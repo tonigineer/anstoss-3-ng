@@ -662,6 +662,19 @@ impl Cycle {
                     return Ok(());
                 }
             }
+            // The week's end books what the managers gave to other
+            // humans' clubs with the recipients' other income, and
+            // empties the week's store so its givers may give again
+            // (`FUN_006eeda7`).
+            {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                if let (Some(season), Some(records)) =
+                    (state.season.as_mut(), state.records.as_mut())
+                {
+                    crate::finances::book_donations(records, &mut season.donations);
+                }
+            }
             self.season(|s| s.before_match = false);
             let Some(week) = self.season(|s| self.start_week(s)).flatten() else {
                 return Ok(());

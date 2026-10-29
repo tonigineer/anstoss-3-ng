@@ -5,6 +5,7 @@
 //! info and weighs it in offers and the board's verdict.
 
 use crate::records::{Agreed, Extra, Manager, Records, Team};
+use crate::season::Donation;
 
 /// The club object's fields sit this far before the team record's.
 pub const CLUB_TO_TEAM: usize = 0x278;
@@ -1041,6 +1042,39 @@ pub fn donate(team: &mut Team, manager: &mut Manager, amount: i64) {
     manager.set_confidence((i32::from(manager.confidence()) - half).clamp(0, 100) as i16);
     let image = (i32::from(team.public_image()) + weight).clamp(IMAGE_LEAST, IMAGE_MOST);
     team.set_public_image(image as u8);
+}
+
+/// What a club books donations it receives as its other income, club
+/// +0x2c4 (the finance overview's column "Sonst. Einn. E",
+/// FINANZUEBERSICHT.md s15; the money events `FUN_005e6153` book
+/// donations there).
+const RECEIVED: usize = 0x2c4;
+
+/// What the week's end does with the donations to other humans' clubs
+/// (`FUN_006eeda7`, which the turn machine runs): every recipient,
+/// fetched by country and number (`FUN_0063dd1c`) and written back
+/// (`FUN_0063df96`), takes the amount with its other income; then the
+/// week's store stands empty and its givers may give again. The
+/// original's store holds four slots and books what the Kalkulation
+/// raised for the club's amateur team as well; the replica's
+/// Kalkulation books that at once (KALKULATION.md §7.2).
+pub fn book_donations(records: &mut Records, donations: &mut Vec<Donation>) {
+    for donation in donations.iter() {
+        if donation.amount <= 0 {
+            continue;
+        }
+        let club = donation.club;
+        let Some(index) = records
+            .teams
+            .iter()
+            .position(|team| (team.country(), i16::from(team.number())) == club)
+        else {
+            continue;
+        };
+        let received = records.teams[index].get::<i32>(at(RECEIVED)).wrapping_add(donation.amount);
+        records.teams[index].put(at(RECEIVED), received);
+    }
+    donations.clear();
 }
 
 /// The steps of a slider running to `max`.

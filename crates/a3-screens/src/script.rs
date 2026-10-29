@@ -7079,4 +7079,42 @@ mod tests {
         let runner = on_save(&broke, "licence-gone", refused).unwrap();
         assert_eq!(runner.host.view().id, 380);
     }
+
+    /// A second human: A patched with his slot, without a club and one of
+    /// the next team. The Finanzen screen offers him among the recipients;
+    /// the offered 100.000 given to him, the screen refuses another
+    /// donation this week (text 4602). Both managers whistle their turn
+    /// off, and the week's end (`FUN_006eeda7`) books the amount with the
+    /// recipient's other income (club +0x2c4) and empties the store.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_donation_to_another_human_is_booked_at_the_weeks_end() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "second-human", |records| {
+            records.globals.set_slots([1, 1, 0, 0]);
+            let team = records.managers[0].team();
+            records.managers[1].set_team(team + 1);
+            records.managers[1].set_status(0);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let received = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let team = usize::from(records.managers[1].team());
+            records.teams[team].get::<i32>(0x2c4 + a3_core::finances::CLUB_TO_TEAM)
+        };
+        let Some(before) = on_save(&game, "second-human", "") else { return };
+        let before = received(&before);
+        // Give the second human's club the 100.000 offered at first; the
+        // refusal; then both managers end their turns with the whistle.
+        let then = "on 384 press 4741\non 380 press 4731\n\
+                    now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63\n\
+                    now choose 6022 1\nnow press 1\nuntil dialog 417\nnow press 2222\n\
+                    until dialog 380\nuntil dialog 417\nnow click bar 18\nuntil dialog 302\n\
+                    now click bar 18\nuntil dialog 384\nnow press 4741\nuntil dialog 9";
+        let runner = on_save(&game, "second-human", then).unwrap();
+        assert_eq!(received(&runner), before + 100_000, "{}", runner.log.join("\n"));
+        assert!(runner.host.state().season.as_ref().unwrap().donations.is_empty());
+    }
 }
