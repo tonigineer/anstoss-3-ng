@@ -7117,4 +7117,29 @@ mod tests {
         assert_eq!(received(&runner), before + 100_000, "{}", runner.log.join("\n"));
         assert!(runner.host.state().season.as_ref().unwrap().donations.is_empty());
     }
+
+    /// The world map's points name their place: the pointer resting on the
+    /// Dutch sports school's point, as long as one waits at a menu bar's
+    /// symbol, shows its name as a tooltip (the points' tooltip
+    /// "= its name").
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_world_map_names_the_place_under_the_pointer() {
+        let game = game();
+        let map = "now click bar 6\nuntil dialog 348\nnow drag at 480 210 to 180 260\nuntil dialog 488";
+        let Some(mut runner) = on_save(&game, "A", map) else { return };
+        let point = control(&game.dialogs[&488], 100 + 2).unwrap();
+        let name = game.text(game.rules.year.places[2].name).to_owned();
+        assert!(!name.is_empty());
+        runner.host.view_mut().hovered = Some(Target::Button(point));
+        // The rest only counts from the hover, not from the map's opening.
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, None, "{}", runner.log.join("\n"));
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, None);
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, Some((point, 0)));
+        let tip = runner.host.view().controls[point].state.as_button().unwrap().tip.clone();
+        assert_eq!(tip.as_deref(), Some(name.as_str()));
+    }
 }

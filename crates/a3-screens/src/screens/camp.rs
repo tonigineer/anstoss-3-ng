@@ -35,6 +35,9 @@ const ATLANTIS: u16 = 6156;
 const ATLANTIS_PICTURE: u16 = 3115;
 /// "Noch nicht möglich!": a group's place whose first season has not come.
 const NOT_YET: u16 = 4588;
+/// The seconds the pointer may rest on a point before its tooltip comes,
+/// as long as the menu bar's symbols wait.
+const TIP_SECS: f32 = 0.8;
 
 /// The confirmation: the manager and the day, the place and its cost, its
 /// picture, its ball, the three glasses; OK and cancel.
@@ -74,6 +77,9 @@ enum Asked {
 pub struct WorldMap {
     day: usize,
     asked: Option<Asked>,
+    /// What the pointer rests on and for how long, towards a tooltip.
+    hover: Option<Target>,
+    rested: f32,
 }
 
 impl Screen for WorldMap {
@@ -104,6 +110,11 @@ impl Screen for WorldMap {
         for place in 0..tables.places.len() {
             if let Some(c) = control(dialog, POINTS + place as u16) {
                 view.controls[c].hidden = !tables.open(place, year, lottery);
+                // Each point names its place when the pointer rests on it
+                // (the buttons' tooltip "= its name").
+                if let Some(b) = view.controls[c].state.as_button_mut() {
+                    b.tip = Some(cx.game.text(tables.places[place].name).to_owned());
+                }
             }
         }
         if let Some(c) = control(dialog, ATLANTIS) {
@@ -145,6 +156,24 @@ impl Screen for WorldMap {
             }
             _ => Outcome::Stay,
         }
+    }
+
+    /// A point the pointer rests on names its place, once it has waited as
+    /// long as at a menu bar's symbol.
+    fn tick(&mut self, _: &mut Cx, view: &mut View, seconds: f32) -> Outcome {
+        self.rested = if view.hovered == self.hover { self.rested + seconds } else { 0.0 };
+        self.hover = view.hovered;
+        let point = match view.hovered {
+            Some(Target::Button(c))
+                if self.rested >= TIP_SECS
+                    && view.controls[c].state.as_button().is_some_and(|b| b.tip.is_some()) =>
+            {
+                Some(c)
+            }
+            _ => None,
+        };
+        view.tip = point.map(|c| (c, 0));
+        Outcome::Stay
     }
 }
 

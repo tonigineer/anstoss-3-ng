@@ -28,6 +28,10 @@ pub struct ButtonState {
     pub label: Option<Label>,
     /// Another text than the dialog file's, for a push button.
     pub text: Option<String>,
+    /// The tooltip shown when the pointer rests on the button, as the world
+    /// map's points name their place (`CDiWeltkarte`'s buttons, its tooltip
+    /// `= its name`).
+    pub tip: Option<String>,
 }
 
 #[derive(Clone, Debug)]

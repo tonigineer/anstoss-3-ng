@@ -216,10 +216,18 @@ impl Classic {
                 combo.draw_list(&mut frame, &paint);
             }
         }
-        if let (Some((control, item)), Some(font)) = (view.tip, self.fonts.get(PLAIN_FONT)) {
-            let text = view.controls.get(control).and_then(|c| c.state.as_bar()?.tips.get(item));
-            if let (Some(text), Some(c)) = (text, dialog.controls.get(control)) {
-                bar::draw_tip(&mut frame, font, bar::symbol(c, item), text);
+        if let (Some((control, item)), Some(font)) = (view.tip, self.fonts.get(PLAIN_FONT))
+            && let Some(c) = dialog.controls.get(control)
+        {
+            // A bar item's tip sits over its symbol, a button's - the world
+            // map's points name their place - over its rectangle.
+            let shown = &view.controls[control];
+            let (text, at) = match shown.state.as_bar() {
+                Some(b) => (b.tips.get(item).map(String::as_str), bar::symbol(c, item)),
+                None => (shown.state.as_button().and_then(|b| b.tip.as_deref()), c.rect),
+            };
+            if let Some(text) = text {
+                bar::draw_tip(&mut frame, font, at, text);
             }
         }
         frame
