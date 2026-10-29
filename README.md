@@ -39,8 +39,7 @@ ANSTOSS; "ANSTOSS" is a trademark of its owner.
 
 [Ghidra](https://ghidra-sre.org) decompiles `anstoss3.exe`, and
 [Claude](https://www.anthropic.com/claude) reads that decompile, writes the
-code, and compares every finished screen against the original. The
-decompiled code itself is not part of this repository.
+code, and compares every finished screen against the original.
 
 ### Which copy works
 
