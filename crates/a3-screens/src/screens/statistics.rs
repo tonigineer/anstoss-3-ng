@@ -1181,7 +1181,11 @@ const STRENGTH_HIDDEN: u8 = 0x40;
 /// - the Vorlagen (`FUN_0046b4cf`, 0x87e400 and 0x87e3e0): those with
 ///   assists by them, the last match's in brackets;
 /// - the Gelbe Karten (`FUN_00467de7`, 0x87dea8 and 0x87de80): all by
-///   their yellow cards in the league, then the cup, then Europe.
+///   their yellow cards in the league, then the cup, then Europe;
+/// - the Joker (`FUN_0046bd01`): those with joker goals by them, on a tie
+///   the fewer came-ons first, with the goals per came-on as "%3.1f";
+/// - the Mannschaft's Eigentore (`FUN_00468c74`): those with own goals,
+///   by them.
 fn squad_page(code: i16) -> Option<SquadPage> {
     Some(match code {
         statistics::SQUAD_SCORERS_PAGE => SquadPage {
@@ -1405,6 +1409,45 @@ fn squad_page(code: i16) -> Option<SquadPage> {
             figures: |p| {
                 format!("{}\t{}\t{}", p.league_cards()[0], p.cup_cards()[0], p.europe_cards()[0])
             },
+        },
+        statistics::SQUAD_JOKER_PAGE => SquadPage {
+            header: 3038,
+            header_columns: &[
+                (C, 0x14),
+                (0x19, 0),
+                (C | 0xc8, 0x28),
+                (C | 0xfa, 0x28),
+                (C | 0x12c, 0x28),
+            ],
+            columns: &[
+                (R, 0x14),
+                (0x19, 0),
+                (C | 0xc8, 0x28),
+                (C | 0xfa, 0x28),
+                (C | 0x12c, 0x28),
+            ],
+            centred: false,
+            keep: |p| p.joker_goals() != 0,
+            // By their joker goals, on a tie the fewer came-ons first.
+            key: |p| i32::from(p.joker_goals()) << 8 | 0xff - i32::from(p.league_less()[0]),
+            figures: |p| {
+                let (joker, came_on) = (p.joker_goals(), p.league_less()[0]);
+                let average = if came_on == 0 {
+                    String::new()
+                } else {
+                    tenths(f64::from(joker) / f64::from(came_on))
+                };
+                format!("{joker}\t{came_on}\t{average}")
+            },
+        },
+        statistics::SQUAD_OWN_GOALS_PAGE => SquadPage {
+            header: 2409,
+            header_columns: &[(R, 0x14), (0x19, 0), (C | 0xc8, 0x3c)],
+            columns: &[(R, 0x14), (0x19, 0), (R | 0xc8, 0x28)],
+            centred: false,
+            keep: |p| p.own_goals() != 0,
+            key: |p| i32::from(p.own_goals()),
+            figures: |p| p.own_goals().to_string(),
         },
         _ => return None,
     })

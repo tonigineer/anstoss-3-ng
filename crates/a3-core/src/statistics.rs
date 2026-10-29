@@ -339,10 +339,16 @@ pub const SQUAD_LINES_FORM_PAGE: i16 = 0x18;
 pub const SQUAD_ALL_TIME_PAGE: i16 = 1;
 pub const SQUAD_ALL_TIME_MATCHES_PAGE: i16 = 5;
 pub const SQUAD_POINTS_PAGE: i16 = 2;
+/// The Joker under 3038 (`FUN_0046bd01`), once the squad has a joker
+/// goal.
+pub const SQUAD_JOKER_PAGE: i16 = 3;
 /// The Einsätze under 2406 (`FUN_004681ce`).
 pub const SQUAD_MATCHES_PAGE: i16 = 4;
 pub const SQUAD_FAIRNESS_PAGE: i16 = 6;
 pub const SQUAD_ASSISTS_PAGE: i16 = 0xc;
+/// The Mannschaft's Eigentore under 2409 (`FUN_00468c74`), once the
+/// squad has an own goal.
+pub const SQUAD_OWN_GOALS_PAGE: i16 = 0xd;
 pub const SQUAD_YELLOW_PAGE: i16 = 0xe;
 /// The Spielereigenschaften under 4739 (`FUN_00471109`).
 pub const SQUAD_TRAITS_PAGE: i16 = 0x1d;

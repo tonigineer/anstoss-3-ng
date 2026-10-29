@@ -4969,6 +4969,75 @@ mod tests {
         assert_eq!(table.rows[4].text, "5.\tDiogo Leite\t0\t0\t0\t0\t0\t0\t0\t0.0");
     }
 
+    /// Once the squad has a joker goal and an own goal, the Mannschaft
+    /// category lists its Joker and its Eigentore pages (texts 2083 and
+    /// 2041) and both name the players by their counts: the Joker by the
+    /// joker goals, the fewer came-ons first on a tie, and the goals per
+    /// came-on as "%3.1f" (`FUN_0046bd01`), the Eigentore by the own
+    /// goals (`FUN_00468c74`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_archive_names_the_jokers_and_the_own_goals() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut ids = [0; 2];
+        let root = patched(&dir, "A", "squad-goals", |records| {
+            let index = records.human_slot(0).unwrap();
+            let (country, number) =
+                (records.managers[index].country(), records.managers[index].team());
+            let players = records.team(country, number).unwrap().players();
+            ids = [players[0], players[1]];
+            // Two joker goals each: the one came on less often stands
+            // first. The second also put one past his own keeper.
+            let joker = &mut records.players[usize::from(players[0])];
+            joker.set_joker_goals(2);
+            joker.set_league_less([3, 0]);
+            let own = &mut records.players[usize::from(players[1])];
+            own.set_joker_goals(2);
+            own.set_league_less([5, 0]);
+            own.set_own_goals(1);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 14\nuntil dialog 18\nnow row 1283 1";
+        let Some(mut runner) = on_save(&game, "squad-goals", open) else { return };
+        let dialog = &game.dialogs[&18];
+        let list = control(dialog, 1284).unwrap();
+        let entries = runner.host.view().list(list).unwrap().keys.clone();
+        // The list's keys name the pages by their place in the category,
+        // so the two codes find theirs there first.
+        let pages = &game.rules.statistics.categories[1];
+        let at = |code: i16| pages.iter().position(|p| p.code == code).unwrap();
+        let joker = entries.iter().position(|&e| e == at(3)).unwrap();
+        let own = entries.iter().position(|&e| e == at(0xd)).unwrap();
+        runner.run(&Script::parse(&format!("now row 1284 {joker}")).unwrap()).unwrap();
+        let names = runner
+            .host
+            .state()
+            .records
+            .as_ref()
+            .map(|records| [ids[0], ids[1]].map(|id| records.known_as(id).unwrap_or_default()))
+            .unwrap_or_default();
+        let name = |k: usize| names[k].clone();
+        {
+            let view = runner.host.view();
+            assert_eq!(view.text(control(dialog, 1292).unwrap()), game.text(3038));
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            assert_eq!(
+                table.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+                [
+                    format!("1.\t{}\t2\t3\t0.7", name(0)).as_str(),
+                    format!("2.\t{}\t2\t5\t0.4", name(1)).as_str()
+                ]
+            );
+        }
+        runner.run(&Script::parse(&format!("now row 1284 {own}")).unwrap()).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), game.text(2409));
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].text, format!("1.\t{}\t1", name(1)));
+    }
+
     /// With the department raised the Mannschaft category's Notenschnitt
     /// Mannschaft draws the club's mean grade and its opponents' by
     /// matchday.
