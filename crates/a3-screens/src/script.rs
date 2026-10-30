@@ -7523,4 +7523,66 @@ mod tests {
         let button = control(&game.dialogs[&175], 5571).unwrap();
         assert_eq!(back.host.view().chosen(button), crate::controls::options::NONE);
     }
+
+    /// The share market (dialog 431, `CDiAktienmarkt`) behind the honours
+    /// page's "A", as the original trades on A: the nine clubs' shares by
+    /// name, AFC Sunderland chosen and six bought for 907 € and a fee of
+    /// 5, three sold back for 453 € less 3 — the offer down and up again,
+    /// the holding kept in the last place at the price paid —; back on the
+    /// honours page the holding in its list, a click voting to sack its
+    /// club's manager.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_share_market_buys_and_sells() {
+        let game = game();
+        let dialog = &game.dialogs[&431];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 0\nuntil dialog 431";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Aktienmarkt Toni Lubiniecki");
+        assert_eq!(
+            [5282, 5139, 5286, 5326, 5334, 5327].map(|id| text(&runner, id)),
+            ["99.300 €", "6958.92", "0.50%", "---", " 0 €", " 0 €"]
+        );
+        let shares = runner.host.view().list(control(dialog, 5278).unwrap()).unwrap().clone();
+        assert_eq!(shares.rows.len(), 9);
+        assert_eq!(shares.rows[0], "AFC Sunderland\t151,31\t168,81\t-10.37%\t2.150\t168,81\t138,88");
+        assert_eq!(shares.inks[0], Some([255, 0, 0]));
+        assert!(shares.rows[8].starts_with("Tottenham Hotspur\t"));
+        assert!(runner.host.view().controls[control(dialog, 5280).unwrap()].hidden);
+        // Six of the first.
+        let six = format!("{open}\nnow row 5278 0\n{}", "now spin 5280 up\n".repeat(5));
+        let runner = on_save(&game, "A", &six).unwrap();
+        assert_eq!([5294, 5295, 5281, 5287].map(|id| text(&runner, id)), ["169,81", "138,08", "6", " 907 €"]);
+        let bought = format!("{six}now choose 5654 1");
+        let runner = on_save(&game, "A", &bought).unwrap();
+        assert_eq!([5282, 5326, 5327].map(|id| text(&runner, id)), ["98.388 €", "0.00", " 907 €"]);
+        let held = runner.host.view().list(control(dialog, 5276).unwrap()).unwrap().rows.clone();
+        assert_eq!(held, ["AFC Sunderland\t151,31\t151,31\t0.00%\t6\t907,91"]);
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let holdings = a3_core::market::holdings(records, 0);
+            assert!(holdings[..49].iter().all(Option::is_none), "the last place first");
+            let h = holdings[49].unwrap();
+            assert_eq!((h.count, h.sack), (6, false));
+            let market = a3_core::market::market(records).unwrap();
+            assert_eq!(market.shares[h.share].offer, 2144);
+        }
+        // Three sold back.
+        let sold = format!("{bought}\nnow row 5276 0\nnow spin 5284 up\nnow spin 5284 up\nnow choose 5655 1");
+        let runner = on_save(&game, "A", &sold).unwrap();
+        assert_eq!([5282, 5327].map(|id| text(&runner, id)), ["98.838 €", " 453 €"]);
+        let row = &runner.host.view().list(control(dialog, 5278).unwrap()).unwrap().rows[0];
+        assert!(row.contains("\t2.147\t"), "{row}");
+        // Back on the honours page: the holding, and a click on it.
+        let back = format!("{bought}\nnow ok\nuntil dialog 175");
+        let runner = on_save(&game, "A", &back).unwrap();
+        let list = control(&game.dialogs[&175], 5261).unwrap();
+        let rows = runner.host.view().list(list).unwrap().rows.clone();
+        assert_eq!(rows, ["AFC Sunderland\t6\t0.0\t151,31\t151,31\t907,91\t"]);
+        let runner = on_save(&game, "A", &format!("{back}\nnow row 5261 0")).unwrap();
+        let rows = runner.host.view().list(list).unwrap().rows.clone();
+        assert_eq!(rows, [format!("AFC Sunderland\t6\t0.0\t151,31\t151,31\t907,91\t{}", game.text(3163))]);
+    }
 }

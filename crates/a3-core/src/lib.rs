@@ -24,6 +24,7 @@ pub mod league;
 pub mod licence;
 pub mod lineup;
 pub mod load;
+pub mod market;
 pub mod marking;
 pub mod medical;
 pub mod mood;
