@@ -860,6 +860,13 @@ record! {
     /// 3: under contract.
     0x22 => status, set_status: u8;
     0x23 => level, set_level: u8;
+    /// A player-manager's own career (dialog 403): how hard he trains,
+    /// how hard he goes in a match, how rough he plays — 0 to 4, 0 to 4,
+    /// 0 to 2 (the manager object's +0x28 to +0x2a).
+    0x27 => own_play, set_own_play: [u8; 3];
+    /// The rival he means to foul, a team-mate's id, 0 none (the object's
+    /// +0x2c).
+    0x2c => rival, set_rival: i16;
     0x2e => birth_day, set_birth_day: u8;
     0x2f => birth_month, set_birth_month: u8;
     0x30 => birth_year, set_birth_year: u16;
@@ -919,6 +926,9 @@ record! {
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
+    /// The team-mate a player-manager makes friends with, by id
+    /// (`FUN_006a6705`, `FUN_006a66dd`).
+    0x1f66 => friend, set_friend: i16;
     0x1f6e => market_filter, set_market_filter: i16;
     0x1f70 => market_show, set_market_show: i16;
     /// How the week's player in individual training is chosen when nobody

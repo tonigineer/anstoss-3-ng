@@ -256,6 +256,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(training::settings::CoTrainerSettings::default()),
         Box::new(training::performance::TrainingStatistics::default()),
         Box::new(training::rooms::Rooms::default()),
+        Box::new(training::career::PlayerCareer::default()),
         Box::new(camp::WorldMap::default()),
         Box::new(camp::CampConfirm),
         Box::new(camp::CampGroup),
@@ -290,6 +291,7 @@ pub fn compose(game: &mut Game) {
     training::settings::compose(&mut game.dialogs);
     training::performance::compose(&mut game.dialogs);
     training::rooms::compose(&mut game.dialogs);
+    training::career::compose(&mut game.dialogs);
     camp::compose(&mut game.dialogs, &game.data.rules);
     donations::compose(&mut game.dialogs);
     licence::compose(&mut game.dialogs);

@@ -25,6 +25,7 @@ use super::super::hub::{self, ABILITY_CHOICE, INDIVIDUAL_TRAINING, INDIVIDUAL_TR
 use super::super::{
     Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, playerinfo, set,
 };
+use super::career::PLAYER_CAREER;
 use crate::controls::ControlState;
 use crate::controls::list::Bar;
 use crate::pointer::{Grip, Target};
@@ -160,7 +161,9 @@ impl Screen for IndividualTraining {
         }
         fill(cx, view);
         let works = |target: Target| match target {
-            Target::Button(c) => BUTTONS.contains(&dialog.controls[c].id.unwrap_or(0)),
+            Target::Button(c) => {
+                [BUTTONS.as_slice(), &[CAREER]].concat().contains(&dialog.controls[c].id.unwrap_or(0))
+            }
             _ => hub::on_bar(dialog, target).is_none_or(hub::bar_works),
         };
         mark_inert(view, dialog, works);
@@ -220,6 +223,12 @@ impl Screen for IndividualTraining {
             }
             Target::Menu(Grip::Row { control: c, row }) if id(c) == LIST => {
                 self.menu_player = open_menu(cx, view, c, row);
+            }
+            // The player-manager's own career (`0x596b40`): its answer
+            // changes nothing here.
+            Target::Button(c) if id(c) == CAREER => {
+                self.popup = Some(PLAYER_CAREER);
+                return Outcome::Popup(Request::new(PLAYER_CAREER));
             }
             // A group's button: on with the left button, back with the
             // right; then everyone's intensity anew (`FUN_0074bd20`).

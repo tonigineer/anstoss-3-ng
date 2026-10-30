@@ -7408,4 +7408,83 @@ mod tests {
         assert_eq!(seen(&runner, 95), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The individual training's "Spieler-karriere" (dialog 403,
+    /// `CDiSpielerkarriere`), as the original shows it on A: titled with
+    /// the player-manager and his club, the sliders at his 4, 4 and 1, both
+    /// lists opening on "Bitte auswählen" and then the squad in its order
+    /// but for himself — the friends' only with players who have no best
+    /// friend or have him. OK keeps the sliders, the rival and a friend;
+    /// the first row clears the rival (−1); "Abbruch" keeps nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_player_manager_sets_his_own_career() {
+        let game = game();
+        let dialog = &game.dialogs[&403];
+        let open = "now click bar 5\nuntil dialog 347\nnow press 6151\nuntil dialog 403";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let view = runner.host.view();
+        assert_eq!(
+            view.text(control(dialog, 9929).unwrap()),
+            "ANSTOSS 3 - Spielerkarriere Toni Lubiniecki (1.FC Union Berlin)"
+        );
+        let sliders = [6133, 6134, 6135].map(|id| {
+            let value = view.value(control(dialog, id).unwrap()).unwrap();
+            (value.value, value.range)
+        });
+        assert_eq!(sliders, [(4, (0, 4)), (4, (0, 4)), (1, (0, 2))]);
+        let rival = view.combo(control(dialog, 6137).unwrap()).unwrap();
+        let friend = view.combo(control(dialog, 6138).unwrap()).unwrap();
+        assert_eq!((rival.selected, friend.selected), (Some(0), Some(0)));
+        assert_eq!(rival.items[..5], [game.text(4945), "Rönnow, F.", "Raab, M.", "Klaus, C.", "Doekhi, D."]);
+        assert!(!rival.items.iter().any(|i| i.starts_with("Lubiniecki")));
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let season = state.season.as_ref().unwrap();
+            let club = &season.clubs[&season.managers[0].club.unwrap()];
+            let free = club
+                .status
+                .iter()
+                .filter(|s| s.id < 17001)
+                .filter(|s| {
+                    let best = records.player(s.id).unwrap().best_friend();
+                    (best as i16) < 1 || best == 17001
+                })
+                .count();
+            assert_eq!(friend.items.len(), free + 1);
+        }
+        // The button stands crossed out no more.
+        let training = on_save(&game, "A", "now click bar 5\nuntil dialog 347").unwrap();
+        let career = control(&game.dialogs[&347], 6151).unwrap();
+        assert!(!training.host.view().inert.contains(&Target::Button(career)));
+        // OK with the sliders moved and a rival and a friend chosen.
+        let kept = format!("{open}\nnow slide 6133 2; slide 6135 0; row 6137 3; row 6138 2; ok\nuntil dialog 347");
+        let runner = on_save(&game, "A", &kept).unwrap();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = &records.managers[0];
+            assert_eq!(manager.own_play(), [2, 4, 0]);
+            let last = |id: i16| {
+                let player = records.player(id as u16).unwrap();
+                records.name(player.last_name()).to_owned()
+            };
+            assert_eq!(last(manager.rival()), "Klaus");
+            assert_eq!(last(manager.friend()), "Raab");
+        }
+        // The first row clears the rival; the friend stays as it was.
+        let cleared = format!("{open}\nnow row 6137 0; row 6138 0; ok\nuntil dialog 347");
+        let runner = on_save(&game, "A", &cleared).unwrap();
+        let state = runner.host.state();
+        let manager = &state.records.as_ref().unwrap().managers[0];
+        assert_eq!((manager.rival(), manager.friend()), (-1, 0));
+        drop(state);
+        // "Abbruch" keeps nothing.
+        let dropped = format!("{open}\nnow slide 6133 0; row 6137 3; cancel\nuntil dialog 347");
+        let runner = on_save(&game, "A", &dropped).unwrap();
+        let state = runner.host.state();
+        let manager = &state.records.as_ref().unwrap().managers[0];
+        assert_eq!((manager.own_play(), manager.rival()), ([4, 4, 1], 0));
+    }
 }
