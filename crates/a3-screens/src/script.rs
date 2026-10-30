@@ -7673,4 +7673,66 @@ mod tests {
         let notice = control(&game.dialogs[&380], 4730).unwrap();
         assert_eq!(runner.host.view().text(notice), game.text(4592));
     }
+
+    /// The betting office's season bets (dialog 410), in a game's first
+    /// eight half weeks — here A with its counter set to 5, as the
+    /// original was poked —: the first league's table with the
+    /// champions' odds by place ("FC Bayern München 3.0"), the cups'
+    /// names as the new game set them, the European championship left out
+    /// in 2025 and the world's shown; the trainer chosen takes the odds of
+    /// the row below his, as the game does; the stakes stop where the
+    /// season's leave no room: with 150 € and four bets of 10 €, the
+    /// champion's at 100 €.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_betting_office_takes_season_bets() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-bets", |records| records.globals.set_half_weeks(5));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&410];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let items = |runner: &Runner, id: u16| runner.host.view().combo(control(dialog, id).unwrap()).unwrap().items.clone();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 410";
+        let Some(runner) = on_save(&game, "season-bets", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Wettbüro Saison Toni Lubiniecki");
+        assert_eq!([6284, 6285, 5282].map(|id| text(&runner, id)), ["Champions League", "Europa League", "99.300 €"]);
+        assert_eq!(items(&runner, 5149)[..3], [game.text(4945), "FC Bayern München\t3.0", "Bayer 04 Leverkusen\t5.4"]);
+        assert_eq!(items(&runner, 5167)[..3], [game.text(4945), " 1\t2.1", " 2\t1.5"]);
+        assert_eq!(items(&runner, 5246)[1], "Brasilien\t1.7");
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[control(dialog, id).unwrap()].hidden;
+        assert!(hidden(&runner, 5243) && hidden(&runner, 5242) && !hidden(&runner, 5246));
+        let chosen = format!(
+            "{open}\nnow spin 5148 up\nnow spin 5148 up\nnow spin 5148 up\nnow row 5149 1\nnow row 5164 1\n\
+             now row 5167 1\nnow row 5246 1"
+        );
+        let runner = on_save(&game, "season-bets", &chosen).unwrap();
+        assert_eq!(text(&runner, 5150), " 30 €");
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let bets = a3_core::betting::season_bets(records, 0);
+            let bayern = records.teams.iter().find(|t| t.name() == "FC Bayern München").unwrap().number();
+            assert_eq!(bets.pages[0].champion, bayern as i16);
+            assert_eq!(bets.pages[0].stakes[0], 30);
+            let offer = a3_core::betting::season_offer(records, 0).unwrap();
+            assert_eq!((bets.pages[0].trainer, bets.pages[0].trainer_odds), (offer.trainers[0].id, offer.trainers[1].odds));
+            let manager = &records.managers[0];
+            assert_eq!((bets.place, bets.place_club), (1, (manager.team() as i16, manager.country() as i16)));
+            assert_eq!(bets.cups[3], 0);
+        }
+        let root = patched(&dir, "A", "season-cap", |records| {
+            records.globals.set_half_weeks(5);
+            records.managers[0].set_cash(150);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let capped = format!(
+            "{open}\nnow spin 5165 up\nnow spin 5237 up\nnow spin 5239 up\nnow spin 5245 up\n{}",
+            "now spin 5148 up\n".repeat(12)
+        );
+        let runner = on_save(&game, "season-cap", &capped).unwrap();
+        assert_eq!(text(&runner, 5150), " 100 €");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -320,18 +320,12 @@ impl Screen for Honours {
                 view.set_chosen(c, NONE);
             }
         }
-        let season_bets =
-            cx.state.records.as_ref().is_some_and(|r| r.globals.half_weeks() <= SEASON_BETS_UNTIL);
         // The two transfers and the built pages are open.
         let works = |t: Target| match t {
             Target::Option { control: c, item } if dialog.controls[c].id == Some(PAGES) => {
                 item == PLAYER_MANAGER || PAGE_DIALOGS.get(item).is_some_and(Option::is_some)
             }
-            // The share market, and the betting office but for its season
-            // bets.
-            Target::Option { control: c, item } if dialog.controls[c].id == Some(MARKETS) => {
-                item == SHARE_MARKET || !season_bets
-            }
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(MARKETS) => true,
             _ => hub::on_bar(dialog, t).is_none_or(hub::bar_works),
         };
         mark_inert(view, dialog, works);
@@ -384,8 +378,7 @@ impl Screen for Honours {
                 let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
                 let weeks = records.globals.half_weeks();
                 if weeks <= SEASON_BETS_UNTIL {
-                    view.set_chosen(c, NONE);
-                    return Outcome::Stay;
+                    return Outcome::Popup(a3_core::cycle::Request::new(betting::SEASON_DIALOG));
                 }
                 if MATCHDAY_BETS.contains(&weeks) && a3_core::betting::matchday_open(records) {
                     return Outcome::Popup(a3_core::cycle::Request::new(betting::MATCHDAY_DIALOG));

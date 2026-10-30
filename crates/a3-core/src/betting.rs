@@ -265,6 +265,199 @@ pub fn matchday_offer(records: &Records, page: usize) -> Option<MatchdayOffer> {
     Some(MatchdayOffer { matches, scorers, trainers })
 }
 
+/// A human's season bets on a country (the bets record's first pages,
+/// 0x1c a country): the champion by team number, the cup winner and the
+/// top scorer by their rows in the offer, the trainer sacked first with
+/// the odds taken, and the four stakes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeasonPage {
+    pub champion: i16,
+    pub cup: i16,
+    pub scorer: i16,
+    pub trainer: i16,
+    pub trainer_odds: i16,
+    pub stakes: [i32; 4],
+}
+
+/// The season bets over all countries: the own team's place, with the
+/// club it was bet for, and the European cups' and the tournaments'
+/// winners by their rows, with the five stakes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeasonBets {
+    pub pages: [SeasonPage; PAGES],
+    pub place: i16,
+    pub place_club: (i16, i16),
+    /// The Champions League, the UEFA cup, the European and the World
+    /// championship.
+    pub cups: [i16; 4],
+    /// The place's, then the four cups' stakes.
+    pub stakes: [i32; 5],
+}
+
+const SEASON_PAGE: usize = 0x1c;
+const SEASON_STAKES: usize = 0xc;
+const PLACE_CLUB: usize = 0x19a;
+const PLACE: usize = 0x19e;
+const CUPS: usize = 0x1a0;
+const STAKES: usize = 0x1a8;
+/// The own league's size and the odds of each place.
+const LEAGUE_SIZE: usize = 0x168;
+const PLACE_ODDS: usize = 0x16a;
+
+/// The human's season bets.
+pub fn season_bets(records: &Records, human: usize) -> SeasonBets {
+    let Some(b) = records.block(&bets_block(human)) else { return SeasonBets::default() };
+    SeasonBets {
+        pages: std::array::from_fn(|c| {
+            let p = c * SEASON_PAGE;
+            SeasonPage {
+                champion: short(b, p),
+                cup: short(b, p + 2),
+                scorer: short(b, p + 4),
+                trainer: short(b, p + 6),
+                trainer_odds: short(b, p + 8),
+                stakes: std::array::from_fn(|k| int(b, p + SEASON_STAKES + 4 * k)),
+            }
+        }),
+        place: short(b, PLACE),
+        place_club: (short(b, PLACE_CLUB), short(b, PLACE_CLUB + 2)),
+        cups: std::array::from_fn(|k| short(b, CUPS + 2 * k)),
+        stakes: std::array::from_fn(|k| int(b, STAKES + 4 * k)),
+    }
+}
+
+/// Writes the season bets back.
+pub fn set_season_bets(records: &mut Records, human: usize, bets: &SeasonBets) {
+    let Some(b) = records.block_mut(&bets_block(human)) else { return };
+    let mut put = |at: usize, bytes: &[u8]| b[at..at + bytes.len()].copy_from_slice(bytes);
+    for (c, page) in bets.pages.iter().enumerate() {
+        let p = c * SEASON_PAGE;
+        put(p, &page.champion.to_le_bytes());
+        put(p + 2, &page.cup.to_le_bytes());
+        put(p + 4, &page.scorer.to_le_bytes());
+        put(p + 6, &page.trainer.to_le_bytes());
+        put(p + 8, &page.trainer_odds.to_le_bytes());
+        for (k, stake) in page.stakes.iter().enumerate() {
+            put(p + SEASON_STAKES + 4 * k, &stake.to_le_bytes());
+        }
+    }
+    put(PLACE, &bets.place.to_le_bytes());
+    put(PLACE_CLUB, &bets.place_club.0.to_le_bytes());
+    put(PLACE_CLUB + 2, &bets.place_club.1.to_le_bytes());
+    for (k, cup) in bets.cups.iter().enumerate() {
+        put(CUPS + 2 * k, &cup.to_le_bytes());
+    }
+    for (k, stake) in bets.stakes.iter().enumerate() {
+        put(STAKES + 4 * k, &stake.to_le_bytes());
+    }
+}
+
+/// The odds of each place of the own league, as many as it has teams.
+pub fn place_odds(records: &Records, human: usize) -> Vec<i16> {
+    let Some(b) = records.block(&bets_block(human)) else { return Vec::new() };
+    let size = usize::try_from(short(b, LEAGUE_SIZE)).unwrap_or(0).min(24);
+    (0..size).map(|i| short(b, PLACE_ODDS + 2 * i)).collect()
+}
+
+impl SeasonBets {
+    /// All the season's stakes (what `FUN_0077fc41` sums; the matchday's
+    /// are not counted).
+    pub fn total(&self) -> i32 {
+        self.pages.iter().flat_map(|p| p.stakes).sum::<i32>() + self.stakes.iter().sum::<i32>()
+    }
+}
+
+/// What a season stake may still take (`FUN_0077fc41`): the fortune less
+/// the season's stakes, at most 20.000, none below.
+pub fn season_room(bets: &SeasonBets, fortune: i32) -> i32 {
+    (fortune - bets.total()).min(MOST_STAKE).max(0)
+}
+
+/// What the game offers on the season (`0x1c65e88`, its data from
+/// 0x1c65ea8): a country's top scorers, trainers and cup teams, and over
+/// all the European cups' clubs and the tournaments' nations.
+const SEASON_OFFER_AT: &str = "0x1c65e88";
+const SEASON_SCORERS: usize = 0;
+const SEASON_TRAINERS: usize = 0xbcc;
+const CUP_TEAMS: usize = 0x13a6;
+const CUP_PAGE: usize = 0x102;
+const CHAMPIONS_LEAGUE: usize = 0x18b0;
+const UEFA_CUP: usize = 0x19a2;
+const EUROPEAN: usize = 0x1a94;
+const WORLD: usize = 0x1c66;
+/// The champions' odds by place, in the globals block (`0xb21820`).
+const GLOBALS_AT: &str = "0xb1f860";
+const CHAMPION_ODDS: usize = 0x1fc0;
+const CHAMPION_PAGE: usize = 0x90;
+
+/// The season's offer on a country, and over all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeasonOffer {
+    /// The odds of the champion by the league's places.
+    pub champion_odds: Vec<i16>,
+    /// The cup's teams by number with their odds.
+    pub cup: Vec<(i16, i16)>,
+    pub scorers: Vec<Scorer>,
+    pub trainers: Vec<Trainer>,
+    /// The European cups' clubs, by country and number, with their odds.
+    pub european_cups: [Vec<((u8, u16), i16)>; 2],
+    /// The tournaments' nations with their odds.
+    pub tournaments: [Vec<(i16, i16)>; 2],
+}
+
+fn scorers(b: &[u8], s: usize) -> Vec<Scorer> {
+    (0..usize::try_from(int(b, s)).unwrap_or(0).min(50))
+        .map(|i| Scorer {
+            names: (short(b, s + 0xcc + 2 * i) as u16, short(b, s + 0x130 + 2 * i) as u16),
+            odds: int(b, s + 0x194 + 4 * i),
+        })
+        .collect()
+}
+
+fn trainers(b: &[u8], t: usize) -> Vec<Trainer> {
+    (0..usize::try_from(short(b, t)).unwrap_or(0).min(50))
+        .map(|i| Trainer {
+            id: short(b, t + 2 + 2 * i),
+            club: (short(b, t + 0x66 + 2 * i), short(b, t + 0xca + 2 * i)),
+            odds: short(b, t + 0x12e + 2 * i),
+        })
+        .collect()
+}
+
+/// The season's offer on the page's country.
+pub fn season_offer(records: &Records, page: usize) -> Option<SeasonOffer> {
+    let b = records.block(SEASON_OFFER_AT)?;
+    let odds = records.block(GLOBALS_AT);
+    let champion_odds = (0..24)
+        .map(|i| odds.map_or(0, |g| short(g, CHAMPION_ODDS + page * CHAMPION_PAGE + 2 * i)))
+        .collect();
+    let c = CUP_TEAMS + page * CUP_PAGE;
+    let cup = (0..usize::try_from(short(b, c)).unwrap_or(0).min(64))
+        .map(|i| (short(b, c + 2 + 2 * i), short(b, c + 0x82 + 2 * i)))
+        .collect();
+    let clubs = |at: usize| {
+        (0..usize::try_from(short(b, at)).unwrap_or(0).min(40))
+            .map(|i| {
+                let e = at + 2 + 4 * i;
+                ((b.get(e).copied().unwrap_or(0), short(b, e + 2) as u16), short(b, at + 0xa2 + 2 * i))
+            })
+            .collect()
+    };
+    let nations = |at: usize| {
+        (0..usize::try_from(short(b, at)).unwrap_or(0).min(116))
+            .map(|i| (short(b, at + 2 + 2 * i), short(b, at + 0xea + 2 * i)))
+            .collect()
+    };
+    Some(SeasonOffer {
+        champion_odds,
+        cup,
+        scorers: scorers(b, SEASON_SCORERS + page * SCORER_PAGE),
+        trainers: trainers(b, SEASON_TRAINERS + page * TRAINER_PAGE),
+        european_cups: [clubs(CHAMPIONS_LEAGUE), clubs(UEFA_CUP)],
+        tournaments: [nations(EUROPEAN), nations(WORLD)],
+    })
+}
+
 /// Odds in tenths as the lists write them: one place below ten, the whole
 /// number from ten on.
 pub fn odds(tenths: i32) -> String {
