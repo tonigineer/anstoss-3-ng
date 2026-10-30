@@ -148,7 +148,11 @@ AREAS = {
                 (*menu(17, 175, 5571, 0, 320), 320),
                 (*menu(17, 175, 5572, 0, 431), 431),
                 (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now row 5278 0",
-                      "now spin 5280 up", "now choose 5654 1", "now row 5276 0"), 431)],
+                      "now spin 5280 up", "now choose 5654 1", "now row 5276 0"), 431),
+                (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now row 5278 0",
+                      "now choose 5654 0", "until dialog 432"), 432),
+                (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now press 5292",
+                      "until dialog 433"), 433)],
     # The archive's tables: the current one, at home, the 2. Bundesliga's
     # forecast one step along the strip, a cup's round, the Ligapokal's,
     # the Europa League's, the season's cross-table, and a goal graph on

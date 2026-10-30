@@ -427,6 +427,9 @@ pub enum Args {
     /// A text by its id with a player's name for its `%s`, and the alert's
     /// style, which picks its ball (`FUN_0043e4c2`: 3 and 4 the doping's).
     StyledFor(u16, u16, u8),
+    /// A share of the market by its place, and the manager's holding of it
+    /// by its place, whose price paid the chart marks.
+    Share(usize, Option<usize>),
 }
 
 /// How a screen was left.

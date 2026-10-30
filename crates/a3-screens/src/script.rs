@@ -7585,4 +7585,42 @@ mod tests {
         let rows = runner.host.view().list(list).unwrap().rows.clone();
         assert_eq!(rows, [format!("AFC Sunderland\t6\t0.0\t151,31\t151,31\t907,91\t{}", game.text(3163))]);
     }
+
+    /// The market's big chart (432) and the week's winners and losers
+    /// (433), as the original shows them on A: AFC Sunderland's year in 52
+    /// bars on a scale from 137,88 to 169,81, its figures above, the
+    /// offer without points; from a holding the same with the black line
+    /// at the price paid. The winners: AS Rom first at 4.94 %; the losers:
+    /// SpVgg Unterhaching first at −22.65 %, the prices rounded with a dot.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_share_market_shows_its_chart_and_the_weeks_winners() {
+        let game = game();
+        let text = |runner: &Runner, dialog: u16, id: u16| {
+            runner.host.view().text(control(&game.dialogs[&dialog], id).unwrap()).to_owned()
+        };
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 0\nuntil dialog 431\nnow row 5278 0";
+        let chart = format!("{open}\nnow choose 5654 0\nuntil dialog 432");
+        let Some(runner) = on_save(&game, "A", &chart) else { return };
+        assert_eq!(
+            [9947, 1866, 5301, 5300, 5304, 5303, 5302, 5305, 5328].map(|id| text(&runner, 432, id)),
+            ["ANSTOSS 3 - Chart", "AFC Sunderland", "151,31", "168,81", "2150", "168,81", "138,88", "169,81", "137,88"]
+        );
+        let paint = control(&game.dialogs[&432], 5299).unwrap();
+        let shown = runner.host.view().paint(paint).unwrap().clone();
+        assert_eq!(shown.bars.len(), 52);
+        assert!(shown.lines.iter().all(|l| l.1 != image::Rgba([0, 0, 0, 255])), "no line at a price paid");
+        let held = format!("{open}\nnow choose 5654 1\nnow row 5276 0\nnow choose 5655 0\nuntil dialog 432");
+        let runner = on_save(&game, "A", &held).unwrap();
+        let shown = runner.host.view().paint(paint).unwrap().clone();
+        assert!(shown.lines.iter().any(|l| l.1 == image::Rgba([0, 0, 0, 255])), "the price paid");
+        let winners = format!("{open}\nnow press 5292\nuntil dialog 433");
+        let runner = on_save(&game, "A", &winners).unwrap();
+        let rows = |id| runner.host.view().list(control(&game.dialogs[&433], id).unwrap()).unwrap().rows.clone();
+        let (up, down) = (rows(5308), rows(5307));
+        assert_eq!((up.len(), down.len()), (8, 8));
+        assert_eq!(up[0], "AS Rom\t271.67\t258.88\t4.94%\t2.400\t12.79");
+        assert_eq!(down[0], "SpVgg Unterhaching\t64.07\t82.83\t-22.65%\t1.620\t-18.76");
+        assert!(down[2].starts_with("AFC Sunderland\t151.32\t"), "{}", down[2]);
+    }
 }

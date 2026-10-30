@@ -205,6 +205,8 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(honours::abilities::Abilities),
         Box::new(honours::confidence::Confidence),
         Box::new(honours::market::ShareMarket::default()),
+        Box::new(honours::market::ShareChart),
+        Box::new(honours::market::Winners),
         Box::new(honours::pay::Pay),
         Box::new(honours::season_records::SeasonRecords),
         Box::new(honours::scores::Scores),

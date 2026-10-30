@@ -70,19 +70,27 @@ const BLUE: [u8; 3] = [0, 0, 255];
 const AS_MONEY: i32 = 100_000;
 const AS_VALUE: f64 = 1000.0;
 
-/// The chart (`FUN_0043aeaa`): ten weeks, white bars a pixel apart; blue
-/// through the last two peaks, red through the last two troughs; black at
-/// the price a holding was bought at.
+/// The chart (`FUN_0043aeaa`): ten weeks here, all 52 on the big chart,
+/// white bars a pixel apart; blue through the last two peaks, red through
+/// the last two troughs; black at the price a holding was bought at.
 const CHART_WEEKS: usize = 10;
 const WHITE: u32 = 0xffffff;
 const PEAKS: u32 = 0xff0000;
 const TROUGHS: u32 = 0x0000ff;
 const BOUGHT: u32 = 0;
 
-/// The caption bar takes the title with the manager's names.
+/// The caption bar takes the title with the manager's names; the big
+/// chart's and the winners' keep their own.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    let Some(dialog) = dialogs.get_mut(&MARKET_DIALOG) else { return };
-    dialog.controls.insert(0, caption(dialog.frame, CAPTION_ID, String::new()));
+    if let Some(dialog) = dialogs.get_mut(&MARKET_DIALOG) {
+        dialog.controls.insert(0, caption(dialog.frame, CAPTION_ID, String::new()));
+    }
+    for id in [CHART_DIALOG, WINNERS_DIALOG] {
+        if let Some(dialog) = dialogs.get_mut(&id) {
+            let title = dialog.title.clone();
+            dialog.controls.insert(0, caption(dialog.frame, CAPTION_ID, title));
+        }
+    }
 }
 
 /// A price, its cents as `ftol(p × 100)` cuts them, worked out wider than
@@ -130,8 +138,7 @@ fn sorted<T>(mut rows: Vec<(String, T)>) -> Vec<(String, T)> {
 
 /// What a share's chart shows: its bars and lines, and the top and bottom
 /// of its scale (`FUN_0043aeaa`).
-fn chart(share: &Share, width: i32, height: i32, bought: f32) -> (PaintState, f32, f32) {
-    let n = CHART_WEEKS;
+fn chart(share: &Share, n: usize, width: i32, height: i32, bought: f32) -> (PaintState, f32, f32) {
     let p: Vec<f32> = (0..n).map(|k| share.price(n - 1 - k)).collect();
     let mut low = p.iter().copied().fold(50_000.0f32, f32::min);
     let mut high = p.iter().copied().fold(-10_000.0f32, f32::max);
@@ -438,7 +445,7 @@ fn clear_chart(dialog: &Dialog, view: &mut View, side: &Side) {
 fn show_chart(dialog: &Dialog, view: &mut View, side: &Side, share: &Share, bought: f32) {
     let Some(c) = control(dialog, side.chart) else { return };
     let r = dialog.controls[c].rect;
-    let (shown, low, high) = chart(share, r.width() as i32, r.height() as i32, bought);
+    let (shown, low, high) = chart(share, CHART_WEEKS, r.width() as i32, r.height() as i32, bought);
     if let Some(paint) = view.paint_mut(c) {
         *paint = shown;
     }
@@ -483,14 +490,7 @@ impl Screen for ShareMarket {
             clear_chart(dialog, view, side);
             off(dialog, view, side);
         }
-        // The big chart (432) and the week's winners (433) are not built.
-        mark_inert(view, dialog, |t| match t {
-            Target::Option { control: c, item } => {
-                !matches!(dialog.controls[c].id, Some(id) if (id == BUY.trade || id == SELL.trade) && item != TRADE)
-            }
-            Target::Button(c) => dialog.controls[c].id != Some(WINNERS),
-            _ => true,
-        });
+        mark_inert(view, dialog, |_| true);
     }
 
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
@@ -577,10 +577,23 @@ impl Screen for ShareMarket {
                 self.after_trade(cx, view, h.share);
                 self.selling(cx, view);
             }
+            // The big chart of the share or the holding chosen
+            // (`0x43c169`, `0x43c1f9`).
             Target::Option { control: c, .. } if id(c) == BUY.trade || id(c) == SELL.trade => {
                 if let Some(o) = view.options_mut(c) {
                     o.chosen = NONE;
                 }
+                let args = if id(c) == BUY.trade {
+                    self.share.map(|s| Args::Share(s, None))
+                } else {
+                    self.place.and_then(|p| Some(Args::Share(Self::holdings(cx)[p]?.share, Some(p))))
+                };
+                if let Some(args) = args {
+                    return Outcome::Popup(Request::with(CHART_DIALOG, args));
+                }
+            }
+            Target::Button(c) if id(c) == WINNERS => {
+                return Outcome::Popup(Request::new(WINNERS_DIALOG));
             }
             Target::Button(c) if crate::controls::button::is_ok(&dialog.controls[c]) => {
                 return Outcome::Close(Reply::Ok);
@@ -588,6 +601,117 @@ impl Screen for ShareMarket {
             _ => {}
         }
         Outcome::Stay
+    }
+}
+
+pub(crate) const CHART_DIALOG: u16 = 432;
+/// The share's name, its price and last week's, the offer, the year's
+/// highest and lowest, the chart and its scale's ends.
+const CHART_NAME: u16 = 1866;
+const CHART_PRICE: u16 = 5301;
+const CHART_LAST: u16 = 5300;
+const CHART_OFFER: u16 = 5304;
+const CHART_HIGH: u16 = 5303;
+const CHART_LOW: u16 = 5302;
+const BIG_CHART: u16 = 5299;
+const CHART_TOP: u16 = 5305;
+const CHART_BOTTOM: u16 = 5328;
+
+/// The big chart (dialog 432, `CDiChart`): a share's year, its 52 weeks
+/// as the market's small charts draw ten, with the price a holding was
+/// bought at. Its tendency's picture is never set.
+pub struct ShareChart;
+
+impl Screen for ShareChart {
+    fn ids(&self) -> &[u16] {
+        &[CHART_DIALOG]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        mark_inert(view, dialog, |_| true);
+        let Args::Share(i, place) = args else { return };
+        let Some(share) = ShareMarket::market(cx).and_then(|m| m.shares.get(i).cloned()) else { return };
+        let bought = place.and_then(|p| ShareMarket::holdings(cx)[p]).map_or(-1.0, |h| h.bought_at);
+        set(view, dialog, CHART_NAME, share.name.clone());
+        set(view, dialog, CHART_PRICE, price(share.price(0)));
+        set(view, dialog, CHART_LAST, price(share.price(1)));
+        set(view, dialog, CHART_OFFER, share.offer.to_string());
+        set(view, dialog, CHART_HIGH, price(share.high));
+        set(view, dialog, CHART_LOW, price(share.low));
+        let Some(c) = control(dialog, BIG_CHART) else { return };
+        let r = dialog.controls[c].rect;
+        let (shown, low, high) = chart(&share, market::WEEKS, r.width() as i32, r.height() as i32, bought);
+        if let Some(paint) = view.paint_mut(c) {
+            *paint = shown;
+        }
+        set(view, dialog, CHART_TOP, price(high));
+        set(view, dialog, CHART_BOTTOM, price(low));
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if crate::controls::button::is_ok(&cx.dialog.controls[c]) => {
+                Outcome::Close(Reply::Ok)
+            }
+            _ => Outcome::Stay,
+        }
+    }
+}
+
+pub(crate) const WINNERS_DIALOG: u16 = 433;
+const GAINERS: u16 = 5308;
+const LOSERS: u16 = 5307;
+/// How many of each.
+const WINNERS_SHOWN: usize = 8;
+
+/// The week's winners and losers (dialog 433, `CDiGewinnerUndVerlierer`):
+/// of all shares, the eight that rose most, the most first, and the eight
+/// that fell most, the most first (`0x4b67b5`) — the prices rounded here,
+/// with a dot.
+pub struct Winners;
+
+impl Screen for Winners {
+    fn ids(&self) -> &[u16] {
+        &[WINNERS_DIALOG]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        let dialog = cx.dialog;
+        mark_inert(view, dialog, |_| true);
+        let Some(market) = ShareMarket::market(cx) else { return };
+        let row = |s: &Share| {
+            format!(
+                "{}\t{:.2}\t{:.2}\t{:.2}%\t{}\t{:.2}",
+                s.name,
+                s.price(0),
+                s.price(1),
+                s.change,
+                count(s.offer),
+                s.price(0) - s.price(1)
+            )
+        };
+        // Each put after those before it with a change no smaller (no
+        // greater), as the game inserts them.
+        let mut up: Vec<&Share> = market.shares.iter().filter(|s| s.change >= 0.0).collect();
+        up.sort_by(|a, b| b.change.total_cmp(&a.change));
+        let mut down: Vec<&Share> = market.shares.iter().filter(|s| s.change < 0.0).collect();
+        down.sort_by(|a, b| a.change.total_cmp(&b.change));
+        for (id, shares) in [(GAINERS, up), (LOSERS, down)] {
+            if let Some(list) = control(dialog, id).and_then(|c| view.list_mut(c)) {
+                list.rows = shares.iter().take(WINNERS_SHOWN).map(|s| row(s)).collect();
+                list.selected = None;
+            }
+        }
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if crate::controls::button::is_ok(&cx.dialog.controls[c]) => {
+                Outcome::Close(Reply::Ok)
+            }
+            _ => Outcome::Stay,
+        }
     }
 }
 
