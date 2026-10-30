@@ -188,6 +188,10 @@ AREAS = {
     "options": [(*bar(18, 302), 302), (*menu(18, 302, 4035, 3, 384), 384),
                 (*menu(18, 302, 4035, 4, 384), 384), (*menu(18, 302, 4035, 7, 511), 511),
                 (*menu(18, 302, 4035, 1, 259), 259), (*menu(18, 302, 4035, 6, 503), 503),
+                # "Spielstand speichern" lists the saves, and a taken name asks (384).
+                (*bar(18, 302, "now choose 4035 2", "until dialog 489"), 489),
+                (*bar(18, 302, "now choose 4035 2", "until dialog 489", "now type 1866 A",
+                      "now ok", "until dialog 384"), 384),
                 (*menu(18, 302, 4035, 8, 158), 158)],
 }
 
