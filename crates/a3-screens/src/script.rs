@@ -671,11 +671,11 @@ mod tests {
         assert_eq!(season.day, 42);
         assert!(season.managers[0].club.is_some() && season.managers[1].club.is_none());
         assert_eq!(seen(&runner, WEEK), 6, "{}", runner.log.join("\n"));
-        // Every turn ends with the whistle, one for each manager before each
-        // week; the script stops at the first turn of day 42. (The original
-        // gives the manager without a club no turns.)
+        // Every turn ends with the whistle, one before each week: the
+        // manager without a club plays none (`FUN_0064e40f`); the script
+        // stops at the first turn of day 42.
         let whistles = runner.log.iter().filter(|line| line.trim() == "Bar(18)").count();
-        assert_eq!(whistles, 2 * 6);
+        assert_eq!(whistles, 6);
     }
 
     /// Loads the newest save and stops on the line-up.
@@ -2751,11 +2751,12 @@ mod tests {
         let text = runner.host.view().text(control(notice, 4730).unwrap()).to_owned();
         assert_eq!(text, game.text(1804));
         // The yes to its alert ends the turn as EndDialog(-3) does: the
-        // board is closed, and the next manager's turn opens.
+        // board is closed, and with Anna Alpha, who has no club, playing
+        // no turn the week goes on.
         let over =
-            on_save(&game, "board-resigned", &format!("{ask}\nnow press 4731\nuntil dialog 302"))
+            on_save(&game, "board-resigned", &format!("{ask}\nnow press 4731\nuntil dialog 2"))
                 .unwrap();
-        assert_eq!(over.host.view().id, 302);
+        assert!(a3_core::cycle::dialogs::WEEKS.contains(&over.host.view().id));
         assert_eq!(seen(&over, 380), 1);
     }
 
@@ -7271,12 +7272,12 @@ mod tests {
         let Some(before) = on_save(&game, "second-human", "") else { return };
         let before = received(&before);
         // Give the second human's club the 100.000 offered at first; the
-        // refusal; then both managers end their turns with the whistle.
+        // refusal; then the manager ends his turn with the whistle — the
+        // second, not under contract, plays none.
         let then = "on 384 press 4741\non 380 press 4731\n\
                     now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63\n\
                     now choose 6022 1\nnow press 1\nuntil dialog 417\nnow press 2222\n\
-                    until dialog 380\nuntil dialog 417\nnow click bar 18\nuntil dialog 302\n\
-                    now click bar 18\nuntil dialog 384\nnow press 4741\nuntil dialog 9";
+                    until dialog 380\nuntil dialog 417\nnow click bar 18\nuntil dialog 9";
         let runner = on_save(&game, "second-human", then).unwrap();
         assert_eq!(received(&runner), before + 100_000, "{}", runner.log.join("\n"));
         assert!(runner.host.state().season.as_ref().unwrap().donations.is_empty());
@@ -7356,13 +7357,11 @@ mod tests {
         let runner = on_save(&game, "Karriereende", &no).unwrap();
         assert_eq!(runner.host.view().id, 302);
         assert!(runner.host.state().leaving.is_empty());
-        // Yes, and Anna's turn whistled off: the highscores show him at
-        // the week's end (event 0xb0), from the list kept for the end.
+        // Yes: Anna, without a club, plays no turn, so the turns are over
+        // and the highscores show him at once (event 0xb0), as on the
+        // original — from the list kept for the end.
         let before = today();
-        let yes = format!(
-            "{ask}\nnow press 4741\nuntil dialog 302\nnow click bar 18\nuntil dialog 384\n\
-             now press 4741\nuntil dialog 95"
-        );
+        let yes = format!("{ask}\nnow press 4741\nuntil dialog 95");
         let runner = on_save(&game, "Karriereende", &yes).unwrap();
         let rows = &runner.host.view().list(control(&game.dialogs[&95], 2010).unwrap()).unwrap().rows;
         assert!(rows[1].starts_with("2.\tBert Beta\t55\t40\t40\t2\t0\t"), "{rows:?}");
@@ -7380,8 +7379,9 @@ mod tests {
         assert_eq!(&bert[0x1a..0x2a], [55, 0, 1, 0, 0, 0, 40, 0, 0, 0, 2, 2, 0, 0, 0, 0]);
         assert!([before, today()].contains(&bert[0x2a..0x2e].try_into().unwrap()));
         // Its OK, and the week played: Anna alone is left, in the slots,
-        // the order and the count.
-        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\nrepeat 7 days");
+        // the order and the count — and with no one else to play, the next
+        // week's turn is hers, in the dressing room (`FUN_0064e40f`).
+        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\nuntil dialog 302");
         let runner = on_save(&game, "Karriereende", &week).unwrap();
         let screens: Vec<&str> =
             runner.log.iter().filter_map(|l| l.strip_prefix("screen ")).collect();
@@ -7395,7 +7395,10 @@ mod tests {
         assert_eq!(records.globals.humans(), 1);
         assert_eq!(records.globals.slots(), [0, 1, 0, 0]);
         assert_eq!(records.globals.order(), [2, -1, -1, -1]);
+        assert_eq!(season.day % 7, 0, "a week's first day");
         drop(state);
+        let caption = control(&game.dialogs[&302], 9920).unwrap();
+        assert!(runner.host.view().text(caption).contains("Anna Alpha"));
         // "Spiel beenden" enters him at once, as the program ends — the
         // original's extro follows, not the highscores.
         let quit = "now click bar 17\nuntil dialog 302\nnow choose 4035 4\nuntil dialog 384\n\

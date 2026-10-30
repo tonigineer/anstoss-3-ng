@@ -662,6 +662,25 @@ impl Cycle {
         });
     }
 
+    /// The managers who have a turn this week, in their order
+    /// (`FUN_0064e40f`): each of a club (its turn 100), and one with a
+    /// national team only (0x65); without either a manager plays no turn
+    /// in a game at one computer, but over the net he does. When that
+    /// leaves nobody, the first has the turn.
+    fn turns(&self) -> Vec<usize> {
+        let network = matches!(self.state().mode, Mode::ServerNew | Mode::ServerLoad | Mode::Client);
+        self.season(|s| {
+            let turns: Vec<usize> = (0..s.managers.len())
+                .filter(|&m| {
+                    let manager = &s.managers[m];
+                    manager.club.is_some() || manager.national_team.is_some() || network
+                })
+                .collect();
+            if turns.is_empty() && !s.managers.is_empty() { vec![0] } else { turns }
+        })
+        .unwrap_or_default()
+    }
+
     /// The season week by week: the autosave's wait screen, every human
     /// manager's turn, and the week running day by day — until the week of
     /// the first match, which is not played yet. A loaded game starts with
@@ -672,8 +691,7 @@ impl Cycle {
                 self.ask(Request::new(WAIT))?;
             }
             wait = true;
-            let managers = self.season(|s| s.managers.len()).unwrap_or(0);
-            for manager in 0..managers {
+            for manager in self.turns() {
                 self.season(|s| s.current = manager);
                 if !self.turn()? {
                     return Ok(());
