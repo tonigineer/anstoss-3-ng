@@ -24,6 +24,7 @@ use crate::view::View;
 
 pub mod abilities;
 pub mod beliebtheit;
+pub mod confidence;
 pub mod pay;
 pub mod privates;
 pub mod scores;
@@ -310,11 +311,7 @@ impl Screen for Honours {
             Target::Option { control: c, item } if dialog.controls[c].id == Some(PAGES) => {
                 item == PLAYER_MANAGER || PAGE_DIALOGS.get(item).is_some_and(Option::is_some)
             }
-            Target::Option { control: c, .. }
-                if matches!(dialog.controls[c].id, Some(CONFIDENCE_PAGE | MARKETS)) =>
-            {
-                false
-            }
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(MARKETS) => false,
             _ => hub::on_bar(dialog, t).is_none_or(hub::bar_works),
         };
         mark_inert(view, dialog, works);
@@ -355,6 +352,11 @@ impl Screen for Honours {
                     }
                 }
             }
+            // The board's confidence (`0x53eba3`); the button stays
+            // pressed while it is open.
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(CONFIDENCE_PAGE) => {
+                Outcome::Popup(a3_core::cycle::Request::new(confidence::CONFIDENCE_DIALOG))
+            }
             Target::Option { control: c, .. } => {
                 view.set_chosen(c, NONE);
                 Outcome::Stay
@@ -387,8 +389,10 @@ impl Screen for Honours {
                 *label = cx.game.text(if playing { STEP_DOWN } else { BECOME }).to_owned();
             }
         }
-        if let Some(c) = control(cx.dialog, PAGES) {
-            view.set_chosen(c, NONE);
+        for id in [PAGES, CONFIDENCE_PAGE] {
+            if let Some(c) = control(cx.dialog, id) {
+                view.set_chosen(c, NONE);
+            }
         }
         if let Some(manager) = super::kalkulation::own_manager(cx) {
             set(view, cx.dialog, WEALTH, money(cx.game, manager.get::<i32>(WEALTH_AT).into()));

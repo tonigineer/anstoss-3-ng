@@ -889,6 +889,9 @@ record! {
     0x184 => confidence, set_confidence: i16;
     0x186 => confidence_ups, set_confidence_ups: [u8; 2];
     0x188 => confidence_swings, set_confidence_swings: [i8; 2];
+    /// The confidence at the end of each of the last ten periods, oldest
+    /// first, 0 where there was none yet (the manager object's +0xa5).
+    0x18a => confidence_history, set_confidence_history: [u8; 10];
     /// His options: the line-up's view in bits 0 to 3 (0 the pitch, else
     /// the list), the screen his turn starts on in bits 6 and 7, the
     /// short-term training as pictures in bit 8.

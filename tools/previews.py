@@ -144,7 +144,8 @@ AREAS = {
                 (*bar(17, 175), 175),
                 *[(*menu(17, 175, 5643, i, d), d)
                   for i, d in [(0, 405), (1, 443), (3, 384), (4, 84), (5, 26), (6, 211),
-                               (7, 174), (8, 95)]]],
+                               (7, 174), (8, 95)]],
+                (*menu(17, 175, 5571, 0, 320), 320)],
     # The archive's tables: the current one, at home, the 2. Bundesliga's
     # forecast one step along the strip, a cup's round, the Ligapokal's,
     # the Europa League's, the season's cross-table, and a goal graph on

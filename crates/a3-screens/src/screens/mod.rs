@@ -203,6 +203,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(statistics::Statistics::default()),
         Box::new(honours::Honours::default()),
         Box::new(honours::abilities::Abilities),
+        Box::new(honours::confidence::Confidence),
         Box::new(honours::pay::Pay),
         Box::new(honours::season_records::SeasonRecords),
         Box::new(honours::scores::Scores),
@@ -326,6 +327,7 @@ pub fn compose(game: &mut Game) {
     honours::trainer_erfolge::compose(&mut game.dialogs);
     honours::privates::compose(&mut game.dialogs);
     honours::beliebtheit::compose(&mut game.dialogs);
+    honours::confidence::compose(&mut game.dialogs);
     market::compose(&mut game.dialogs);
     market::compose_best(&mut game.dialogs);
     market::compose_talks(&mut game.dialogs);

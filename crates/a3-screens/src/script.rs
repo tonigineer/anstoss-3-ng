@@ -7487,4 +7487,40 @@ mod tests {
         let manager = &state.records.as_ref().unwrap().managers[0];
         assert_eq!((manager.own_play(), manager.rival()), ([4, 4, 1], 0));
     }
+
+    /// The honours page's "Vertrauen Vorstand" (dialog 320,
+    /// `CVertrauenVorstand`), as the original draws it: on A the confidence
+    /// of the last periods from the second on, 85 with an 88, then today's
+    /// 82 — a red curve from (218,172) to (344,176) over the 50 % line, each
+    /// with its last pixel — and text 2472; on Probe1 a flat 82 from the
+    /// sixth period. OK leaves the page's button unpressed.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_board_confidence_shows_its_curve() {
+        let game = game();
+        let dialog = &game.dialogs[&320];
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5571 0\nuntil dialog 320";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 4157).unwrap()), game.text(2472));
+        let red = [255, 0, 0];
+        let ends: Vec<[i32; 4]> = view.lines.iter().map(|&(l, ink)| {
+            assert_eq!(ink, red);
+            l
+        }).collect();
+        assert_eq!(ends[..2], [[213, 222, 366, 222], [366, 222, 366, 222]]);
+        let points: Vec<(i32, i32)> = ends[2..].iter().map(|l| (l[2], l[3])).collect();
+        assert_eq!(
+            points,
+            [(218, 172), (232, 172), (246, 172), (260, 172), (274, 172), (288, 172), (302, 172),
+             (316, 168), (330, 172), (344, 176), (344, 176)]
+        );
+        let runner = on_save(&game, "Probe1", open).unwrap();
+        let view = runner.host.view();
+        let points: Vec<(i32, i32)> = view.lines[2..].iter().map(|&(l, _)| (l[2], l[3])).collect();
+        assert_eq!(points, [(218, 176), (232, 176), (246, 176), (260, 176), (274, 176), (288, 176), (288, 176)]);
+        let back = on_save(&game, "A", &format!("{open}\nnow ok\nuntil dialog 175")).unwrap();
+        let button = control(&game.dialogs[&175], 5571).unwrap();
+        assert_eq!(back.host.view().chosen(button), crate::controls::options::NONE);
+    }
 }
