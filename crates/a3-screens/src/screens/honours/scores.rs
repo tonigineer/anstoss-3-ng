@@ -61,6 +61,17 @@ impl Scores {
     }
 }
 
+/// A list's entries as the session left them: careers ended in it wait in
+/// the state for the program's end to write their list.
+fn entries(cx: &Cx, cat: u8) -> Vec<HighEntry> {
+    let kept = a3_core::highscore::file(i16::from(cat))
+        .and_then(|file| cx.state.settings_files.iter().find(|(f, _)| *f == file));
+    match kept {
+        Some((_, bytes)) => HighEntry::list(bytes),
+        None => cx.game.high_entries(cat),
+    }
+}
+
 impl Screen for Scores {
     fn ids(&self) -> &[u16] {
         &[SCORES_DIALOG]
@@ -72,8 +83,7 @@ impl Screen for Scores {
         set(view, dialog, CAPTION_ID, dialog.title.clone());
         // The careers: the age at the third column, the rate over the
         // seasons.
-        let career = game
-            .high_entries(9)
+        let career = entries(cx, 9)
             .iter()
             .enumerate()
             .filter(|(_, e)| e.points != 0)
@@ -83,8 +93,7 @@ impl Screen for Scores {
         // standing at place 1.
         let fixed = (0..9u8)
             .flat_map(|cat| {
-                let entries = game.high_entries(cat);
-                entries
+                entries(cx, cat)
                     .into_iter()
                     .enumerate()
                     .filter(|(_, e)| e.points != 0)

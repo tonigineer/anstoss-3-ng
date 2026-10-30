@@ -263,6 +263,13 @@ impl Game {
     pub fn high_entries(&self, cat: u8) -> Vec<HighEntry> {
         let path = self.dir.join(format!("Highscore/high{cat:02}"));
         let Ok(data) = std::fs::read(path) else { return Vec::new() };
+        HighEntry::list(&data)
+    }
+}
+
+impl HighEntry {
+    /// The entries of a list's bytes.
+    pub fn list(data: &[u8]) -> Vec<HighEntry> {
         data.as_chunks::<48>()
             .0
             .iter()

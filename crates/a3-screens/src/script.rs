@@ -7306,4 +7306,103 @@ mod tests {
         let tip = runner.host.view().controls[point].state.as_button().unwrap().tip.clone();
         assert_eq!(tip.as_deref(), Some(name.as_str()));
     }
+
+    /// "Karriereende" (the dressing room's sixth game option,
+    /// `FUN_005b13da`) asks with text 2691. Yes ends the turn, and the
+    /// week's end the career (`FUN_006c5190`): Bert Beta, the first of
+    /// Probe1's two humans, goes into the career list of the game's mode
+    /// (`FUN_00656e9b`) at the first place with fewer points — the place
+    /// it takes lost, the one under it standing twice, as the game's shift
+    /// stops a place short —, the highscores show him, and he leaves the
+    /// game to Anna Alpha. "Spiel beenden" enters his career the same, at
+    /// once, and ends the game before the highscores show.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_career_ends_into_the_highscore_list() {
+        use chrono::Datelike;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Probe1", "Karriereende", |_| {});
+        // A list of the copy's own: the installation's is only linked.
+        let scores = root.join("Highscore");
+        std::fs::remove_file(&scores).unwrap();
+        std::fs::create_dir(&scores).unwrap();
+        let list: Vec<u8> = [100, 30, 20, 10, 5]
+            .iter()
+            .flat_map(|&points: &i32| {
+                let mut entry = [0; 0x30];
+                entry[..4].copy_from_slice(b"Old\0");
+                entry[0x20..0x24].copy_from_slice(&points.to_le_bytes());
+                entry
+            })
+            .collect();
+        std::fs::write(scores.join("high09"), &list).unwrap();
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let today = || {
+            let d = chrono::Utc::now().date_naive();
+            [d.day() as u8, d.month() as u8, d.year() as u8, (d.year() >> 8) as u8]
+        };
+        let entered = |runner: &Runner| {
+            let state = runner.host.state();
+            let (_, list) = state.settings_files.iter().find(|(f, _)| *f == "Highscore/high09")?;
+            Some(list.clone())
+        };
+        let ask = "now click bar 17\nuntil dialog 302\nnow choose 4035 5\nuntil dialog 384";
+        let Some(runner) = on_save(&game, "Karriereende", ask) else { return };
+        let question = &game.dialogs[&384];
+        assert_eq!(runner.host.view().text(control(question, 4738).unwrap()), game.text(2691));
+        // No: the dressing room stands, his career whole.
+        let no = format!("{ask}\nnow press 4739\nuntil dialog 302");
+        let runner = on_save(&game, "Karriereende", &no).unwrap();
+        assert_eq!(runner.host.view().id, 302);
+        assert!(runner.host.state().leaving.is_empty());
+        // Yes, and Anna's turn whistled off: the highscores show him at
+        // the week's end (event 0xb0), from the list kept for the end.
+        let before = today();
+        let yes = format!(
+            "{ask}\nnow press 4741\nuntil dialog 302\nnow click bar 18\nuntil dialog 384\n\
+             now press 4741\nuntil dialog 95"
+        );
+        let runner = on_save(&game, "Karriereende", &yes).unwrap();
+        let rows = &runner.host.view().list(control(&game.dialogs[&95], 2010).unwrap()).unwrap().rows;
+        assert!(rows[1].starts_with("2.\tBert Beta\t55\t40\t40\t2\t0\t"), "{rows:?}");
+        let list = entered(&runner).expect("the career list kept for the end");
+        let points: Vec<i32> = list
+            .chunks(0x30)
+            .map(|e| i32::from_le_bytes(e[0x20..0x24].try_into().unwrap()))
+            .collect();
+        assert_eq!(points, [100, 40, 20, 20, 10]);
+        let bert = &list[0x30..0x60];
+        assert_eq!(&bert[..5], b"Bert\0");
+        assert_eq!(&bert[0xa..0xf], b"Beta\0");
+        // 55 years old, a year a trainer, 40 points, level 2 twice, no
+        // titles, today.
+        assert_eq!(&bert[0x1a..0x2a], [55, 0, 1, 0, 0, 0, 40, 0, 0, 0, 2, 2, 0, 0, 0, 0]);
+        assert!([before, today()].contains(&bert[0x2a..0x2e].try_into().unwrap()));
+        // Its OK, and the week played: Anna alone is left, in the slots,
+        // the order and the count.
+        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\nrepeat 7 days");
+        let runner = on_save(&game, "Karriereende", &week).unwrap();
+        let screens: Vec<&str> =
+            runner.log.iter().filter_map(|l| l.strip_prefix("screen ")).collect();
+        let shown = screens.iter().position(|&s| s == "95").unwrap();
+        assert_eq!(screens[shown + 1], "2", "the week after the highscores");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        let names: Vec<_> = season.managers.iter().map(|m| m.first_name.as_str()).collect();
+        assert_eq!(names, ["Anna"]);
+        assert_eq!(records.globals.humans(), 1);
+        assert_eq!(records.globals.slots(), [0, 1, 0, 0]);
+        assert_eq!(records.globals.order(), [2, -1, -1, -1]);
+        drop(state);
+        // "Spiel beenden" enters him at once, as the program ends — the
+        // original's extro follows, not the highscores.
+        let quit = "now click bar 17\nuntil dialog 302\nnow choose 4035 4\nuntil dialog 384\n\
+                    now press 4741\nuntil end";
+        let runner = on_save(&game, "Karriereende", quit).unwrap();
+        assert_eq!(entered(&runner).as_ref().map(|l| &l[0x30..0x35]), Some(&b"Bert\0"[..]));
+        assert_eq!(seen(&runner, 95), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

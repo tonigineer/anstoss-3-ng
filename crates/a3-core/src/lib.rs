@@ -17,6 +17,7 @@ pub mod evaluation;
 pub mod finances;
 pub mod forecast;
 pub mod grounds;
+pub mod highscore;
 pub mod individual;
 pub mod jobs;
 pub mod league;

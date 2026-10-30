@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use bevy_math::{Rect, Vec2};
+use chrono::Datelike;
 use tracing::info;
 
 use a3_core::lineup::{self, ALLROUNDER, BENCH, FIELD, Lineup, PARTS, Place};
@@ -299,6 +300,11 @@ const QUIT_QUESTION: u16 = u16::MAX;
 const NEW_GAME_ITEM: usize = 3;
 const NEW_GAME_REALLY: u16 = 2689;
 const NEW_GAME_QUESTION: u16 = u16::MAX - 2;
+/// "Karriereende" and its question (`FUN_005b13da`); yes ends the
+/// manager's career and his turn.
+const CAREER_ITEM: usize = 5;
+const CAREER_REALLY: u16 = 2691;
+const CAREER_QUESTION: u16 = u16::MAX - 3;
 /// "3D - Optionen": the 3D settings (`FUN_005b15ec`).
 const KONFIG_3D_ITEM: usize = 7;
 /// "Musik & Soundeffekte" (`FUN_005b1653`).
@@ -319,6 +325,19 @@ fn light_option(dialog: &Dialog, view: &mut View, item: Option<usize>) {
         options.actions = item.is_none();
         options.chosen = item.unwrap_or(crate::controls::options::NONE);
     }
+}
+
+/// Marks the manager's career to end (`FUN_006c511b`), with the day the
+/// computer's clock tells — the game's own clock is UTC (`GetSystemTime`):
+/// the week's end enters it in the highscore list and lets him go.
+fn end_career(cx: &mut Cx) {
+    let Some(current) = cx.state.season.as_ref().map(|s| s.current) else { return };
+    if cx.state.leaving.iter().any(|&(n, _)| n == current) {
+        return;
+    }
+    let today = chrono::Utc::now().date_naive();
+    let date = (today.day() as u8, today.month() as u8, today.year() as u16);
+    cx.state.leaving.push((current, date));
 }
 
 /// Puts the main screens together: the bar along the bottom, the title in
@@ -575,6 +594,7 @@ impl Screen for MenuBar {
                         item,
                         QUIT_ITEM
                             | NEW_GAME_ITEM
+                            | CAREER_ITEM
                             | SAVE_ITEM
                             | KONFIG_3D_ITEM
                             | MUSIK_ITEM
@@ -766,6 +786,14 @@ impl Screen for MenuBar {
             light_option(cx.dialog, view, Some(item));
             return Outcome::Popup(Request::with(QUESTION, Args::Text(NEW_GAME_REALLY)));
         }
+        if view.id == DRESSING_ROOM
+            && cx.dialog.controls[c].id == Some(DRESSING_OPTIONS)
+            && item == CAREER_ITEM
+        {
+            self.popup = Some(CAREER_QUESTION);
+            light_option(cx.dialog, view, Some(item));
+            return Outcome::Popup(Request::with(QUESTION, Args::Text(CAREER_REALLY)));
+        }
         // "Spielstand speichern". The original asks first whether the
         // game is on at all (`FUN_007cb965`); here it always is. A game
         // played over the net saves when every player has ended the
@@ -858,11 +886,24 @@ impl Screen for MenuBar {
                 change_lineup(cx, view, Boxes::Keep, self.sort, |_, _, _| {});
                 Outcome::Stay
             }
-            (Some(QUIT_QUESTION), Reply::Ok) => Outcome::Close(Reply::Quit),
+            // "Spiel beenden" ends the career too (`FUN_006c511b`), but for
+            // a game over the net, which tells the others (`FUN_007ca6ca`).
+            (Some(QUIT_QUESTION), Reply::Ok) => {
+                if !matches!(cx.state.mode, Mode::ServerNew | Mode::ServerLoad | Mode::Client) {
+                    end_career(cx);
+                }
+                Outcome::Close(Reply::Quit)
+            }
             (Some(NEW_GAME_QUESTION), Reply::Ok) => Outcome::Close(Reply::NewGame),
+            // The career ends with the week, and the turn at once
+            // (`FUN_007a0d38(-3)`).
+            (Some(CAREER_QUESTION), Reply::Ok) => {
+                end_career(cx);
+                Outcome::Close(Reply::Ok)
+            }
             (
                 Some(
-                    QUIT_QUESTION | NEW_GAME_QUESTION | NOTICE | super::save::SAVE
+                    QUIT_QUESTION | NEW_GAME_QUESTION | CAREER_QUESTION | NOTICE | super::save::SAVE
                     | super::konfig3d::KONFIG_3D | super::musik::MUSIK
                     | super::optionen::OPTIONEN | super::nutzung::NUTZUNG,
                 ),

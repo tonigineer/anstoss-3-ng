@@ -866,8 +866,13 @@ record! {
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
+    /// His years as a trainer ("Trainerjahre", the manager object's +0x38).
+    0x124 => trainer_years, set_trainer_years: i16;
     /// How the public, the fans and the media like him, 0 to 100.
     0x126 => popularity, set_popularity: [u8; 3];
+    /// The mode his game is played in, as the globals' [`Globals::mode`]
+    /// (the manager object's +0x40).
+    0x12a => mode, set_mode: i16;
     /// When he signed with his club: day, month, year.
     0x17c => signed_day, set_signed_day: u8;
     0x17d => signed_month, set_signed_month: u8;
@@ -908,6 +913,9 @@ record! {
     /// What his level's history adds to the last mark of the comparison:
     /// the manager object's +0xd8 (`FUN_006dda52`).
     0x20c => standing_marks, set_standing_marks: i32;
+    /// The two counts of titles the highscore lists add up (the manager
+    /// object's +0xdc and +0xde, `FUN_00656e9b`).
+    0x210 => titles, set_titles: [i16; 2];
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
@@ -1269,6 +1277,12 @@ record! {
     Globals, 0x1590, base 0xb5cb88;
     /// Whether each human slot is in play: above 0.
     0xb5cb9c => slots, set_slots: [i16; MANAGERS];
+    /// The humans by their numbers in the order they play, −1 after the
+    /// last (`DAT_00b5cb92`).
+    0xb5cb92 => order, set_order: [i16; MANAGERS];
+    /// The game's mode: 0 to 8 a fixed number of seasons, 9 a career, 10
+    /// the endless game (`DAT_00b5cbc6`).
+    0xb5cbc6 => mode, set_mode: i16;
     /// Seasons so far, 1 in the first.
     0xb5cbc8 => seasons, set_seasons: u16;
     /// The funds' prices, which deposits are worth by (`DAT_00b5cc8c`).

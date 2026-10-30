@@ -679,6 +679,17 @@ impl Cycle {
                     return Ok(());
                 }
             }
+            // The careers ended in the turns end before the week does
+            // (`FUN_006c5190`), and the highscores show them (its event
+            // 0xb0) — unless no human is left: then the game ends as "Spiel
+            // beenden" ends it, by its flag 4, before the event shows.
+            let (ended, left) = self.careers_end();
+            if !left {
+                return Err(Gone);
+            }
+            if ended {
+                self.ask(Request::new(HIGH_SCORES))?;
+            }
             // The week's end books what the managers gave to other
             // humans' clubs with the recipients' other income, and
             // empties the week's store so its givers may give again
@@ -741,6 +752,82 @@ impl Cycle {
             }
             Err(err) => warn!("{}: {err}", fresh.display()),
         }
+    }
+
+    /// The careers ended (`FUN_006c5190`): each goes into the highscore
+    /// list of the game's mode (`FUN_00656e9b`), kept as its file is to
+    /// hold it at the end, and its manager leaves the game — his slot
+    /// closed, the humans after him moving up in the order, the clubs that
+    /// engaged him for next season and the other humans' +0x1b0 naming him
+    /// let go of him (`FUN_006a40ce`), his club no longer followed as a
+    /// human's. His club's own goodbye (`FUN_006da1ac`, reason 4) and the
+    /// national team's (`FUN_006b9872`) are not built. Whether a career
+    /// ended, and whether a human is left.
+    fn careers_end(&self) -> (bool, bool) {
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let leaving = std::mem::take(&mut state.leaving);
+        let Some(season) = state.season.as_mut() else { return (false, true) };
+        if leaving.is_empty() {
+            return (false, !season.managers.is_empty());
+        }
+        let today = season.date();
+        let mut lists = Vec::new();
+        if let Some(records) = state.records.as_mut() {
+            let slots: Vec<_> = leaving.iter().map(|&(n, date)| (records.human_slot(n), date)).collect();
+            for &(slot, date) in &slots {
+                let Some(slot) = slot else { continue };
+                let mode = records.globals.mode();
+                let Some(file) = crate::highscore::file(mode) else { continue };
+                let manager = &records.managers[slot];
+                let born = chrono::NaiveDate::from_ymd_opt(
+                    i32::from(manager.birth_year()),
+                    u32::from(manager.birth_month()),
+                    u32::from(manager.birth_day()),
+                );
+                let career = crate::highscore::Career {
+                    manager,
+                    // `FUN_006a426b(n)` takes the record of slot n − 1.
+                    points: crate::evaluation::marks(records, manager, slot + 1).iter().sum(),
+                    age: crate::autolineup::age(born, today),
+                    date,
+                };
+                // A list entered before in this session stands in for its
+                // file, which is written only at the end.
+                let list = lists
+                    .iter()
+                    .rev()
+                    .chain(state.settings_files.iter())
+                    .find(|(f, _)| *f == file)
+                    .map(|(_, bytes)| bytes.clone())
+                    .or_else(|| std::fs::read(self.data.dir.join(file)).ok())
+                    .unwrap_or_default();
+                if let Some(bytes) = crate::highscore::enter(mode, &list, &career) {
+                    lists.push((file, bytes));
+                }
+            }
+            for &(slot, _) in &slots {
+                let Some(slot) = slot else { continue };
+                leave(records, slot);
+            }
+        }
+        let mut gone: Vec<usize> = leaving.iter().map(|&(n, _)| n).collect();
+        gone.sort_unstable();
+        gone.dedup();
+        for &n in gone.iter().rev() {
+            if n < season.managers.len() {
+                let manager = season.managers.remove(n);
+                if let Some(club) = manager.club {
+                    season.clubs.remove(&club);
+                }
+            }
+        }
+        season.current = season.current.min(season.managers.len().saturating_sub(1));
+        let left = !season.managers.is_empty();
+        for (file, bytes) in lists {
+            state.keep_settings(file, bytes);
+        }
+        (true, left)
     }
 
     /// What the managers booked for today in their planners with a player
@@ -902,8 +989,14 @@ impl Cycle {
                 Reply::Goto(next) => {
                     screen = self.season(|s| line_up_view(s, next)).unwrap_or(next);
                 }
-                // "Spiel beenden": the cycle ends, and with it the program.
-                Reply::Quit => return Err(Gone),
+                // "Spiel beenden": the career ends as "Karriereende" ends
+                // it, at once, and the cycle with it — and the program,
+                // before the highscores can show it, as the original's
+                // goes straight to its extro.
+                Reply::Quit => {
+                    self.careers_end();
+                    return Err(Gone);
+                }
                 // "Neues Spiel": its flag 8 ends the game cycle, and the
                 // main loop goes back to the start menu (`FUN_00788115`).
                 Reply::NewGame => return Ok(false),
@@ -1053,6 +1146,42 @@ fn roll_autosaves(saves: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .or_else(|err| if err.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(err) })?;
     }
     std::fs::write(saves.join("Autos.an3"), bytes)
+}
+
+/// What the other humans' records hold of a human, by his number: +0x1b0.
+const NAMES_HUMAN_AT: usize = 0x1b0;
+/// The field after the team's `engaged`, which goes with it.
+const ENGAGED_WITH_AT: usize = 0xb0;
+
+/// The human of `slot` leaves the records (`FUN_006a40ce` and what
+/// `FUN_006c5190` does around it): the humans after him in the order move
+/// up a place, which leaves −1 at its end, and his slot closes — only
+/// when he stands in the order at all; the humans count one fewer; the
+/// other humans' +0x1b0 and the clubs that engaged him for next season let
+/// go of his number.
+fn leave(records: &mut Records, slot: usize) {
+    let human = slot as i16 + 1;
+    let mut order = records.globals.order();
+    if let Some(at) = order.iter().position(|&h| h == human) {
+        order.copy_within(at + 1.., at);
+        order[order.len() - 1] = -1;
+        records.globals.set_order(order);
+        let mut slots = records.globals.slots();
+        slots[slot] = 0;
+        records.globals.set_slots(slots);
+    }
+    records.globals.set_humans(records.globals.humans().saturating_sub(1));
+    for manager in &mut records.managers {
+        if manager.get::<i16>(NAMES_HUMAN_AT) == human {
+            manager.put(NAMES_HUMAN_AT, 0i16);
+        }
+    }
+    for team in &mut records.teams {
+        if team.engaged() == -human {
+            team.set_engaged(0);
+            team.put(ENGAGED_WITH_AT, 0i16);
+        }
+    }
 }
 
 #[cfg(test)]
