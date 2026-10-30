@@ -44,6 +44,8 @@ const ARROW: f32 = 20.0;
 const BAR: i32 = 20;
 /// Where the texts start: in the field, in a row.
 const FIELD_TEXT: i32 = 2;
+/// How far before the arrow the field's text is cut off.
+const FIELD_MARGIN: i32 = 4;
 const ROW_TEXT: i32 = 2;
 const LIST: Rgba<u8> = Rgba([220, 216, 225, 255]);
 const STRIP: Rgba<u8> = Rgba([225, 216, 220, 255]);
@@ -71,12 +73,19 @@ fn draw_text(
 ) {
     match &control.kind {
         Kind::Combo { columns: c, .. } if c.len() > 1 => {
-            let mut tabs: Vec<f32> = c.iter().map(|c| c.at).collect();
-            tabs[0] += first as f32;
+            // Every column set to the left starts a pixel in, the first's
+            // as a later one's (410's world champions, odds left at 105).
+            let tabs: Vec<f32> =
+                c.iter().map(|c| if c.align.is_none() { c.at + first as f32 } else { c.at }).collect();
             let aligns: Vec<Option<(Align, f32)>> = c.iter().map(|c| c.align).collect();
-            columns(font, frame, at, text.split('\t'), &tabs, &aligns, color, right);
+            columns(font, frame, at, text.split('\t'), &tabs, &aligns, color, right, 0);
         }
-        _ => font.draw(frame, at.0 + first, at.1, text, color, false),
+        // Without columns only what stands before a tab shows (410's
+        // places, "%2d\t%.1f" of a place and its odds).
+        _ => {
+            let shown = text.split('\t').next().unwrap_or_default();
+            font.draw_clipped(frame, at.0 + first, at.1, shown, color, false, right);
+        }
     }
 }
 
@@ -197,7 +206,10 @@ impl ComboState {
             // Centred top to bottom in whole pixels.
             let top = y + (r.height() as i32 - font.height() as i32) / 2;
             let at = (x + FIELD_TEXT, top);
-            draw_text(font, frame, paint.control, at, 0, text, r.max.x as i32, self.ink(s));
+            // The text stops short of the arrow (410's place field, 98
+            // pixels: "Bitte auswählen" loses its last letter).
+            let right = r.max.x as i32 - ARROW as i32 - FIELD_MARGIN;
+            draw_text(font, frame, paint.control, at, 0, text, right, self.ink(s));
         }
     }
 

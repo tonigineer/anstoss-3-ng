@@ -408,6 +408,9 @@ pub(crate) fn fill(frame: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, color:
 /// column — or to the left, centred or to the right in a width of their
 /// own.
 #[allow(clippy::too_many_arguments)]
+/// How far short of the next column a list's left-set column is cut.
+pub(crate) const LIST_GAP: i32 = 4;
+
 pub(crate) fn columns<'a>(
     font: &BitmapFont,
     frame: &mut RgbaImage,
@@ -417,6 +420,7 @@ pub(crate) fn columns<'a>(
     aligns: &[Option<(Align, f32)>],
     color: Rgba<u8>,
     right: i32,
+    gap: i32,
 ) {
     for (i, cell) in cells.enumerate() {
         let Some(&tab) = tabs.get(i) else { break };
@@ -442,8 +446,10 @@ pub(crate) fn columns<'a>(
                 let clip = (left + width as i32).min(right);
                 font.draw_clipped(frame, left, y, cell, color, false, clip);
             }
+            // Short of the next column by the gap: four pixels in a list,
+            // none in a combo box's (410's champions run up to the odds).
             _ => {
-                let clip = tabs.get(i + 1).map_or(right, |&next| x + next as i32 - 4);
+                let clip = tabs.get(i + 1).map_or(right, |&next| x + next as i32 - gap);
                 font.draw_clipped(frame, left, y, cell, color, false, clip.min(right));
             }
         }

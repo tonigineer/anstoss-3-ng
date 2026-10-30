@@ -10,7 +10,7 @@ use a3_files::rch::{Align, Control, Kind};
 
 use super::combo;
 use super::player_box::{self, PlayerBox};
-use crate::classic::{Paint, SCROLL_DOWN, SCROLL_UP, TEXT, TEXT_HOVER, columns, fill, paste};
+use crate::classic::{LIST_GAP, Paint, SCROLL_DOWN, SCROLL_UP, TEXT, TEXT_HOVER, columns, fill, paste};
 use crate::pointer::{Geometry, Target};
 
 /// Rows are as high as the dialog file says; this high where it says
@@ -292,7 +292,7 @@ impl ListState {
                 // the row, another pixel up (`FUN_007a7d9c`'s other branch).
                 font.draw_clipped(frame, x, top - 2, line, color, false, right);
             } else {
-                columns(font, frame, at, cells, &self.tabs, &self.aligns, color, right);
+                columns(font, frame, at, cells, &self.tabs, &self.aligns, color, right, LIST_GAP);
             }
             // So do the icons, the keyed ones without their pure black.
             for &(left, id) in self.row_icons.get(self.scroll + row).into_iter().flatten() {
