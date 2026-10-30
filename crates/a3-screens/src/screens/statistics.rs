@@ -2146,7 +2146,7 @@ fn pairing_text(game: &Game, records: &Records, p: &statistics::CupPairing) -> S
 
 /// A name from the pool's ids as `FUN_00637cbb` spells it, "%s %s", or
 /// just one of the two where the other's id is 0, nothing where both are.
-fn spelled(records: &Records, first: u16, last: u16) -> String {
+pub(crate) fn spelled(records: &Records, first: u16, last: u16) -> String {
     match (first, last) {
         (0, 0) => String::new(),
         (0, _) => records.name(last).to_owned(),

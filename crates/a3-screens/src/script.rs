@@ -7623,4 +7623,54 @@ mod tests {
         assert_eq!(down[0], "SpVgg Unterhaching\t64.07\t82.83\t-22.65%\t1.620\t-18.76");
         assert!(down[2].starts_with("AFC Sunderland\t151.32\t"), "{}", down[2]);
     }
+
+    /// The betting office's matchday bets (dialog 411) behind the honours
+    /// page's "W", as the original takes them on A: the German matchday's
+    /// eleven matches; the full tip twice with match one's three outcomes
+    /// (six euros), a highest win on one match only at 30 € each; Harry
+    /// Kane first in the scorers' list at 3.1; England's page with a German
+    /// match in its eleventh row; everything kept to the next opening.
+    /// Probe1, in its fifth week, finds the office closed (text 4592).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_betting_office_takes_matchday_bets() {
+        let game = game();
+        let dialog = &game.dialogs[&411];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 411";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Wettbüro Spieltag Toni Lubiniecki");
+        assert_eq!(
+            [5282, 5233, 5172, 5249, 5182].map(|id| text(&runner, id)),
+            ["99.300 €", "0 x", "Eintracht Frankfurt - 1.FC Heidenheim", "7", "SV Darmstadt 98 - Karlsruher SC"]
+        );
+        let scorers = runner.host.view().combo(control(dialog, 5187).unwrap()).unwrap().items.clone();
+        assert_eq!(scorers[..3], [game.text(4488), "Harry Kane\t(3.1)", "Serhou Guirassy\t(10)"]);
+        let ticks = [5189, 5190, 5232, 5191, 5192, 5193, 5194, 5195, 5196, 5197, 5198, 5199, 5210]
+            .map(|id| format!("now click {id}"))
+            .join("\n");
+        let tips = format!(
+            "{open}\nnow spin 5170 up\n{ticks}\nnow spin 5170 up\nnow click 5223\n\
+             now spin 5171 up\nnow spin 5171 up\nnow spin 5171 up\nnow click 5224\nnow row 5187 1"
+        );
+        let runner = on_save(&game, "A", &tips).unwrap();
+        assert_eq!([5233, 5168, 5235, 5169].map(|id| text(&runner, id)), ["2 x", " 6 €", " 30 €", " 30 €"]);
+        {
+            let state = runner.host.state();
+            let bet = a3_core::betting::matchday_bet(state.records.as_ref().unwrap(), 0, 0);
+            assert_eq!((bet.full, bet.ticks[0], bet.ticks[2], bet.ticks[3], bet.ticks[4]), (2, 7, 4, 12, 4));
+            assert_eq!((bet.high_stake, bet.scorer), (30, 0));
+        }
+        let england = format!("{open}\nnow click 5152");
+        let runner = on_save(&game, "A", &england).unwrap();
+        assert_eq!(text(&runner, 5172), "AFC Bournemouth - Manchester City");
+        assert_eq!(text(&runner, 5182), "Eintracht Frankfurt - 1.FC Heidenheim");
+        let again = format!("{tips}\nnow ok\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 411");
+        let runner = on_save(&game, "A", &again).unwrap();
+        assert_eq!(text(&runner, 5233), "2 x");
+        let closed = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 380";
+        let runner = on_save(&game, "Probe1", closed).unwrap();
+        let notice = control(&game.dialogs[&380], 4730).unwrap();
+        assert_eq!(runner.host.view().text(notice), game.text(4592));
+    }
 }

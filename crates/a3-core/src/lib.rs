@@ -4,6 +4,7 @@
 //! that asks for the screens (see [`cycle`]).
 
 pub mod autolineup;
+pub mod betting;
 pub mod calendar;
 pub mod cards;
 pub mod cohesion;

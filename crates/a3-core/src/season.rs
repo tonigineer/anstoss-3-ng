@@ -110,6 +110,8 @@ pub struct Rules {
     pub discipline: crate::discipline::DisciplineTables,
     /// The share market's slider scale and the colours of its rows.
     pub market: crate::market::MarketTables,
+    /// The betting office's stake scale.
+    pub betting: crate::betting::BettingTables,
     /// Injuries: which allow an injection.
     pub medical: crate::medical::MedicalTables,
     /// The tactics screen's states and its special win bonus.
@@ -170,6 +172,7 @@ impl Rules {
             words: crate::words::Words::load(exe)?,
             discipline: crate::discipline::DisciplineTables::load(exe)?,
             market: crate::market::MarketTables::load(exe)?,
+            betting: crate::betting::BettingTables::load(exe)?,
             medical: crate::medical::MedicalTables::load(exe)?,
             tactics: crate::tactics::TacticsTables::load(exe)?,
             training: crate::training::TrainingTables::load(exe)?,

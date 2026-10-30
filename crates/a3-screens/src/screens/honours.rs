@@ -24,6 +24,7 @@ use crate::view::View;
 
 pub mod abilities;
 pub mod beliebtheit;
+pub mod betting;
 pub mod confidence;
 pub mod market;
 pub mod pay;
@@ -71,6 +72,11 @@ const PAGES: u16 = 5643;
 const CONFIDENCE_PAGE: u16 = 5571;
 const MARKETS: u16 = 5572;
 const SHARE_MARKET: usize = 0;
+/// The betting office opens by the half weeks: the season's bets until
+/// the eighth, the matchday's from the eleventh to the 92nd.
+const SEASON_BETS_UNTIL: u16 = 8;
+const MATCHDAY_BETS: std::ops::RangeInclusive<u16> = 11..=92;
+const BETTING_CLOSED: u16 = 4592;
 /// The holdings' column: no club to sack a manager of, or the vote cast.
 const NO_CLUB: &str = "---";
 const SACKED: u16 = 3163;
@@ -314,14 +320,17 @@ impl Screen for Honours {
                 view.set_chosen(c, NONE);
             }
         }
+        let season_bets =
+            cx.state.records.as_ref().is_some_and(|r| r.globals.half_weeks() <= SEASON_BETS_UNTIL);
         // The two transfers and the built pages are open.
         let works = |t: Target| match t {
             Target::Option { control: c, item } if dialog.controls[c].id == Some(PAGES) => {
                 item == PLAYER_MANAGER || PAGE_DIALOGS.get(item).is_some_and(Option::is_some)
             }
-            // The share market; the betting office is not built.
+            // The share market, and the betting office but for its season
+            // bets.
             Target::Option { control: c, item } if dialog.controls[c].id == Some(MARKETS) => {
-                item == SHARE_MARKET
+                item == SHARE_MARKET || !season_bets
             }
             _ => hub::on_bar(dialog, t).is_none_or(hub::bar_works),
         };
@@ -367,6 +376,21 @@ impl Screen for Honours {
                 if dialog.controls[c].id == Some(MARKETS) =>
             {
                 Outcome::Popup(a3_core::cycle::Request::new(market::MARKET_DIALOG))
+            }
+            // The betting office (`0x53ecc7`): the season's bets in its
+            // first four weeks, the matchday's from the sixth week as long
+            // as the game offers a matchday, else closed (text 4592).
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(MARKETS) => {
+                let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
+                let weeks = records.globals.half_weeks();
+                if weeks <= SEASON_BETS_UNTIL {
+                    view.set_chosen(c, NONE);
+                    return Outcome::Stay;
+                }
+                if MATCHDAY_BETS.contains(&weeks) && a3_core::betting::matchday_open(records) {
+                    return Outcome::Popup(a3_core::cycle::Request::new(betting::MATCHDAY_DIALOG));
+                }
+                Outcome::Popup(a3_core::cycle::Request::with(NOTICE, Args::Text(BETTING_CLOSED)))
             }
             // A holding of a club's shares votes to sack its manager, or
             // no more; without dismissals the game says so (`0x53e9a9`).
