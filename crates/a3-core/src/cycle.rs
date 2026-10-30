@@ -76,6 +76,10 @@ pub mod dialogs {
     /// The line-up as a list, for a manager who switched to it.
     pub const LINEUP_LIST: u16 = 429;
     pub const DRESSING_ROOM: u16 = 302;
+    /// "Spielstand speichern" of the dressing room's game options
+    /// (`CDiSave`), asking over its own question (`CAlertOkAbbruch`)
+    /// before it takes a name that is saved already.
+    pub const SAVE: u16 = 489;
     /// The comparison with the next opponent, man for man, the bar's
     /// second symbol.
     pub const COMPARISON: u16 = 78;

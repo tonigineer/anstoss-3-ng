@@ -36,6 +36,7 @@ pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
 pub mod popups;
+pub mod save;
 pub mod search;
 pub mod special;
 pub mod squad;
@@ -162,6 +163,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(announcement::Announcement),
         Box::new(announcement::MatchAnnouncement),
         Box::new(nutzung::Nutzung::default()),
+        Box::new(save::SaveGame::default()),
         Box::new(youth_tables::YouthTables::default()),
         Box::new(doping::Doping),
         Box::new(year::YearCalendar::default()),
@@ -299,6 +301,7 @@ pub fn compose(game: &mut Game) {
     optionen::compose(&mut game.dialogs);
     announcement::compose(&mut game.dialogs);
     nutzung::compose(&mut game.dialogs);
+    save::compose(&mut game.dialogs);
     youth_tables::compose(&mut game.dialogs);
     doping::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);

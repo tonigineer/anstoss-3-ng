@@ -3818,6 +3818,70 @@ mod tests {
         assert_eq!(lit(&runner), crate::controls::options::NONE);
     }
 
+    /// "Spielstand speichern" (dialog 489): the saved games stand in its
+    /// list with their extension, a row names itself in the field, a fresh
+    /// name writes at once (".an3" completed), and a taken one asks —
+    /// text 4593 — before yes writes it, "Abbruch" leaving the old file
+    /// and the dialog standing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_save_dialog_writes_what_ok_names() {
+        let game = game();
+        // A copy of the installation with a save of its own, so the
+        // dialog may write without touching the original's saves.
+        let root = patched(&game.dir, "Probe1", "Nachtprobe", |_| {});
+        let mut copy = Game::load(&root).unwrap();
+        compose(&mut copy);
+        let dialog = &copy.dialogs[&489];
+        let field = control(dialog, 1866).unwrap();
+        let open = "now click bar 17\nuntil dialog 302\nnow choose 4035 2\nuntil dialog 489";
+        // It opens with no row chosen and the field empty, focused for a
+        // new name; the rows carry their extension.
+        let Some(runner) = on_save(&copy, "Nachtprobe", open) else { return };
+        let view = runner.host.view();
+        let list = view.list(control(dialog, 5248).unwrap()).unwrap();
+        assert_eq!(list.rows.len(), 1);
+        assert!(list.rows[0].starts_with("Nachtprobe.an3\t"), "{:?}", list.rows);
+        assert_eq!(list.tabs, [0.0, 270.0, 325.0]);
+        assert_eq!(list.selected, None);
+        assert_eq!(view.focus, Some(field));
+        assert_eq!(view.text(field), "");
+        // A click on the row puts its name, extension and all, into the
+        // field. (Before the write runs below, while it is still the only
+        // save and the first row.)
+        let named = format!("{open}\nnow row 5248 0\nuntil dialog 489");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &named) else { return };
+        assert_eq!(runner.host.view().text(field), "Nachtprobe.an3");
+        // OK saves it under a fresh name — the ".an3" completed — and
+        // lands back on 302.
+        let fresh = format!("{open}\nnow type 1866 Nachtzwei\nnow ok\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &fresh) else { return };
+        let _ = runner;
+        assert!(std::fs::metadata(root.join("saves/Nachtzwei.an3")).is_ok());
+        // A taken name asks first; "Abbruch" answers the question and
+        // leaves 489 standing, the old file untouched, and cancel then
+        // gives the save up.
+        let old = root.join("saves/Nachtprobe.an3");
+        let kept = std::fs::metadata(&old).unwrap().modified().unwrap();
+        let asked = format!("{open}\nnow type 1866 Nachtprobe\nnow ok\nuntil dialog 384");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &asked) else { return };
+        let question = &copy.dialogs[&384];
+        assert_eq!(
+            runner.host.view().text(control(question, 4738).unwrap()),
+            copy.text(4593)
+        );
+        let dropped = format!("{asked}\nnow press 4739\nnow cancel\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &dropped) else { return };
+        assert_eq!(runner.host.view().id, 302);
+        assert_eq!(std::fs::metadata(&old).unwrap().modified().unwrap(), kept);
+        // Yes takes the name over and writes.
+        let taken = format!("{asked}\nnow press 4741\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &taken) else { return };
+        assert_eq!(runner.host.view().id, 302);
+        assert!(std::fs::metadata(&old).unwrap().modified().unwrap() > kept);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_dragged_player_goes_with_the_pointer() {

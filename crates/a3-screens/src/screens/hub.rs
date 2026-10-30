@@ -30,6 +30,7 @@ pub use a3_core::cycle::dialogs::{
     TACTICS, TRAINING_PICTURES, UNIT_CHOICE, WEEK_PLANNER, YEAR_CALENDAR,
 };
 use a3_core::cycle::dialogs::{AMATEUR_PLAYERS, NOTICE, QUESTION, YOUTH_TEAM};
+use a3_core::newgame::Mode;
 
 use super::calendar::FIXTURE_AHEAD;
 use super::formations::FORMATIONS;
@@ -306,6 +307,10 @@ const MUSIK_ITEM: usize = 1;
 const OPTIONEN_ITEM: usize = 6;
 /// "Wie oft & Wie lange" (`FUN_005b14b3`).
 const NUTZUNG_ITEM: usize = 8;
+/// "Spielstand speichern" (`FUN_005b1357`); a game played over the net
+/// (`FUN_00407550`) is told its save waits for the other players (4594).
+const SAVE_ITEM: usize = 2;
+const SAVE_LATER: u16 = 4594;
 
 /// Lights a game option under its question, as the original's pressed
 /// button stays lit until the question is answered; `None` puts it out.
@@ -568,9 +573,13 @@ impl Screen for MenuBar {
                 Some(DRESSING_OPTIONS) => {
                     matches!(
                         item,
-                        QUIT_ITEM | NEW_GAME_ITEM | KONFIG_3D_ITEM | MUSIK_ITEM | NUTZUNG_ITEM
-                    )
-                        || item == OPTIONEN_ITEM && options_shown
+                        QUIT_ITEM
+                            | NEW_GAME_ITEM
+                            | SAVE_ITEM
+                            | KONFIG_3D_ITEM
+                            | MUSIK_ITEM
+                            | NUTZUNG_ITEM
+                    ) || item == OPTIONEN_ITEM && options_shown
                 }
                 _ => false,
             }
@@ -757,6 +766,22 @@ impl Screen for MenuBar {
             light_option(cx.dialog, view, Some(item));
             return Outcome::Popup(Request::with(QUESTION, Args::Text(NEW_GAME_REALLY)));
         }
+        // "Spielstand speichern". The original asks first whether the
+        // game is on at all (`FUN_007cb965`); here it always is. A game
+        // played over the net saves when every player has ended the
+        // turn; its own dialog would only stand in the way.
+        if view.id == DRESSING_ROOM
+            && cx.dialog.controls[c].id == Some(DRESSING_OPTIONS)
+            && item == SAVE_ITEM
+        {
+            light_option(cx.dialog, view, Some(item));
+            if matches!(cx.state.mode, Mode::ServerNew | Mode::ServerLoad | Mode::Client) {
+                self.popup = Some(NOTICE);
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(SAVE_LATER)));
+            }
+            self.popup = Some(super::save::SAVE);
+            return Outcome::Popup(Request::new(super::save::SAVE));
+        }
         // The settings' own dialogs: 3D and music.
         let settings = match item {
             KONFIG_3D_ITEM => Some(super::konfig3d::KONFIG_3D),
@@ -837,8 +862,9 @@ impl Screen for MenuBar {
             (Some(NEW_GAME_QUESTION), Reply::Ok) => Outcome::Close(Reply::NewGame),
             (
                 Some(
-                    QUIT_QUESTION | NEW_GAME_QUESTION | super::konfig3d::KONFIG_3D
-                    | super::musik::MUSIK | super::optionen::OPTIONEN | super::nutzung::NUTZUNG,
+                    QUIT_QUESTION | NEW_GAME_QUESTION | NOTICE | super::save::SAVE
+                    | super::konfig3d::KONFIG_3D | super::musik::MUSIK
+                    | super::optionen::OPTIONEN | super::nutzung::NUTZUNG,
                 ),
                 _,
             ) => {
