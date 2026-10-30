@@ -581,6 +581,12 @@ fn press(
             pending.0.push((Target::SliderAt { control, value }, 1));
             held.drag = Some((control, left, zoom));
         }
+        // A drawn picture is told where on it the pointer pressed.
+        Target::Point { control, .. } => {
+            let hit = press.hit.position.map_or(Vec2::splat(0.5), |p| Vec2::new(p.x, p.y) + 0.5);
+            let at = hit * classic.size();
+            pending.0.push((Target::Point { control, x: at.x as i16, y: at.y as i16 }, press.count));
+        }
         Target::Option { control, item } if is_bar(&game, view.id, control) => {
             if view.bar(control).is_some_and(|b| b.item_on(item)) && SoundEffects::on(effects) {
                 let sound = if item == hub::WHISTLE { &sounds.whistle } else { &sounds.click };

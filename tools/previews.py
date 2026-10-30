@@ -205,6 +205,13 @@ AREAS = {
                 (*bar(18, 302, "now choose 4035 2", "until dialog 489", "now type 1866 A",
                       "now ok", "until dialog 384"), 384),
                 (*menu(18, 302, 4035, 8, 158), 158)],
+    # The help behind the honours page's question mark: its topic, the
+    # table further down, the contents and the index.
+    "look": [(*bar(17, 175, *help_page), 423) for help_page in (
+        ["now click at 623 11", "until dialog 423"],
+        ["now click at 623 11", "until dialog 423", *["now click at 469 454"] * 3],
+        ["now click at 623 11", "until dialog 423", "now press 5143"],
+        ["now click at 623 11", "until dialog 423", "now press 5139"])],
 }
 
 

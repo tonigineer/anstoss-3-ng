@@ -258,7 +258,7 @@ impl ControlState {
             Self::Anim(a) => a.draw(frame, paint),
             Self::Slider(v) => slider::draw(v, frame, paint),
             Self::Fader(v) => fader::draw(v, frame, paint),
-            Self::Spin(_) => spin::draw(frame, paint),
+            Self::Spin(v) => spin::draw(v, frame, paint),
             Self::Edit(e) => e.draw(frame, paint),
             Self::Options(o) => o.draw(frame, paint),
             Self::Player(Some(p)) => p.draw(frame, paint),
@@ -290,6 +290,9 @@ impl ControlState {
                 for ((x, y), tile) in b.tiles.iter().flat_map(|t| t.each()) {
                     out.push((Target::Tile { control: index, x, y }, geometry.map(tile)));
                 }
+            }
+            Self::Bitmap(b) if b.pointed => {
+                out.push((Target::Point { control: index, x: 0, y: 0 }, geometry.rect(control)))
             }
             Self::Bitmap(b) if b.clickable => {
                 out.push((Target::Control(index), geometry.rect(control)))

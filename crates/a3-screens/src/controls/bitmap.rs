@@ -29,6 +29,8 @@ pub struct BitmapState {
     /// The tiles a click tells (`Target::Tile`): the grounds' map and its
     /// minimap.
     pub tiles: Option<Tiles>,
+    /// Whether a click tells its spot (`Target::Point`): the help's page.
+    pub pointed: bool,
     /// The tooltip over the grounds' map.
     pub tip: Option<Tip>,
 }

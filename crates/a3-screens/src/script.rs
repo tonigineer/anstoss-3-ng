@@ -505,7 +505,13 @@ impl<'a> Runner<'a> {
         let controls = &self.game.dialogs[&shown];
         let at = Vec2::new(f32::from(x), f32::from(y));
         let rects = crate::pointer::targets(controls, self.host.view(), &Pixels);
-        let found = rects.iter().rev().find(|(_, r)| r.contains(at)).map(|&(t, _)| t);
+        let found = rects.iter().rev().find(|(_, r)| r.contains(at)).map(|&(t, r)| match t {
+            // A drawn picture is told the spot, from its top left.
+            Target::Point { control, .. } => {
+                Target::Point { control, x: x - r.min.x as i16, y: y - r.min.y as i16 }
+            }
+            t => t,
+        });
         found.ok_or_else(|| Error::Unsupported(named(shown), format!("a click at {x} {y}")))
     }
 
@@ -7734,5 +7740,40 @@ mod tests {
         let runner = on_save(&game, "season-cap", &capped).unwrap();
         assert_eq!(text(&runner, 5150), " 100 €");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The help (dialog 423) behind the honours page's question mark, as
+    /// the original shows it on A: the window's topic, "Persönliche
+    /// Erfolge", fifteen steps of the bar long; thirteen steps down the
+    /// button before "Siehe auch" leads to "Rechtsformen der Vereine",
+    /// the black text beside it nowhere; "Historie" returns to where the
+    /// bar stood; the contents and the index hold no history.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_help_shows_a_windows_topic_and_follows_its_links() {
+        let game = game();
+        let dialog = &game.dialogs[&423];
+        let title = |runner: &Runner| runner.host.view().text(control(dialog, 6476).unwrap()).to_owned();
+        let bar = |runner: &Runner| {
+            let value = runner.host.view().value(control(dialog, 5142).unwrap()).copied().unwrap();
+            (value.value, value.range)
+        };
+        let open = "now click bar 16\nuntil dialog 175\nnow click at 623 11\nuntil dialog 423";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(runner.host.view().text(control(dialog, 9947).unwrap()), "ANSTOSS 3 - Hilfe Version 1.40/1.30");
+        assert_eq!((title(&runner).as_str(), bar(&runner)), ("Persönliche Erfolge", (0, (0, 15))));
+        let down = format!("{open}\n{}", "now click at 469 454\n".repeat(13));
+        let runner = on_save(&game, "A", &format!("{down}now click at 100 349")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).0), ("Persönliche Erfolge", 13));
+        let button = format!("{down}now click at 29 349");
+        let runner = on_save(&game, "A", &button).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner)), ("Rechtsformen der Vereine", (0, (0, 0))));
+        let runner = on_save(&game, "A", &format!("{button}\nnow choose 6164 0")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).0), ("Persönliche Erfolge", 13));
+        let pages = format!("{button}\nnow press 5143\nnow press 5139\nnow choose 6164 0");
+        let runner = on_save(&game, "A", &pages).unwrap();
+        assert_eq!(title(&runner), "Persönliche Erfolge");
+        let runner = on_save(&game, "A", &format!("{open}\nnow press 5139")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).1), ("Index", (0, 126)));
     }
 }

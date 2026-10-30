@@ -18,6 +18,7 @@ pub mod duties;
 pub mod finances;
 pub mod formations;
 pub mod grounds;
+pub mod help;
 pub mod honours;
 pub mod hub;
 pub mod jobs;
@@ -209,6 +210,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(honours::market::Winners),
         Box::new(honours::betting::MatchdayBets::default()),
         Box::new(honours::betting::SeasonBets::default()),
+        Box::new(help::HelpPage::default()),
         Box::new(honours::pay::Pay),
         Box::new(honours::season_records::SeasonRecords),
         Box::new(honours::scores::Scores),
@@ -342,6 +344,7 @@ pub fn compose(game: &mut Game) {
     youth::compose(&mut game.dialogs);
     search::compose(&mut game.dialogs);
     start::compose(&mut game.dialogs);
+    help::compose(&mut game.dialogs);
     corner_buttons(&mut game.dialogs);
 }
 
@@ -378,17 +381,25 @@ fn corner_buttons(dialogs: &mut HashMap<u16, Dialog>) {
     }
 }
 
-/// Whether `target` is a corner button, which does nothing yet.
+/// Whether `target` is a corner button: the help's or the printer's.
 pub(crate) fn is_corner_button(dialog: &Dialog, target: Target) -> bool {
     let Target::Button(i) = target else { return false };
     dialog.controls.get(i).is_some_and(|c| matches!(c.id, Some(HELP | PRINTER)))
 }
 
-/// The corner buttons, crossed out on every screen.
-pub(crate) fn cross_corner_buttons(view: &mut View, dialog: &Dialog) {
+/// Whether `target` is the help's button.
+pub(crate) fn is_help_button(dialog: &Dialog, target: Target) -> bool {
+    let Target::Button(i) = target else { return false };
+    dialog.controls.get(i).is_some_and(|c| c.id == Some(HELP))
+}
+
+/// The corner buttons that do nothing, crossed out on every screen: the
+/// printer's, and the help's where the game has no help.
+pub(crate) fn cross_corner_buttons(view: &mut View, dialog: &Dialog, help: bool) {
     for i in 0..dialog.controls.len() {
         let target = Target::Button(i);
-        if is_corner_button(dialog, target) && !view.inert.contains(&target) {
+        let works = help && is_help_button(dialog, target);
+        if is_corner_button(dialog, target) && !works && !view.inert.contains(&target) {
             view.inert.push(target);
         }
     }
@@ -541,9 +552,11 @@ pub(crate) fn mark_inert(view: &mut View, dialog: &Dialog, works: impl Fn(Target
     view.inert = targets
         .into_iter()
         .map(|(target, _)| target)
-        .filter(|&t| matches!(t, Target::Button(_) | Target::Option { .. }) && !works(t))
+        .filter(|&t| {
+            matches!(t, Target::Button(_) | Target::Option { .. }) && !works(t) && !is_help_button(dialog, t)
+        })
         .collect();
-    cross_corner_buttons(view, dialog);
+    cross_corner_buttons(view, dialog, true);
 }
 
 /// Sets the text of the dialog's control with `id`.

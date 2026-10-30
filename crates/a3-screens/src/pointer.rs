@@ -117,6 +117,13 @@ pub enum Target {
         control: usize,
         next: bool,
     },
+    /// A spot of a picture its screen drew, from its top left: the help's
+    /// page, whose links lie anywhere on it.
+    Point {
+        control: usize,
+        x: i16,
+        y: i16,
+    },
 }
 
 /// Where a look puts things. By default everything stays where the classic

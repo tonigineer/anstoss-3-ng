@@ -33,6 +33,9 @@ pub struct Game {
     flags: Option<Mutex<Archive>>,
     /// The game's fonts, read when first drawn with.
     fonts: OnceLock<Arc<Fonts>>,
+    /// The help, read when it is first opened; none where its files are
+    /// missing.
+    help: OnceLock<Option<a3_files::help::Help>>,
 }
 
 pub struct SaveGame {
@@ -77,6 +80,7 @@ impl Game {
             more: Archive::open(&dir.join("Archives/grafik1.cpr")).ok().map(Mutex::new),
             flags: Archive::open(&dir.join("Archives/flaggen.cpr")).ok().map(Mutex::new),
             fonts: OnceLock::new(),
+            help: OnceLock::new(),
         })
     }
 
@@ -222,6 +226,11 @@ impl Game {
             image::load_from_memory(&bytes)?
         };
         Ok(picture.to_rgba8())
+    }
+
+    /// The help (`Hilfe/anstoss3.rtf`, `anstoss3.cnt`).
+    pub fn help(&self) -> Option<&a3_files::help::Help> {
+        self.help.get_or_init(|| a3_files::help::Help::load(&self.dir).ok()).as_ref()
     }
 
     /// The fonts the game draws its dialogs' text with.
