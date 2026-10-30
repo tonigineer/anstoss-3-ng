@@ -45,7 +45,12 @@ impl AnimState {
         let (shown, next, blend) = self.showing(paint.phase);
         let picture = |i: usize| self.frames.get(i).and_then(|&id| paint.image(id));
         if let (Some(shown), Some(next)) = (picture(shown), picture(next)) {
-            blend_frames(frame, shown, next, paint.control.rect.min, blend);
+            // Its window clips a picture taller or wider than it (411's
+            // flags, 22 pixels in 21).
+            let r = paint.control.rect;
+            let (x, y) = (r.min.x as i32, r.min.y as i32);
+            let reach = (x, y, x + shown.width().max(next.width()) as i32, y + shown.height().max(next.height()) as i32);
+            super::text::within(frame, r, reach, |frame| blend_frames(frame, shown, next, r.min, blend));
         }
     }
 

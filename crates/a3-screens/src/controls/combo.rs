@@ -187,15 +187,8 @@ impl ComboState {
     /// down.
     pub(crate) fn draw(&self, frame: &mut RgbaImage, paint: &Paint) {
         let r = paint.control.rect;
-        if self.open
-            && let Some(held) = paint.widget(FIELD_HELD)
-        {
-            let (left, up) = if Self::above(paint.control) {
-                (HELD_AT.0, HELD_AT.1 - Self::field_excess(paint.control))
-            } else {
-                HELD_AT_BELOW
-            };
-            paste(frame, held, Vec2::new(r.max.x - left, r.min.y - up));
+        if self.open {
+            self.draw_held(frame, paint);
         }
         let (x, y) = (r.min.x as i32, r.min.y as i32);
         if let (Some(font), Some(s)) = (paint.font(), self.selected)
@@ -206,6 +199,18 @@ impl ComboState {
             let at = (x + FIELD_TEXT, top);
             draw_text(font, frame, paint.control, at, 0, text, r.max.x as i32, self.ink(s));
         }
+    }
+
+    /// The field's arrow held while the list is down.
+    fn draw_held(&self, frame: &mut RgbaImage, paint: &Paint) {
+        let r = paint.control.rect;
+        let Some(held) = paint.widget(FIELD_HELD) else { return };
+        let (left, up) = if Self::above(paint.control) {
+            (HELD_AT.0, HELD_AT.1 - Self::field_excess(paint.control))
+        } else {
+            HELD_AT_BELOW
+        };
+        paste(frame, held, Vec2::new(r.max.x - left, r.min.y - up));
     }
 
     /// The dropped list, over everything else.
@@ -279,6 +284,11 @@ impl ComboState {
                 let down = (track - length) * self.scroll as i32 / last as i32;
                 paste(frame, &handle, Vec2::new(bar as f32, (y0 + 1 + BAR + down + lift) as f32));
             }
+        }
+        // A list above the field ends on its arrow's top, and the held
+        // arrow lies over the list's edge there (411's trainers).
+        if Self::above(control) {
+            self.draw_held(frame, paint);
         }
     }
 
