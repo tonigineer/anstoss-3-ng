@@ -7,6 +7,7 @@
 //! The screens share the [`GameState`] with the cycle; while it waits for a
 //! reply, the open screen may read and change the state.
 
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -194,6 +195,12 @@ const WEEK_DAYS: usize = 7;
 const ANNOUNCE_OPTION: usize = 2;
 const ON: u8 = 1;
 const ANNOUNCE_AHEAD: i16 = 7;
+/// The game options' switch to keep the rolling autosaves and the weeks
+/// between them — bytes 0x0f and 0x1f of the switches at `0xb5d13c`, on
+/// and every week since `FUN_006c6290`. The dressing room's spinner 6348
+/// sets the weeks; zero saves every week.
+const AUTOSAVE: usize = 0x0f;
+const AUTOSAVE_WEEKS: usize = 0x1f;
 /// The kind of a league match (club +0xb4c).
 const LEAGUE_MATCH: u8 = 2;
 /// A talk booked in the week planner, and the talk itself.
@@ -689,15 +696,40 @@ impl Cycle {
                     if start {
                         s.begin_week();
                     }
-                    start
+                    start.then_some(s.day / WEEK_DAYS)
                 });
-                if week_start == Some(true)
+                if let Some(Some(weeks)) = week_start
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
+                    self.autosave(records, weeks);
                 }
                 self.ask(Request::new(week))?;
             }
+        }
+    }
+
+    /// The rolling autosaves of the game being played (`FUN_006ecfeb`):
+    /// of the three kept under `saves` the oldest goes, its two fellows
+    /// move up a place, and the game writes itself afresh into the
+    /// newest. The week's end asks for them before its announcement
+    /// (`FUN_0064e40f`); the original also holds them back while a load
+    /// runs (`DAT_00b5cc04`, which `CDiLoad` sets), which never meets the
+    /// replica's week boundary. The counter the original weighs, "half
+    /// weeks since the start" at `0xb5cbd2`, ticks on the week's middle
+    /// day and its end, so half of it is the whole weeks counted here.
+    fn autosave(&self, records: &Records, weeks: usize) {
+        if !autosave_due(&records.globals.game_options(), weeks) {
+            return;
+        }
+        let fresh = self.data.dir.join("saves").join("Autos.an3");
+        match records.to_save().to_bytes_stored() {
+            Ok(bytes) => {
+                if let Err(err) = roll_autosaves(&self.data.dir.join("saves"), &bytes) {
+                    warn!("{}: {err}", fresh.display());
+                }
+            }
+            Err(err) => warn!("{}: {err}", fresh.display()),
         }
     }
 
@@ -950,4 +982,88 @@ fn line_up_view(season: &Season, screen: u16) -> u16 {
 /// start menu.
 fn would_start(what: &str) {
     info!("{what}: here the game itself would begin; back to the start menu");
+}
+
+/// Whether the week's end rolls the autosaves: the options' switch on byte
+/// 0x0f standing on (`DAT_00b5d14b`), and byte 0x1f (`DAT_00b5d15b`, the
+/// dressing room's spinner 6348) telling every how many weeks — its zero
+/// saving every week (`FUN_0064e40f` weighing half of `0xb5cbd2`).
+fn autosave_due(options: &[u8; 39], weeks: usize) -> bool {
+    let every = usize::from(options[AUTOSAVE_WEEKS]);
+    options[AUTOSAVE] == ON && (every == 0 || weeks % every == 0)
+}
+
+/// `FUN_006ecfeb` over the game's saves: `DeleteFileA` on the oldest
+/// `Auto2.an3`, `Auto1.an3` renamed into its place and `Autos.an3` into
+/// `Auto1`'s, and the bytes written as the fresh `Autos.an3`.
+fn roll_autosaves(saves: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::remove_file(saves.join("Auto2.an3"))
+        .or_else(|err| if err.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(err) })?;
+    for (from, to) in [("Auto1.an3", "Auto2.an3"), ("Autos.an3", "Auto1.an3")] {
+        std::fs::rename(saves.join(from), saves.join(to))
+            .or_else(|err| if err.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(err) })?;
+    }
+    std::fs::write(saves.join("Autos.an3"), bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_week_rolls_the_autosaves_on_the_options() {
+        let mut options = [0_u8; 39];
+        assert!(!autosave_due(&options, 1), "the switch off keeps them away");
+        options[AUTOSAVE] = ON;
+        options[AUTOSAVE_WEEKS] = 1;
+        for weeks in 1..=12 {
+            assert!(autosave_due(&options, weeks), "week {weeks}");
+        }
+        options[AUTOSAVE_WEEKS] = 0;
+        assert!(autosave_due(&options, 7), "no number means every week");
+        options[AUTOSAVE_WEEKS] = 3;
+        assert!(autosave_due(&options, 6) && autosave_due(&options, 9));
+        assert!(!autosave_due(&options, 7) && !autosave_due(&options, 8));
+    }
+
+    #[test]
+    fn three_rolling_autosaves() {
+        let dir = std::env::temp_dir().join("a3-autosave-roll");
+        let saves = dir.join("saves");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(saves.join("Toni.an3"), b"the manager's own").unwrap();
+        let kept = |name: &str| std::fs::read(saves.join(name)).unwrap();
+        for week in 1..=4 {
+            roll_autosaves(&saves, format!("save {week}").as_bytes()).unwrap();
+            assert_eq!(kept("Autos.an3"), format!("save {week}").as_bytes());
+        }
+        // The fourth roll dropped the first: three saves remain around,
+        // the newest first, and the manager's own file untouched.
+        assert_eq!(kept("Autos.an3"), b"save 4");
+        assert_eq!(kept("Auto1.an3"), b"save 3");
+        assert_eq!(kept("Auto2.an3"), b"save 2");
+        assert_eq!(kept("Toni.an3"), b"the manager's own");
+        assert_eq!(std::fs::read_dir(&saves).unwrap().count(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_autosave_holds_the_loaded_game() {
+        let dir = std::env::temp_dir().join("a3-autosave-save");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records =
+            Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        records.globals.set_half_weeks(2);
+        let options = records.globals.game_options();
+        assert!(autosave_due(&options, usize::from(records.globals.half_weeks()) / 2));
+        let bytes = records.to_save().to_bytes_stored().unwrap();
+        roll_autosaves(&dir, &bytes).unwrap();
+        let rolled = Save::parse(&std::fs::read(dir.join("Autos.an3")).unwrap()).unwrap();
+        assert!(a3_files::an3::compare(&rolled, &records.to_save()).blocks.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
