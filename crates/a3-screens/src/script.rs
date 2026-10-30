@@ -3298,6 +3298,37 @@ mod tests {
         assert_eq!(text, game.text(2921));
     }
 
+    /// The booked professional contract's talk speaks up on its day: the
+    /// original's day run walks the talks list the planner booking wrote
+    /// and, while he is still with the club, posts its message (text 5048,
+    /// `FUN_0076cb3e`, `FUN_0076bb38`, `FUN_0076c613`). Wilson's talk from
+    /// `a_professional_contract_talk_is_booked` is booked for Monday, and
+    /// the week plays on to Tuesday: the week message then carries it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_contract_talk_is_announced_on_its_day() {
+        let game = game();
+        let wilson = "now click at 80 91\nuntil dialog 11";
+        let book = format!(
+            "now click bar 10\nuntil dialog 218\nnow choose 5042 3\nuntil dialog 427\n\
+             {wilson}\nnow choose 1254 1\nuntil dialog 412\nnow choose 5034 1\nuntil dialog 427"
+        );
+        // The week on: the planner's yes, the line-up and the office
+        // whistled off, the no-training question answered, and over the
+        // days the week reports and waits for.
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 2 days";
+        let Some(runner) = on_save(&game, "Probe1", &format!("{book}\n{play}")) else { return };
+        let state = runner.host.state();
+        let season = state.season.as_ref().expect("the season is playing");
+        let records = state.records.as_ref().unwrap();
+        // Two days on: the Monday the talk stands in the planner for.
+        let talk = records.planners[0].day(usize::try_from(season.day).unwrap() - 1);
+        assert_eq!((talk.kind, talk.flag), (0x10, 1), "no talk booked on Monday");
+        let name = records.name(records.player(talk.player).unwrap().last_name()).to_owned();
+        assert_eq!(season.planner_message, Some((5048, name)), "the talk is not announced");
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn spiel_beenden_ends_the_game() {

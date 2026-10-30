@@ -24,6 +24,7 @@ use crate::random::Random;
 use crate::records::Records;
 use crate::season::Season;
 use crate::state::GameState;
+use crate::youth;
 
 /// The dialogs the cycle asks for, by their ids in the dialog file; the
 /// week screen under ids of its own for none to four club panels.
@@ -210,6 +211,11 @@ const TALK_DIALOG: u16 = dialogs::TALK;
 const VISIT: u8 = 0x0b;
 const TALK_TEXT: u16 = 4230;
 const VISIT_TEXT: u16 = 2221;
+/// The professional-contract talks "Profivertrag geben" books, for the
+/// youth and the amateurs; on their day the week calls them a negotiation
+/// (`FUN_0076cb3e`, text 5048 via `FUN_0064f456`).
+const CONTRACT_TALKS: [u8; 2] = [youth::YOUTH_CONTRACT_TALK, youth::AMATEUR_CONTRACT_TALK];
+const CONTRACT_TALK_TEXT: u16 = 5048;
 /// The visit tells how he took it with the preparation at "normal", or
 /// from this day of the season on.
 const NORMAL_PREPARATION: u8 = 5;
@@ -737,8 +743,10 @@ impl Cycle {
     /// still in their squads, manager by manager (`FUN_0072fd53`): a talk
     /// opens in its manager's turn (`FUN_0048ddbe`); a sick visit happens
     /// (`FUN_00557e1f`) and tells how he took it — unless the game runs its
-    /// preparation fast and the season is younger than day 42. Each
-    /// manager's step clears the week's message, so the last one's stays.
+    /// preparation fast and the season is younger than day 42. The day's
+    /// message starts fresh with its first step (`FUN_0076fac0` zeroes the
+    /// day's twenty slots before its managers are walked), so the last
+    /// manager with one stays on the week screen.
     fn appointments(&self) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
         for n in 0..managers {
@@ -750,7 +758,9 @@ impl Cycle {
                     return Ok(());
                 };
                 season.current = n;
-                season.planner_message = None;
+                if n == 0 {
+                    season.planner_message = None;
+                }
                 let manager = &season.managers[n];
                 let last_name = manager.last_name.clone();
                 let club = manager.club;
@@ -759,10 +769,45 @@ impl Cycle {
                     .and_then(|slot| records.planners.get(slot))
                     .map(|p| p.day(season.day))
                     .filter(|b| b.player != 0);
-                let status = booked.and_then(|b| {
-                    let club = season.clubs.get(&club?)?;
-                    club.status.iter().position(|s| s.id == b.player).map(|p| (b, p))
-                });
+                // The professional contract's talk on its day: the
+                // original's day run walks the talks list the booking
+                // wrote beside the planner and looks him up in the
+                // club — the youth in its squad, the amateur in its
+                // amateur pool — before it posts the week's message
+                // (`FUN_0076cb3e`, `FUN_0076bb38`, `FUN_0076c613`);
+                // the planner's own pump ignores these kinds. The
+                // talk's own screen is not traced, so the replica
+                // stops at the message.
+                let talk = booked
+                    .filter(|b| CONTRACT_TALKS.contains(&b.kind))
+                    .filter(|b| {
+                        if b.kind == youth::YOUTH_CONTRACT_TALK {
+                            club.and_then(|key| season.clubs.get(&key)).is_some_and(|c| {
+                                c.status.iter().any(|s| s.id == b.player)
+                            })
+                        } else {
+                            records
+                                .human_slot(n)
+                                .and_then(|slot| records.managers.get(slot))
+                                .is_some_and(|m| {
+                                    youth::pool(records, m.country() as u8, m.team() as u16)
+                                        .iter()
+                                        .any(|list| list.contains(&b.player))
+                                })
+                        }
+                    });
+                if let Some(b) = talk {
+                    let name = records
+                        .player(b.player)
+                        .map(|r| records.name(r.last_name()).to_owned());
+                    season.planner_message = Some((CONTRACT_TALK_TEXT, name.unwrap_or_default()));
+                }
+                let status = booked
+                    .filter(|b| !CONTRACT_TALKS.contains(&b.kind))
+                    .and_then(|b| {
+                        let club = season.clubs.get(&club?)?;
+                        club.status.iter().position(|s| s.id == b.player).map(|p| (b, p))
+                    });
                 match status {
                     Some((b, _)) if b.kind == TALK => {
                         season.planner_message = Some((TALK_TEXT, last_name));
