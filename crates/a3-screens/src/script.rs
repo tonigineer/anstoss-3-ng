@@ -3637,12 +3637,14 @@ mod tests {
     /// every first-round pairing holds a result with its flags answering
     /// to the score — a shootout's score staying even — the second round's
     /// rows hold the winners, each once and unplayed, the block names
-    /// round 2 as drawn, and the human club's tie played with the rest.
+    /// round 2 as drawn, and the human club's tie played with the rest —
+    /// its home tie booking its gate on the club's cup takings.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_cup_round_plays_on_when_its_day_comes() {
         use a3_core::opponent::{CUPS_AT, PAIRING, PAIRINGS};
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut cup_gate = (0u16, 0i32);
         let root = patched(&dir, "A", "cup-days", |records| {
             records.globals.set_day(56);
             // The save's planner still holds the talks and visits booked in
@@ -3660,6 +3662,29 @@ mod tests {
             }
             let nation = usize::try_from(records.globals.main_country()).unwrap();
             let cup = format!("{CUPS_AT:#x}[{}]", records.countries.slot(nation));
+            // The human club plays its first-round tie at home on this
+            // save; keep its number and the cup takings the save holds
+            // from the round it lived through, to see the gate come on.
+            if let Some(b) = records.block(&cup) {
+                for q in 0..32 {
+                    let p = &b[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+                    let num = u16::from_le_bytes([p[2], p[3]]);
+                    if usize::from(p[0]) == nation
+                        && records
+                            .team(nation as u16, num)
+                            .is_some_and(|t| t.human() > 0)
+                    {
+                        if let Some(t) = records.team(nation as u16, num) {
+                            cup_gate = (
+                                num,
+                                t.get::<i32>(
+                                    0x234 + a3_core::finances::CLUB_TO_TEAM,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
             let Some(block) = records.block_mut(&cup) else {
                 panic!("the save's cup block");
             };
@@ -3733,6 +3758,19 @@ mod tests {
             })
             .count();
         assert_eq!(human, 1, "the human club in the first round's pairings");
+        // The home tie booked its gate on the club's cup takings (+0x234);
+        // the save lived through this round once, so the run books once
+        // more atop what it held.
+        assert_ne!(cup_gate.0, 0, "the human club played away in round one");
+        let booked = records
+            .team(nation, cup_gate.0)
+            .unwrap()
+            .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM);
+        assert!(
+            booked > cup_gate.1,
+            "the cup tie booked no gate: {} -> {booked}",
+            cup_gate.1
+        );
     }
 
     #[test]

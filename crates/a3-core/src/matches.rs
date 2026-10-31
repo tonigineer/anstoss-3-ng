@@ -18,10 +18,13 @@ use crate::world::{self, World};
 const STADIUM_AT: u32 = 0x1a48138;
 const CAPACITY: usize = 0x3c;
 /// The plan's attendance and its season-ticket holders (club +0x120,
-/// +0x124), and the gate money booked match by match (club +0x230).
+/// +0x124), and the gate money booked match by match — the league's in
+/// club +0x230, the cup's in +0x234, against the cup's planned gate at
+/// +0x12c, a money and not a crowd.
 const PLAN_ATTENDANCE: usize = 0x120;
 const PLAN_SEASON_TICKETS: usize = 0x124;
 const BOOKED_LEAGUE: usize = 0x230;
+const BOOKED_CUP: usize = 0x234;
 
 /// Strengths to reckon by when a team's record (G+0xb8) carries none: the
 /// goalkeeper, defenders, midfield and attack in tenths, attack and hold
@@ -84,6 +87,8 @@ const CUP_SHOOT: u8 = 0x40;
 /// side. Once the round's last game is played its winners are shuffled
 /// and paired anew — the home side drawn too — where the next round's row
 /// says, and the block's last drawn round (the byte at +0x28) follows.
+/// Each home club books its gate: a crowd as in the league, the money on
+/// its season's cup takings (club +0x234).
 fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     let Some(row) = calendar.row(nation, 0) else {
         return;
@@ -103,8 +108,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         return;
     };
     let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
-    // The scores drawn before the block is written, as in the leagues.
+    // The scores drawn before the block is written, as in the leagues, and
+    // the gate money the home clubs book with them.
     let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
+    let mut gates: Vec<(u8, u16, i32)> = Vec::new();
     for q in start..start + count {
         let Some(p) = records
             .block(&name)
@@ -147,6 +154,18 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         }
         let winner = u8::from(won == std::cmp::Ordering::Less);
         scored.push((q, [hg, ag, flags, winner]));
+        // The home club's gate: a crowd as in the league, and the money it
+        // brings — the played match's reckoning (FUN_0078b26c) at a mark
+        // no cup round holds, which leaves it as it is.
+        let (country, number) = (p[0], u16_at(p, 2));
+        if let Some(t) = records.team(u16::from(country), number) {
+            let cap = capacity(records, u16::from(country), number);
+            let att = attendance(t, cap, random);
+            let money = tickets::booked_gate(records, t, att, 0);
+            if money != 0 {
+                gates.push((country, number, money));
+            }
+        }
     }
     if let Some(cup) = records.block_mut(&name) {
         for (q, [hg, ag, flags, winner]) in scored {
@@ -157,6 +176,12 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             if let Some(p) = cup.get_mut(at + 0xc..at + 0xe) {
                 p.copy_from_slice(&[flags, winner]);
             }
+        }
+    }
+    for (country, number, money) in gates {
+        if let Some(t) = records.team_mut(u16::from(country), number) {
+            let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
+            t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
         }
     }
     // The round is through when its every drawn pairing stands played; the
