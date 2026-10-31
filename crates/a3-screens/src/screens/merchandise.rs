@@ -16,10 +16,15 @@ use a3_files::rch::Dialog;
 use super::discipline::CAPTION_ID;
 use super::honours::market::cents;
 use super::{Args, Cx, Outcome, Reply, Screen, control, mark_inert, set};
+use a3_core::cycle::Request;
 use crate::pointer::Target;
 use crate::view::View;
 
 pub(crate) const MERCHANDISE_RANGE: u16 = 56;
+/// An article of it (`CFanartKaufen`), and its question before it is
+/// given up (text 3836).
+const ARTICLE: u16 = 57;
+const GIVE_UP_QUESTION: u16 = 3836;
 
 const LIST: u16 = 1495;
 const BUYER: u16 = 1496;
@@ -54,7 +59,6 @@ const ICON_SLOT: usize = 0;
 
 #[derive(Default)]
 pub struct MerchandiseRange {
-    range: Option<Range>,
     /// The order size's place on its spinner, from 0.
     size: usize,
     /// The article last chosen in the list, by its place: the first at
@@ -99,32 +103,31 @@ impl Screen for MerchandiseRange {
             spin.range = (0, ORDER_SIZES.len() as i32 - 1);
             spin.set(self.size as i32);
         }
-        self.range = range;
+        cx.state.merchandise = range;
         self.show_discount(cx, view);
         self.show_size(cx, view);
         self.rows(cx, view);
         self.chart(cx, view);
-        let count = self.range.as_ref().map_or(0, |r| r.articles().len());
+        let count = cx.state.merchandise.as_ref().map_or(0, |r| r.articles().len());
         if let Some(c) = control(dialog, WEEKS_TITLE) {
             let text = super::finances::printf(&dialog.controls[c].text, &[&count]);
             view.set_text(c, text);
         }
-        // The article's own dialog (CFanartKaufen, a double click) and its
-        // information (CFanartikelInfo) are not built.
+        // The information (CFanartikelInfo) is not built.
         mark_inert(view, dialog, |t| match t {
             Target::Button(c) => matches!(dialog.controls[c].id, Some(OK | BUY_ONE | BUY_ALL)),
             _ => false,
         });
     }
 
-    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, double: bool) -> Outcome {
         let dialog = cx.dialog;
         let id = |c: usize| dialog.controls[c].id.unwrap_or(0);
         match target {
             // The fans' discount (`FUN_0049bb71`): the prices anew.
             Target::Spin { control: c, .. } if id(c) == DISCOUNT_SPIN => {
                 let v = view.value(c).map_or(DISCOUNT_ZERO, |v| v.value);
-                if let Some(r) = self.range.as_mut() {
+                if let Some(r) = cx.state.merchandise.as_mut() {
                     r.set_fans_discount((v - DISCOUNT_ZERO) as i16);
                 }
                 self.show_discount(cx, view);
@@ -141,6 +144,11 @@ impl Screen for MerchandiseRange {
                     view.list(c).and_then(|l| l.selected.and_then(|s| l.keys.get(s).copied()))
                 {
                     self.chosen = place;
+                    // A double click opens the article (`OnDblClk_…_LISTE`).
+                    if double {
+                        let place = u16::try_from(place).unwrap_or(0);
+                        return Outcome::Popup(Request::with(ARTICLE, Args::Record(place)));
+                    }
                 }
             }
             Target::Button(c) if id(c) == BUY_ONE => self.buy(cx, view, Some(self.chosen)),
@@ -153,12 +161,18 @@ impl Screen for MerchandiseRange {
         }
         Outcome::Stay
     }
+
+    /// Back from the article: the rows anew.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
+        self.rows(cx, view);
+        Outcome::Stay
+    }
 }
 
 impl MerchandiseRange {
     fn show_discount(&self, cx: &Cx, view: &mut View) {
         let dialog = cx.dialog;
-        let discount = self.range.as_ref().map_or(0, Range::fans_discount);
+        let discount = cx.state.merchandise.as_ref().map_or(0, Range::fans_discount);
         set(view, dialog, DISCOUNT, format!("{}%", discount.unsigned_abs()));
         let label = if discount < 0 { SURCHARGE_TEXT } else { DISCOUNT_TEXT };
         set(view, dialog, DISCOUNT_LABEL, label.to_owned());
@@ -176,24 +190,17 @@ impl MerchandiseRange {
     /// its kind's picture.
     fn rows(&self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
-        let Some(range) = &self.range else { return };
+        let Some(range) = &cx.state.merchandise else { return };
         let Some(records) = cx.state.records.as_ref() else { return };
-        let Some(team) = super::squad::own_team(cx) else { return };
         let tables = &game.rules.merchandise;
         let weeks = merchandise::delivery_weeks(records);
-        let club = team.short_name();
-        let rival = u8::try_from(team.get::<i8>(RIVAL))
-            .ok()
-            .and_then(|n| records.team(team.country().into(), n.into()));
-        let rival = rival.map_or_else(String::new, |t| t.short_name());
-        let year = records.globals.start_year();
         let Some(c) = control(dialog, LIST) else { return };
         let slots = crate::controls::list::icon_slots(&dialog.controls[c]);
         let at = slots.get(ICON_SLOT).copied().unwrap_or(0.0);
         let (mut rows, mut icons, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         for a in range.articles() {
             let kind = tables.kinds.get(a.kind).copied().unwrap_or_default();
-            let name = range.name(game.text(kind.name), &club, &rival, year);
+            let name = article_name(cx, range, kind);
             let lz = weeks.get(a.kind).copied().unwrap_or(0);
             rows.push(format!(
                 "{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{lz}",
@@ -248,13 +255,14 @@ impl MerchandiseRange {
     /// it costs is booked at once, the pieces wait in the copy.
     fn buy(&mut self, cx: &mut Cx, view: &mut View, place: Option<usize>) {
         let pieces = ORDER_SIZES[self.size];
-        let Some(range) = self.range.as_mut() else { return };
+        let Some(mut range) = cx.state.merchandise.take() else { return };
         let weeks = cx.state.records.as_ref().map(merchandise::delivery_weeks).unwrap_or_default();
         let tables = &cx.game.rules.merchandise;
         let cost = match place {
             Some(p) => range.order(tables, &weeks, p, pieces).unwrap_or(0),
             None => range.order_all(tables, &weeks, pieces),
         };
+        cx.state.merchandise = Some(range);
         if let Some(team) = super::squad::own_team_mut(cx) {
             let at = BOUGHT + a3_core::finances::CLUB_TO_TEAM;
             team.put(at, team.get::<i32>(at).wrapping_add(cost));
@@ -269,7 +277,7 @@ impl MerchandiseRange {
         let dialog = cx.dialog;
         let checked = |id| control(dialog, id).and_then(|c| view.check(c)).is_some_and(|c| c.checked);
         let (buyer, marketing) = (checked(BUYER), checked(MARKETING));
-        let Some(mut range) = self.range.take() else { return };
+        let Some(mut range) = cx.state.merchandise.take() else { return };
         range.set_buyer(buyer);
         range.set_marketing(marketing);
         let months = cx.state.records.as_ref().map_or(0, |r| {
@@ -302,9 +310,171 @@ const RIVAL: usize = 0x122;
 const BOUGHT: usize = 0x308;
 const STAFF_WAGES: usize = 0x280;
 
-/// Puts the dialog's caption in its frame.
+/// An article's name, its kind's text with the club's names filled in
+/// (`FUN_0061069a`).
+fn article_name(cx: &Cx, range: &Range, kind: merchandise::Kind) -> String {
+    let Some(records) = cx.state.records.as_ref() else { return String::new() };
+    let Some(team) = super::squad::own_team(cx) else { return String::new() };
+    let rival = u8::try_from(team.get::<i8>(RIVAL))
+        .ok()
+        .and_then(|n| records.team(team.country().into(), n.into()))
+        .map_or_else(String::new, |t| t.short_name());
+    range.name(cx.game.text(kind.name), &team.short_name(), &rival, records.globals.start_year())
+}
+
+/// An article of the range (dialog 57, `CFanartKaufen`), opened by a
+/// double click on its row: its price among the steps its markup may
+/// take, the kind's recommended and purchase prices, the stock, whether it
+/// is left out of buying them all, its last ten weeks' sales as bars, and
+/// — for any but the four fixed kinds — giving it up.
+#[derive(Default)]
+pub struct Article {
+    place: usize,
+    kind: usize,
+    /// The prices it may take and the markup of each; the one shown.
+    steps: Vec<(i32, i16)>,
+    step: usize,
+    /// Giving it up asked, waiting for the answer.
+    asking: bool,
+}
+
+const NAME: u16 = 1509;
+const CHART_10: u16 = 1510;
+const PRICE: u16 = 1511;
+const RECOMMENDED: u16 = 1512;
+const PURCHASE: u16 = 1513;
+const STOCK: u16 = 1514;
+const EXCLUDED: u16 = 1515;
+const PRICE_SPIN: u16 = 1516;
+const GIVE_UP: u16 = 1517;
+const CANCEL: u16 = 1518;
+const BEST_WEEK: u16 = 1519;
+/// Where its ten bars stand (`0x880d54`).
+const ARTICLE_BARS: [i32; 10] = [10, 26, 42, 58, 73, 88, 103, 119, 135, 150];
+
+impl Screen for Article {
+    fn ids(&self) -> &[u16] {
+        &[ARTICLE]
+    }
+
+    /// `FUN_0049d381`.
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        *self = Self::default();
+        // Its OK keeps its own picture: it does not ask for the day's.
+        set(view, dialog, CAPTION_ID, dialog.title.clone());
+        let Args::Record(place) = args else { return };
+        self.place = usize::from(place);
+        let Some(range) = cx.state.merchandise.as_ref() else { return };
+        let Some(a) = range.article(self.place) else { return };
+        self.kind = a.kind;
+        let kind = game.rules.merchandise.kinds.get(a.kind).copied().unwrap_or_default();
+        self.steps = merchandise::price_steps(kind.sold_at);
+        // The step whose first markup is the article's; the original reads
+        // a stale index where none is.
+        self.step = self.steps.iter().position(|&(_, m)| m == a.markup).unwrap_or(0);
+        set(view, dialog, NAME, article_name(cx, range, kind));
+        set(view, dialog, STOCK, a.stock.to_string());
+        set(view, dialog, RECOMMENDED, cents(kind.sold_at));
+        set(view, dialog, PURCHASE, cents(kind.bought_at));
+        if let Some(spin) = control(dialog, PRICE_SPIN).and_then(|c| view.value_mut(c)) {
+            spin.range = (0, self.steps.len() as i32 - 1);
+            spin.set(self.step as i32);
+        }
+        self.show_price(cx, view);
+        if let Some(check) = control(dialog, EXCLUDED).and_then(|c| view.check_mut(c)) {
+            check.checked = a.excluded;
+        }
+        if kind.fixed & 1 != 0
+            && let Some(c) = control(dialog, GIVE_UP)
+        {
+            view.controls[c].hidden = true;
+        }
+        // The chart (`FUN_0049d9b8`): the best week told beside its label.
+        let sales = range.sales(self.place);
+        let best = sales.iter().copied().max().unwrap_or(0);
+        if let Some(c) = control(dialog, BEST_WEEK) {
+            if best < 1 {
+                view.controls[c].hidden = true;
+            } else {
+                view.set_text(c, format!("{} {best}", dialog.controls[c].text));
+            }
+        }
+        if best >= 1
+            && let Some(c) = control(dialog, CHART_10)
+        {
+            let height = dialog.controls[c].rect.height() as i32;
+            let scale = merchandise::chart_scale(best);
+            if let Some(paint) = view.paint_mut(c) {
+                paint.bars.clear();
+                for (&x, &v) in ARTICLE_BARS.iter().zip(&sales) {
+                    let h = (height - BAR_TOP_GAP).wrapping_mul(v) / scale;
+                    paint.bar(x, height + 1 - h, BAR_WIDTH, h, BAR_COLOUR);
+                }
+            }
+        }
+        mark_inert(view, dialog, |_| true);
+    }
+
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        let id = |c: usize| dialog.controls[c].id.unwrap_or(0);
+        match target {
+            // A price step (`FUN_0049d94b`).
+            Target::Spin { control: c, .. } if id(c) == PRICE_SPIN => {
+                self.step = view.value(c).map_or(0, |v| v.value).max(0) as usize;
+                self.show_price(cx, view);
+            }
+            // OK keeps the markup and the box (`OnClicked_IDOK_0049d842`,
+            // then `0x49b9c9`).
+            Target::Button(c) if id(c) == OK => {
+                let excluded =
+                    control(dialog, EXCLUDED).and_then(|e| view.check(e)).is_some_and(|e| e.checked);
+                let markup = self.steps.get(self.step).map_or(0, |&(_, m)| m);
+                if let Some(range) = cx.state.merchandise.as_mut() {
+                    range.set_article(self.place, markup, excluded);
+                }
+                return Outcome::Close(Reply::Ok);
+            }
+            Target::Button(c) if id(c) == CANCEL => return Outcome::Close(Reply::Cancel),
+            Target::Button(c) if id(c) == GIVE_UP => {
+                self.asking = true;
+                return Outcome::Popup(Request::with(
+                    super::popups::QUESTION,
+                    Args::Text(GIVE_UP_QUESTION),
+                ));
+            }
+            _ => {}
+        }
+        Outcome::Stay
+    }
+
+    /// Asked to give it up (`OnClicked_IDC_FANA_K_LOESCHEN`): yes, and the
+    /// range lets the kind go (`FUN_006112a9`).
+    fn answer(&mut self, cx: &mut Cx, _: &mut View, reply: Reply) -> Outcome {
+        if !std::mem::take(&mut self.asking) || reply != Reply::Ok {
+            return Outcome::Stay;
+        }
+        let tables = &cx.game.rules.merchandise;
+        if let Some(range) = cx.state.merchandise.as_mut() {
+            range.give_up(tables, self.kind);
+        }
+        Outcome::Close(Reply::Ok)
+    }
+}
+
+impl Article {
+    fn show_price(&self, cx: &Cx, view: &mut View) {
+        let price = self.steps.get(self.step).map_or(0, |&(p, _)| p);
+        set(view, cx.dialog, PRICE, cents(price));
+    }
+}
+
+/// Puts the dialogs' captions in their frames.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    let Some(dialog) = dialogs.get_mut(&MERCHANDISE_RANGE) else { return };
-    let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
-    dialog.controls.insert(0, caption);
+    for id in [MERCHANDISE_RANGE, ARTICLE] {
+        let Some(dialog) = dialogs.get_mut(&id) else { continue };
+        let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
+        dialog.controls.insert(0, caption);
+    }
 }

@@ -32,6 +32,9 @@ pub struct GameState {
     /// The stadium the expansion plans, and whether it is played in; the
     /// plan comes back in its place when it is OKed.
     pub expansion: Option<(crate::stadium::Sub, bool)>,
+    /// The merchandise range the club's dialog (56) works on, for the
+    /// article's dialog (57) it opens; written back by 56's OK.
+    pub merchandise: Option<crate::merchandise::Range>,
     /// The stadium the views (249, 510) show.
     pub viewed: Option<crate::stadium::Sub>,
     /// What the stadium screen hands the grounds (466).

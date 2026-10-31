@@ -8528,4 +8528,48 @@ mod tests {
             assert_eq!(ordered.article(a.place).unwrap().ordered, a.ordered + 1000, "{}", a.place);
         }
     }
+
+    /// A double click on an article of the range opens it (57): its price
+    /// stepped up twice and the box ticked, OK keeps the markup and leaves
+    /// it out of buying all; given up, after the question, it leaves the
+    /// range, and 56's OK writes both back.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn an_article_takes_its_price_or_leaves_the_range() {
+        use a3_core::merchandise::Range;
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56\n\
+                    now dbl row 1495 6\nuntil dialog 57";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&57];
+        let text = |id| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(1509), "Schlafanzug");
+        let figures = [1511, 1512, 1513, 1514].map(text);
+        assert_eq!(figures, ["60,--", "60,--", "25,--", "886"]);
+        assert_eq!(text(1519), "Max. Verkauf: 92");
+        let range = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = records.humans().next().unwrap();
+            Range::of(records, records.team(manager.country(), manager.team()).unwrap()).unwrap()
+        };
+        let place = range(&runner).articles()[6].place;
+        let kept = format!(
+            "{open}\nnow spin 1516 up\nnow spin 1516 up\nnow click 1515\nnow ok\nuntil dialog 56\n\
+             now press 1\nuntil dialog 115"
+        );
+        let after = range(&on_save(&game, "A", &kept).unwrap());
+        let a = after.article(place).unwrap();
+        // 60 € is the kind's price; a euro a step, 61 € first at +2%,
+        // 62 € at +4%.
+        assert_eq!((a.markup, a.excluded), (4, true));
+        let gone = format!(
+            "{open}\nnow press 1517\nuntil dialog 384\nnow ok\nuntil dialog 56\n\
+             now press 1\nuntil dialog 115"
+        );
+        let after = range(&on_save(&game, "A", &gone).unwrap());
+        assert!(after.article(place).is_none());
+        assert_eq!(after.articles().len(), 12);
+    }
 }

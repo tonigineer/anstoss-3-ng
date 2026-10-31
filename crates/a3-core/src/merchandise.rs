@@ -31,6 +31,12 @@ const MARKUP: usize = 6;
 const STOCK: usize = 0xc;
 const ORDERED: usize = 0x10;
 const SOLD: usize = 0x20;
+/// Left out of buying them all; the nine weeks' sales before the last.
+const EXCLUDED: usize = 1;
+const PAST_SALES: usize = 0x28;
+const PAST_WEEKS: usize = 9;
+/// Where a range marks the kinds it has given up, a byte each.
+const GIVEN_UP: usize = 0xce2;
 const TAKEN: usize = 0x4c;
 /// The buyer and the marketing man, hired; the fans' discount in percent,
 /// below nought a surcharge; the goalkeeper's and the other name some
@@ -62,13 +68,15 @@ pub const FIRST_ORDER_SIZE: usize = 3;
 pub const BUYER_WAGE: i32 = 120_000;
 pub const MARKETING_WAGE: i32 = 240_000;
 
-/// A kind of article.
+/// A kind of article; one of the first four, which every range keeps,
+/// is fixed (+0x10 is 1).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kind {
     pub name: u16,
     pub picture: u16,
     pub bought_at: i32,
     pub sold_at: i32,
+    pub fixed: u16,
 }
 
 pub struct MerchandiseTables {
@@ -85,6 +93,7 @@ impl MerchandiseTables {
                 picture: k[1] as u16,
                 bought_at: k[2] as i32,
                 sold_at: k[3] as i32,
+                fixed: k[4] as u16,
             })
             .collect();
         Ok(Self { kinds })
@@ -115,6 +124,7 @@ pub struct Article {
     pub ordered: i32,
     pub sold: i32,
     pub taken: i32,
+    pub excluded: bool,
 }
 
 impl Range {
@@ -167,7 +177,47 @@ impl Range {
             ordered,
             sold: self.i32_(at + SOLD),
             taken: self.i32_(at + TAKEN),
+            excluded: self.0[at + EXCLUDED] != 0,
         })
+    }
+
+    /// The sales of the ten weeks before, the oldest first and last week's
+    /// at the end, as the article's chart draws them.
+    pub fn sales(&self, place: usize) -> [i32; 10] {
+        let at = place * ARTICLE;
+        let mut weeks = [0; 10];
+        for (w, v) in weeks.iter_mut().take(PAST_WEEKS).enumerate() {
+            *v = self.i32_(at + PAST_SALES + 4 * w);
+        }
+        weeks[PAST_WEEKS] = self.i32_(at + SOLD);
+        weeks
+    }
+
+    /// The article's dialog's OK (`0x49b9c9`): its markup and whether it is
+    /// left out of buying them all.
+    pub fn set_article(&mut self, place: usize, markup: i16, excluded: bool) {
+        let at = place * ARTICLE;
+        if let Some(b) = self.0.get_mut(at + MARKUP..at + MARKUP + 2) {
+            b.copy_from_slice(&markup.to_le_bytes());
+        }
+        if let Some(b) = self.0.get_mut(at + EXCLUDED) {
+            *b = excluded.into();
+        }
+    }
+
+    /// Gives an article of a kind up (`FUN_006112a9`): a fixed kind stays;
+    /// otherwise the first article of the kind leaves the range, which
+    /// marks the kind as given up. Whether one left.
+    pub fn give_up(&mut self, tables: &MerchandiseTables, kind: usize) -> bool {
+        if tables.kinds.get(kind).is_some_and(|k| k.fixed == 1) {
+            return false;
+        }
+        let Some(a) = self.articles().into_iter().find(|a| a.kind == kind) else { return false };
+        if let Some(b) = self.0.get_mut(GIVEN_UP + kind) {
+            *b = 2;
+        }
+        self.0[a.place * ARTICLE + ACTIVE] = 0;
+        true
     }
 
     /// The articles in the range, by their places.
@@ -285,6 +335,48 @@ impl Range {
     }
 }
 
+/// The prices an article may be sold at (`FUN_0049d381`): from the
+/// kind's price less half, a percent at a time to half as much again,
+/// each price cut to its unit (`FUN_00610a29`), with the first markup
+/// that gives it.
+pub fn price_steps(sold_at: i32) -> Vec<(i32, i16)> {
+    let price = |m: i16| {
+        let v = (f64::from(sold_at) * (f64::from(m) + 100.0) / 100.0) as i32;
+        let unit = if v < 1000 {
+            50
+        } else if v < 10000 {
+            100
+        } else {
+            1000
+        };
+        v / unit * unit
+    };
+    let mut steps = vec![(price(-50), -50)];
+    for m in -49..=50 {
+        let p = price(m);
+        if steps.last().is_some_and(|&(last, _)| last != p) {
+            steps.push((p, m));
+        }
+    }
+    steps
+}
+
+/// The scale of an article's chart (`FUN_0049d9b8`): the power of ten
+/// above the best week (`ftol(log10(best) + 1.0)`), or a fifth, quarter
+/// or half of it where the best is no more.
+pub fn chart_scale(best: i32) -> i32 {
+    let d = 10f64.powi((f64::from(best).log10() + 1.0) as i32) as i32;
+    if best <= d / 5 {
+        d / 5
+    } else if best <= d / 4 {
+        d / 4
+    } else if best <= d / 2 {
+        d / 2
+    } else {
+        d
+    }
+}
+
 /// The rebate on an order of so many pieces, in percent; a small order
 /// costs more (`FUN_006109d5`).
 pub fn rebate(pieces: i32) -> i32 {
@@ -309,6 +401,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prices_step_by_their_units() {
+        let steps = price_steps(8000);
+        assert_eq!(steps.first(), Some(&(4000, -50)));
+        assert_eq!(steps.last(), Some(&(12000, 50)));
+        assert!(steps.contains(&(8000, 0)));
+        // Below ten euros the price goes by 50 cents, so markups share.
+        let pens = price_steps(500);
+        assert_eq!(&pens[..3], &[(250, -50), (300, -40), (350, -30)]);
+    }
+
+    #[test]
+    fn the_chart_scales_to_a_step_above_the_best() {
+        assert_eq!(chart_scale(92), 100);
+        assert_eq!(chart_scale(45), 50);
+        assert_eq!(chart_scale(20), 20);
+        assert_eq!(chart_scale(270), 500);
+    }
+
+    #[test]
     fn rebates_follow_the_order_size() {
         let r: Vec<i32> = ORDER_SIZES.iter().map(|&n| rebate(n)).collect();
         assert_eq!(r, [-20, -10, -10, 0, 10, 10, 10, 20, 20, 20, 30]);
@@ -321,7 +432,9 @@ mod tests {
         };
         let mut range = Range(vec![0; 0xd34]);
         range.set_fans_discount(10);
-        let shirt = Article { place: 0, kind: 0, markup: 0, stock: 0, ordered: 0, sold: 0, taken: 0 };
+        let shirt = Article {
+            place: 0, kind: 0, markup: 0, stock: 0, ordered: 0, sold: 0, taken: 0, excluded: false,
+        };
         assert_eq!(range.price(&tables, &shirt), 7200);
         let pen = Article { kind: 1, markup: 5, ..shirt };
         // 999 · 1.05 · 0.9 = 944.055 → 900 cents.
