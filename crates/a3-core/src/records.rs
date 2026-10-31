@@ -241,6 +241,9 @@ record! {
     0x21a => face, set_face: [u8; 2];
     /// 1 to 12.
     0x21c => strength, set_strength: u8;
+    /// What keeps him from taking a bribe: under 85 he takes any amount
+    /// (the black cash box's `FUN_004c9863`).
+    0x294 => scruples, set_scruples: u8;
     /// The main position, then two side positions, 0 none (1 the keeper).
     0x21d => positions, set_positions: [u8; 3];
     /// His club: its league and number (league 0 none).
@@ -891,6 +894,8 @@ record! {
     0x1a0 => gate_kept, set_gate_kept: f32;
     0x1a4 => cup_share_kept, set_cup_share_kept: f32;
     0x1a8 => illegal_closed, set_illegal_closed: u32;
+    /// The opponent's player chosen to bribe (the object's +0x102).
+    0x1b2 => bribe_target, set_bribe_target: u16;
     0x1b6 => incited, set_incited: [u16; 2];
     /// How the public, the fans and the media like him, 0 to 100.
     0x126 => popularity, set_popularity: [u8; 3];

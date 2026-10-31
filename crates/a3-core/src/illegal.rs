@@ -127,3 +127,14 @@ pub fn opponent_price(day: i16, place: u8, factor: i64, below: &mut impl FnMut(u
 pub const OPPONENT_BRIBED: u32 = 0x10;
 pub const OPPONENT_YES: [u16; 2] = [4604, 4603];
 pub const OPPONENT_NO: [u16; 3] = [4605, 4606, 4607];
+
+/// A player of the next opponent bribed (+0x1a8): he takes any amount
+/// with scruples under 85, else more than 100.000 and 20.000 for each
+/// point of his strength (`DAT_00a3b37c`, `DAT_00a3b3ac`).
+pub const PLAYER_BRIBED: u32 = 0x4;
+pub fn player_takes(amount: i64, scruples: u8, strength: u8) -> bool {
+    scruples < 85 || amount > 100_000 + 20_000 * i64::from(strength)
+}
+/// His answers: yes (4612, 4613, one of two by chance), no (4614-4616).
+pub const PLAYER_YES: [u16; 2] = [4613, 4612];
+pub const PLAYER_NO: [u16; 3] = [4614, 4615, 4616];

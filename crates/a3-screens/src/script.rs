@@ -8712,4 +8712,34 @@ mod tests {
         assert_eq!(state(&taken), (100_000, 0x30));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// A player of the next opponent: Gulácsi refuses a hundred on A —
+    /// his scruples hold, and a hundred is less than his price — and,
+    /// his scruples patched away, takes it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_player_of_the_opponent_takes_the_black_money_or_not() {
+        let game = game();
+        let ask = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442\n\
+                   now row 5541 1\nnow slide 5538 1\nnow press 5554\nuntil dialog 380";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed(), m.bribe_target())
+        };
+        let Some(refused) = on_save(&game, "A", ask) else { return };
+        let (cash, closed, target) = state(&refused);
+        assert_eq!((cash, closed), (220_757, 0x8));
+        let name = refused.host.state().records.as_ref().unwrap().known_as(target);
+        assert_eq!(name.as_deref(), Some("Péter Gulácsi"));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "no-scruples", |records| {
+            records.player_mut(target).unwrap().set_scruples(0);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(taken) = on_save(&patched_game, "no-scruples", ask) else { return };
+        assert_eq!(state(&taken), (220_657, 0xc, target));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

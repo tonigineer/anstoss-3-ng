@@ -311,6 +311,17 @@ impl Screen for Illegal {
             }
             Target::Button(c) if id(c) == REFEREE_OK => return self.bribe_referee(cx, view),
             Target::Button(c) if id(c) == OPPONENT_OK => return self.bribe_opponent(cx, view),
+            Target::Button(c) if id(c) == PLAYER_OK => return self.bribe_player(cx, view),
+            // A player chosen (`OnSelChange_IDC_SPIELER_COMBO`): kept with
+            // the manager at once.
+            Target::Row { control: c, .. } if id(c) == PLAYERS => {
+                let row = view.combo(c).and_then(|combo| combo.selected).unwrap_or(0);
+                if let Some(&player) = row.checked_sub(1).and_then(|r| self.players.get(r))
+                    && let Some(m) = own_manager_mut(cx)
+                {
+                    m.set_bribe_target(player);
+                }
+            }
             Target::Button(c) if id(c) == BOOKS_OK => self.into_books(cx, view),
             Target::Button(c) if id(c) == POCKET_OK => self.into_pocket(cx, view),
             Target::Button(c) if id(c) == 1 => return Outcome::Close(Reply::Ok),
@@ -416,6 +427,42 @@ impl Illegal {
         Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(text)))
     }
 
+    /// A player of the next opponent asked (`OnClicked_IDC_SPIELER_OK`):
+    /// nothing until one is chosen; then once a season, the amount leaving
+    /// the box if he takes it. The section goes.
+    fn bribe_player(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let row = control(cx.dialog, PLAYERS).and_then(|c| view.combo(c)).and_then(|c| c.selected);
+        if row.unwrap_or(0) == 0 {
+            return Outcome::Stay;
+        }
+        let amount = std::mem::take(&mut self.amounts[Amount::Player as usize]);
+        let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
+        let target = own_manager(cx).map_or(0, |m| m.bribe_target());
+        let (scruples, strength) =
+            records.player(target).map_or((0, 0), |p| (p.scruples(), p.strength()));
+        let taken = illegal::player_takes(amount, scruples, strength);
+        let Some(season) = cx.state.season.as_mut() else { return Outcome::Stay };
+        let text = if taken {
+            illegal::PLAYER_YES[season.random.below(2) as usize]
+        } else {
+            illegal::PLAYER_NO[season.random.below(3) as usize]
+        };
+        if let Some(m) = own_manager_mut(cx) {
+            let mut closed = m.illegal_closed() | illegal::PLAYER_DONE;
+            if taken {
+                closed |= illegal::PLAYER_BRIBED;
+                m.set_black_cash(m.black_cash().wrapping_sub(amount as i32));
+            }
+            m.set_illegal_closed(closed);
+        }
+        if taken {
+            let cash = own_manager(cx).map_or(0, |m| m.black_cash().max(0));
+            set(view, cx.dialog, CASH, money(cx.game, cash.into()));
+        }
+        self.closing = vec![PLAYER_OK, PLAYER_SLIDER, PLAYERS, PLAYER_AMOUNT];
+        Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(text)))
+    }
+
     /// "Geld in die Bilanz bringen" (`OnClicked_IDC_BILANZ_OK`): the
     /// amount from the box to the gates' takings as booked (club +0x230);
     /// its OK stays up at nought. The club's money is told anew, now by
@@ -485,7 +532,10 @@ impl Illegal {
 fn cross(view: &mut View, dialog: &Dialog) {
     mark_inert(view, dialog, |t| match t {
         Target::Button(c) => {
-            matches!(dialog.controls[c].id, Some(1 | REFEREE_OK | OPPONENT_OK | BOOKS_OK | POCKET_OK))
+            matches!(
+                dialog.controls[c].id,
+                Some(1 | REFEREE_OK | OPPONENT_OK | PLAYER_OK | BOOKS_OK | POCKET_OK)
+            )
         }
         _ => true,
     });
