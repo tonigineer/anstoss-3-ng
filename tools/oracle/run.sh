@@ -55,7 +55,10 @@ cd "$WINEPREFIX/drive_c/GOG Games/ANSTOSS 3"
 game=$!
 cd "$caller"
 probe() { python3 "$here/tools/probe/client.py" "$@"; }
-A3PROBE_WAIT=30 probe ping > /dev/null || { echo "the probe does not answer" >&2; exit 1; }
+# A game that crashes at the start — its mode picker (FUN_004316a2) reads
+# past the list of display modes when none is 640 wide — never lets the
+# probe answer: end with 75 then, so the caller retries as for a crash.
+A3PROBE_WAIT=30 probe ping > /dev/null || { echo "the probe does not answer" >&2; exit 75; }
 status=0
 if [ $# -gt 0 ]; then
     "$@" &
