@@ -97,6 +97,13 @@ pub fn figure(team: &Team, fund_prices: [i32; 5]) -> i64 {
         .wrapping_add(deposits(team, fund_prices))
 }
 
+/// The club's money as the black cash box tells it ("Vereinsvermögen",
+/// `FUN_004c75b0`): the cash, the shares sold and the season's result so
+/// far, without loans or deposits.
+pub fn cash_and_result(team: &Team) -> i64 {
+    i64_(team, 0x210).wrapping_add(i64::from(team.get::<i32>(at(0x2d0)))).wrapping_add(result(team))
+}
+
 /// The season's result so far as the balance sheet has it, the transfers
 /// as sales less purchases (`FUN_0061fc81`).
 pub fn result(team: &Team) -> i64 {
@@ -998,7 +1005,7 @@ pub fn compulsory_insurance(records: &Records, team: &Team) -> i32 {
 /// (`FUN_004ea44a`): the first table whose limit lies above it, each
 /// (up to, step) — the last step from there on (0x883920 … 0x883ba0).
 const STEP_LIMITS: [i64; 8] = [100, 200, 500, 1000, 10_000, 100_000, 1_000_000, 10_000_000];
-const ON: i64 = i64::MAX;
+pub(crate) const ON: i64 = i64::MAX;
 const STEP_TABLES: [&[(i64, i64)]; 9] = [
     &[(50, 1), (ON, 2)],
     &[(50, 1), (100, 2), (150, 5), (ON, 10)],

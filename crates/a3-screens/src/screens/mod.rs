@@ -20,6 +20,7 @@ pub mod formations;
 pub mod grounds;
 pub mod help;
 pub mod honours;
+pub mod illegal;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
@@ -186,6 +187,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(merchandise::MerchandiseRange::default()),
         Box::new(merchandise::Article::default()),
         Box::new(merchandise::Info),
+        Box::new(illegal::Illegal::default()),
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
         Box::new(squad::SquadMenu::default()),
@@ -323,6 +325,7 @@ pub fn compose(game: &mut Game) {
     bank::compose(&mut game.dialogs);
     kalkulation::compose(&mut game.dialogs);
     merchandise::compose(&mut game.dialogs);
+    illegal::compose(&mut game.dialogs);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);

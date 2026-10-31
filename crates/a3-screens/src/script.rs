@@ -8591,4 +8591,37 @@ mod tests {
         let back = format!("{then}\nnow ok\nuntil dialog 56");
         on_save(&game, "A", &back).unwrap();
     }
+
+    /// The Finanzen screen's black cash box (442): the next match's
+    /// referee and opponent named, the day's teams of the country to
+    /// incite, what the box holds; a slider's step sets its amount and
+    /// shows its OK, and the two shares reach the manager at once — the
+    /// cup opponents' the other way round.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_cash_box_shows_its_uses() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&442];
+        let view = runner.host.view();
+        let text = |id| view.text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(5546), "Schiedsrichter Robert Kempter bestechen");
+        assert_eq!(text(5547), "Gegner RB Leipzig bestechen");
+        assert_eq!(text(5528), "220.757 €");
+        assert_eq!((text(5529), text(5530)), ("3.0%".to_owned(), "45.0%".to_owned()));
+        let teams = &view.combo(control(dialog, 5542).unwrap()).unwrap().items;
+        assert_eq!(&teams[..3], ["Bitte auswählen", "Eintracht Frankfurt", "1.FC Heidenheim"]);
+        let then = format!("{open}\nnow slide 5539 1\nnow spin 5545 up\nnow spin 5544 down");
+        let runner = on_save(&game, "A", &then).unwrap();
+        let view = runner.host.view();
+        let text = |id| view.text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(5540), " 100 €");
+        assert!(!view.controls[control(dialog, 5551).unwrap()].hidden);
+        assert_eq!((text(5529), text(5530)), ("2.9%".to_owned(), "45.1%".to_owned()));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let m = records.humans().next().unwrap();
+        assert_eq!(((m.gate_kept() * 1000.0) as i32, (m.cup_share_kept() * 1000.0) as i32), (29, 49));
+    }
 }

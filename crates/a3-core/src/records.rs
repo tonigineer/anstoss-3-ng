@@ -39,7 +39,7 @@ macro_rules! numbers {
         }
     )*};
 }
-numbers!(u8, i8, u16, i16, u32, i32, i64);
+numbers!(u8, i8, u16, i16, u32, i32, i64, f32);
 
 impl<T: Field, const N: usize> Field for [T; N] {
     const SIZE: usize = T::SIZE * N;
@@ -881,6 +881,17 @@ record! {
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
     /// His years as a trainer ("Trainerjahre", the manager object's +0x38).
     0x124 => trainer_years, set_trainer_years: i16;
+    /// The black cash box (the manager object's +0xec …, `FUN_006a426b`
+    /// copying ten words from +0x19c): what it holds; the share of the
+    /// gates kept back for it and the share of a cup tie's gate kept from
+    /// the opponent, as fractions; what of it is closed this season, by
+    /// bit ([`crate::illegal`]); the club last incited against, by
+    /// country and number.
+    0x19c => black_cash, set_black_cash: i32;
+    0x1a0 => gate_kept, set_gate_kept: f32;
+    0x1a4 => cup_share_kept, set_cup_share_kept: f32;
+    0x1a8 => illegal_closed, set_illegal_closed: u32;
+    0x1b6 => incited, set_incited: [u16; 2];
     /// How the public, the fans and the media like him, 0 to 100.
     0x126 => popularity, set_popularity: [u8; 3];
     /// The mode his game is played in, as the globals' [`Globals::mode`]

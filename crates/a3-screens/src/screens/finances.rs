@@ -197,8 +197,9 @@ pub struct Finances {
     finding: usize,
     compared: usize,
     comparisons: Vec<usize>,
-    /// Whether the donations are open.
-    donating: bool,
+    /// Whether the donations or the black cash box are open: their
+    /// answer refills the figures.
+    refill: bool,
     /// Whether this is the season's statement: the dialog the season end
     /// posts comes without the bar and with its OK, hides the picture
     /// buttons and tells the tax below the rows (`FUN_004a141c`).
@@ -303,6 +304,9 @@ const LICENCE_BUTTON: u16 = 1619;
 /// `FUN_004c74f8` and its dialog 442; that is not built, so the button
 /// stays crossed out.
 const CASH_BOX: u16 = 2224;
+/// "Sie können erst in der nächsten Saison wieder Einstellungen an der
+/// schwarzen Kasse vornehmen."
+const CASH_BOX_CLOSED: u16 = 4599;
 /// The season's statement's line below the rows, telling the tax, and
 /// the sentences it picks by the tax booked (`0x4a141c`'s OnInitDialog
 /// step 10): none, in narrow bounds, a pretty part, a hard hour.
@@ -343,6 +347,7 @@ impl Screen for Finances {
             Target::Button(c) => dialog.controls[c].id.is_some_and(|id| {
                 id == DONATIONS_BUTTON
                     || id == LICENCE_BUTTON
+                    || id == CASH_BOX
                     || id == OK && self.statement
                     || ROW_BUTTONS.contains(&id)
                     && kalkulation::BUILT
@@ -399,6 +404,18 @@ impl Screen for Finances {
             }
             return Outcome::Popup(Request::new(super::licence::LICENCE));
         }
+        // The black cash box (`0x4a3864` → `FUN_004c74f8`): up to the
+        // season's 92nd half-week, else text 4599; the figures anew.
+        if let Target::Button(c) = target
+            && cx.dialog.controls[c].id == Some(CASH_BOX)
+        {
+            let half_weeks = cx.state.records.as_ref().map_or(0, |r| r.globals.half_weeks());
+            if half_weeks as i16 > a3_core::illegal::LAST_HALF_WEEK {
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(CASH_BOX_CLOSED)));
+            }
+            self.refill = true;
+            return Outcome::Popup(Request::new(super::illegal::ILLEGAL));
+        }
         // The donations, unless the manager gave to another human this
         // week (`0x4a3893`); the figures anew afterwards.
         if let Target::Button(c) = target
@@ -407,7 +424,7 @@ impl Screen for Finances {
             if super::donations::given(cx) {
                 return Outcome::Popup(Request::with(NOTICE, Args::Text(GIVEN_THIS_WEEK)));
             }
-            self.donating = true;
+            self.refill = true;
             return Outcome::Popup(Request::new(super::donations::DONATIONS));
         }
         if let Target::Button(c) = target
@@ -438,8 +455,8 @@ impl Screen for Finances {
     /// the last's; its OK or cancel brings the figures anew, as the
     /// calculations may have booked.
     fn answer(&mut self, cx: &mut Cx, view: &mut View, reply: Reply) -> Outcome {
-        // Back from the donations, the figures anew.
-        if std::mem::take(&mut self.donating) {
+        // Back from the donations or the black cash box, the figures anew.
+        if std::mem::take(&mut self.refill) {
             self.fill(cx, view);
             return Outcome::Stay;
         }

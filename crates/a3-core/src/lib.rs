@@ -19,6 +19,7 @@ pub mod finances;
 pub mod forecast;
 pub mod grounds;
 pub mod highscore;
+pub mod illegal;
 pub mod individual;
 pub mod jobs;
 pub mod league;
