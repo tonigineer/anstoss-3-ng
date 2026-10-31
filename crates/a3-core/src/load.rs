@@ -37,7 +37,10 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
                 first_name: m.first_name(),
                 last_name: m.last_name(),
                 club,
-                national_team: None,
+                // The save names the national team he took (the manager
+                // record's +0x1f72); only a country number above nought
+                // means one.
+                national_team: u16::try_from(m.national_team()).ok().filter(|&n| n > 0),
                 level: m.level().into(),
                 difficulty: DIFFICULTY,
                 negotiating: 0,

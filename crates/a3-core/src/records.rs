@@ -884,6 +884,10 @@ record! {
     0x17c => signed_day, set_signed_day: u8;
     0x17d => signed_month, set_signed_month: u8;
     0x17e => signed_year, set_signed_year: u16;
+    /// The national team he manages, by country number, 0 when he manages
+    /// none: the manager object's +0x17e6, whose name the honours page
+    /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
+    0x1f72 => national_team, set_national_team: i16;
     /// The board's confidence in percent, and what it has on top
     /// (`FUN_007701b2` adds them up).
     0x184 => confidence, set_confidence: i16;

@@ -8399,4 +8399,35 @@ mod tests {
         let runner = on_save(&game, "A", &format!("{open}\nnow press 5139")).unwrap();
         assert_eq!((title(&runner).as_str(), bar(&runner).1), ("Index", (0, 126)));
     }
+
+    /// A loaded manager keeps the national team the save names: his
+    /// record's +0x1f72 (the manager object's +0x17e6, whose name the
+    /// honours page writes with text 5566, `FUN_006a426b`) turns into the
+    /// season's `national_team`; a save naming none leaves him without
+    /// one. No kept save names a team, so the test pokes Germany (14)
+    /// into a copy of Toni.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_loaded_manager_keeps_his_national_team() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let game = game();
+        let Some(runner) = on_save(&game, "Toni", "") else { return };
+        assert_eq!(
+            runner.host.state().season.as_ref().unwrap().managers[0].national_team,
+            None,
+            "Toni names no national team"
+        );
+        let root = patched(&dir, "Toni", "national", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let runner = on_save(&game, "national", "").unwrap();
+        let state = runner.host.state();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.managers[0].national_team, Some(14), "the season's national team");
+        assert!(season.managers[0].club.is_some(), "he still stands at his club");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
