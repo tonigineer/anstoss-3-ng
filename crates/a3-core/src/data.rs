@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use a3_files::exe::Exe;
 
 use crate::calendar::Calendar;
+use crate::presale::PresaleTables;
 use crate::season::Rules;
 use crate::world::World;
 
@@ -18,6 +19,8 @@ pub struct Data {
     pub calendar: Calendar,
     /// The rules the game keeps in tables of its own.
     pub rules: Rules,
+    /// The advance sales' tables.
+    pub presale: PresaleTables,
 }
 
 impl Data {
@@ -29,6 +32,7 @@ impl Data {
             dir: dir.to_owned(),
             calendar: Calendar::load(&exe, &world)?,
             rules: Rules::load(&exe)?,
+            presale: PresaleTables::load(&exe)?,
             world,
         })
     }

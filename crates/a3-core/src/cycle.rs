@@ -708,6 +708,28 @@ impl Cycle {
                     return Ok(());
                 }
             }
+            // The week's end opens the advance sales of each human club's
+            // league matches of the next four weeks (`FUN_0064e40f` ->
+            // `FUN_0077d4ea`), drawing as the original does.
+            {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                if let (Some(season), Some(records)) =
+                    (state.season.as_mut(), state.records.as_mut())
+                {
+                    let today = season.day as i32;
+                    for club in crate::statistics::human_clubs(records) {
+                        crate::presale::week_end(
+                            records,
+                            &self.data.calendar,
+                            club,
+                            today,
+                            &mut season.random,
+                            &self.data.presale,
+                        );
+                    }
+                }
+            }
             // The careers ended in the turns end before the week does
             // (`FUN_006c5190`), and the highscores show them (its event
             // 0xb0) — unless no human is left: then the game ends as "Spiel
@@ -743,6 +765,13 @@ impl Cycle {
                     let mut guard = self.state();
                     let state = &mut *guard;
                     state.season.as_mut().map(|season| {
+                        // The human clubs' day starts it (`FUN_0064f981`):
+                        // the event gates, then the day's ticket sales.
+                        let today = season.day as i32;
+                        crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
+                        if let Some(records) = state.records.as_mut() {
+                            crate::presale::day(records, today, &mut season.random, &self.data.presale);
+                        }
                         season.pass_day();
                         season.day += 1;
                         // The day's league games: where the original lets

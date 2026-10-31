@@ -7767,6 +7767,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The ticket office's advance sales, as the original makes them on A
+    /// with its generator set to 12345/67890 and played to the next day:
+    /// the week's end opens a record for Union's away match at club 10 on
+    /// day 90 and sells 188 at once (one percent of a demand of 18.8
+    /// thousand, drawn), and the day sells on Union's home match on day
+    /// 69 from 3,588 to 4,605 (six percent of 16,955) — the records, the
+    /// prices and the draws as the original's, watched by the probe
+    /// (`FUN_0077ca2b`, `FUN_0077c8b5`, `FUN_0078ab55`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_ticket_office_sells_ahead_as_the_original() {
+        let game = game();
+        let then = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\non 375 click at 617 182; press 4715\nuntil day 64";
+        let Some(runner) = on_save(&game, "A", then) else { return };
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let home = a3_core::tickets::sale(records, (14, 84), (14, 2), 69).unwrap();
+        let away = a3_core::tickets::sale(records, (14, 10), (14, 84), 90).unwrap();
+        assert_eq!((home.sold, home.prices), (4605, [17, 23, 43, 150]));
+        assert_eq!((away.sold, away.prices), (188, [15, 20, 40, 150]));
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {

@@ -78,7 +78,7 @@ const MARKED_MATCHDAYS: i32 = 46;
 /// object's +0x11e0, a byte of the team).
 const CLASS: usize = 0x875;
 /// The prices each class is reckoned against (statics set at start-up).
-const REFERENCE_PRICES: [i32; 4] = [150, 40, 20, 15];
+pub(crate) const REFERENCE_PRICES: [i32; 4] = [150, 40, 20, 15];
 /// A league's record: its teams, matchdays, matchdays played, and the
 /// pairings of every matchday, home and away slots.
 const LEAGUE_AT: u32 = 0x1a09d48;
@@ -181,13 +181,13 @@ fn long(block: &[u8], at: usize) -> i32 {
 }
 
 /// `_ftol`: towards zero, the low 32 bits.
-fn ftol(v: f64) -> i32 {
+pub(crate) fn ftol(v: f64) -> i32 {
     v as i64 as i32
 }
 
 /// How much a class's demand changes by its price against the reference
 /// one (`FUN_0078aa63`): less when dearer, more when cheaper.
-fn weight(price: i16, reference: i32) -> f32 {
+pub(crate) fn weight(price: i16, reference: i32) -> f32 {
     let d = ((i32::from(price) - reference) * 100 / reference) as i16;
     let d = d.clamp(-50, 100);
     let e = 2.71f64.powf(-(f64::from(i32::from(d) * i32::from(d)) / 4900.0)) as f32;
