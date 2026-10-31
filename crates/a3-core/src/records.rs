@@ -753,6 +753,15 @@ impl Extra {
             .collect()
     }
 
+    /// The past seasons' sponsor money (`FUN_0063393e`): at most fifty
+    /// from +0x20d4 after their count at +0x20d0, the start year and the
+    /// money, the oldest first.
+    pub fn sponsors(&self) -> Vec<(i16, i32)> {
+        (0..self.get::<i16>(0x20d0).clamp(0, 50) as usize)
+            .map(|k| (self.get(0x20d4 + k * 8), self.get(0x20d8 + k * 8)))
+            .collect()
+    }
+
     /// The cash standing at each week's end (`FUN_00633bb5`): up to
     /// fifty i32 from +0x2268, the Kassenstand page's curve.
     pub fn cash_weeks(&self) -> Vec<i32> {

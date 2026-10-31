@@ -411,6 +411,9 @@ const SPIEL_FOULS_ROW_COLUMNS: [(u16, u16); 9] = [
 const FINANZEN_TRANSFERS_TITLE: u16 = 0x962;
 const FINANZEN_TRANSFERS_UNIT: u16 = 0xa55;
 const FINANZEN_TRANSFERS_NONE: u16 = 0xa57;
+/// The Werbeeinnahmen page's header (`FUN_0045c4ae` with 0x961); its unit
+/// label is the Transferbilanz's.
+const FINANZEN_SPONSORS_TITLE: u16 = 0x961;
 /// The longest bar of the page, and how far its bars stand lower than
 /// the goal pages' (graph +0x7bc).
 const FINANZEN_TRANSFERS_PLOT: i32 = 384;
@@ -2613,6 +2616,9 @@ impl Statistics {
             Some(statistics::FINANZEN_SHIRTS) if self.category == FINANZEN => {
                 self.finanzen_shirts_page(cx, view)
             }
+            Some(statistics::FINANZEN_SPONSORS) if self.category == FINANZEN => {
+                self.finanzen_sponsors_page(cx, view)
+            }
             _ => false,
         };
         let table = control(dialog, TABLE);
@@ -3802,6 +3808,54 @@ impl Statistics {
             rows.push(TableRow { text, ink: INK, mark: None, columns: None });
             let ink = if v > 0 { PROFIT_INK } else if v < 0 { LOSS_INK } else { BAR_INK };
             bars.push(((f64::from(v.unsigned_abs()) * s + 0.5) as i32, ink));
+        }
+        if let Some(table) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *table = TableState {
+                columns: vec![],
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: Some(Graph {
+                    bars,
+                    steps,
+                    top: FINANZEN_TRANSFERS_TOP,
+                    unit: game.text(FINANZEN_TRANSFERS_UNIT).to_owned(),
+                    ..Graph::default()
+                }),
+            };
+        }
+        true
+    }
+
+    /// Werbeeinnahmen (`FUN_0045c4ae`): the sponsor money of the kept
+    /// seasons and of the running one (club +0x2f4, +0x2f8 and +0x2fc
+    /// together) as black bars, newest at the top and twenty at most, each
+    /// "%d (%s)" of the year and the money (0x87ce78, tighter than the
+    /// Transferbilanz's); a season without any shows
+    /// nothing. The longest bar ends at the greatest amount's steps shared
+    /// into 384 pixels, as on the Transferbilanz.
+    fn finanzen_sponsors_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(team) = own_team(cx) else { return false };
+        set_header(view, dialog, game.text(FINANZEN_SPONSORS_TITLE).to_owned(), &[(0, 0)]);
+        let extra = team.human().checked_sub(1).and_then(|s| records.extras.get(usize::from(s)));
+        let mut seasons = extra.map(|e| e.sponsors()).unwrap_or_default();
+        let club = |c: usize| team.get::<i32>(c + a3_core::finances::CLUB_TO_TEAM);
+        let running = club(0x2f4).wrapping_add(club(0x2f8)).wrapping_add(club(0x2fc));
+        seasons.push((records.globals.start_year() as i16, running));
+        let most = seasons.iter().map(|&(_, v)| v).max().unwrap_or(0).max(1);
+        let (_, steps) = Self::money_steps(most, 20);
+        let plot = if steps > 0 { FINANZEN_TRANSFERS_PLOT / steps * steps } else { 0 };
+        let s = f64::from(plot) / f64::from(most);
+        let mut rows: Vec<TableRow> = Vec::new();
+        let mut bars: Vec<(i32, [u8; 3])> = Vec::new();
+        for &(year, v) in seasons.iter().rev().filter(|&&(_, v)| v != 0).take(0x14) {
+            let text = format!("{year} ({})", super::playerinfo::money(game, i64::from(v)));
+            rows.push(TableRow { text, ink: INK, mark: None, columns: None });
+            bars.push(((f64::from(v) * s + 0.5) as i32, BAR_INK));
         }
         if let Some(table) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
             *table = TableState {

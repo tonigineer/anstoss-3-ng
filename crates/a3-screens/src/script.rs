@@ -7549,6 +7549,39 @@ mod tests {
         assert_eq!(graph.unit, "Dauerkarten/1000");
     }
 
+    /// In his second season the manager's Finanzen list the Werbeeinnahmen
+    /// as their eighth page (condition 0x11): S2c, a day of Union's second
+    /// season the original played on to from A, shows last season's
+    /// sponsor money from the human's extra record and the running
+    /// season's, newest first, as the original does on the same save.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_second_season_lists_the_sponsor_money() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let kept = dir.parent().unwrap().join("saves-kept/S2c.an3");
+        if !kept.exists() {
+            eprintln!("no S2c among the kept saves");
+            return;
+        }
+        let root = patched(&dir, "S2c", "second-season", |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 6\nnow row 1284 7";
+        let Some(runner) = on_save(&game, "second-season", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.list(control(dialog, 1284).unwrap()).unwrap().rows.len(), 8);
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(
+            table.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["2026 (1.31 Mio €)", "2025 (8.87 Mio €)"]
+        );
+        let graph = table.graph.as_ref().unwrap();
+        assert_eq!(graph.bars.len(), 2);
+        assert!(graph.bars[1].0 > graph.bars[0].0, "last season's bar is the longer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {
