@@ -3348,7 +3348,9 @@ mod tests {
     /// top-scorers list grown by exactly the new goals, and the rows of
     /// the matchdays in the players' forty-six — the starters, the
     /// substitutions, the grades, the cards and the goal nibbles all
-    /// answering to the counters. Played on
+    /// answering to the counters — and the human's year calendar filling
+    /// its booked fixture days with the new scores and the standing
+    /// result flags. Played on
     /// a copy: ten days cross week ends, and their autosaves roll into the
     /// game's own `saves` — which would shuffle the list the other tests
     /// pick their save from.
@@ -3624,6 +3626,52 @@ mod tests {
                     );
                 }
             }
+        }
+        // The year calendar had the whole season booked: each of the
+        // human's fixtures stands on its day — kind 6, the matchday
+        // plain as its code, both clubs named — with no score and no
+        // flag. The played matchdays fill their day's entry: the new
+        // score, and the flag saying the result stands (0x20).
+        let human = (0..league.teams())
+            .map(|place| league.team(place) as u16)
+            .find(|&number| records.team(nation, number).is_some_and(|t| t.human() > 0))
+            .expect("the human club");
+        let hum = usize::from(records.team(nation, human).unwrap().human()) - 1;
+        let cal = &records.calendars[hum];
+        for md in 3..league.played() {
+            let code = u32::try_from(md + 1).unwrap();
+            let day = (0..a3_core::records::PLANNER_DAYS)
+                .find(|&d| {
+                    let e = cal.entry(d);
+                    e[0] == 6 && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) == code
+                })
+                .expect("the calendar's day of the matchday");
+            let (home, away, result) = league
+                .games(md)
+                .into_iter()
+                .find(|&(h, a, _)| {
+                    [league.team(h) as u16, league.team(a) as u16].contains(&human)
+                })
+                .expect("the human's fixture");
+            let [hg, ag, _, _] = result.expect("the fixture's score");
+            let e = cal.entry(day);
+            assert_eq!(e[8], nation as u8, "md {md} day {day}: the entry's country");
+            assert_eq!(
+                u16::from_le_bytes([e[10], e[11]]),
+                league.team(home) as u16,
+                "md {md}: the entry's home club"
+            );
+            assert_eq!(
+                u16::from_le_bytes([e[0xe], e[0xf]]),
+                league.team(away) as u16,
+                "md {md}: the entry's away club"
+            );
+            assert_eq!(
+                &e[0x10..0x12],
+                &[hg, ag],
+                "md {md} day {day}: the calendar's score"
+            );
+            assert_eq!(e[0x14] & 0x20, 0x20, "md {md}: the result flag");
         }
         assert!(season.day > 63);
     }

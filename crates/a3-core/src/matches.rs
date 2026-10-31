@@ -61,7 +61,7 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                settle(records, nation, level, &mut season.random);
+                settle(records, nation, level, day, &mut season.random);
             }
         }
     }
@@ -472,8 +472,10 @@ fn mark_cup(
 /// follows. Each match leaves its mark on its players: appearances and
 /// scorers' goals in their records, and in the league's top-scorers list.
 /// Both clubs keep their gate figures: the home club its crowd, income and
-/// the visiting fans, the away club the travelling gate of the game.
-fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
+/// the visiting fans, the away club the travelling gate of the game. The
+/// human's year calendar fills the day's fixture with the new score, its
+/// flag saying the result stands.
+fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mut Random) {
     let Some(league) = League::of(records, nation, level) else {
         return;
     };
@@ -609,6 +611,38 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     // What the goals leave on the players of both sides.
     for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {
         mark_match(records, nation, level, md, home, away, result[0], result[1], random);
+    }
+    // The human's year calendar keeps the matchday's result: the season's
+    // booking named the fixture on the day's entry — kind 6, the matchday
+    // plain as its code — and the played match fills its score in, the
+    // flag saying the result stands (0x20; the cup's 0x08 stays off).
+    for ((&team, &away), &[hg, ag, _, _]) in homes.iter().zip(&aways).zip(&scored) {
+        let mut slots: Vec<usize> = Vec::new();
+        for number in [team, away] {
+            if let Some(slot) = human_slot(records, u8::try_from(nation).unwrap_or(0), number)
+                && !slots.contains(&slot)
+            {
+                slots.push(slot);
+            }
+        }
+        let code = u32::try_from(matchday).unwrap_or(0);
+        for slot in slots {
+            let Some(cal) = records.calendars.get_mut(slot) else {
+                continue;
+            };
+            let mut e = cal.entry(day);
+            if e[0] != YEAR_MATCH
+                || u32::from_le_bytes([e[4], e[5], e[6], e[7]]) != code
+                || e[YEAR_HOME + 2..YEAR_HOME + 4] != team.to_le_bytes()
+                || e[YEAR_AWAY + 2..YEAR_AWAY + 4] != away.to_le_bytes()
+            {
+                continue;
+            }
+            e[YEAR_GOALS] = hg;
+            e[YEAR_GOALS + 1] = ag;
+            e[YEAR_FLAGS] |= YEAR_RESULT;
+            cal.set_entry(day, e);
+        }
     }
     // And the day has served: one match off every suspension of the
     // clubs that played. A card drawn this day set its count two matches
