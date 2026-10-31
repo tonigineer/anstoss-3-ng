@@ -8823,4 +8823,41 @@ mod tests {
         assert_eq!(state(&ordered), (100_000, 0x8000_0000, anna));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The black cash box fills from the human's home league gates: with
+    /// all of the gate kept back, the takings stay where they were and the
+    /// box gains it all; with A's 3% the box gains three hundredths of the
+    /// gates, the rest booked. Played on copies, a fortnight on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn home_gates_fill_the_black_cash_box() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 14 days";
+        let figures = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let m = records.humans().next().unwrap();
+            let t = records.team(m.country(), m.team()).unwrap();
+            (m.black_cash(), t.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM), t.home_games())
+        };
+        for (name, share) in [("gate-all", 1.0f32), ("gate-some", 0.03)] {
+            let root = patched(&dir, "A", name, |records| records.managers[0].set_gate_kept(share));
+            let mut game = Game::load(&root).unwrap();
+            compose(&mut game);
+            let Some(before) = on_save(&game, name, "") else { return };
+            let (box0, booked0, home0) = figures(&before);
+            let after = on_save(&game, name, play).unwrap();
+            let (box1, booked1, home1) = figures(&after);
+            assert!(home1 > home0, "a home game in a fortnight");
+            let (kept, rest) = (i64::from(box1 - box0), i64::from(booked1 - booked0));
+            if share == 1.0 {
+                assert!(kept > 0 && rest == 0, "{kept} {rest}");
+            } else {
+                let gates = kept + rest;
+                assert!((kept - gates * 3 / 100).abs() <= i64::from(home1 - home0), "{kept} of {gates}");
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
 }

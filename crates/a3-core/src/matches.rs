@@ -561,10 +561,26 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         // the gate's income of this home game, as the statistics pages
         // read them (the match record's +0x54 and +0x3c into extra +0x3f4
         // and +0x450, `FUN_007108d3`).
+        // A human's home club against a computer's keeps its manager's
+        // share of the gate back for his black cash box, at most all of it
+        // and never below nought (`FUN_0078b26c` with `FUN_0069c90c`,
+        // `FUN_0069c869`): ftol of the gate as a float times the share.
+        let human = |n: u16| records.team(nation, n).map_or(0, |t| t.humans()[0]);
+        let kept = match (human(team), human(away)) {
+            (h, 0) if h > 0 => records.managers.get(usize::from(h) - 1).map_or(0, |m| {
+                ((money as f32 as f64 * f64::from(m.gate_kept())) as i32).max(0)
+            }),
+            _ => 0,
+        };
+        if kept > 0
+            && let Some(m) = usize::from(human(team)).checked_sub(1).and_then(|i| records.managers.get_mut(i))
+        {
+            m.set_black_cash(m.black_cash().wrapping_add(kept));
+        }
         let mut host = (0usize, 0u8);
         if let Some(t) = records.team_mut(nation, team) {
             let old = t.get::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM);
-            t.put::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM, old.wrapping_add(money));
+            t.put::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM, old.wrapping_add(money - kept));
             let held = usize::from(t.home_games());
             let mut gates = t.gates();
             if let Some(entry) = gates.get_mut(held) {
