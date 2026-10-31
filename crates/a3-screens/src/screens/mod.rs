@@ -27,6 +27,7 @@ pub mod licence;
 pub mod konfig3d;
 pub mod market;
 pub mod medical;
+pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
 pub mod notepad;
@@ -182,6 +183,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(kalkulation::Tickets),
         Box::new(kalkulation::Sponsors),
         Box::new(kalkulation::Merchandise),
+        Box::new(merchandise::MerchandiseRange::default()),
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
         Box::new(squad::SquadMenu::default()),
@@ -318,6 +320,7 @@ pub fn compose(game: &mut Game) {
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);
     kalkulation::compose(&mut game.dialogs);
+    merchandise::compose(&mut game.dialogs);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);

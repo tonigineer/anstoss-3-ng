@@ -122,7 +122,9 @@ AREAS = {
                       "now press 5036", "until dialog 397"), 397)],
     "balance": [(*bar(9, 349), 349), (*bar(9, 349, "now press 4461", "until dialog 16"), 16),
                 (*bar(9, 349, "now press 4462", "until dialog 335"), 335)],
-    "finances": [(*bar(10, 417), 417)],
+    "finances": [(*bar(10, 417), 417),
+                 (*bar(10, 417, "now click at 88 133", "until dialog 125", "now click at 479 439",
+                       "until dialog 115", "now press 2204", "until dialog 56"), 56)],
     "squad": [(*bar(11, 218), 218),
               *[(*menu(11, 218, 5042, i, d), d) for i, d in
                 [(0, 216), (1, 219), (2, 428), (3, 427), (4, 92), (5, 300), (6, 217)]],

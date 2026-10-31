@@ -8475,4 +8475,57 @@ mod tests {
         assert!(runner.host.state().season.as_ref().unwrap().statement, "{log}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The merchandise calculation's "Details" opens the club's own range
+    /// (56): one article bought at the order size, then every one at the
+    /// next size with its rebate, each booked as merchandise bought at once;
+    /// OK writes the orders back into the human slot's range, in the weeks
+    /// each kind takes.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_merchandise_range_orders_its_articles() {
+        use a3_core::merchandise::{Range, delivery_weeks};
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56";
+        let Some(before) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&56];
+        let view = before.host.view();
+        // Both men hired on A: ticked and locked.
+        for id in [1496, 1497] {
+            let check = view.check(control(dialog, id).unwrap()).unwrap();
+            assert!(check.checked && check.disabled, "{id}");
+        }
+        let rows = &view.list(control(dialog, 1495).unwrap()).unwrap().rows;
+        assert_eq!(rows.len(), 13);
+        assert_eq!(rows[0], "Trikots\t40,--\t72,--\t8437\t0\t270\t19440\t2");
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = records.humans().next().unwrap();
+            let team = records.team(manager.country(), manager.team()).unwrap();
+            let bought = team.get::<i32>(0x308 + a3_core::finances::CLUB_TO_TEAM);
+            (bought, Range::of(records, team).unwrap(), delivery_weeks(records))
+        };
+        let (bought, range, weeks) = state(&before);
+        // Trikots: 500 at 40 € with no rebate, due in two weeks.
+        let one = format!("{open}\nnow row 1495 0\nnow press 1505\nnow press 1\nuntil dialog 115");
+        let (after, ordered, _) = state(&on_save(&game, "A", &one).unwrap());
+        assert_eq!(after - bought, 20_000);
+        assert_eq!(weeks[0], 2);
+        assert_eq!(ordered.article(0).unwrap().ordered, 500);
+        // All at 1.000 pieces, 10% off each.
+        let all = format!("{open}\nnow spin 1499 up\nnow press 1504\nnow press 1\nuntil dialog 115");
+        let (after, ordered, _) = state(&on_save(&game, "A", &all).unwrap());
+        let tables = &game.rules.merchandise;
+        let cost: i32 = range
+            .articles()
+            .iter()
+            .map(|a| (f64::from(tables.kinds[a.kind].bought_at) * 1000.0 / 100.0 * 0.9) as i32)
+            .sum();
+        assert_eq!(after - bought, cost);
+        for a in range.articles() {
+            assert_eq!(ordered.article(a.place).unwrap().ordered, a.ordered + 1000, "{}", a.place);
+        }
+    }
 }

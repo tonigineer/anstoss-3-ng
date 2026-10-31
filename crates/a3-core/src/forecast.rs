@@ -67,6 +67,11 @@ pub struct ForecastTables {
 }
 
 impl ForecastTables {
+    /// The season's months still to come in a month (`0x89e220`).
+    pub fn months_left(&self, month: usize) -> u8 {
+        self.months_left.get(month).copied().unwrap_or(0)
+    }
+
     pub fn load(exe: &Exe) -> io::Result<Self> {
         Ok(Self {
             months_left: exe.bytes(MONTHS_LEFT_AT, MONTHS)?.to_vec(),

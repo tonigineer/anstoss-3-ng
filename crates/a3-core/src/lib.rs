@@ -29,6 +29,7 @@ pub mod market;
 pub mod marking;
 pub mod matches;
 pub mod medical;
+pub mod merchandise;
 pub mod mood;
 pub mod newgame;
 pub mod noracsa;

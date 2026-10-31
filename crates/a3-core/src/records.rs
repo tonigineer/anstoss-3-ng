@@ -566,12 +566,18 @@ record! {
 const SQUAD: usize = 0x1f2;
 /// Where its name is, and how long it may be.
 const TEAM_NAME: (usize, usize) = (0x20, 0x7c);
+const SHORT_NAME: usize = 0x34;
 /// The most a team's will to win may be.
 const WILL_MOST: i16 = 200;
 
 impl Team {
     pub fn name(&self) -> String {
         text(&self.0[TEAM_NAME.0 - HEADER..], TEAM_NAME.1)
+    }
+
+    /// Its short name, "FSV" (+0x34), as `strcpy` takes it: to its end.
+    pub fn short_name(&self) -> String {
+        text(&self.0[SHORT_NAME - HEADER..], TEAM_NAME.1)
     }
 
     /// The team's will to win, 0 to 200 (`FUN_0069ee6d`).

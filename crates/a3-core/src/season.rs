@@ -137,6 +137,8 @@ pub struct Rules {
     pub noracsa: crate::noracsa::NoracsaTables,
     /// The dream stadiums.
     pub stadium: crate::stadium::StadiumTables,
+    /// The kinds of merchandise a club may sell.
+    pub merchandise: crate::merchandise::MerchandiseTables,
 }
 
 impl Rules {
@@ -184,6 +186,7 @@ impl Rules {
             statistics: crate::statistics::Pages::load(exe)?,
             noracsa: crate::noracsa::NoracsaTables::load(exe)?,
             stadium: crate::stadium::StadiumTables::load(exe)?,
+            merchandise: crate::merchandise::MerchandiseTables::load(exe)?,
             messages: crate::youth::MESSAGES
                 .into_iter()
                 .map(|at| (at, exe.text_at(at).unwrap_or_default()))

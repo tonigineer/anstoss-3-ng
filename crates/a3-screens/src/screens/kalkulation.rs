@@ -1481,15 +1481,21 @@ impl Screen for Merchandise {
         if engaged {
             lower_button(view, dialog, RANGE_DETAILS);
         }
-        // The own range (56) is not built.
-        mark_inert(view, dialog, |t| !is_button(dialog, t, RANGE_DETAILS));
+        mark_inert(view, dialog, |_| true);
     }
 
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
-        if let Target::Button(c) = target
-            && cx.dialog.controls[c].id == Some(MERCHANDISE_OK)
-        {
-            return Outcome::Close(Reply::Ok);
+        if let Target::Button(c) = target {
+            match cx.dialog.controls[c].id {
+                Some(MERCHANDISE_OK) => return Outcome::Close(Reply::Ok),
+                // The own range (`0x4e6f98`), while no agency has it.
+                Some(RANGE_DETAILS) if !agency_engaged(cx) => {
+                    return Outcome::Popup(a3_core::cycle::Request::new(
+                        super::merchandise::MERCHANDISE_RANGE,
+                    ));
+                }
+                _ => {}
+            }
         }
         carousel_input(cx, view, target).unwrap_or(Outcome::Stay)
     }
