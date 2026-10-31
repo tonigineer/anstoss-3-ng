@@ -3345,7 +3345,10 @@ mod tests {
     /// counted and the human club's extra rows filled — visiting fans,
     /// gate incomes, travelling gates matching the home club's own — and
     /// the players': new appearances and goals over the save, the league's
-    /// top-scorers list grown by exactly the new goals. Played on
+    /// top-scorers list grown by exactly the new goals, and the rows of
+    /// the matchdays in the players' forty-six — the starters, the
+    /// substitutions, the grades, the cards and the goal nibbles all
+    /// answering to the counters. Played on
     /// a copy: ten days cross week ends, and their autosaves roll into the
     /// game's own `saves` — which would shuffle the list the other tests
     /// pick their save from.
@@ -3385,7 +3388,26 @@ mod tests {
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.goals()[0])))
                 .sum::<usize>()
         };
-        let (apps_before, goals_before) = (apps(&before), goals(&before));
+        let lesss = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_less()[0])))
+                .sum::<usize>()
+        };
+        let carded = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| {
+                    recs.player(id).map_or(0, |p| {
+                        usize::from(p.league_cards()[0])
+                            + usize::from(p.league_cards()[1])
+                            + usize::from(p.league_cards()[2])
+                    })
+                })
+                .sum::<usize>()
+        };
+        let (apps_before, goals_before, less_before, carded_before) =
+            (apps(&before), goals(&before), lesss(&before), carded(&before));
         let tor_before: usize = statistics::torjaeger(&before, home_nation, 0)
             .iter()
             .map(|r| usize::from(r.values[0]))
@@ -3531,6 +3553,78 @@ mod tests {
             .map(|r| usize::from(r.values[0]))
             .sum();
         assert_eq!(tor_after, tor_before + new_goals, "the top-scorers list");
+        // And the matchday rows in the players' forty-six: twenty to
+        // twenty-two starters to every game, one to three men changed per
+        // side, grades within the half steps the saves read, and every row
+        // in agreement with the counters — appearances, coming-ons, cards
+        // and the goal nibbles all adding up to what the games gave.
+        for md in 3..league.played() {
+            for (home, away, _) in league.games(md) {
+                let men: Vec<u16> = [home, away]
+                    .into_iter()
+                    .flat_map(|place| {
+                        records
+                            .team(nation, league.team(place) as u16)
+                            .map(|t| t.players())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let started = men
+                    .iter()
+                    .filter(|&&id| records.player(id).is_some_and(|p| p.matchdays()[md] & 0x40 != 0))
+                    .count();
+                let touched = men
+                    .iter()
+                    .filter(|&&id| records.player(id).is_some_and(|p| p.matchdays()[md] & 0x80 != 0))
+                    .count();
+                assert!(
+                    (20..=22).contains(&started) && (4..=12).contains(&touched),
+                    "md {md}: {started} starters, {touched} changes of men"
+                );
+            }
+        }
+        let mut row_apps = 0usize;
+        let mut came_ons = 0usize;
+        let mut row_cards = 0usize;
+        let mut nibbled = 0usize;
+        for &id in &squad {
+            let Some(p) = records.player(id) else { continue };
+            let bytes = p.matchdays();
+            let nibbles = p.matchday_goals();
+            for md in 3..league.played() {
+                let b = bytes[md];
+                if b & 0xc0 != 0 {
+                    row_apps += 1;
+                    let grade = (b >> 2) & 0xf;
+                    assert!((5..=11).contains(&grade), "p{id} md {md}: grade {grade}");
+                }
+                if b & 0xc0 == 0x80 {
+                    came_ons += 1;
+                }
+                if b & 3 != 0 {
+                    row_cards += 1;
+                }
+                nibbled += usize::from(nibbles[md] >> 4);
+            }
+        }
+        assert_eq!(apps(records), apps_before + row_apps, "the rows and the appearance counts");
+        assert_eq!(lesss(records), less_before + came_ons, "the coming-ons at +0x254");
+        assert_eq!(carded(records), carded_before + row_cards, "the rows' cards and the counters");
+        assert_eq!(nibbled, new_goals, "the matchday goal nibbles");
+        // The grade of the last match stands at +0x273 as the row shows it.
+        let last = league.played() - 1;
+        for &id in &squad {
+            if let Some(p) = records.player(id) {
+                let b = p.matchdays()[last];
+                if b & 0xc0 != 0 {
+                    assert_eq!(
+                        usize::from(p.grade()),
+                        usize::from((b >> 2) & 0xf),
+                        "p{id}: the grade of matchday {last}"
+                    );
+                }
+            }
+        }
         assert!(season.day > 63);
     }
 

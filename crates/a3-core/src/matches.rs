@@ -4,6 +4,7 @@
 //! is out of the replica's scope, so its games are scored like the others.
 
 use crate::calendar::Calendar;
+use crate::cards;
 use crate::finances::CLUB_TO_TEAM;
 use crate::opponent::League;
 use crate::random::Random;
@@ -98,6 +99,8 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     let played_at = league.played_slot();
     let crowd_at = league.crowd_slot();
     let played = (league.played() + 1) as i16;
+    // The row of this matchday in the players' forty-six.
+    let md = usize::from(league.played());
     let matchday = i32::try_from(league.played() + 1).unwrap_or(0);
     let scored: Vec<[u8; 4]> = games
         .iter()
@@ -205,7 +208,23 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     }
     // What the goals leave on the players of both sides.
     for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {
-        mark_match(records, nation, level, home, away, result[0], result[1], random);
+        mark_match(records, nation, level, md, home, away, result[0], result[1], random);
+    }
+    // And the day has served: one match off every suspension of the
+    // clubs that played. A card drawn this day set its count two matches
+    // high — the day itself among them — so that one still stands when
+    // the next matchday picks its men.
+    for &team in homes.iter().chain(&aways) {
+        let squad =
+            records.team(nation, team).map(|t| t.players()).unwrap_or_default();
+        for id in squad {
+            if let Some(p) = records.player_mut(id) {
+                let old = p.suspension();
+                if old & 0x3f != 0 {
+                    p.set_suspension((old & 0xc0) | ((old & 0x3f) - 1));
+                }
+            }
+        }
     }
     // The table as it stands after the matchday, and the places its rows
     // write into the blocks' history.
@@ -253,12 +272,17 @@ const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
 /// scorer's weight is his strength times his position's kind — and stands
 /// in his season's league goals (+0x23c), his goals in the last match
 /// (+0x249), his home goals when his side played at home (+0x252), and in
-/// the league's top-scorer list. Grades, cards and the fitness wear
-/// follow another step.
+/// the league's top-scorer list. Each man on the pitch — the eleven and
+/// the one to three who came on for the weakest of them — keeps his row of
+/// the matchday (+0x319: starter, substitution touched, grade, card) with
+/// his goals of it in +0x2eb; one to three substitutions a side, grades,
+/// cards and the suspensions they bring are the replica's own, held to
+/// what the saves read. The fitness wear follows another step.
 fn mark_match(
     records: &mut Records,
     nation: u16,
     level: u8,
+    md: usize,
     home: u16,
     away: u16,
     full: u8,
@@ -299,11 +323,81 @@ fn mark_match(
                 );
             }
         }
-        for (&id, &n) in eleven.iter().zip(&scored) {
+        // The side's substitutions: one to three of the strongest waiting
+        // men replace the weakest field men of the eleven. The original
+        // substitutes at its manager's word; the replica takes the
+        // strongest who wait.
+        let strength = |id: u16| u32::from(records.player(id).map_or(0, |p| p.strength()));
+        let mut bench: Vec<u16> = squad
+            .iter()
+            .copied()
+            .filter(|&id| !eleven.contains(&id) && available(records, id))
+            .collect();
+        bench.sort_by_key(|&id| std::cmp::Reverse(strength(id)));
+        let mut field: Vec<u16> = eleven
+            .iter()
+            .copied()
+            .filter(|&id| {
+                records.player(id).is_some_and(|p| p.positions()[0] != world::GOALKEEPER)
+            })
+            .collect();
+        field.sort_by_key(|&id| strength(id));
+        let subs = (1 + usize::try_from(random.below(3)).unwrap_or(1))
+            .min(field.len())
+            .min(bench.len());
+        let outs: Vec<u16> = field.iter().copied().take(subs).collect();
+        let ins: Vec<u16> = bench.iter().copied().take(subs).collect();
+        // The matchday row of every man on the pitch (R+0x319): bit 6 he
+        // started, bit 7 a substitution touched him — off for a starter,
+        // on for one coming in —, bits 2 to 5 his grade in half steps,
+        // the low two his card: 1 yellow, 2 yellow-red, 3 red. His goals
+        // of the matchday stand in the high nibble of R+0x2eb, his
+        // coming-ons counted at +0x254, his grade of the last match at
+        // +0x273. The original writes these from its match engine; the
+        // grades (four to eleven half steps about the mean, as the saves
+        // read), the cards — a yellow to about a ninth of the men, the
+        // reds and yellow-reds far rarer — and the substitutions are the
+        // replica's own. A red or yellow-red suspends, and so does every
+        // rule's worth of yellows; the suspension counts the matchday
+        // just played among its matches, which settle serves off at the
+        // day's end.
+        let appearances: Vec<(u16, u8, bool, bool)> = eleven
+            .iter()
+            .zip(&scored)
+            .map(|(&id, &n)| (id, n, true, outs.contains(&id)))
+            .chain(ins.iter().map(|&id| (id, 0, false, false)))
+            .collect();
+        for (id, n, starter, went_off) in appearances {
+            let grade = (5 + u32::from(random.below(5)) + u32::from(n)).min(11) as u8;
+            let card = if random.below(110) == 0 {
+                3
+            } else if random.below(340) == 0 {
+                2
+            } else if random.below(9) == 0 {
+                1
+            } else {
+                0
+            };
+            // Whether this yellow is the country's rule's last: drawn over
+            // the cards as they would stand with it (`cards::league`).
+            let suspends_yellow = card == 1
+                && records.player(id).is_some_and(|p| {
+                    let mut q = p.clone();
+                    let mut counted = q.league_cards();
+                    counted[0] = counted[0].saturating_add(1);
+                    q.set_league_cards(counted);
+                    cards::league(records, nation, level, &q)
+                });
             if let Some(p) = records.player_mut(id) {
                 p.set_league_matches(p.league_matches().saturating_add(1));
                 p.set_matches_in_a_row(p.matches_in_a_row().saturating_add(1));
                 p.set_last_goals(n);
+                p.set_grade(grade);
+                if !starter {
+                    let mut less = p.league_less();
+                    less[0] = less[0].saturating_add(1);
+                    p.set_league_less(less);
+                }
                 if n > 0 {
                     let mut goals = p.goals();
                     goals[0] = goals[0].saturating_add(n);
@@ -312,14 +406,68 @@ fn mark_match(
                         p.set_home_goals(p.home_goals().saturating_add(n));
                     }
                 }
+                if md < p.matchdays().len() {
+                    let mut bytes = p.matchdays();
+                    let mut nibbles = p.matchday_goals();
+                    bytes[md] =
+                        (if starter { 0x40 } else { 0x80 }) | (grade << 2) | card;
+                    if went_off {
+                        bytes[md] |= 0x80;
+                    }
+                    nibbles[md] = n << 4;
+                    p.set_matchdays(bytes);
+                    p.set_matchday_goals(nibbles);
+                }
+                if card != 0 {
+                    let mut cards = p.league_cards();
+                    match card {
+                        1 => cards[0] = cards[0].saturating_add(1),
+                        2 => cards[2] = cards[2].saturating_add(1),
+                        _ => cards[1] = cards[1].saturating_add(1),
+                    }
+                    p.set_league_cards(cards);
+                    if card >= 2 || suspends_yellow {
+                        let old = p.suspension();
+                        let low = ((u32::from(old & 0x3f) + 2).min(63)) as u8;
+                        p.set_suspension((old & 0xc0) | low);
+                    }
+                }
             }
         }
-        for &id in squad.iter().filter(|&id| !eleven.contains(&id)) {
+        for &id in squad
+            .iter()
+            .filter(|&id| !eleven.contains(&id) && !ins.contains(&id))
+        {
             if let Some(p) = records.player_mut(id) {
                 p.set_matches_in_a_row(0);
+                // The man who sat the matchday out keeps a nought row —
+                // the saves read no leftovers of older seasons in it.
+                if md < p.matchdays().len() {
+                    let mut bytes = p.matchdays();
+                    bytes[md] = 0;
+                    p.set_matchdays(bytes);
+                }
+                if md < p.matchday_goals().len() {
+                    let mut nibbles = p.matchday_goals();
+                    nibbles[md] = 0;
+                    p.set_matchday_goals(nibbles);
+                }
             }
         }
     }
+}
+
+/// Whether the player stands fit and free for his club's match: no
+/// injury (+0x228), no match still suspended (+0x229) and no known
+/// number thereof (bit 7), no weeks of a ban (+0x22a), and not marked
+/// suspended for the match (+0x26b bit 4).
+fn available(records: &Records, id: u16) -> bool {
+    records.player(id).is_some_and(|p| {
+        p.injury_kind() == 0
+            && p.suspension() & 0x3f == 0
+            && p.banned_weeks() == 0
+            && p.away_kind() & 0x10 == 0
+    })
 }
 
 /// The eleven a side puts on the pitch: of the players it lists, those
@@ -331,18 +479,7 @@ fn mark_match(
 /// the strongest.
 fn eleven(squad: &[u16], records: &Records) -> Vec<u16> {
     let strength = |id: u16| u32::from(records.player(id).map_or(0, |p| p.strength()));
-    let mut fit: Vec<u16> = squad
-        .iter()
-        .copied()
-        .filter(|&id| {
-            records.player(id).is_some_and(|p| {
-                p.injury_kind() == 0
-                    && p.suspension() & 0x3f == 0
-                    && p.banned_weeks() == 0
-                    && p.away_kind() & 0x10 == 0
-            })
-        })
-        .collect();
+    let mut fit: Vec<u16> = squad.iter().copied().filter(|&id| available(records, id)).collect();
     fit.sort_by_key(|&id| std::cmp::Reverse(strength(id)));
     let keeper = fit
         .iter()
