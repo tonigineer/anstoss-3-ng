@@ -68,7 +68,8 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
 /// matchday, and each club's season record, goals and table place. Every
 /// home club books its gate: the attendance on its played matches, the
 /// money on its season's takings, and the league's attendance row
-/// follows.
+/// follows. Each match leaves its mark on its players: appearances and
+/// scorers' goals in their records, and in the league's top-scorers list.
 fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     let Some(league) = League::of(records, nation, level) else {
         return;
@@ -108,6 +109,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     // money and the stadium it fills — reckoned before the block and the
     // clubs are written.
     let homes: Vec<u16> = games.iter().map(|&(home, _, _)| league.team(home) as u16).collect();
+    let aways: Vec<u16> = games.iter().map(|&(_, away, _)| league.team(away) as u16).collect();
     let booked: Vec<(i32, i32, i32)> = homes
         .iter()
         .map(|&team| match records.team(nation, team) {
@@ -152,6 +154,10 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             statistics::book_attendance(records, slot, *home, att, cap);
         }
     }
+    // What the goals leave on the players of both sides.
+    for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {
+        mark_match(records, nation, level, home, away, result[0], result[1], random);
+    }
     // The table as it stands after the matchday, and the places its rows
     // write into the blocks' history.
     let Some(league) = League::of(records, nation, level) else {
@@ -183,6 +189,148 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             team.set_table_place(rank as u8 + 1);
         }
     }
+}
+
+/// Weights a goal is drawn by, over the position: nought for the keeper,
+/// little for the defence, most for the attack — times the player's
+/// strength. The positions run 1 to 10, keeper to striker; the special
+/// kinds from 11 on (the exe's table at 0x89e23c) count among the attack.
+const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
+
+/// What a scored match leaves on its players: the eleven each side puts
+/// on the pitch stand for their league match (+0x253) and their run of
+/// matches in a row (+0x34e), broken for those listed but not picked;
+/// every goal goes to one of the eleven, drawn over their weights — the
+/// scorer's weight is his strength times his position's kind — and stands
+/// in his season's league goals (+0x23c), his goals in the last match
+/// (+0x249), his home goals when his side played at home (+0x252), and in
+/// the league's top-scorer list. Grades, cards and the fitness wear
+/// follow another step.
+fn mark_match(
+    records: &mut Records,
+    nation: u16,
+    level: u8,
+    home: u16,
+    away: u16,
+    full: u8,
+    a_full: u8,
+    random: &mut Random,
+) {
+    for (team, goals, at_home) in [(home, full, true), (away, a_full, false)] {
+        let squad = records
+            .team(nation, team)
+            .map(|t| t.players())
+            .unwrap_or_default();
+        let eleven = eleven(&squad, records);
+        let weights: Vec<u32> = eleven
+            .iter()
+            .map(|&id| {
+                records.player(id).map_or(0, |p| {
+                    u32::from(p.strength()) * KIND_WEIGHTS[usize::from(p.positions()[0]).min(10)]
+                })
+            })
+            .collect();
+        let mut scored = vec![0u8; eleven.len()];
+        for _ in 0..u32::from(goals) {
+            let Some(k) = draw(&weights, random) else {
+                break;
+            };
+            scored[k] = scored[k].saturating_add(1);
+            let id = eleven[k];
+            let names = records.player(id).map(|p| (p.first_name(), p.last_name()));
+            if let Some((first, last)) = names {
+                statistics::book_goal(
+                    records,
+                    nation,
+                    level,
+                    id,
+                    first,
+                    last,
+                    u8::try_from(team).unwrap_or(0),
+                );
+            }
+        }
+        for (&id, &n) in eleven.iter().zip(&scored) {
+            if let Some(p) = records.player_mut(id) {
+                p.set_league_matches(p.league_matches().saturating_add(1));
+                p.set_matches_in_a_row(p.matches_in_a_row().saturating_add(1));
+                p.set_last_goals(n);
+                if n > 0 {
+                    let mut goals = p.goals();
+                    goals[0] = goals[0].saturating_add(n);
+                    p.set_goals(goals);
+                    if at_home {
+                        p.set_home_goals(p.home_goals().saturating_add(n));
+                    }
+                }
+            }
+        }
+        for &id in squad.iter().filter(|&id| !eleven.contains(&id)) {
+            if let Some(p) = records.player_mut(id) {
+                p.set_matches_in_a_row(0);
+            }
+        }
+    }
+}
+
+/// The eleven a side puts on the pitch: of the players it lists, those
+/// fit and free — no injury (+0x228), no match suspension (+0x229) or
+/// weeks of a ban (+0x22a), and not marked suspended for the match
+/// (+0x26b bit 4) — the keeper first, the strongest who names him one,
+/// and the ten strongest field players beside him. The original follows
+/// the manager's formation; the replica has none of his yet and takes
+/// the strongest.
+fn eleven(squad: &[u16], records: &Records) -> Vec<u16> {
+    let strength = |id: u16| u32::from(records.player(id).map_or(0, |p| p.strength()));
+    let mut fit: Vec<u16> = squad
+        .iter()
+        .copied()
+        .filter(|&id| {
+            records.player(id).is_some_and(|p| {
+                p.injury_kind() == 0
+                    && p.suspension() & 0x3f == 0
+                    && p.banned_weeks() == 0
+                    && p.away_kind() & 0x10 == 0
+            })
+        })
+        .collect();
+    fit.sort_by_key(|&id| std::cmp::Reverse(strength(id)));
+    let keeper = fit
+        .iter()
+        .copied()
+        .find(|&id| records.player(id).is_some_and(|p| p.positions()[0] == world::GOALKEEPER));
+    let mut eleven: Vec<u16> = keeper.into_iter().collect();
+    eleven.extend(fit.iter().copied().filter(|&id| {
+        id != keeper.unwrap_or(0)
+            && records.player(id).is_some_and(|p| p.positions()[0] != world::GOALKEEPER)
+    }));
+    eleven.truncate(11);
+    eleven
+}
+
+/// Which of the eleven scored a goal: drawn over their weights, or of
+/// all of them alike when none of them weighs aught.
+fn draw(weights: &[u32], random: &mut Random) -> Option<usize> {
+    if weights.is_empty() {
+        return None;
+    }
+    let total: u32 = weights.iter().sum();
+    let cap = if total == 0 {
+        u32::try_from(weights.len()).unwrap_or(1)
+    } else {
+        total
+    };
+    let mut draw = random.below(cap.max(1));
+    if total == 0 {
+        return Some((draw as usize).min(weights.len() - 1));
+    }
+    for (k, &w) in weights.iter().enumerate() {
+        if draw < w {
+            return Some(k);
+        }
+        draw -= w;
+    }
+    Some(weights.len() - 1)
 }
 
 /// How many the club's stadium holds (`0x1a48138[index]` +0x3c).

@@ -3339,9 +3339,11 @@ mod tests {
     /// The league's matchdays play on as the days pass: the save's first
     /// league has played three matchdays, and ten days carry at least one
     /// more — every game with a result, half time within full time, the
-    /// clubs' records agreeing with the table the results reckon, and the
+    /// clubs' records agreeing with the table the results reckon, the
     /// gates: a crowd to every matchday, money booked and a gate held for
-    /// every home game, the attendance rows keeping step. Played on
+    /// every home game, the attendance rows keeping step — and the
+    /// players': new appearances and goals over the save, the league's
+    /// top-scorers list grown by exactly the new goals. Played on
     /// a copy: ten days cross week ends, and their autosaves roll into the
     /// game's own `saves` — which would shuffle the list the other tests
     /// pick their save from.
@@ -3355,6 +3357,37 @@ mod tests {
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
                     on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+        // The save as copied, to reckon the players' figures against.
+        let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
+        let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
+            .expect("the save's records");
+        let home_nation = u16::try_from(before.globals.main_country()).unwrap();
+        let league0 = opponent::League::of(&before, home_nation, 0).expect("the first league");
+        let squad: Vec<u16> = (0..league0.teams())
+            .flat_map(|place| {
+                before
+                    .team(home_nation, league0.team(place) as u16)
+                    .map(|t| t.players())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let apps = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_matches())))
+                .sum::<usize>()
+        };
+        let goals = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.goals()[0])))
+                .sum::<usize>()
+        };
+        let (apps_before, goals_before) = (apps(&before), goals(&before));
+        let tor_before: usize = statistics::torjaeger(&before, home_nation, 0)
+            .iter()
+            .map(|r| usize::from(r.values[0]))
+            .sum();
         let Some(runner) = on_save(&game, "league-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -3424,6 +3457,29 @@ mod tests {
             assert_eq!(usize::try_from(row.games).unwrap(), held, "team {number}: row out of step");
             assert!(row.total > 0 && row.percent > 0 && row.percent <= 100, "team {number}: {row:?}");
         }
+        // The matches left their mark on the players: at least twenty of
+        // the twenty-two stand per game even with injuries and suspensions,
+        // the goals of their season's league column grew by just the new
+        // ones, and the top-scorers list took each of them once.
+        let new_games: usize = (3..league.played()).map(|md| league.games(md).len()).sum();
+        let new_goals: usize = (3..league.played())
+            .flat_map(|md| league.games(md))
+            .map(|(_, _, r)| {
+                let r = r.expect("written by the days");
+                usize::from(r[0]) + usize::from(r[1])
+            })
+            .sum();
+        assert!(
+            apps(records) >= apps_before + 20 * new_games,
+            "apps {apps_before} → {}, {new_games} games",
+            apps(records)
+        );
+        assert_eq!(goals(records), goals_before + new_goals, "scorers' goals");
+        let tor_after: usize = statistics::torjaeger(records, nation, 0)
+            .iter()
+            .map(|r| usize::from(r.values[0]))
+            .sum();
+        assert_eq!(tor_after, tor_before + new_goals, "the top-scorers list");
         assert!(season.day > 63);
     }
 

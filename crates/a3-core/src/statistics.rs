@@ -2189,6 +2189,53 @@ pub fn torjaeger(records: &Records, country: u16, level: u8) -> Vec<LigaRow> {
         .collect()
 }
 
+/// Book one goal into the league's season list (`FUN_00449bd6`): the
+/// scorer's entry — his id, his names' pool ids, his club's number and
+/// his goal count — opens at the list's first free slot when he has
+/// none, and the entries are held in descending goals, as the live game
+/// keeps the list match by match.
+pub fn book_goal(
+    records: &mut Records,
+    country: u16,
+    level: u8,
+    id: u16,
+    first: u16,
+    last: u16,
+    team: u8,
+) {
+    let Some(league) = league_of(records, country, level) else {
+        return;
+    };
+    let from = TOR_LIST + league * TOR_LEAGUE;
+    let Some(block) = records.block_mut(LISTS) else {
+        return;
+    };
+    let Some(entries) = block.get_mut(from..from + 100 * 0x10) else {
+        return;
+    };
+    let at = |k: usize| k * 0x10;
+    let mut k = (0..100).find(|&k| {
+        u16::from_le_bytes([entries[at(k)], entries[at(k) + 1]]) == id
+    });
+    if k.is_none() {
+        k = (0..100).find(|&k| u16::from_le_bytes([entries[at(k)], entries[at(k) + 1]]) == 0);
+        if let Some(k) = k {
+            entries[at(k)..at(k) + 2].copy_from_slice(&id.to_le_bytes());
+            entries[at(k) + 2..at(k) + 4].copy_from_slice(&first.to_le_bytes());
+            entries[at(k) + 4..at(k) + 6].copy_from_slice(&last.to_le_bytes());
+            entries[at(k) + 7] = team;
+        }
+    }
+    let Some(mut k) = k else { return };
+    entries[at(k) + 8] = entries[at(k) + 8].saturating_add(1);
+    while k > 0 && entries[at(k) + 8] > entries[at(k - 1) + 8] {
+        for j in 0..0x10 {
+            entries.swap(at(k - 1) + j, at(k) + j);
+        }
+        k -= 1;
+    }
+}
+
 /// The three saved lists that share one shape (`DAT_00b0f576`,
 /// `DAT_00b10ce6` and `DAT_00b114b6`, inside the same block): twenty
 /// entries of 10 with the names' pool ids, the club's number, and from

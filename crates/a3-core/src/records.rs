@@ -1860,6 +1860,10 @@ impl Records {
         (id != 0).then(|| self.players.get(usize::from(id))).flatten()
     }
 
+    pub fn player_mut(&mut self, id: u16) -> Option<&mut Player> {
+        (id != 0).then(|| self.players.get_mut(usize::from(id))).flatten()
+    }
+
     /// The transfers agreed for the season's end.
     pub fn agreed(&self) -> Vec<Agreed> {
         let Some(block) = self.block(&format!("{AGREED_AT:#x}")) else { return Vec::new() };
