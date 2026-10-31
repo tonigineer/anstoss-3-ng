@@ -276,6 +276,12 @@ impl Screen for Illegal {
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
         let (game, dialog) = (cx.game, cx.dialog);
         let id = |c: usize| dialog.controls[c].id.unwrap_or(0);
+        // A button pressed paints itself.
+        if let Target::Button(c) = target
+            && let Some(b) = view.controls[c].state.as_button_mut()
+        {
+            b.unpainted = false;
+        }
         match target {
             Target::SliderStep { control: c, .. }
             | Target::SliderAt { control: c, .. }
@@ -289,7 +295,11 @@ impl Screen for Illegal {
                 self.ranges(cx, view);
                 set(view, dialog, text, money(game, v));
                 if let Some(b) = control(dialog, ok) {
-                    view.controls[b].hidden = v < 1;
+                    if v < 1 {
+                        view.controls[b].hidden = true;
+                    } else {
+                        show_unpainted(view, b);
+                    }
                 }
                 cross(view, dialog);
             }
@@ -309,10 +319,10 @@ impl Screen for Illegal {
                 let Some(m) = own_manager_mut(cx) else { return Outcome::Stay };
                 if gate {
                     m.set_gate_kept(v);
-                    set(view, dialog, GATE_KEPT, format!("{:.1}%", v * 100.0));
+                    set(view, dialog, GATE_KEPT, chopped(f64::from(v) * 100.0));
                 } else {
                     m.set_cup_share_kept(v);
-                    set(view, dialog, CUP_SHARE, format!("{:.1}%", 50.0 - v * 100.0));
+                    set(view, dialog, CUP_SHARE, chopped(50.0 - f64::from(v) * 100.0));
                 }
             }
             // Another team chosen (`OnSelChange_IDC_AUFSTACHELN_COMBO`):
@@ -577,10 +587,13 @@ impl Illegal {
             }
             return;
         };
-        for id in [ATTACK_TARGETS, ATTACK_KINDS, ATTACK_CHOICE, ATTACK_OK] {
+        for id in [ATTACK_TARGETS, ATTACK_KINDS, ATTACK_CHOICE] {
             if let Some(c) = control(dialog, id) {
                 view.controls[c].hidden = false;
             }
+        }
+        if let Some(c) = control(dialog, ATTACK_OK) {
+            show_unpainted(view, c);
         }
         let Some(records) = cx.state.records.as_ref() else { return };
         let other = &records.managers[human];
@@ -713,6 +726,26 @@ impl Illegal {
                 slider.range = (0, most);
                 slider.set(slider.value);
             }
+        }
+    }
+}
+
+/// A share as the spinners' handlers write it ("%.1f%%"): cut to its
+/// tenth, not rounded — 30 tenths of a percent, kept as a float, come out
+/// "2.9%" there where the dialog's opening wrote "3.0%"; the game's
+/// floating point runs chopping in them, seen on the original.
+fn chopped(v: f64) -> String {
+    format!("{:.1}%", (v * 10.0).floor() / 10.0)
+}
+
+/// A use's OK put up as the game does it (`ModifyStyle(0, WS_VISIBLE)`):
+/// the dialog's picture stays there until the button is pointed at or
+/// pressed. One up already keeps its look.
+fn show_unpainted(view: &mut View, c: usize) {
+    if view.controls[c].hidden {
+        view.controls[c].hidden = false;
+        if let Some(b) = view.controls[c].state.as_button_mut() {
+            b.unpainted = true;
         }
     }
 }

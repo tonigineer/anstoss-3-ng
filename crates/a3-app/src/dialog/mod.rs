@@ -573,9 +573,15 @@ fn press(
                 return;
             };
             let Some(&shown) = view.value(control) else { return };
-            // The hit is relative to the track, from -0.5 to 0.5. The handle
-            // jumps under the pointer and stays held there.
+            // The hit is relative to the track, from -0.5 to 0.5. Beside
+            // the handle it pages the slider; on it, it takes hold.
             let along = press.hit.position.map_or(0.5, |p| p.x + 0.5);
+            let r = c.rect;
+            let x = r.min.x + slider::SLIDER_ARROW + along * (r.width() - 2.0 * slider::SLIDER_ARROW);
+            if let Some(value) = slider::paged(c, &shown, x) {
+                pending.0.push((Target::SliderAt { control, value }, 1));
+                return;
+            }
             let left = slider::handle_under(c, along);
             let value = slider::value_at(c, &shown, left);
             pending.0.push((Target::SliderAt { control, value }, 1));

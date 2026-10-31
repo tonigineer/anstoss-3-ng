@@ -81,6 +81,27 @@ pub fn value_at(control: &Control, value: &Value, left: f32) -> i32 {
     (value as i32).clamp(min, max.max(min))
 }
 
+/// A press on the track beside the handle pages it ten steps towards the
+/// press, as `CMyScrBar` does by its page (+0x144, 10 from `0x7abfd2`);
+/// on the handle it is taken hold of instead: none. Only for a slider of
+/// the usual handle — one whose handle a screen sized scrolls a list.
+pub fn paged(control: &Control, value: &Value, x: f32) -> Option<i32> {
+    const PAGE: i32 = 10;
+    if value.handle.is_some() {
+        return None;
+    }
+    let at = handle(control, value);
+    let (min, max) = value.range;
+    let step = if x < at.min.x {
+        -PAGE
+    } else if x >= at.max.x {
+        PAGE
+    } else {
+        return None;
+    };
+    Some((value.value + step).clamp(min, max.max(min)))
+}
+
 /// Where a press on the track, `along` its length from 0 to 1, puts the
 /// left edge of the handle: centred under the pointer.
 pub fn handle_under(control: &Control, along: f32) -> f32 {

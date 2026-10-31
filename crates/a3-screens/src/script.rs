@@ -451,6 +451,14 @@ impl<'a> Runner<'a> {
                 self.host.view_mut().pointer = Some(Vec2::new(at.0.into(), at.1.into()));
                 // A map's tile is pressed and let go of again, the pointer
                 // staying on it.
+                // A slider's track pages it towards the click.
+                if let Target::SliderTrack(control) = target
+                    && let Some(&value) = self.host.view().value(control)
+                    && let Some(paged) =
+                        crate::controls::slider::paged(&controls.controls[control], &value, f32::from(at.0))
+                {
+                    Target::SliderAt { control, value: paged }
+                } else {
                 match Grip::of(target) {
                     Some(grip @ Grip::Tile { .. }) => {
                         self.host.view_mut().hovered = Some(target);
@@ -458,6 +466,7 @@ impl<'a> Runner<'a> {
                         Target::Drop { from: grip, to: Some(grip), at, moved: (0, 0) }
                     }
                     _ => target,
+                }
                 }
             }
             _ => match target_of(controls, named(shown), action)? {
@@ -8618,7 +8627,9 @@ mod tests {
         let text = |id| view.text(control(dialog, id).unwrap()).to_owned();
         assert_eq!(text(5540), " 100 €");
         assert!(!view.controls[control(dialog, 5551).unwrap()].hidden);
-        assert_eq!((text(5529), text(5530)), ("2.9%".to_owned(), "45.1%".to_owned()));
+        // One step down shows 2.8% as the original does: 29 thousandths
+        // as a float times a hundred, chopped.
+        assert_eq!((text(5529), text(5530)), ("2.8%".to_owned(), "45.1%".to_owned()));
         let state = runner.host.state();
         let records = state.records.as_ref().unwrap();
         let m = records.humans().next().unwrap();
