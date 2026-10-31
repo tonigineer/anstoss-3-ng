@@ -8776,4 +8776,40 @@ mod tests {
         assert_eq!(state(&taken), (220_657, 0x3));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// An attack on another human (Probe1, two managers): Anna Alpha
+    /// chosen, a player put out for 400.000 — too dear for an empty box,
+    /// ordered from a patched one, and closed for the season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_money_orders_an_attack_on_another_human() {
+        let game = game();
+        let ask = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442\n\
+                   now choose 5558 0\nnow choose 5550 0\nnow press 5557\nuntil dialog 380";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let current = state.season.as_ref().unwrap().current;
+            let m = records.managers[records.human_slot(current).unwrap()].clone();
+            (m.black_cash(), m.illegal_closed(), m.attacked())
+        };
+        let Some(dear) = on_save(&game, "Probe1", ask) else { return };
+        let dialog = &game.dialogs[&380];
+        let text = dear.host.view().text(control(dialog, 4730).unwrap()).to_owned();
+        assert_eq!(text, "Für diesen Anschlag brauchen Sie mehr Geld!");
+        let (cash, closed, anna) = state(&dear);
+        assert_eq!((cash, closed), (0, 0));
+        assert!(anna > 0, "the human chosen is kept at once");
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Probe1", "rich-attack", |records| {
+            for m in &mut records.managers {
+                m.set_black_cash(500_000);
+            }
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(ordered) = on_save(&patched_game, "rich-attack", ask) else { return };
+        assert_eq!(state(&ordered), (100_000, 0x8000_0000, anna));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

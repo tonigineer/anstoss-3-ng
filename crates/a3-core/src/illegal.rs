@@ -156,3 +156,12 @@ pub fn incite_takes(amount: i64, salaries: &[u16], below: &mut impl FnMut(u32) -
 /// by chance.
 pub const INCITE_YES: [u16; 2] = [4609, 4608];
 pub const INCITE_NO: [u16; 2] = [4611, 4610];
+
+/// The attacks on another human (`OnClicked_IDC_ANSCHLAG_OK`): a player
+/// put out, the merchandise destroyed, the black cash box robbed — what
+/// each costs (`DAT_00a3b350`, `DAT_00a3b35c`, `DAT_00a3b36c`) and the bit
+/// it sets (+0x1a8), closing all three for the season; "Ist in Auftrag!"
+/// (4600), or with too little in the box 4601.
+pub const ATTACKS: [(i64, u32); 3] = [(400_000, 0x8000_0000), (300_000, 0x2000_0000), (200_000, 0x4000_0000)];
+pub const ATTACK_ORDERED: u16 = 4600;
+pub const ATTACK_TOO_DEAR: u16 = 4601;

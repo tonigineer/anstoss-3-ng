@@ -14,6 +14,8 @@ use super::discipline::CAPTION_ID;
 use super::finances::money64;
 use super::playerinfo::money;
 use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
+use crate::controls::bitmap::Picture;
+use crate::controls::options::NONE;
 use crate::pointer::Target;
 use crate::view::View;
 
@@ -59,6 +61,11 @@ const ATTACK_KINDS: u16 = 5550;
 const ATTACK_TARGETS: u16 = 5543;
 const ATTACK_CHOICE: u16 = 6414;
 const ATTACK_OK: u16 = 5557;
+const PORTRAIT: u16 = 6415;
+/// The face shown when a portrait cannot be read (`FUN_004253a3(0xa48)`).
+const NO_PORTRAIT: u16 = 2632;
+/// The drawn portraits' ids, one for each human.
+const PORTRAIT_DRAWN: u64 = 0x442_0000;
 /// "Schiedsrichter %s bestechen", "Gegner %s bestechen", "Bitte
 /// auswählen".
 const REFEREE_TEXT: u16 = 4514;
@@ -102,6 +109,11 @@ pub struct Illegal {
     incite_rows: Vec<(usize, bool)>,
     /// The bribe combo's rows past the first: the players' ids.
     players: Vec<u16>,
+    /// The other humans by their places among the managers, in the rows.
+    humans: Vec<usize>,
+    /// The attack's cost, and the chosen human's players in its list.
+    attack_cost: i64,
+    targets: Vec<u16>,
     /// What a use's answer, once read, hides, and the list it disables.
     closing: Vec<u16>,
     disabling: Option<u16>,
@@ -213,21 +225,29 @@ impl Screen for Illegal {
             hide(view, &[PLAYER_OK, PLAYER_SLIDER, PLAYERS, PLAYER_AMOUNT]);
         }
         // The attack: the other humans by name.
-        let others: Vec<String> = if closed & illegal::ATTACKS_DONE == 0 {
-            records
-                .humans()
-                .filter(|h| h.human() != m.human())
-                .map(|h| format!("{} {}", h.first_name(), h.last_name()))
+        // The managers in play by their numbers (`FUN_006a421a`), but him.
+        let own = records.human_slot(season.current);
+        self.humans = if closed & illegal::ATTACKS_DONE == 0 {
+            let slots = records.globals.slots();
+            (0..records.managers.len())
+                .filter(|&i| slots.get(i).copied().unwrap_or(0) > 0 && Some(i) != own)
                 .collect()
         } else {
             Vec::new()
         };
+        let others: Vec<String> = self
+            .humans
+            .iter()
+            .map(|&i| format!("{} {}", records.managers[i].first_name(), records.managers[i].last_name()))
+            .collect();
         if others.is_empty() {
             hide(view, &[HUMANS]);
         } else if let Some(rows) = control(dialog, HUMANS).and_then(|c| view.options_mut(c)) {
             for (row, label) in rows.labels.iter_mut().enumerate() {
                 *label = others.get(row).cloned().unwrap_or_default();
             }
+            rows.off = (0..rows.labels.len()).map(|row| row >= others.len()).collect();
+            rows.chosen = NONE;
         }
         set(view, dialog, BOOKS_AMOUNT, money(game, 0));
         set(view, dialog, POCKET_AMOUNT, money(game, 0));
@@ -324,6 +344,34 @@ impl Screen for Illegal {
                 }
             }
             Target::Button(c) if id(c) == INCITE_OK => return self.incite(cx, view),
+            Target::Option { control: c, .. } if id(c) == HUMANS => self.choose_human(cx, view),
+            // A kind of attack: the other group cleared
+            // (`OnClicked_IDC_ANSCHLAG_TYP`, `_TYP1`; `FUN_004ca256`).
+            Target::Option { control: c, .. } if id(c) == ATTACK_KINDS || id(c) == ATTACK_CHOICE => {
+                let other = if id(c) == ATTACK_KINDS { ATTACK_CHOICE } else { ATTACK_KINDS };
+                if let Some(o) = control(dialog, other).and_then(|o| view.options_mut(o)) {
+                    o.chosen = NONE;
+                }
+                match attack_kind(dialog, view) {
+                    Some(kind) => self.attack_cost = illegal::ATTACKS[kind].0,
+                    None => {
+                        self.attack_cost = 0;
+                        if let Some(b) = control(dialog, ATTACK_OK) {
+                            view.controls[b].hidden = true;
+                        }
+                    }
+                }
+            }
+            // His player chosen (`OnSelChange_IDC_ANSCHLAG_SPIELER_COMBO`).
+            Target::Row { control: c, .. } if id(c) == ATTACK_TARGETS => {
+                let row = view.combo(c).and_then(|combo| combo.selected).unwrap_or(0);
+                if let Some(&player) = row.checked_sub(1).and_then(|r| self.targets.get(r))
+                    && let Some(m) = own_manager_mut(cx)
+                {
+                    m.set_attacked_player(player);
+                }
+            }
+            Target::Button(c) if id(c) == ATTACK_OK => return self.attack(cx, view),
             Target::Button(c) if id(c) == BOOKS_OK => self.into_books(cx, view),
             Target::Button(c) if id(c) == POCKET_OK => self.into_pocket(cx, view),
             Target::Button(c) if id(c) == 1 => return Outcome::Close(Reply::Ok),
@@ -509,6 +557,101 @@ impl Illegal {
         Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(text)))
     }
 
+    /// A human chosen to attack, or the choice taken back
+    /// (`OnClicked_IDC_MITSPIELER_WAEHLEN`): the kinds, the list of his
+    /// players and the OK show, his portrait beside them.
+    fn choose_human(&mut self, cx: &mut Cx, view: &mut View) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let row = control(dialog, HUMANS).and_then(|c| view.options(c)).map_or(NONE, |o| o.chosen);
+        self.attack_cost = 0;
+        for id in [ATTACK_KINDS, ATTACK_CHOICE] {
+            if let Some(o) = control(dialog, id).and_then(|c| view.options_mut(c)) {
+                o.chosen = NONE;
+            }
+        }
+        let Some(&human) = self.humans.get(row) else {
+            for id in [ATTACK_TARGETS, ATTACK_KINDS, ATTACK_CHOICE, ATTACK_OK] {
+                if let Some(c) = control(dialog, id) {
+                    view.controls[c].hidden = true;
+                }
+            }
+            return;
+        };
+        for id in [ATTACK_TARGETS, ATTACK_KINDS, ATTACK_CHOICE, ATTACK_OK] {
+            if let Some(c) = control(dialog, id) {
+                view.controls[c].hidden = false;
+            }
+        }
+        let Some(records) = cx.state.records.as_ref() else { return };
+        let other = &records.managers[human];
+        // His club's players (`FUN_004caa33`), if he has one.
+        self.targets = if other.country() > 0 {
+            records.team(other.country(), other.team()).map(|t| t.players()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut items = vec![game.text(CHOOSE).to_owned()];
+        items.extend(self.targets.iter().map(|&id| records.known_as(id).unwrap_or_default()));
+        if let Some(combo) = control(dialog, ATTACK_TARGETS).and_then(|c| view.combo_mut(c)) {
+            combo.items = items;
+            combo.selected = Some(0);
+        }
+        // His portrait from the game's folder, else the empty face
+        // (`FUN_004d242a`).
+        let file = format!("portrait/{}", other.portrait());
+        let read = (!other.portrait().is_empty())
+            .then(|| Picture { black_clear: false, ..Picture::file(file) }.load(game).ok())
+            .flatten();
+        // The control stretches it to its own size (`CMyBitmap`).
+        if let Some(c) = control(dialog, PORTRAIT) {
+            let r = dialog.controls[c].rect;
+            let image = read.or_else(|| game.graphic(NO_PORTRAIT).ok());
+            let picture = image.map(|image| {
+                let (w, h) = (r.width() as u32, r.height() as u32);
+                let fitted = stretch(&image, w, h);
+                Picture::drawn(PORTRAIT_DRAWN + human as u64, fitted)
+            });
+            view.set_picture(c, picture);
+        }
+        if let Some(m) = own_manager_mut(cx) {
+            m.set_attacked(human as u16 + 1);
+        }
+        cross(view, dialog);
+    }
+
+    /// The attack ordered (`OnClicked_IDC_ANSCHLAG_OK`): nothing without a
+    /// kind; with too little in the box a word; else it costs its price
+    /// and the section goes for the season.
+    fn attack(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let dialog = cx.dialog;
+        let Some(kind) = attack_kind(dialog, view) else { return Outcome::Stay };
+        let cash = own_manager(cx).map_or(0, |m| i64::from(m.black_cash()));
+        if self.attack_cost > cash {
+            return Outcome::Popup(Request::with(
+                super::popups::NOTICE,
+                Args::Text(illegal::ATTACK_TOO_DEAR),
+            ));
+        }
+        let cost = std::mem::take(&mut self.attack_cost);
+        if let Some(m) = own_manager_mut(cx) {
+            m.set_illegal_closed(m.illegal_closed() | illegal::ATTACKS[kind].1);
+            m.set_black_cash(m.black_cash().wrapping_sub(cost as i32));
+        }
+        for id in [ATTACK_OK, ATTACK_TARGETS, ATTACK_KINDS, ATTACK_CHOICE, HUMANS] {
+            if let Some(c) = control(dialog, id) {
+                view.controls[c].hidden = true;
+            }
+        }
+        for id in [ATTACK_KINDS, ATTACK_CHOICE] {
+            if let Some(o) = control(dialog, id).and_then(|c| view.options_mut(c)) {
+                o.chosen = NONE;
+            }
+        }
+        let cash = own_manager(cx).map_or(0, |m| m.black_cash().max(0));
+        set(view, dialog, CASH, money(cx.game, cash.into()));
+        Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(illegal::ATTACK_ORDERED)))
+    }
+
     /// "Geld in die Bilanz bringen" (`OnClicked_IDC_BILANZ_OK`): the
     /// amount from the box to the gates' takings as booked (club +0x230);
     /// its OK stays up at nought. The club's money is told anew, now by
@@ -580,11 +723,41 @@ fn cross(view: &mut View, dialog: &Dialog) {
         Target::Button(c) => {
             matches!(
                 dialog.controls[c].id,
-                Some(1 | REFEREE_OK | INCITE_OK | OPPONENT_OK | PLAYER_OK | BOOKS_OK | POCKET_OK)
+                Some(
+                    1 | REFEREE_OK
+                        | INCITE_OK
+                        | OPPONENT_OK
+                        | PLAYER_OK
+                        | ATTACK_OK
+                        | BOOKS_OK
+                        | POCKET_OK
+                )
             )
         }
         _ => true,
     });
+}
+
+/// A picture stretched as Windows' `StretchBlt` does it: a source pixel
+/// for each, stepping through the source in 16.16 fixed point from half a
+/// step in (fitted to the original's portrait, pixel for pixel).
+fn stretch(image: &image::RgbaImage, w: u32, h: u32) -> image::RgbaImage {
+    let (sw, sh) = image.dimensions();
+    let at = |i: u32, from: u32, to: u32| {
+        let step = (u64::from(from) << 16) / u64::from(to.max(1));
+        (((u64::from(i) * step + step / 2) >> 16) as u32).min(from.saturating_sub(1))
+    };
+    image::RgbaImage::from_fn(w, h, |x, y| *image.get_pixel(at(x, sw, w), at(y, sh, h)))
+}
+
+/// The kind of attack chosen: one of the first group's two, or the
+/// second group's, which is the third (`FUN_004ca256`).
+fn attack_kind(dialog: &Dialog, view: &View) -> Option<usize> {
+    let chosen = |id| control(dialog, id).and_then(|c| view.options(c)).map_or(NONE, |o| o.chosen);
+    if chosen(ATTACK_CHOICE) != NONE {
+        return Some(2);
+    }
+    Some(chosen(ATTACK_KINDS)).filter(|&k| k < 2)
 }
 
 fn printf(text: &str, s: &str) -> String {

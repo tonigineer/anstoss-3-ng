@@ -896,6 +896,10 @@ record! {
     0x1a8 => illegal_closed, set_illegal_closed: u32;
     /// The opponent's player chosen to bribe (the object's +0x102).
     0x1b2 => bribe_target, set_bribe_target: u16;
+    /// The human to attack, by his number, and his player chosen (the
+    /// object's +0x100, +0x104).
+    0x1b0 => attacked, set_attacked: u16;
+    0x1b4 => attacked_player, set_attacked_player: u16;
     0x1b6 => incited, set_incited: [u16; 2];
     /// How the public, the fans and the media like him, 0 to 100.
     0x126 => popularity, set_popularity: [u8; 3];
@@ -1153,6 +1157,7 @@ impl Manager {
 
 const MANAGER_FIRST_NAME: (usize, usize) = (0, 0xa);
 const MANAGER_LAST_NAME: (usize, usize) = (0xa, 0x12);
+const MANAGER_PORTRAIT: (usize, usize) = (0x1f20, 0x40);
 
 impl Manager {
     pub fn first_name(&self) -> String {
@@ -1161,6 +1166,12 @@ impl Manager {
 
     pub fn last_name(&self) -> String {
         text(&self.0[MANAGER_LAST_NAME.0..], MANAGER_LAST_NAME.1)
+    }
+
+    /// The file of his portrait in the game's `portrait` folder (+0x1f20,
+    /// `FUN_006a6423`).
+    pub fn portrait(&self) -> String {
+        text(&self.0[MANAGER_PORTRAIT.0..], MANAGER_PORTRAIT.1)
     }
 }
 
