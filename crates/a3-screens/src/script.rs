@@ -8646,4 +8646,42 @@ mod tests {
         // Three steps of a hundred to the books, twelve to the pocket.
         assert_eq!(after, (cash - 300 - 1200, own + 1200, gates + 300));
     }
+
+    /// The referee asked: A's does not take money, and only says so —
+    /// his section closed for the season, the box untouched. One the news
+    /// made corruptible (his +8) takes 300.000 in a first league for sure:
+    /// the box pays and he promises a favour.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_referee_takes_the_black_money_or_not() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let ask = format!("{open}\nnow slide 5539 1\nnow press 5551\nuntil dialog 380");
+        let Some(refused) = on_save(&game, "A", &ask) else { return };
+        assert_eq!(state(&refused), (220_757, 0x80));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "corrupt-referee", |records| {
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            let referee = team.referee();
+            records.block_mut(&format!("0x19f4ed8[{referee}]")).unwrap()[8] = 0x80;
+            records.managers[0].set_black_cash(400_000);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        // 300.000: a hundred steps of hundreds, ninety of thousands, twenty
+        // of ten thousands: step 210.
+        let ask = format!("{open}\nnow slide 5539 210\nnow press 5551\nuntil dialog 380");
+        let Some(taken) = on_save(&patched_game, "corrupt-referee", &ask) else { return };
+        let (cash, closed) = state(&taken);
+        assert_eq!(cash, 100_000);
+        assert_eq!(closed & 0xc0, 0xc0);
+        assert_eq!((closed & 0x1c00_0000).count_ones(), 1, "{closed:#x}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

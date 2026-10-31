@@ -1841,6 +1841,15 @@ impl Records {
         Some((self.name(name), *bytes.get(5)?, *bytes.get(6)?))
     }
 
+    /// Whether a referee takes money (his record's +8, which the black
+    /// cash box asks, `FUN_004c8823`).
+    pub fn referee_corruptible(&self, id: i16) -> bool {
+        let Some(id) = usize::try_from(id).ok().filter(|id| (1..=REFEREES).contains(id)) else {
+            return false;
+        };
+        self.block(&format!("{REFEREE_AT:#x}[{id}]")).and_then(|b| b.get(8)).is_some_and(|&b| b != 0)
+    }
+
     /// A referee's full name (`FUN_00637cbb`): first and last name, one
     /// alone where the other is none, nothing where both are.
     pub fn referee_name(&self, id: i16) -> Option<String> {

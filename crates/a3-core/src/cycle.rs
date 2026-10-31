@@ -298,6 +298,9 @@ pub enum Args {
     WeekPlayer,
     /// An alert the game writes itself, by where it is in the program.
     Message(u32),
+    /// Two texts, the first and a space before the second, both as they
+    /// are; a first of 0 is none.
+    Texts(u16, u16),
     /// A text by its id, with a player's name for its `%s`.
     TextFor(u16, u16),
     /// A text by its id, with the date of a day of the season for its

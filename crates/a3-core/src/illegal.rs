@@ -61,3 +61,50 @@ pub fn gate_most(league: u8) -> i32 {
 
 /// The cup opponents' share at most kept back, in tenths of a percent.
 pub const CUP_SHARE_MOST: i32 = 50;
+
+/// How dear bribes come by the club's league (`FUN_004c8d07`): in the
+/// countries 63 and 28 fifteen, else ten in a first league, four in a
+/// second, two below.
+pub fn league_factor(country: u8, league: u8) -> i64 {
+    match (country, league) {
+        (63 | 28, _) => 15,
+        (_, 0) => 10,
+        (_, 1) => 4,
+        _ => 2,
+    }
+}
+
+/// What makes a referee's bribe sure, by the league's factor
+/// (`DAT_00a3b3a0` = 30 · 1000), and the unit its chance counts in
+/// (`DAT_00a3b328` = 1250 · 1000).
+const REFEREE_SURE: i64 = 30_000;
+const REFEREE_UNIT: i64 = 1_250_000;
+
+/// What the referee promises, by the bits his bribe sets (+0x1a8): a
+/// penalty at the first dive, a red card at the first chance, a generous
+/// offside rule; texts 4549 to 4551.
+pub const REFEREE_PROMISES: [(u16, u32); 3] =
+    [(4549, 0x1000_0000), (4550, 0x0800_0000), (4551, 0x0400_0000)];
+/// His greeting when the money is sure to do it (text 4552), and his
+/// refusals (`0x882500`).
+pub const REFEREE_GREETING: u16 = 4552;
+pub const REFEREE_REFUSALS: [u16; 5] = [4553, 4554, 4555, 4556, 4557];
+/// A bribed referee (+0x1a8).
+pub const REFEREE_BRIBED: u32 = 0x40;
+
+/// The referee asked (`OnClicked_IDC_SCHIEDSRICHTER_OK`): sure where he
+/// takes money and the amount reaches thirty thousand by the league's
+/// factor; else by chance, a hundredth of the amount in 12.500s by the
+/// factor above a hundred — which takes over 1.25 million. Returns whether
+/// he takes it and whether it was sure; `below` draws the game's random
+/// numbers.
+pub fn bribe_referee(
+    amount: i64,
+    corruptible: bool,
+    factor: i64,
+    below: &mut impl FnMut(u32) -> u32,
+) -> (bool, bool) {
+    let chance = if corruptible { amount * 10 / REFEREE_UNIT * factor } else { 0 };
+    let sure = corruptible && amount >= REFEREE_SURE * factor;
+    (sure || i64::from(below(100)) < chance - 100, sure)
+}

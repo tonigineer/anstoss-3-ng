@@ -13,7 +13,7 @@ use a3_files::rch::Dialog;
 use super::discipline::CAPTION_ID;
 use super::finances::money64;
 use super::playerinfo::money;
-use super::{Args, Cx, Outcome, Reply, Screen, control, mark_inert, set};
+use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
 use crate::pointer::Target;
 use crate::view::View;
 
@@ -102,6 +102,8 @@ pub struct Illegal {
     incite_rows: Vec<(usize, bool)>,
     /// The bribe combo's rows past the first: the players' ids.
     players: Vec<u16>,
+    /// What a use's answer, once read, hides.
+    closing: Vec<u16>,
 }
 
 impl Screen for Illegal {
@@ -307,6 +309,7 @@ impl Screen for Illegal {
                     }
                 }
             }
+            Target::Button(c) if id(c) == REFEREE_OK => return self.bribe_referee(cx, view),
             Target::Button(c) if id(c) == BOOKS_OK => self.into_books(cx, view),
             Target::Button(c) if id(c) == POCKET_OK => self.into_pocket(cx, view),
             Target::Button(c) if id(c) == 1 => return Outcome::Close(Reply::Ok),
@@ -314,9 +317,58 @@ impl Screen for Illegal {
         }
         Outcome::Stay
     }
+
+    /// A use's answer read: its section goes, the sliders reach anew.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
+        for id in std::mem::take(&mut self.closing) {
+            if let Some(c) = control(cx.dialog, id) {
+                view.controls[c].hidden = true;
+            }
+        }
+        self.ranges(cx, view);
+        cross(view, cx.dialog);
+        Outcome::Stay
+    }
 }
 
 impl Illegal {
+    /// The referee asked (`OnClicked_IDC_SCHIEDSRICHTER_OK`): once a
+    /// season, whatever he says. Taking it, he costs the amount and
+    /// promises one of three favours, kept with the manager for the
+    /// match; refusing, he costs nothing. His section goes.
+    fn bribe_referee(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let amount = std::mem::take(&mut self.amounts[Amount::Referee as usize]);
+        let Some(team) = super::squad::own_team(cx) else { return Outcome::Stay };
+        let factor = illegal::league_factor(team.country(), team.get::<u8>(LEAGUE));
+        let corruptible =
+            cx.state.records.as_ref().is_some_and(|r| r.referee_corruptible(team.referee()));
+        let Some(season) = cx.state.season.as_mut() else { return Outcome::Stay };
+        let mut below = |n| season.random.below(n);
+        let (taken, sure) = illegal::bribe_referee(amount, corruptible, factor, &mut below);
+        let pick = if taken { below(3) } else { below(5) } as usize;
+        let mut closed = illegal::REFEREE_DONE;
+        let text = if taken {
+            let (promise, bit) = illegal::REFEREE_PROMISES[pick];
+            closed |= illegal::REFEREE_BRIBED | bit;
+            Args::Texts(if sure { illegal::REFEREE_GREETING } else { 0 }, promise)
+        } else {
+            Args::Text(illegal::REFEREE_REFUSALS[pick])
+        };
+        if let Some(m) = own_manager_mut(cx) {
+            m.set_illegal_closed(m.illegal_closed() | closed);
+            if taken {
+                m.set_black_cash(m.black_cash().wrapping_sub(amount as i32));
+            }
+        }
+        if taken {
+            let cash = own_manager(cx).map_or(0, |m| m.black_cash().max(0));
+            set(view, cx.dialog, CASH, money(cx.game, cash.into()));
+        }
+        // The section goes once his answer is read.
+        self.closing = vec![REFEREE_OK, REFEREE_SLIDER, REFEREE_AMOUNT];
+        Outcome::Popup(Request::with(super::popups::NOTICE, text))
+    }
+
     /// "Geld in die Bilanz bringen" (`OnClicked_IDC_BILANZ_OK`): the
     /// amount from the box to the gates' takings as booked (club +0x230);
     /// its OK stays up at nought. The club's money is told anew, now by
@@ -385,7 +437,9 @@ impl Illegal {
 /// The uses not built yet: their OKs are crossed out as they show.
 fn cross(view: &mut View, dialog: &Dialog) {
     mark_inert(view, dialog, |t| match t {
-        Target::Button(c) => matches!(dialog.controls[c].id, Some(1 | BOOKS_OK | POCKET_OK)),
+        Target::Button(c) => {
+            matches!(dialog.controls[c].id, Some(1 | REFEREE_OK | BOOKS_OK | POCKET_OK))
+        }
         _ => true,
     });
 }
