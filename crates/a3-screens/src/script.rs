@@ -3338,8 +3338,10 @@ mod tests {
 
     /// The league's matchdays play on as the days pass: the save's first
     /// league has played three matchdays, and ten days carry at least one
-    /// more — every game with a result, half time within full time, and the
-    /// clubs' records agreeing with the table the results reckon. Played on
+    /// more — every game with a result, half time within full time, the
+    /// clubs' records agreeing with the table the results reckon, and the
+    /// gates: a crowd to every matchday, money booked and a gate held for
+    /// every home game, the attendance rows keeping step. Played on
     /// a copy: ten days cross week ends, and their autosaves roll into the
     /// game's own `saves` — which would shuffle the list the other tests
     /// pick their save from.
@@ -3395,6 +3397,32 @@ mod tests {
                 "team {}",
                 row.team
             );
+        }
+        // The gates come in with the games: every matchday the days played
+        // has its crowd, every club booked money, holds a gate per home
+        // game, and its attendance row keeps step with them.
+        for md in 3..league.played() {
+            assert!(league.matchday_crowds()[md] > 0, "md {md}: no crowd");
+        }
+        let att_slot = statistics::attendance_slot(records, nation, 0).expect("the league's row");
+        let att_rows = statistics::league_attendance(records, att_slot).expect("the attendance rows");
+        for place in 0..league.teams() {
+            let number = league.team(place) as u16;
+            let team = records.team(nation, number).expect("a league club");
+            let booked = team.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM);
+            assert!(booked > 0, "team {number}: no gate money booked");
+            let homes = (0..league.played())
+                .flat_map(|md| league.games(md))
+                .filter(|&(home, _, _)| home == place)
+                .count();
+            let held = usize::from(team.home_games());
+            assert_eq!(held, homes, "team {number}: {} gates for {homes} home games", held);
+            for idx in 0..held {
+                assert!(team.gates()[idx] > 0, "team {number}: gate {idx} nought");
+            }
+            let row = att_rows[place];
+            assert_eq!(usize::try_from(row.games).unwrap(), held, "team {number}: row out of step");
+            assert!(row.total > 0 && row.percent > 0 && row.percent <= 100, "team {number}: {row:?}");
         }
         assert!(season.day > 63);
     }

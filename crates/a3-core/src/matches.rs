@@ -4,12 +4,23 @@
 //! is out of the replica's scope, so its games are scored like the others.
 
 use crate::calendar::Calendar;
+use crate::finances::CLUB_TO_TEAM;
 use crate::opponent::League;
 use crate::random::Random;
-use crate::records::Records;
+use crate::records::{Records, Team};
 use crate::season::Season;
 use crate::statistics::{self, ALL};
+use crate::tickets;
 use crate::world::{self, World};
+
+/// The stadiums (`0x1a48138[index]`), and the capacity within.
+const STADIUM_AT: u32 = 0x1a48138;
+const CAPACITY: usize = 0x3c;
+/// The plan's attendance and its season-ticket holders (club +0x120,
+/// +0x124), and the gate money booked match by match (club +0x230).
+const PLAN_ATTENDANCE: usize = 0x120;
+const PLAN_SEASON_TICKETS: usize = 0x124;
+const BOOKED_LEAGUE: usize = 0x230;
 
 /// Strengths to reckon by when a team's record (G+0xb8) carries none: the
 /// goalkeeper, defenders, midfield and attack in tenths, attack and hold
@@ -51,11 +62,13 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
 }
 
 /// Score a league's next matchday and write it to its block: the four goal
-/// bytes of each pair, the count of matchdays played, and the crowd — left
-/// nought, the gate and its money being the stadium's to bring (the
-/// original writes totals of some hundred and fifty thousand here) — then
-/// the places the table shows after the matchday, and each club's season
-/// record, goals and table place.
+/// bytes of each pair, the count of matchdays played, and the crowd — the
+/// matchday's gates together, as the original keeps them by the hundred
+/// and fifty thousand — then the places the table shows after the
+/// matchday, and each club's season record, goals and table place. Every
+/// home club books its gate: the attendance on its played matches, the
+/// money on its season's takings, and the league's attendance row
+/// follows.
 fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     let Some(league) = League::of(records, nation, level) else {
         return;
@@ -82,6 +95,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     let played_at = league.played_slot();
     let crowd_at = league.crowd_slot();
     let played = (league.played() + 1) as i16;
+    let matchday = i32::try_from(league.played() + 1).unwrap_or(0);
     let scored: Vec<[u8; 4]> = games
         .iter()
         .map(|&(home, away, _)| {
@@ -90,6 +104,23 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             [full, a_full, half, a_half]
         })
         .collect();
+    // The gate each home club books for its match — the attendance, the
+    // money and the stadium it fills — reckoned before the block and the
+    // clubs are written.
+    let homes: Vec<u16> = games.iter().map(|&(home, _, _)| league.team(home) as u16).collect();
+    let booked: Vec<(i32, i32, i32)> = homes
+        .iter()
+        .map(|&team| match records.team(nation, team) {
+            Some(t) => {
+                let cap = capacity(records, nation, team);
+                let att = attendance(t, cap, random);
+                (att, tickets::booked_gate(records, t, att, matchday), cap)
+            }
+            None => (0, 0, 0),
+        })
+        .collect();
+    let crowd: i32 = booked.iter().map(|&(att, _, _)| att).sum();
+    let att_slot = statistics::attendance_slot(records, nation, level);
     if let Some(block) = records.block_mut(&name) {
         for ((_, _, at), result) in games.iter().zip(&scored) {
             if let Some(slot) = block.get_mut(*at..*at + 4) {
@@ -100,7 +131,25 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             slot.copy_from_slice(&played.to_le_bytes());
         }
         if let Some(slot) = block.get_mut(crowd_at..crowd_at + 4) {
-            slot.copy_from_slice(&0i32.to_le_bytes());
+            slot.copy_from_slice(&crowd.to_le_bytes());
+        }
+    }
+    for ((home, _, _), (&team, (att, money, cap))) in
+        games.iter().zip(homes.iter().zip(booked))
+    {
+        if let Some(t) = records.team_mut(nation, team) {
+            let old = t.get::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM);
+            t.put::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM, old.wrapping_add(money));
+            let held = usize::from(t.home_games());
+            let mut gates = t.gates();
+            if let Some(entry) = gates.get_mut(held) {
+                *entry = att;
+                t.set_gates(gates);
+            }
+            t.set_home_games(u8::try_from(held + 1).unwrap_or(u8::MAX));
+        }
+        if let Some(slot) = att_slot {
+            statistics::book_attendance(records, slot, *home, att, cap);
         }
     }
     // The table as it stands after the matchday, and the places its rows
@@ -134,6 +183,34 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             team.set_table_place(rank as u8 + 1);
         }
     }
+}
+
+/// How many the club's stadium holds (`0x1a48138[index]` +0x3c).
+fn capacity(records: &Records, nation: u16, team: u16) -> i32 {
+    records
+        .team_index(nation, team)
+        .and_then(|i| records.block(&format!("{STADIUM_AT:#x}[{i}]")))
+        .map_or(0, |b| {
+            b.get(CAPACITY..CAPACITY + 4).map_or(0, |c| i32::from_le_bytes(c.try_into().unwrap()))
+        })
+}
+
+/// How many come to one of the club's home matches: the plan's attendance
+/// with three in ten off to three in ten on, held up by its season-ticket
+/// holders and capped by the stadium when it holds places. The original
+/// draws its crowd over the plan too (`FUN_0078e5e6`, its clubs' fills a
+/// little above and below the plan); the replica's luck rides a tenth to
+/// two tenths about it.
+fn attendance(team: &Team, capacity: i32, random: &mut Random) -> i32 {
+    let plan = team.get::<i32>(PLAN_ATTENDANCE + CLUB_TO_TEAM);
+    if plan <= 0 {
+        return 0;
+    }
+    let season = team.get::<i32>(PLAN_SEASON_TICKETS + CLUB_TO_TEAM).max(0);
+    let luck = 70 + i32::try_from(random.below(61)).unwrap_or(70);
+    let a = plan.wrapping_mul(luck) / 100;
+    let a = a.max(season);
+    if capacity > 0 { a.min(capacity) } else { a }
 }
 
 /// How many goals one side scores past the other: its midfield and attack

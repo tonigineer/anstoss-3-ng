@@ -3659,6 +3659,39 @@ pub fn league_attendance(records: &Records, slot: usize) -> Option<[Attendance; 
     }))
 }
 
+/// Book one played home match of a league's club into its slot: the gate
+/// added to the club's total, its home games raised, and the utilisation
+/// re-reckoned — the total against the stadium's places over the games
+/// (`FUN_00677b07`).
+pub fn book_attendance(records: &mut Records, slot: usize, place: usize, gate: i32, capacity: i32) {
+    let Some(base) = slot.checked_mul(ATTENDANCE_SLOT) else { return };
+    let Some(block) = records.block_mut(ATTENDANCE_BLOCK) else { return };
+    let Some(at) = base.checked_add(4 * place) else { return };
+    let Some(games_at) = base.checked_add(ATTENDANCE_GAMES + 2 * place) else { return };
+    let Some(percent_at) = base.checked_add(ATTENDANCE_PERCENT + 2 * place) else { return };
+    let total = block
+        .get(at..at + 4)
+        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .wrapping_add(gate);
+    let games =
+        block.get(games_at..games_at + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]])) + 1;
+    let percent = if capacity > 0 {
+        i32::try_from(i64::from(total) * 100 / (i64::from(capacity) * i64::from(games)))
+            .unwrap_or(i32::MAX)
+    } else {
+        0
+    };
+    if let Some(b) = block.get_mut(at..at + 4) {
+        b.copy_from_slice(&total.to_le_bytes());
+    }
+    if let Some(b) = block.get_mut(games_at..games_at + 2) {
+        b.copy_from_slice(&games.to_le_bytes());
+    }
+    if let Some(b) = block.get_mut(percent_at..percent_at + 2) {
+        b.copy_from_slice(&i16::try_from(percent).unwrap_or(i16::MAX).to_le_bytes());
+    }
+}
+
 /// One entry of the biggest-stadium lists (`CArchivTabControl`'s block at
 /// `0xa3b640`, six lists of 0x4b0: `FUN_00638db7` copies one out): its
 /// club and the capacity kept there, the strings behind it unused — the
