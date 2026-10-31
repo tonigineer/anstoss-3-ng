@@ -452,6 +452,14 @@ pub(crate) fn switch_off(cx: &Cx, view: &mut View, symbol: usize) {
     }
 }
 
+/// Take the bar off a screen: the season's statement opens its finances
+/// without one (`FUN_004a141c` keeps the dialog's bar pointer at nought).
+pub(crate) fn hide_bar(view: &mut View, dialog: &Dialog) {
+    if let Some(c) = control(dialog, BAR_ID) {
+        view.controls[c].hidden = true;
+    }
+}
+
 /// Whether a target is a symbol of the bar.
 pub(crate) fn on_bar(dialog: &Dialog, target: Target) -> Option<usize> {
     match target {

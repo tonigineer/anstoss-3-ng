@@ -70,11 +70,16 @@ const PRICES: [u16; 2] = [4461, 4460];
 /// The overdraft is kept in units of this.
 const OVERDRAFT_UNIT: i32 = 100_000;
 
-/// The bar takes the OK's place; the caption.
+/// The bar takes the OK's place; the caption. The finances keep their OK:
+/// the season's statement opens the dialog with it, and the week's
+/// OnInitDialog only hides it (`FUN_0043ff5f`'s bar mode, `+0x60
+/// 0x10000000`).
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     for id in [BALANCE, FINANCES] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
-        dialog.controls.retain(|c| c.id != Some(OK));
+        if id == BALANCE {
+            dialog.controls.retain(|c| c.id != Some(OK));
+        }
         dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
         hub::add_bar(dialog, rules);
     }
@@ -194,6 +199,10 @@ pub struct Finances {
     comparisons: Vec<usize>,
     /// Whether the donations are open.
     donating: bool,
+    /// Whether this is the season's statement: the dialog the season end
+    /// posts comes without the bar and with its OK, hides the picture
+    /// buttons and tells the tax below the rows (`FUN_004a141c`).
+    statement: bool,
 }
 
 /// The combos: how the figures are found, what they are compared with,
@@ -289,6 +298,16 @@ const ROW_BUTTONS: std::ops::RangeInclusive<u16> = 5767..=5779;
 const DONATIONS_BUTTON: u16 = 2222;
 /// The picture button to the association's conditions for the licence.
 const LICENCE_BUTTON: u16 = 1619;
+/// The picture button to the black cash box — `IDC_KALK_GUV_SKASSE` with
+/// the bitmap `kalk/Schwarz1.bmp`, which `0x4a3864` sends to
+/// `FUN_004c74f8` and its dialog 442; that is not built, so the button
+/// stays crossed out.
+const CASH_BOX: u16 = 2224;
+/// The season's statement's line below the rows, telling the tax, and
+/// the sentences it picks by the tax booked (`0x4a141c`'s OnInitDialog
+/// step 10): none, in narrow bounds, a pretty part, a hard hour.
+const TAX_LINE: u16 = 1621;
+const TAXES: [u16; 4] = [2244, 2245, 2246, 2247];
 const GIVEN_THIS_WEEK: u16 = 4602;
 
 impl Screen for Finances {
@@ -296,15 +315,35 @@ impl Screen for Finances {
         &[FINANCES]
     }
 
-    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        self.statement = matches!(args, Args::Statement);
         open_screen(cx, view, FINANCES_SYMBOL);
         let game = cx.game;
         let dialog = cx.dialog;
         self.calculation = None;
+        // The week's figures wear the bar and hide their OK; the
+        // season's statement comes with the OK, no bar, no picture
+        // buttons and the tax below the rows (`0x4a141c`'s OnInitDialog,
+        // its byte +0x1280, FINANZUEBERSICHT.md §1.3).
+        let hide = |view: &mut View, id: u16| {
+            if let Some(c) = control(dialog, id) {
+                view.controls[c].hidden = true;
+            }
+        };
+        if self.statement {
+            hub::hide_bar(view, dialog);
+            hide(view, DONATIONS_BUTTON);
+            hide(view, CASH_BOX);
+            tax_line(game, cx, view);
+        } else {
+            hide(view, OK);
+            hide(view, TAX_LINE);
+        }
         let works = |target: Target| match target {
             Target::Button(c) => dialog.controls[c].id.is_some_and(|id| {
                 id == DONATIONS_BUTTON
                     || id == LICENCE_BUTTON
+                    || id == OK && self.statement
                     || ROW_BUTTONS.contains(&id)
                     && kalkulation::BUILT
                         .contains(&kalkulation::ROW_DIALOGS[usize::from(id - ROW_BUTTONS.start())])
@@ -318,9 +357,12 @@ impl Screen for Finances {
             .is_some_and(|(_, e)| a3_core::finances::Accounts::last_season(e).is_some());
         self.comparisons =
             (0..COMPARISONS.len()).filter(|&c| c != LAST_SEASON || has_last_season).collect();
+        // The statement leaves the finding combo on "Aktuell" (its
+        // step 10 disables it).
         if let Some(combo) = control(dialog, FINDING).and_then(|c| view.combo_mut(c)) {
             combo.items = FINDINGS.iter().map(|&t| game.text(t).to_owned()).collect();
             combo.selected = Some(CURRENT);
+            combo.disabled = self.statement;
         }
         if let Some(combo) = control(dialog, COMPARED).and_then(|c| view.combo_mut(c)) {
             combo.items =
@@ -335,6 +377,13 @@ impl Screen for Finances {
             let outcome = hub::bar_click(cx, view, item, FINANCES_SYMBOL);
             self.whistle = matches!(outcome, Outcome::Popup(_));
             return outcome;
+        }
+        // The season's statement is read: its OK, the one thing the
+        // season end's dialog keeps where the week's hides it.
+        if let Target::Button(c) = target
+            && cx.dialog.controls[c].id == Some(OK)
+        {
+            return Outcome::Close(Reply::Ok);
         }
         // The association's conditions, unless the licence's chance is
         // gone (`0x4a3ac6`); nothing anew afterwards.
@@ -389,6 +438,7 @@ impl Screen for Finances {
     /// the last's; its OK or cancel brings the figures anew, as the
     /// calculations may have booked.
     fn answer(&mut self, cx: &mut Cx, view: &mut View, reply: Reply) -> Outcome {
+        // Back from the donations, the figures anew.
         if std::mem::take(&mut self.donating) {
             self.fill(cx, view);
             return Outcome::Stay;
@@ -453,6 +503,26 @@ impl Finances {
         }
         bars(view, dialog, &graph);
     }
+}
+
+/// What the season's statement says of the tax: the amount the season
+/// end's settlement booked at the club's +0x310 (`FUN_006219d2`),
+/// weighed unsigned (`0x4a141c`'s OnInitDialog step 10): none at all,
+/// still in narrow bounds, a pretty part of the gain, or a hard hour.
+fn tax_line(game: &Game, cx: &Cx, view: &mut View) {
+    let tax = own_team(game, cx).map_or(0, |(_, team)| finances::tax_paid(team));
+    let band = match tax {
+        0 => 0,
+        1..100_000 => 1,
+        100_000..1_000_000 => 2,
+        _ => 3,
+    };
+    let line = if band == 0 {
+        game.text(TAXES[0]).to_owned()
+    } else {
+        printf(game.text(TAXES[band]), &[&money32(game, tax)])
+    };
+    set(view, cx.dialog, TAX_LINE, line);
 }
 
 /// A column of figures, its costs and its income, into the texts and the
@@ -752,6 +822,20 @@ pub(crate) fn money64(game: &Game, v: i64) -> String {
         _ => printf(text(3), &[&sign, &(v / 1_000_000_000), &(v % 1_000_000_000 / 1_000_000)]),
     };
     // Without a sign the text starts after it.
+    if sign == ' ' { written.chars().skip(2).collect() } else { written }
+}
+
+/// Money in 32 bits as the game writes it (`FUN_004daf8f`): the same
+/// three places as [`money64`] without the billions'; the season's
+/// statement's tax is such a figure.
+pub(crate) fn money32(game: &Game, v: u32) -> String {
+    let sign = if (v as i32) < 0 { '-' } else { ' ' };
+    let text = |i: usize| game.text(MONEY_64[i]);
+    let written = match v {
+        0..1_000 => printf(text(0), &[&sign, &v]),
+        1_000..1_000_000 => printf(text(1), &[&sign, &(v / 1000), &(v % 1000)]),
+        _ => printf(text(2), &[&sign, &(v / 1_000_000), &(v % 1_000_000 / 10_000)]),
+    };
     if sign == ' ' { written.chars().skip(2).collect() } else { written }
 }
 

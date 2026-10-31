@@ -274,6 +274,11 @@ pub enum Fill {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Args {
     None,
+    /// The finances' yearly statement at the season's end: dialog 417
+    /// opened without the bar and with its OK, as the event 0x12d the
+    /// season end posts to every human club opens it (`FUN_006742e0`,
+    /// `FUN_004a141c`).
+    Statement,
     /// The world map of the training camps' places, for a camp from a day.
     CampDay(usize),
     /// A camp's place to confirm, from 0, and its first day.
@@ -689,6 +694,7 @@ impl Cycle {
     /// the turns, as the original's does (its cycle's case 2).
     fn weeks(&mut self, mut wait: bool) -> Result<(), Gone> {
         loop {
+            self.statement()?;
             if wait {
                 self.ask(Request::new(WAIT))?;
             }
@@ -765,6 +771,48 @@ impl Cycle {
                 self.ask(Request::new(week))?;
             }
         }
+    }
+
+    /// The season's end: the yearly statement for every manager with a
+    /// club, dialog 417 opened by the event 0x12d the season end posts
+    /// (`FUN_006742e0` in `FUN_006da3a9`'s season-end block, `FUN_004a141c`
+    /// for the dialog). It is due once the played country's top league has
+    /// no matchday ahead of the game; the block's settlement, promotions
+    /// and rollover into the new season are not built here, and the
+    /// statement shows once in a loaded game (`season.statement`).
+    fn statement(&mut self) -> Result<(), Gone> {
+        let ready = {
+            let state = self.state();
+            state.season.as_ref().is_some_and(|season| {
+                !season.statement
+                    && self
+                        .data
+                        .world
+                        .country(season.main)
+                        .and_then(|country| {
+                            Some(self.data.calendar.row(u16::try_from(country.nation).ok()?, 0))
+                        })
+                        .flatten()
+                        .is_some_and(|row| {
+                            self.data.calendar.next_matchday(row, season.day + 1).is_none()
+                        })
+            })
+        };
+        if !ready {
+            return Ok(());
+        }
+        self.season(|s| s.statement = true);
+        let humans = self.season(|s| {
+            (0..s.managers.len())
+                .filter(|&m| s.managers[m].club.is_some())
+                .collect::<Vec<usize>>()
+        })
+        .unwrap_or_default();
+        for manager in humans {
+            self.season(|s| s.current = manager);
+            self.ask(Request::with(FINANCES, Args::Statement))?;
+        }
+        Ok(())
     }
 
     /// The rolling autosaves of the game being played (`FUN_006ecfeb`):

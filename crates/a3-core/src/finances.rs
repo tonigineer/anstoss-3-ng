@@ -133,6 +133,14 @@ fn at(c: usize) -> usize {
     c + CLUB_TO_TEAM
 }
 
+/// The club's tax bill of the season (`FUN_006219d2`): the season end's
+/// settlement takes a share of the booked result and books it at the
+/// team's +0x310, where the year calendar's statement and the Sonstiges
+/// dialog's "Steueraufwand" read it; the settlement itself is not built.
+pub fn tax_paid(team: &Team) -> u32 {
+    team.get::<u32>(at(0x310))
+}
+
 fn i64_(team: &Team, c: usize) -> i64 {
     team.get::<i64>(at(c))
 }

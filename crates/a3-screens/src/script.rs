@@ -8430,4 +8430,49 @@ mod tests {
         assert!(season.managers[0].club.is_some(), "he still stands at his club");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The season's end: A set one day before its top league's last
+    /// matchday, with 250.000 booked at the club's +0x310 as the season
+    /// end's settlement would (`FUN_006219d2`). Past the last matchday
+    /// the game brings its managers with a club the yearly statement —
+    /// the event 0x12d (`FUN_006742e0`, opened by `FUN_004a141c`):
+    /// dialog 417 without the bar, with its OK instead, hiding the
+    /// Spenden and black cash box buttons, keeping the Ermittlung combo on
+    /// "Aktuell", and below the rows text 2246 with the tax in words.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_statements_the_tax() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-statement", |records| {
+            records.globals.set_day(320);
+            let at = 0x310 + a3_core::finances::CLUB_TO_TEAM;
+            let team = usize::from(records.managers[0].team());
+            records.teams[team].put(at, 250_000i32);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // The week's finances, the whistle, the week run out past the
+        // last matchday, and the statement comes before the new week.
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417";
+        let Some(runner) = on_save(&game, "season-statement", then) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, 417, "{log}");
+        let dialog = &game.dialogs[&417];
+        let view = runner.host.view();
+        // The statement mode: OK up, bar and picture buttons off, the
+        // finding combo disabled, and the tax told below the rows.
+        let shown = |id: u16| !view.controls[control(dialog, id).unwrap()].hidden;
+        assert!(shown(1), "the statement keeps its OK");
+        assert!(!shown(9930), "the statement comes without the bar");
+        assert!(!shown(2222), "the statement hides the Spenden button");
+        assert!(!shown(2224), "the statement hides the black cash box button");
+        assert!(view.combo(control(dialog, 2226).unwrap()).unwrap().disabled, "{log}");
+        let line = view.text(control(dialog, 1621).unwrap());
+        assert!(line.contains("250.000 €"), "the tax line reads {line}");
+        // The statement has shown itself once in this game.
+        assert!(runner.host.state().season.as_ref().unwrap().statement, "{log}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

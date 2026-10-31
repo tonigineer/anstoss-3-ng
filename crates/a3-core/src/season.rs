@@ -290,6 +290,9 @@ pub struct Season {
     /// The week's donations to other humans' clubs (`CSpenden`, the table
     /// at 0x1bac688, which no save keeps).
     pub donations: Vec<Donation>,
+    /// Whether the season's statement — dialog 417 as the season end
+    /// posts it — has come up in this game.
+    pub statement: bool,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -660,6 +663,7 @@ impl Season {
             before_match: false,
             random,
             donations: Vec::new(),
+            statement: false,
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {
