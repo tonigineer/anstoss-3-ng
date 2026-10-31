@@ -11,7 +11,7 @@
  * them (tools/probe/prologues.py checks both). rand() and srand()
  * are hooked in the import tables of the modules that call them.
  *
- * Draws go to a trace file of 16-byte records (see struct draw), events to
+ * Draws go to a trace file of 48-byte records (see struct draw), events to
  * the log as "event NAME key=value ...", each with the number of draws so far.
  */
 #include <windows.h>
@@ -29,6 +29,9 @@ static const char *const source_names[SOURCES] = {"main", "second", "third", "ra
 						  "rand-activesim"};
 
 /* One draw in the trace. */
+/* How many return addresses above the drawing code a record keeps. */
+#define FRAMES 8
+
 struct draw {
 	uint32_t caller;   /* the return address into the code that drew */
 	uint32_t argument; /* the range for the generators, 0 for rand() */
@@ -36,6 +39,7 @@ struct draw {
 	uint8_t source; /* enum source */
 	uint8_t thread; /* the threads in the order they first drew, from 0 */
 	uint16_t spare;
+	uint32_t frames[FRAMES]; /* the callers above it, 0 past the last found */
 };
 
 static volatile LONG counts[SOURCES];
@@ -58,7 +62,33 @@ static LONG total_draws(void)
 	note("event " format " draws=%ld thread=%lu", __VA_ARGS__, total_draws(),               \
 	     GetCurrentThreadId())
 
-static void record(enum source source, void *caller, unsigned argument, int result)
+/* The return addresses above the code that drew, by the game's frame
+ * pointers: the hook's own frame (`hook`) holds the drawing code's frame,
+ * each frame the one above it and a return address. Every step stays
+ * inside the thread's stack and goes up, so a routine without a frame
+ * pointer ends the walk instead of misleading it. */
+static void walk(void *hook, uint32_t *frames)
+{
+	NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+	uintptr_t low = (uintptr_t)tib->StackLimit, high = (uintptr_t)tib->StackBase;
+	uintptr_t frame = (uintptr_t)hook;
+	for (int i = 0; i < FRAMES; i++)
+		frames[i] = 0;
+	if (frame < low || frame + 8 > high)
+		return;
+	frame = *(uintptr_t *)frame;
+	for (int i = 0; i < FRAMES; i++) {
+		if (frame < low || frame + 8 > high || (frame & 3))
+			return;
+		frames[i] = *(uint32_t *)(frame + 4);
+		uintptr_t next = *(uintptr_t *)frame;
+		if (next <= frame)
+			return;
+		frame = next;
+	}
+}
+
+static void record(enum source source, void *caller, unsigned argument, int result, void *hook)
 {
 	InterlockedIncrement(&counts[source]);
 	if (!trace)
@@ -72,7 +102,8 @@ static void record(enum source source, void *caller, unsigned argument, int resu
 		if (thread == thread_count && thread_count < (int)(sizeof threads / sizeof *threads))
 			threads[thread_count++] = id;
 		struct draw draw = {(uint32_t)(uintptr_t)caller, argument, result, source,
-				    (uint8_t)thread, 0};
+				    (uint8_t)thread, 0, {0}};
+		walk(hook, draw.frames);
 		fwrite(&draw, sizeof draw, 1, trace);
 	}
 	LeaveCriticalSection(&trace_lock);
@@ -112,10 +143,10 @@ void report_counts(char *reply, size_t size)
 typedef long(__cdecl *below_fn)(unsigned);
 static below_fn below_original[3];
 
-static long below(enum source source, unsigned range, void *caller)
+static long below(enum source source, unsigned range, void *caller, void *hook)
 {
 	long value = below_original[source](range);
-	record(source, caller, range, value);
+	record(source, caller, range, value, hook);
 	return value;
 }
 
@@ -123,17 +154,17 @@ static long below(enum source source, unsigned range, void *caller)
  * generators at 0x89dcc0, 0x8ad2b8 and 0x8ad2c0. */
 static long __cdecl below_main(unsigned range)
 {
-	return below(MAIN, range, __builtin_return_address(0));
+	return below(MAIN, range, __builtin_return_address(0), __builtin_frame_address(0));
 }
 
 static long __cdecl below_second(unsigned range)
 {
-	return below(SECOND, range, __builtin_return_address(0));
+	return below(SECOND, range, __builtin_return_address(0), __builtin_frame_address(0));
 }
 
 static long __cdecl below_third(unsigned range)
 {
-	return below(THIRD, range, __builtin_return_address(0));
+	return below(THIRD, range, __builtin_return_address(0), __builtin_frame_address(0));
 }
 
 typedef int(__cdecl *rand_fn)(void);
@@ -144,14 +175,14 @@ static srand_fn srand_original[2];
 static int __cdecl rand_game(void)
 {
 	int value = rand_original[0]();
-	record(RAND, __builtin_return_address(0), 0, value);
+	record(RAND, __builtin_return_address(0), 0, value, __builtin_frame_address(0));
 	return value;
 }
 
 static int __cdecl rand_sim(void)
 {
 	int value = rand_original[1]();
-	record(RAND_SIM, __builtin_return_address(0), 0, value);
+	record(RAND_SIM, __builtin_return_address(0), 0, value, __builtin_frame_address(0));
 	return value;
 }
 

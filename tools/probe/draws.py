@@ -14,8 +14,10 @@ two or more are set against them in order (below 2 neither generator
 moves); the first that differs is shown with what led up to it, the
 original's callers named by the decompile's functions.tsv where given.
 
-A record is 16 bytes: the caller's return address, the range (0 for rand()),
-the result, the source and the thread (in the order threads first drew).
+A record is 48 bytes: the caller's return address, the range (0 for rand()),
+the result, the source, the thread (in the order threads first drew) and
+the eight return addresses above the caller, by the game's frame pointers
+(0 past the last found).
 """
 
 import argparse
@@ -24,7 +26,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-RECORD = struct.Struct("<IIiBBH")
+RECORD = struct.Struct("<IIiBBH8I")
 SOURCES = ["main", "second", "third", "rand", "rand-activesim"]
 
 
@@ -35,10 +37,13 @@ def read(path: Path) -> list[tuple]:
     return [RECORD.unpack_from(data, i) for i in range(0, len(data), RECORD.size)]
 
 
-def show(index: int, draw: tuple) -> str:
-    caller, argument, result, source, thread, _ = draw
-    name = SOURCES[source] if source < len(SOURCES) else str(source)
-    return f"{index:9} {name:14} thread {thread} caller {caller:#09x} range {argument:6} -> {result}"
+def show(index: int, draw: tuple, name=None) -> str:
+    caller, argument, result, source, thread = draw[:5]
+    kind = SOURCES[source] if source < len(SOURCES) else str(source)
+    where = name or (lambda a: f"{a:#09x}")
+    stack = " < ".join(where(a) for a in draw[6:] if a)
+    return (f"{index:9} {kind:14} thread {thread} range {argument:6} -> {result:<6} "
+            f"{where(caller)}" + (f" < {stack}" if stack else ""))
 
 
 def main() -> int:
@@ -66,8 +71,9 @@ def main() -> int:
         print(f"the same {len(draws)} draws")
         return 0
     if args.list:
+        name = naming(args.functions) if args.functions else None
         for i, draw in enumerate(draws):
-            print(show(i, draw))
+            print(show(i, draw, name))
         return 0
     print(f"{len(draws)} draws")
     for source, count in sorted(Counter(d[3] for d in draws).items()):
@@ -117,15 +123,17 @@ def compare(draws: list[tuple], replica: Path, functions: Path | None, context: 
             print(f"the replica parts at draw {i} (of {len(original)} and {len(ours)}):")
             for k in range(max(0, i - context), min(i + 3, len(original), len(ours))):
                 o, r = original[k], ours[k]
-                mark = "  " if k < i else ">>" if k == i else "  "
+                mark = ">>" if k == i else "  "
                 print(f"{mark}{k:8}  original {o[1]:6} -> {o[2]:<6} {name(o[0]):40}"
                       f"  replica {r[0]:6} -> {r[1]:<6} {r[2]}")
+            print("the original's draw there, with its callers:")
+            print(show(i, original[i], name))
             return 1
     n = min(len(original), len(ours))
     if len(original) != len(ours):
         print(f"the same {n} draws, then " + (
-            f"the original draws on ({len(original)} against {len(ours)}), next at "
-            f"{name(original[n][0])}" if len(original) > n else
+            f"the original draws on ({len(original)} against {len(ours)}), next:\n"
+            f"{show(n, original[n], name)}" if len(original) > n else
             f"the replica draws on ({len(ours)} against {len(original)}), next at {ours[n][2]}"))
         return 1
     print(f"the same {n} draws")

@@ -3,7 +3,7 @@
 #   make            # builds into target/probe/ of the replica
 
 CC = i686-w64-mingw32-gcc
-CFLAGS = -O2 -Wall -Wextra -std=c11 -static-libgcc
+CFLAGS = -O2 -fno-omit-frame-pointer -Wall -Wextra -std=c11 -static-libgcc
 OUT ?= ../../target/probe
 
 all: $(OUT)/probe.dll $(OUT)/launch.exe
