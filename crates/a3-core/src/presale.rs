@@ -469,14 +469,211 @@ fn demand(home: &Side, away: &Side, prices: [i16; 4], t: &PresaleTables) -> i32 
     own + guests
 }
 
+/// A side's demand at the ground: the home row when the side's club
+/// issued the tickets, else the away rows (`FUN_0078ee04`,
+/// `FUN_0078f369`).
+fn side_demand(t: &PresaleTables, class: usize, f: f32, issuer: bool) -> f32 {
+    let row = t.demand.get(class).copied().unwrap_or([0; 4]);
+    if issuer {
+        if f <= 1.0 { row[0] as f32 } else { (f64::from(row[0]) * f64::from(f)) as f32 }
+    } else if class <= 3 && f < 1.0 {
+        (f64::from(row[2]) * f64::from(f) + f64::from(row[3])) as f32
+    } else {
+        (f64::from(row[1]) * f64::from(f)) as f32
+    }
+}
+
+/// The four classes' shares of a crowd by the club's class — boxes,
+/// side, behind the goal and the standing rest of `total` — weighed by
+/// their prices against the reference ones.
+fn shares(class: i32, extra: [f32; 3], total: f32, prices: [i16; 4]) -> ([f32; 4], f32, f32) {
+    let c = f64::from(class * 2);
+    let boxes = (c + f64::from(extra[0])) as f32;
+    let side = (c + f64::from(extra[1])) as f32;
+    let behind = (c + f64::from(extra[2])) as f32;
+    let standing = (f64::from(total) - f64::from(boxes) - f64::from(behind) - f64::from(side)) as f32;
+    let [stand_price, behind_price, side_price, box_price] = prices;
+    let [box_ref, side_ref, behind_ref, stand_ref] = REFERENCE_PRICES;
+    let (w_box, w_side) = (weight(box_price, box_ref), weight(side_price, side_ref));
+    let (w_behind, w_stand) = (weight(behind_price, behind_ref), weight(stand_price, stand_ref));
+    ([boxes * w_box, side * w_side, behind * w_behind, standing * w_stand], w_side, w_stand)
+}
+
+/// A crowd over the four classes' weighted shares, in hundreds.
+fn over(crowd: f32, s: [f32; 4]) -> i32 {
+    let c = f64::from(crowd);
+    ftol(c * f64::from(s[0]) + c * f64::from(s[1]) + c * f64::from(s[2]) + c * f64::from(s[3])) / 100
+}
+
+/// The away fans on the side and the standing places.
+fn guests(crowd: f32, w_side: f32, w_stand: f32) -> i32 {
+    let c = f64::from(crowd);
+    ftol(c * 4.0 * f64::from(w_side) / 5.0 + c * f64::from(w_stand) / 5.0)
+}
+
+/// The cup rounds' pull (`DAT_008ad4c0`), by the record's round.
+const ROUND_FACTORS: [f32; 8] = [0.8, 1.0, 1.2, 1.6, 2.4, 3.0, 3.5, 4.0];
+const FINAL: i16 = 7;
+
+/// The demand for a cup tie (`FUN_0078ee04`, summed by `FUN_0078f32f`):
+/// the club that issued the tickets reads the home row and lends its
+/// class; both leagues' pulls averaged; the round's pull, a hundredfold
+/// for a final no side of which issued; a small club at home to a first
+/// league side with few fans doubled; the classes apart weigh on the home
+/// side.
+fn cup_demand(home: &Side, away: &Side, sale: &Sale, issuer: (u8, i16), t: &PresaleTables) -> i32 {
+    let f = distance(home, away);
+    let (lh, la) = (fan_class(home, away, t), fan_class(away, home, t));
+    let issued = |side: &Side| issuer == (side.country, i16::from(side.number));
+    let (mut neutral, mut class) = (true, 6);
+    let mut h = side_demand(t, lh, f, issued(home));
+    if issued(home) {
+        class = home.class();
+        neutral = false;
+    }
+    let mut a = side_demand(t, la, f, issued(away));
+    if issued(away) {
+        class = away.class();
+        neutral = false;
+    }
+    standing(home, away, &mut h, &mut a, t);
+    let pull = (pull(home, t) + pull(away, t)) / 2;
+    h = (f64::from(pull) * f64::from(h) / 100.0) as f32;
+    a = (f64::from(pull) * f64::from(a) / 100.0) as f32;
+    if sale.extra == FINAL && neutral {
+        h *= 100.0;
+        a *= 100.0;
+    } else if 0 < sale.extra {
+        let k = ROUND_FACTORS.get(sale.extra as usize).copied().unwrap_or(1.0);
+        h *= k;
+        a *= k;
+    }
+    if home.country == away.country && home.level() >= 2 && away.level() == 0 && away.fans().0 < 2 {
+        h = h + h;
+    }
+    let (lv_home, lv_away) = (i32::from(home.level().min(2)), i32::from(away.level().min(2)));
+    if lv_away < lv_home {
+        h = ((f64::from(lv_home - lv_away) * 0.2 + 1.0) * f64::from(h)) as f32;
+    } else if lv_home < lv_away {
+        h = ((f64::from(lv_home - lv_away) * 0.35 + 1.0) * f64::from(h)) as f32;
+    }
+    let (s, w_side, w_stand) = shares(class, [3.0, 30.0, 10.0], 100.0, sale.prices);
+    let own = over(h, s);
+    if neutral { own + over(a, s) } else { own + guests(a, w_side, w_stand) }
+}
+
+/// How the distance to the ground carries a side's fans
+/// (`FUN_0078f76b` by `FUN_0067792f`): as between clubs, from the
+/// coordinates of a played country's clubs, nought elsewhere.
+fn distance_to(records: &Records, side: &Side, ground: (u8, i16)) -> f32 {
+    if side.country != ground.0 {
+        return 0.125;
+    }
+    let at = Side::of(records, ground.0, ground.1)
+        .filter(|g| records.globals.played(i16::from(g.country)))
+        .map_or((0, 0), |g| g.at());
+    let (x1, y1) = side.at();
+    let d = ftol(f64::from((x1 - at.0) * (x1 - at.0) + (y1 - at.1) * (y1 - at.1)).sqrt() * 1.0);
+    match d {
+        ..3 => 3.0,
+        3..10 => 2.5,
+        10..25 => 2.0,
+        25..50 => 0.8,
+        50..100 => 0.4,
+        100..250 => 0.2,
+        _ => 0.125,
+    }
+}
+
+/// The demand for an international tie (`FUN_0078f369`, summed by
+/// `FUN_0078f803`): a final sells a quarter of a million on each side;
+/// else both sides' fans by their distances to the ground, the issuing
+/// club reading the home row, their leagues' pulls, a small club at home
+/// to a first league side doubled, the round's pull, and Germany at home
+/// to country 0x43 five times its guests.
+fn international_demand(records: &Records, home: &Side, away: &Side, sale: &Sale, issuer: (u8, i16), t: &PresaleTables) -> i32 {
+    let (lh, la) = (fan_class(home, away, t), fan_class(away, home, t));
+    if sale.extra == FINAL {
+        return 250_000 + 250_000;
+    }
+    let fa = distance_to(records, away, issuer);
+    let fh = distance_to(records, home, issuer);
+    let mut a = side_demand(t, la, fa, false);
+    let mut h = side_demand(t, lh, fh, issuer == (home.country, i16::from(home.number)));
+    h = (f64::from(pull(home, t)) * f64::from(h) / 100.0) as f32;
+    a = (f64::from(pull(away, t)) * f64::from(a) / 100.0) as f32;
+    if home.country == away.country && home.level() >= 2 && away.level() == 0 && away.fans().0 < 2 {
+        h = h + h;
+    }
+    if (0..=FINAL).contains(&sale.extra) {
+        let k = ROUND_FACTORS[sale.extra as usize];
+        h *= k;
+        a *= k;
+    }
+    if away.country == 0x43 && home.country == 0xe {
+        a *= 5.0;
+    }
+    let (s, w_side, w_stand) = shares(home.class(), [3.0, 30.0, 10.0], 100.0, sale.prices);
+    over(h, s) + guests(a, w_side, w_stand)
+}
+
+/// How many a cup or international tie's record has sold by now
+/// (`FUN_0078ade2`, `FUN_0078b026`): within the week as a league match's
+/// but without the cap of fifteen thousand; further ahead per mille,
+/// drawn by how far. The issuing club's stadium bounds it, and a record
+/// never sells less than it had.
+fn sell_tie(records: &Records, sale: &Sale, today: i32, random: &mut Random, t: &PresaleTables) -> i32 {
+    let (Some(home), Some(away)) =
+        (Side::of(records, sale.home.0, sale.home.1), Side::of(records, sale.away.0, sale.away.1))
+    else {
+        return sale.sold;
+    };
+    let want = if (3..=4).contains(&sale.kind) {
+        cup_demand(&home, &away, sale, sale.issuer, t)
+    } else {
+        international_demand(records, &home, &away, sale, sale.issuer, t)
+    };
+    let room = Side::of(records, sale.issuer.0, sale.issuer.1).map_or(0, |g| capacity(records, &g));
+    let index = country_index(records, sale.issuer.0, t);
+    let mut sold = sale.sold;
+    let days = i32::from(sale.day) - today;
+    if i32::from(sale.day) < today + WEEK {
+        let by_days = i32::from(t.by_days.get(days.max(0) as usize).copied().unwrap_or(0));
+        let luck = random.below(2) as i32;
+        let by_country = i32::from(t.by_country.get(index).copied().unwrap_or(0));
+        sold = sold.wrapping_add(want.wrapping_mul(by_days + luck * 3) / 100 * by_country / 100);
+        if room < sold {
+            sold = room;
+        }
+    } else {
+        let per_mille = if days < 15 {
+            random.below(150) as i32 + 50
+        } else if days < 25 {
+            random.below(80) as i32 + 40
+        } else {
+            random.below(20) as i32 + 1
+        };
+        let mut ahead = (want.wrapping_mul(per_mille) as u32 / 1000) as i32;
+        if room < ahead {
+            ahead = room;
+        }
+        if sold < ahead {
+            sold = ahead;
+        }
+    }
+    sold.max(sale.sold)
+}
+
 /// A record of the sales.
 #[derive(Clone, Copy, Debug)]
 struct Sale {
     at: usize,
     home: (u8, i16),
     away: (u8, i16),
+    issuer: (u8, i16),
     day: i16,
     kind: i16,
+    extra: i16,
     sold: i32,
     prices: [i16; 4],
 }
@@ -491,8 +688,10 @@ fn read(block: &[u8], k: usize) -> Option<Sale> {
         at: k,
         home: (r[0], word(r, 2)),
         away: (r[4], word(r, 6)),
+        issuer: (r[SALE_ISSUER], word(r, SALE_ISSUER + 2)),
         day: word(r, SALE_DAY),
         kind: word(r, SALE_KIND),
+        extra: word(r, SALE_EXTRA),
         sold: i32::from_le_bytes(r[SALE_SOLD..SALE_SOLD + 4].try_into().unwrap()),
         prices: std::array::from_fn(|i| word(r, SALE_PRICES + 2 * i)),
     })
@@ -556,11 +755,12 @@ fn capacity(records: &Records, side: &Side) -> i32 {
 }
 
 /// A record's sale of the day, by its kind (`FUN_0077bfbd`,
-/// `FUN_0077c0c9`). Cup and international ties' models are not ported:
-/// their records keep what they sold.
+/// `FUN_0077c0c9`): a league match's from the seventh week on, a cup or
+/// international tie's at once.
 fn sell(records: &mut Records, sale: &Sale, today: i32, random: &mut Random, t: &PresaleTables) {
     let sold = match sale.kind {
         LEAGUE if today > FIRST_SALES_DAY => sell_league(records, sale, today, random, t),
+        3..=10 => sell_tie(records, sale, today, random, t),
         _ => return,
     };
     if let Some(b) = records.block_mut(SALES_AT) {
