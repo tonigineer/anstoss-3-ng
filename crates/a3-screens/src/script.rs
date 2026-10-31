@@ -7558,12 +7558,18 @@ mod tests {
     /// from A, as the only save of a game of its own; `None` where it is
     /// not kept.
     fn second_season(out: &str) -> Option<(PathBuf, Game)> {
+        kept_game("S2c", out)
+    }
+
+    /// A kept save as the only save of a game of its own; `None` where it
+    /// is not kept.
+    fn kept_game(save: &str, out: &str) -> Option<(PathBuf, Game)> {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
-        if !dir.parent().unwrap().join("saves-kept/S2c.an3").exists() {
-            eprintln!("no S2c among the kept saves");
+        if !dir.parent().unwrap().join(format!("saves-kept/{save}.an3")).exists() {
+            eprintln!("no {save} among the kept saves");
             return None;
         }
-        let root = patched(&dir, "S2c", out, |_| {});
+        let root = patched(&dir, save, out, |_| {});
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         Some((root, game))
@@ -7698,6 +7704,39 @@ mod tests {
                 "2025\tKylian Mbappé\tReal Madrid",
                 "1.\tBlessin, A.\t1\t0\t0\t1\t0",
                 "2025/26\tFC Chelsea\tEngland\t314\t31\t10.1",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches a statistics department of level 3 adds, on S2c
+    /// with Union's department raised (S2c3), each page's first row as the
+    /// original shows it: the eternal home and away tables, the
+    /// Herbstmeister, the Rekordmeister, the clubs most often promoted and
+    /// relegated, and the players.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_third_department_shows_more_history() {
+        let Some((root, game)) = kept_game("S2c3", "third-department") else { return };
+        let dialog = &game.dialogs[&18];
+        let first = |page: usize| {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}");
+            let runner = on_save(&game, "third-department", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.first().map(|r| r.text.clone()).unwrap_or_default()
+        };
+        assert_eq!(
+            [17, 18, 19, 20, 31, 32, 35, 36].map(first),
+            [
+                "1.\tBorussia Dortmund\t26\t52\t24\t54\t:\t30",
+                "1.\t1.FSV Mainz 05\t26\t41\t4\t35\t:\t31",
+                "2026/27\tBorussia Dortmund\t33\t5\t32\t:\t27",
+                "1.\tFC Bayern München\t34\t20\t8",
+                "1\tFC Hansa Rostock\t2\t0\t1\t1",
+                "1.\tSC Freiburg\t1\t1\t0\t0\t0",
+                "1\tBenjamin Uphoff\t2\tFC Hansa Rostock",
+                "1\tDiant Ramaj\t1\t1.FC Heidenheim",
             ]
         );
         let _ = std::fs::remove_dir_all(&root);

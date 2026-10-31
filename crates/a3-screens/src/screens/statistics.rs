@@ -1891,6 +1891,34 @@ const BEST_TEAMS_HEADER_COLUMNS: [(u16, u16); 6] =
     [(R, 60), (65, 0), (180, 0), (C | 300, 40), (C | 340, 40), (C | 380, 50)];
 const BEST_TEAMS_ROW_COLUMNS: [(u16, u16); 6] =
     [(R, 60), (65, 0), (180, 0), (R | 300, 25), (R | 340, 25), (R | 380, 30)];
+/// The Herbstmeister (text 3028, the Nat. Meister's columns) and its
+/// closing line (3698 "In den letzten Jahren sind %.1f%% der Herbstmeister
+/// auch Meister geworden.").
+const AUTUMN_HEADER: u16 = 3028;
+const AUTUMN_SHARE: u16 = 3698;
+/// The Rekordmeister (text 3026 "Nr.\tVerein\tMeister\tPokal\tEuro").
+const RECORD_CHAMPIONS_HEADER: u16 = 3026;
+const RECORD_CHAMPIONS_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 20), (25, 0), (C | 225, 50), (C | 275, 40), (C | 315, 40)];
+const RECORD_CHAMPIONS_ROW_COLUMNS: [(u16, u16); 5] =
+    [(R, 20), (25, 0), (R | 220, 30), (R | 270, 30), (R | 310, 30)];
+/// The Rekordaufsteiger (0x1293) and Rekordabsteiger (0x1294).
+const RECORD_PROMOTED_HEADER: u16 = 0x1293;
+const RECORD_PROMOTED_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(R, 25), (40, 0), (C | 200, 50), (C | 250, 40), (C | 290, 40), (C | 330, 40)];
+const RECORD_PROMOTED_ROW_COLUMNS: [(u16, u16); 6] =
+    [(R, 25), (40, 0), (R | 200, 30), (R | 250, 30), (R | 290, 30), (R | 330, 30)];
+const RECORD_RELEGATED_HEADER: u16 = 0x1294;
+const RECORD_RELEGATED_HEADER_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (C | 180, 60), (C | 240, 50), (C | 290, 50), (C | 340, 50), (C | 390, 50)];
+const RECORD_RELEGATED_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (R | 180, 35), (R | 240, 30), (R | 290, 30), (R | 340, 30), (R | 390, 30)];
+/// The Meiste Aufstiege (0x1296) and Meiste Abstiege (0x1297), both
+/// "Pl.\tSpieler\tAnzahl\tVerein".
+const MOST_PROMOTIONS_HEADER: u16 = 0x1296;
+const MOST_RELEGATIONS_HEADER: u16 = 0x1297;
+const MOST_MOVES_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (C | 200, 50), (250, 0)];
+const MOST_MOVES_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (R | 200, 30), (250, 0)];
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2597,7 +2625,13 @@ impl Statistics {
             Some(code @ (statistics::ABSOLUTE_PAGE | statistics::RELATIVE_PAGE))
                 if self.category == HISTORY =>
             {
-                self.eternal_page(cx, view, code == statistics::RELATIVE_PAGE)
+                self.eternal_page(cx, view, code == statistics::RELATIVE_PAGE, statistics::ALL)
+            }
+            Some(code @ (statistics::ETERNAL_HOME_PAGE | statistics::ETERNAL_AWAY_PAGE))
+                if self.category == HISTORY =>
+            {
+                let kind = if code == statistics::ETERNAL_HOME_PAGE { statistics::HOME } else { statistics::AWAY };
+                self.eternal_page(cx, view, false, kind)
             }
             Some(code) if self.category == HISTORY && statistics::FINAL_TABLE_PAGES.contains(&code) => {
                 self.final_table_page(cx, view, code)
@@ -2636,6 +2670,22 @@ impl Statistics {
                 if self.category == HISTORY =>
             {
                 self.awards_page(cx, view, (code - statistics::TRAINER_AWARD_PAGE) as usize)
+            }
+            Some(statistics::AUTUMN_CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.autumn_champions_page(cx, view)
+            }
+            Some(statistics::RECORD_CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.record_champions_page(cx, view)
+            }
+            Some(code @ (statistics::RECORD_PROMOTED_PAGE | statistics::RECORD_RELEGATED_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.record_moves_page(cx, view, code == statistics::RECORD_RELEGATED_PAGE)
+            }
+            Some(code @ (statistics::MOST_PROMOTIONS_PAGE | statistics::MOST_RELEGATIONS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.most_moves_page(cx, view, code == statistics::MOST_RELEGATIONS_PAGE)
             }
             Some(statistics::BEST_TEAMS_PAGE) if self.category == HISTORY => {
                 self.best_teams_page(cx, view)
@@ -3254,6 +3304,123 @@ impl Statistics {
             })
             .collect();
         self.fill_list(view, dialog, &BEST_TEAMS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Herbstmeister (`FUN_00462d17`): the half-season leaders, the newest
+    /// first, laid like the champions, the own club red; then, across the
+    /// whole row, how many of them became champions too.
+    fn autumn_champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(AUTUMN_HEADER).to_owned(), &CHAMPIONS_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (t.country(), i16::from(t.number())));
+        let (leaders, share) = statistics::autumn_champions(records, country);
+        let mut rows: Vec<TableRow> = leaders
+            .iter()
+            .map(|c| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t:\t{}",
+                    season_text(i32::from(c.year)),
+                    game.club_name(Some(records), c.club.0, c.club.1),
+                    c.points,
+                    c.goals_for - c.goals_against,
+                    c.goals_for,
+                    c.goals_against
+                );
+                TableRow { text, ink: if own == Some(c.club) { OWN_INK } else { INK }, mark: None, columns: None }
+            })
+            .collect();
+        if let Some(share) = share {
+            let text = game.text(AUTUMN_SHARE).replace("%.1f%%", &format!("{share:.1}%"));
+            rows.push(TableRow { text, ink: INK, mark: None, columns: Some(vec![(0, 0)]) });
+        }
+        self.fill_list(view, dialog, &CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordmeister (`FUN_004624fc`): the country's clubs with a title,
+    /// by titles, cups and European cups, "%d.\t%s\t%d\t%d\t%d", in black.
+    fn record_champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(
+            view,
+            dialog,
+            game.text(RECORD_CHAMPIONS_HEADER).to_owned(),
+            &RECORD_CHAMPIONS_HEADER_COLUMNS,
+        );
+        let rows = statistics::record_champions(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, &(team, [a, b, c]))| {
+                let text =
+                    format!("{}.\t{}\t{a}\t{b}\t{c}", i + 1, game.club_name(Some(records), country as u8, team));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &RECORD_CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordaufsteiger and Rekordabsteiger (`FUN_00465f1a`,
+    /// `FUN_00466266`): the main country's clubs by their promotions or
+    /// relegations, the total and by league; the promotions' number goes
+    /// without its dot.
+    fn record_moves_page(&self, cx: &Cx, view: &mut View, relegations: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = records.globals.main_country() as u8;
+        let (header, header_columns, columns): (u16, &[(u16, u16)], &[(u16, u16)]) = if relegations {
+            (RECORD_RELEGATED_HEADER, &RECORD_RELEGATED_HEADER_COLUMNS, &RECORD_RELEGATED_ROW_COLUMNS)
+        } else {
+            (RECORD_PROMOTED_HEADER, &RECORD_PROMOTED_HEADER_COLUMNS, &RECORD_PROMOTED_ROW_COLUMNS)
+        };
+        set_header(view, dialog, game.text(header).to_owned(), header_columns);
+        let rows = statistics::record_moves(records, relegations)
+            .iter()
+            .enumerate()
+            .map(|(i, (team, figures))| {
+                let mut text = format!(
+                    "{}{}\t{}",
+                    i + 1,
+                    if relegations { "." } else { "" },
+                    game.club_name(Some(records), country, *team)
+                );
+                for f in figures {
+                    text.push_str(&format!("\t{f}"));
+                }
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, columns, rows);
+        true
+    }
+
+    /// Meiste Aufstiege and Meiste Abstiege (`FUN_00466c6f`,
+    /// `FUN_00466e72`): the players most often promoted or relegated,
+    /// "%d\t%s\t%d\t%s" of the place, the name, how often and the club.
+    fn most_moves_page(&self, cx: &Cx, view: &mut View, relegations: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let header = if relegations { MOST_RELEGATIONS_HEADER } else { MOST_PROMOTIONS_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &MOST_MOVES_HEADER_COLUMNS);
+        let rows = statistics::most_moves(records, relegations)
+            .iter()
+            .enumerate()
+            .map(|(i, (names, (country, team), count))| {
+                let text = format!(
+                    "{}\t{}\t{count}\t{}",
+                    i + 1,
+                    spelled(records, names[0], names[1]),
+                    game.club_name(Some(records), *country, *team)
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &MOST_MOVES_ROW_COLUMNS, rows);
         true
     }
 
@@ -6168,8 +6335,11 @@ impl Statistics {
     /// The Abs. or Rel. ewige Tabelle (`FUN_00460f97`, `FUN_00461ac7`) of
     /// the country the strip stands at: the clubs that played its first
     /// league, by points or by points a game, numbered as shown; the own
-    /// club red. Under Germany's absolute table, its two notes.
-    fn eternal_page(&self, cx: &Cx, view: &mut View, relative: bool) -> bool {
+    /// club red. Under Germany's absolute table, its two notes. With
+    /// `kind` the home or the away games only: the ewige Heim- and
+    /// Auswärtstabelle (`FUN_004613db`, `FUN_00461751`), sorted as the
+    /// absolute one and without the notes.
+    fn eternal_page(&self, cx: &Cx, view: &mut View, relative: bool, kind: u8) -> bool {
         let (game, dialog) = (cx.game, cx.dialog);
         let Some(records) = cx.state.records.as_ref() else { return false };
         let country = self.strip_country(records);
@@ -6179,7 +6349,7 @@ impl Statistics {
             (ABSOLUTE_HEADER, &ABSOLUTE_HEADER_COLUMNS)
         };
         set_header(view, dialog, game.text(header).to_owned(), columns);
-        let mut table = statistics::eternal(records, country);
+        let mut table = statistics::eternal_of(records, country, kind);
         if relative {
             statistics::relative_order(&mut table);
         } else {
@@ -6204,7 +6374,7 @@ impl Statistics {
                 TableRow { text, ink, mark: None, columns: None }
             })
             .collect();
-        if !relative && country == GERMANY {
+        if !relative && kind == statistics::ALL && country == GERMANY {
             for note in GERMAN_NOTES {
                 let text = game.text(note).to_owned();
                 rows.push(TableRow { text, ink: INK, mark: None, columns: Some(vec![(0, 0)]) });
