@@ -8742,4 +8742,38 @@ mod tests {
         assert_eq!(state(&taken), (220_657, 0xc, target));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Another team's opponents incited: nothing before a team is chosen;
+    /// a hundred falls short of a hundred times the next opponent's average
+    /// salary on A, and is enough once their salaries are patched to one.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_money_incites_another_teams_opponents_or_not() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let unchosen = format!("{open}\nnow slide 5531 1\nnow press 5552");
+        let Some(runner) = on_save(&game, "A", &unchosen) else { return };
+        assert_eq!(state(&runner), (220_757, 0));
+        let ask = format!("{open}\nnow row 5542 1\nnow slide 5531 1\nnow press 5552\nuntil dialog 380");
+        assert_eq!(state(&on_save(&game, "A", &ask).unwrap()), (220_757, 0x2));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "cheap-opponents", |records| {
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            let next = records.team(team.next_country().into(), team.next_number() as u16).unwrap();
+            for id in next.players() {
+                records.player_mut(id).unwrap().set_salary(1);
+            }
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(taken) = on_save(&patched_game, "cheap-opponents", &ask) else { return };
+        assert_eq!(state(&taken), (220_657, 0x3));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -138,3 +138,21 @@ pub fn player_takes(amount: i64, scruples: u8, strength: u8) -> bool {
 /// His answers: yes (4612, 4613, one of two by chance), no (4614-4616).
 pub const PLAYER_YES: [u16; 2] = [4613, 4612];
 pub const PLAYER_NO: [u16; 3] = [4614, 4615, 4616];
+
+/// Another team's opponents incited (+0x1a8): the money is enough when it
+/// reaches a hundred times the average salary of the manager's own next
+/// opponent's squad — the side the original sums, not the one chosen;
+/// a squad of none gives a chance of 12 in 100 (`OnClicked_IDC_AUFSTACHELN_OK`,
+/// `DAT_00a3b3fc` = 100).
+pub const INCITED_DONE: u32 = 0x1;
+pub fn incite_takes(amount: i64, salaries: &[u16], below: &mut impl FnMut(u32) -> u32) -> bool {
+    if salaries.is_empty() {
+        return below(100) < 12;
+    }
+    let sum: i64 = salaries.iter().map(|&s| i64::from(s)).sum();
+    amount >= sum / salaries.len() as i64 * 100
+}
+/// The captain's answers: yes (4608, 4609), no (4610, 4611), one of two
+/// by chance.
+pub const INCITE_YES: [u16; 2] = [4609, 4608];
+pub const INCITE_NO: [u16; 2] = [4611, 4610];

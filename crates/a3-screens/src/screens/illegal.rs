@@ -102,8 +102,9 @@ pub struct Illegal {
     incite_rows: Vec<(usize, bool)>,
     /// The bribe combo's rows past the first: the players' ids.
     players: Vec<u16>,
-    /// What a use's answer, once read, hides.
+    /// What a use's answer, once read, hides, and the list it disables.
     closing: Vec<u16>,
+    disabling: Option<u16>,
 }
 
 impl Screen for Illegal {
@@ -322,6 +323,7 @@ impl Screen for Illegal {
                     m.set_bribe_target(player);
                 }
             }
+            Target::Button(c) if id(c) == INCITE_OK => return self.incite(cx, view),
             Target::Button(c) if id(c) == BOOKS_OK => self.into_books(cx, view),
             Target::Button(c) if id(c) == POCKET_OK => self.into_pocket(cx, view),
             Target::Button(c) if id(c) == 1 => return Outcome::Close(Reply::Ok),
@@ -332,6 +334,11 @@ impl Screen for Illegal {
 
     /// A use's answer read: its section goes, the sliders reach anew.
     fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
+        if let Some(combo) =
+            self.disabling.take().and_then(|id| control(cx.dialog, id)).and_then(|c| view.combo_mut(c))
+        {
+            combo.disabled = true;
+        }
         for id in std::mem::take(&mut self.closing) {
             if let Some(c) = control(cx.dialog, id) {
                 view.controls[c].hidden = true;
@@ -463,6 +470,45 @@ impl Illegal {
         Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(text)))
     }
 
+    /// Another team's opponents incited (`OnClicked_IDC_AUFSTACHELN_OK`):
+    /// nothing until a team is chosen; then once a season, the amount
+    /// leaving the box if it is enough. The section goes, its list
+    /// disabled.
+    fn incite(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let row = control(cx.dialog, INCITE_TEAMS).and_then(|c| view.combo(c)).and_then(|c| c.selected);
+        if row.unwrap_or(0) == 0 {
+            return Outcome::Stay;
+        }
+        let amount = std::mem::take(&mut self.amounts[Amount::Incite as usize]);
+        let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
+        let Some(team) = super::squad::own_team(cx) else { return Outcome::Stay };
+        let salaries: Vec<u16> = u16::try_from(team.next_number())
+            .ok()
+            .and_then(|n| records.team(team.next_country().into(), n))
+            .map(|t| t.players().iter().filter_map(|&id| records.player(id)).map(|p| p.salary()).collect())
+            .unwrap_or_default();
+        let Some(season) = cx.state.season.as_mut() else { return Outcome::Stay };
+        let mut below = |n| season.random.below(n);
+        let taken = illegal::incite_takes(amount, &salaries, &mut below);
+        let pick = below(2) as usize;
+        let text = if taken { illegal::INCITE_YES[pick] } else { illegal::INCITE_NO[pick] };
+        if let Some(m) = own_manager_mut(cx) {
+            let mut closed = m.illegal_closed() | illegal::INCITED;
+            if taken {
+                closed |= illegal::INCITED_DONE;
+                m.set_black_cash(m.black_cash().wrapping_sub(amount as i32));
+            }
+            m.set_illegal_closed(closed);
+        }
+        if taken {
+            let cash = own_manager(cx).map_or(0, |m| m.black_cash().max(0));
+            set(view, cx.dialog, CASH, money(cx.game, cash.into()));
+        }
+        self.closing = vec![INCITE_OK, INCITE_SLIDER, INCITE_AMOUNT];
+        self.disabling = Some(INCITE_TEAMS);
+        Outcome::Popup(Request::with(super::popups::NOTICE, Args::Text(text)))
+    }
+
     /// "Geld in die Bilanz bringen" (`OnClicked_IDC_BILANZ_OK`): the
     /// amount from the box to the gates' takings as booked (club +0x230);
     /// its OK stays up at nought. The club's money is told anew, now by
@@ -534,7 +580,7 @@ fn cross(view: &mut View, dialog: &Dialog) {
         Target::Button(c) => {
             matches!(
                 dialog.controls[c].id,
-                Some(1 | REFEREE_OK | OPPONENT_OK | PLAYER_OK | BOOKS_OK | POCKET_OK)
+                Some(1 | REFEREE_OK | INCITE_OK | OPPONENT_OK | PLAYER_OK | BOOKS_OK | POCKET_OK)
             )
         }
         _ => true,
