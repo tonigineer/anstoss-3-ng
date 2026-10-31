@@ -189,7 +189,7 @@ impl<'a> Original<'a> {
                 Some(actions) => actions,
                 None => match self.on.get(&up.id) {
                     Some(actions) => actions.clone(),
-                    None => match self.explore.then(|| self.answer(up.id)).flatten() {
+                    None => match self.explore.then(|| self.answer(up.id, turns % 2 == 1)).flatten() {
                         Some(action) => {
                             self.log.push("  (exploring)".into());
                             vec![action]
@@ -212,16 +212,31 @@ impl<'a> Original<'a> {
     }
 
     /// What exploring answers a dialog with: its OK button, or its only
-    /// button.
-    fn answer(&self, id: u16) -> Option<Action> {
+    /// button, or the first of its choices — at once without a button, or
+    /// when the OK did not take it away.
+    fn answer(&self, id: u16, again: bool) -> Option<Action> {
         let dialog = self.game.dialogs.get(&id)?;
+        let choice = || {
+            dialog
+                .controls
+                .iter()
+                .find(|c| matches!(c.kind, Kind::Options { .. }))
+                .and_then(|c| c.id)
+                .map(|id| Action::Choose(id, 0))
+        };
+        // An OK that left the dialog where it was waits for a choice: the
+        // first, then the OK again, by turns.
+        if again && let Some(action) = choice() {
+            return Some(action);
+        }
         if target_of(dialog, id, &Action::Ok).is_ok() {
             return Some(Action::Ok);
         }
         let mut buttons = dialog.controls.iter().filter(|c| matches!(c.kind, Kind::Button { .. }));
         match (buttons.next(), buttons.next()) {
             (Some(button), None) => button.id.map(Action::Press),
-            _ => None,
+            // A question answered by a group of choices takes the first.
+            _ => choice(),
         }
     }
 
