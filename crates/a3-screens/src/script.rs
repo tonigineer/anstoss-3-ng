@@ -7554,18 +7554,25 @@ mod tests {
     /// season the original played on to from A, shows last season's
     /// sponsor money from the human's extra record and the running
     /// season's, newest first, as the original does on the same save.
+    /// S2c, a day of Union's second season the original played on to
+    /// from A, as the only save of a game of its own; `None` where it is
+    /// not kept.
+    fn second_season(out: &str) -> Option<(PathBuf, Game)> {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.parent().unwrap().join("saves-kept/S2c.an3").exists() {
+            eprintln!("no S2c among the kept saves");
+            return None;
+        }
+        let root = patched(&dir, "S2c", out, |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        Some((root, game))
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_second_season_lists_the_sponsor_money() {
-        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
-        let kept = dir.parent().unwrap().join("saves-kept/S2c.an3");
-        if !kept.exists() {
-            eprintln!("no S2c among the kept saves");
-            return;
-        }
-        let root = patched(&dir, "S2c", "second-season", |_| {});
-        let mut game = Game::load(&root).unwrap();
-        compose(&mut game);
+        let Some((root, game)) = second_season("second-season") else { return };
         let dialog = &game.dialogs[&18];
         let then = "now click bar 14\nuntil dialog 18\nnow row 1283 6\nnow row 1284 7";
         let Some(runner) = on_save(&game, "second-season", then) else { return };
@@ -7579,6 +7586,33 @@ mod tests {
         let graph = table.graph.as_ref().unwrap();
         assert_eq!(graph.bars.len(), 2);
         assert!(graph.bars[1].0 > graph.bars[0].0, "last season's bar is the longer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches' Endtabelle of the season gone by: the Bundesliga
+    /// 2025/26 as the archive keeps it on S2c, reckoned from the stored
+    /// results — St. Pauli champions with 54 points, Union third in red —,
+    /// the places' boxes cyan, teal and green above and lavender for the
+    /// three going down, as the original draws them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_endtabelle_shows_the_season_gone_by() {
+        let Some((root, game)) = second_season("endtabelle") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 0";
+        let Some(runner) = on_save(&game, "endtabelle", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), r"Nr.\tVerein\tPkt\tDiff\tTore");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.rows.len(), 18);
+        assert_eq!(table.rows[0].text, "1.\tFC St. Pauli\t54\t14\t41\t:\t27");
+        assert_eq!(table.rows[2].text, "3.\t1.FC Union Berlin\t53\t8\t41\t:\t33");
+        assert_eq!(table.rows[2].ink, [255, 0, 0]);
+        assert_eq!(table.rows[17].text, "18.\t1.FC Heidenheim\t33\t-18\t32\t:\t50");
+        assert_eq!(table.rows[0].mark, Some([0, 255, 255]));
+        assert_eq!(table.rows[1].mark, Some([0, 128, 128]));
+        assert_eq!(table.rows[15].mark, Some([160, 160, 255]));
+        assert_eq!(table.rows[6].mark, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

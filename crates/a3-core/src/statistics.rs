@@ -1064,6 +1064,9 @@ pub const RELATIVE_PAGE: i16 = 0x24;
 pub const SACKED_PAGE: i16 = 0x33;
 pub const SCORES_PAGE: i16 = 0x39;
 pub const FINALS_PAGE: i16 = 0x28;
+/// The Historisches' Endtabelle of the seasons gone by (`FUN_0045ebbf`),
+/// the last one at code 0, the archive's slot nine less the code.
+pub const FINAL_TABLE_PAGES: std::ops::RangeInclusive<i16> = 0..=9;
 /// The Historisches' Rekorde (`FUN_0045f7a5`) and Für die Ewigkeit
 /// (`FUN_0045f8e5`).
 pub const RECORDS_PAGE: i16 = 0x1d;
@@ -2152,6 +2155,100 @@ fn league_of(records: &Records, country: u16, level: u8) -> Option<usize> {
     (0..more)
         .find(|&k| globals.more_countries()[k] == country)
         .map(|k| k + 6)
+}
+
+/// The ten seasons gone by of each kept league (`0xb21adc` in the block
+/// from `0xb1f860`, GEGNERINFO §9): a slot of 0x972 bytes a season, ten
+/// slots a league, the oldest first. A slot holds its country, how many
+/// teams, whether they met four times, its sort rule, the teams' numbers,
+/// a penalty byte each, a mark per place and the results, a row of 0x60
+/// bytes per home side, four bytes a game.
+const ARCHIVE_BLOCK: &str = "0xb1f860";
+const ARCHIVE_AT: usize = 0xb21adc - 0xb1f860;
+const ARCHIVE_LEAGUE: usize = 0x5e74;
+const ARCHIVE_SEASON: usize = 0x972;
+pub const ARCHIVE_SEASONS: usize = 10;
+const ARCHIVE_ROW: usize = 0x60;
+/// A game never played keeps its home goals at 0xff.
+const UNPLAYED: u8 = 0xff;
+/// A penalty byte's points docked, three each, and its bit for the
+/// bottom of the table.
+const DOCKED: u8 = 3;
+const BOTTOM: u8 = 0x80;
+
+/// A row of a season gone by (`FUN_0072af32`'s 0x14 bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalRow {
+    pub team: u8,
+    pub penalty: u8,
+    pub games: i16,
+    pub points: i16,
+    pub goals_for: i16,
+    pub goals_against: i16,
+}
+
+/// A league's table of a season gone by, as the Historisches' Endtabelle
+/// shows it (`FUN_0072b18a`, `FUN_0072af32`, `FUN_0072b9b9`): its country,
+/// its rows in their order and the mark of each place. `slot` counts from
+/// the oldest kept season; 9 is the last one played.
+pub struct FinalTable {
+    pub country: u16,
+    pub rows: Vec<FinalRow>,
+    pub marks: Vec<i16>,
+}
+
+pub fn final_table(records: &Records, country: u16, level: u8, slot: usize) -> Option<FinalTable> {
+    let league = league_of(records, country, level)?;
+    if slot >= ARCHIVE_SEASONS {
+        return None;
+    }
+    let at = ARCHIVE_AT + league * ARCHIVE_LEAGUE + slot * ARCHIVE_SEASON;
+    let s = records.block(ARCHIVE_BLOCK)?.get(at..at + ARCHIVE_SEASON)?;
+    let short = |at: usize| i16::from_le_bytes([s[at], s[at + 1]]);
+    let n = usize::try_from(short(2)).ok().filter(|&n| n > 0 && n <= 24)?;
+    let rounds = if s[4] != 0 { 2 } else { 1 };
+    let mut rows: Vec<FinalRow> =
+        (0..n).map(|i| FinalRow { team: s[0x12 + i], penalty: s[0x2a + i], ..FinalRow::default() }).collect();
+    for i in 0..n {
+        for j in (0..n).filter(|&j| j != i) {
+            for round in 0..rounds {
+                let at = 0x72 + i * ARCHIVE_ROW + (j + round * n) * 4;
+                let (home, away) = (s[at], s[at + 1]);
+                if home == UNPLAYED {
+                    continue;
+                }
+                let (h, a) = (i16::from(home), i16::from(away));
+                let (hp, ap) = match h.cmp(&a) {
+                    std::cmp::Ordering::Greater => (3, 0),
+                    std::cmp::Ordering::Equal => (1, 1),
+                    std::cmp::Ordering::Less => (0, 3),
+                };
+                for (k, gf, ga, p) in [(i, h, a, hp), (j, a, h, ap)] {
+                    let row = &mut rows[k];
+                    row.games += 1;
+                    row.goals_for += gf;
+                    row.goals_against += ga;
+                    row.points += p;
+                }
+            }
+        }
+    }
+    for row in &mut rows {
+        row.points -= 3 * i16::from(row.penalty & DOCKED);
+    }
+    // The bubble sort keeps equal rows in their order: the docked to the
+    // bottom, then by points, then by the league's rule — goals scored
+    // before the difference for rule 1, else the difference first —, the
+    // more games first.
+    let rule = short(0x10);
+    let key = |r: &FinalRow| {
+        let diff = r.goals_for - r.goals_against;
+        let (first, second) = if rule == 1 { (r.goals_for, diff) } else { (diff, r.goals_for) };
+        (r.penalty & BOTTOM == 0, r.points, first, second, r.games)
+    };
+    rows.sort_by(|a, b| key(b).cmp(&key(a)));
+    let marks = (0..n).map(|i| short(0x42 + 2 * i)).collect();
+    Some(FinalTable { country: u16::try_from(short(0)).unwrap_or(country), rows, marks })
 }
 
 /// A league's list in the block: its base, row and entry widths.

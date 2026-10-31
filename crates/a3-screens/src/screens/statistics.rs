@@ -1781,6 +1781,18 @@ const STANDINGS_COLUMNS: [(u16, u16); 8] = [
     (310, 0),
 ];
 /// The own club's rows red, the others black (COLORREF 0xff).
+/// The Endtabelle's header (text 3014 "Nr.\tVerein\tPkt\tDiff\tTore",
+/// 0x87cf30 and 0x87cf4c) and its seven row columns (0x87cef8, 0x87cf14).
+const FINAL_TABLE_HEADER: u16 = 3014;
+const FINAL_TABLE_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 20), (25, 0), (C | 207, 30), (C | 248, 30), (C | 278, 40)];
+const FINAL_TABLE_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 20), (25, 0), (R | 200, 30), (R | 240, 30), (R | 275, 25), (302, 0), (305, 0)];
+/// The Endtabelle's place boxes by the season's mark (`FUN_0045ebbf`):
+/// COLORREFs 0xffff00, 0x808000, 0xa000, 0xffa0a0, 0xc800, 0xc80000 and
+/// 0x8080 — the Tabellen's values with red and blue the other way round.
+const FINAL_MARK_COLOURS: [[u8; 3]; 7] =
+    [[0, 255, 255], [0, 128, 128], [0, 160, 0], [160, 160, 255], [0, 200, 0], [0, 0, 200], [128, 128, 0]];
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2482,6 +2494,9 @@ impl Statistics {
             {
                 self.eternal_page(cx, view, code == statistics::RELATIVE_PAGE)
             }
+            Some(code) if self.category == HISTORY && statistics::FINAL_TABLE_PAGES.contains(&code) => {
+                self.final_table_page(cx, view, code)
+            }
             Some(statistics::SCORES_PAGE) if self.category == HISTORY => self.scores_page(cx, view),
             Some(statistics::SACKED_PAGE) if self.category == HISTORY => self.sacked_page(cx, view),
             Some(statistics::LEADERS_PAGE) if self.category == HISTORY => {
@@ -2686,6 +2701,54 @@ impl Statistics {
         if let Some(table) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
             *table = TableState {
                 columns: columns.to_vec(),
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: None,
+            };
+        }
+        true
+    }
+
+    /// Endtabelle of a season gone by (`FUN_0045ebbf`, archive slot nine
+    /// less the code): the league the strip stands on as the archive
+    /// keeps it, its rows reckoned from the stored results — place, the
+    /// club's name, points, difference and goals —, the own club red and
+    /// each place's box from the season's marks.
+    fn final_table_page(&self, cx: &Cx, view: &mut View, code: i16) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(&(country, level)) = self.leagues.get(self.chosen) else { return false };
+        let slot = statistics::ARCHIVE_SEASONS - 1 - usize::try_from(code).unwrap_or(0);
+        let Some(table) = statistics::final_table(records, country, level, slot) else { return false };
+        set_header(view, dialog, game.text(FINAL_TABLE_HEADER).to_owned(), &FINAL_TABLE_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), t.number()));
+        let rows = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let name = game.club_name(Some(records), table.country as u8, i16::from(row.team));
+                let text = format!(
+                    "{}.\t{name}\t{}\t{}\t{}\t:\t{}",
+                    i + 1,
+                    row.points,
+                    row.goals_for - row.goals_against,
+                    row.goals_for,
+                    row.goals_against
+                );
+                let mark = usize::try_from(table.marks.get(i).copied().unwrap_or(0) - 1)
+                    .ok()
+                    .and_then(|k| FINAL_MARK_COLOURS.get(k).copied());
+                let ink = if own == Some((table.country, row.team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark, columns: None }
+            })
+            .collect();
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns: FINAL_TABLE_ROW_COLUMNS.to_vec(),
                 rows,
                 width: ROW_WIDTH,
                 centred: -1,
