@@ -3707,6 +3707,10 @@ mod tests {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let mut cup_gate = (0u16, 0i32);
         let mut cup_marks: Vec<(u16, (i64, i64, i64))> = Vec::new();
+        // The visitor of the human's home tie, and the box and visitor's
+        // cup takings as the patch leaves them, to measure the split.
+        let mut cup_away = (0u8, 0u16);
+        let mut cup_box: Option<(usize, i32, i32)> = None;
         let root = patched(&dir, "A", "cup-days", |records| {
             records.globals.set_day(56);
             // The save's planner still holds the talks and visits booked in
@@ -3765,11 +3769,38 @@ mod tests {
                             );
                         }
                         let away = u16::from_le_bytes([p[6], p[7]]);
+                        cup_away = (p[4], away);
                         for &n in &[num, away] {
                             cup_marks.push((n, totals(records, n)));
                         }
                     }
                 }
+            }
+            // The manager keeps his cup share of the visitor's half of
+            // the gate in the black cash box: with the share at 0.3, and
+            // the league's share at nought so the league games of these
+            // days leave the box alone, the run's black cash gain is the
+            // cup's share alone. Note the box and the visitor's cup
+            // takings as the patch leaves them.
+            if cup_away.1 != 0
+                && let Some(h) = records
+                    .team(nation as u16, cup_gate.0)
+                    .filter(|t| usize::from(t.human()) > 0)
+                    .map(|t| usize::from(t.human()) - 1)
+                && records
+                    .team(u16::from(cup_away.0), cup_away.1)
+                    .is_some_and(|t| usize::from(t.human()) == 0)
+            {
+                records.managers[h].set_cup_share_kept(0.3);
+                records.managers[h].set_gate_kept(0.0);
+                cup_box = Some((
+                    h,
+                    records.managers[h].black_cash(),
+                    records
+                        .team(u16::from(cup_away.0), cup_away.1)
+                        .unwrap()
+                        .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM),
+                ));
             }
             let Some(block) = records.block_mut(&cup) else {
                 panic!("the save's cup block");
@@ -3856,6 +3887,32 @@ mod tests {
             booked > cup_gate.1,
             "the cup tie booked no gate: {} -> {booked}",
             cup_gate.1
+        );
+        // The gate split between the clubs: the home club booked half of
+        // it, the visitor the other half less the manager's cup share,
+        // and the black cash box gained that share — ftol of the home
+        // club's half times the 0.3 the patch set.
+        let Some((h, box0, away0)) = cup_box else {
+            panic!("no human home tie against a computer's to measure");
+        };
+        let away_booked = records
+            .team(nation, cup_away.1)
+            .unwrap()
+            .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM);
+        let (home, away, kept) = (
+            i64::from(booked - cup_gate.1),
+            i64::from(away_booked - away0),
+            i64::from(records.managers[h].black_cash() - box0),
+        );
+        assert_eq!(
+            away + kept,
+            home,
+            "the visitor booked {away} and the box kept {kept}, against the home club's half {home}"
+        );
+        assert_eq!(
+            kept,
+            i64::from((f64::from(home as i32) * f64::from(0.3f32)) as i32),
+            "the manager kept {kept} of the half {home}, not his three tenths"
         );
         // And the tie marked its men: the eleven each side sent out stand
         // in the career's cup appearances (+0x25f), and its goals — all

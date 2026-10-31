@@ -129,7 +129,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // sides they mark, and the gate money the home clubs book with them.
     let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
     let mut marks: Vec<(u8, u16, u8, u16, u8, u8)> = Vec::new();
-    let mut gates: Vec<(u8, u16, i32)> = Vec::new();
+    let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     for q in start..start + count {
         let Some(p) = records
             .block(&name)
@@ -182,7 +182,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             let att = attendance(t, cap, random);
             let money = tickets::booked_gate(records, t, att, 0);
             if money != 0 {
-                gates.push((country, number, money));
+                gates.push((country, number, p[4], u16_at(p, 6), money));
             }
         }
     }
@@ -197,10 +197,34 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             }
         }
     }
-    for (country, number, money) in gates {
-        if let Some(t) = records.team_mut(u16::from(country), number) {
-            let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
-            t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
+    // The cup's gate belongs to both clubs: each books half of the played
+    // match's money at +0x234 (`FUN_0078b26c`, the branch whose record kind
+    // answers to the cup). Where the home club has a human's manager and the
+    // visitor has none, the manager keeps his cup share (the getter
+    // `FUN_0069c962` reads the manager's +0x1a4) of the visitor's half back
+    // for the black cash box (`FUN_0069c869` adds it), at most all of it and
+    // never below nought; the visitor books the rest of the half.
+    for (hc, hn, ac, an, money) in gates {
+        let half = money / 2;
+        let kept = match (human_slot(records, hc, hn), human_slot(records, ac, an)) {
+            (Some(i), None) => records.managers.get(i).map_or(0, |m| {
+                ((half as f32 as f64 * f64::from(m.cup_share_kept())) as i32).max(0)
+            }),
+            _ => 0,
+        };
+        if kept > 0
+            && let Some(m) = human_slot(records, hc, hn).and_then(|i| records.managers.get_mut(i))
+        {
+            m.set_black_cash(m.black_cash().wrapping_add(kept));
+        }
+        for (country, number, money) in [
+            (hc, hn, half),
+            (ac, an, half - kept),
+        ] {
+            if let Some(t) = records.team_mut(u16::from(country), number) {
+                let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
+                t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
+            }
         }
     }
     // What the ties leave on the men who played them.
