@@ -1067,6 +1067,9 @@ pub const FINALS_PAGE: i16 = 0x28;
 /// The Historisches' Endtabelle of the seasons gone by (`FUN_0045ebbf`),
 /// the last one at code 0, the archive's slot nine less the code.
 pub const FINAL_TABLE_PAGES: std::ops::RangeInclusive<i16> = 0..=9;
+/// The Historisches' Resultate of the seasons gone by (`FUN_00463e8d`),
+/// the last one at 0xa, the archive's slot 0x13 less the code.
+pub const ARCHIVED_RESULTS_PAGES: std::ops::RangeInclusive<i16> = 0xa..=0x13;
 /// The Historisches' Rekorde (`FUN_0045f7a5`) and Für die Ewigkeit
 /// (`FUN_0045f8e5`).
 pub const RECORDS_PAGE: i16 = 0x1d;
@@ -2195,6 +2198,11 @@ pub struct FinalTable {
     pub country: u16,
     pub rows: Vec<FinalRow>,
     pub marks: Vec<i16>,
+    /// The teams in the archive's order, and each one's home games
+    /// against every other in that order, the first meeting; none where
+    /// it was never played.
+    pub teams: Vec<u8>,
+    pub games: Vec<Vec<Option<(u8, u8)>>>,
 }
 
 pub fn final_table(records: &Records, country: u16, level: u8, slot: usize) -> Option<FinalTable> {
@@ -2248,7 +2256,18 @@ pub fn final_table(records: &Records, country: u16, level: u8, slot: usize) -> O
     };
     rows.sort_by(|a, b| key(b).cmp(&key(a)));
     let marks = (0..n).map(|i| short(0x42 + 2 * i)).collect();
-    Some(FinalTable { country: u16::try_from(short(0)).unwrap_or(country), rows, marks })
+    let teams = (0..n).map(|i| s[0x12 + i]).collect();
+    let games = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    let at = 0x72 + i * ARCHIVE_ROW + j * 4;
+                    (i != j && s[at] != UNPLAYED).then_some((s[at], s[at + 1]))
+                })
+                .collect()
+        })
+        .collect();
+    Some(FinalTable { country: u16::try_from(short(0)).unwrap_or(country), rows, marks, teams, games })
 }
 
 /// A league's list in the block: its base, row and entry widths.

@@ -7616,6 +7616,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The Historisches' Resultate of the season gone by: the archive's
+    /// Bundesliga 2025/26 on S2c laid crosswise in its own order under
+    /// "Resultate letzte Saison", each cell the row's home game, the own
+    /// club's name red but its cells black, as the original paints them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_resultate_show_the_season_gone_by_crosswise() {
+        let Some((root, game)) = second_season("resultate") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 1";
+        let Some(runner) = on_save(&game, "resultate", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), "Resultate letzte Saison");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.cross, Some(0));
+        assert_eq!(table.rows.len(), 18);
+        assert!(table.rows[0].text.starts_with("1 FC Bayern München\t\t1:2\t2:0\t1:1"), "{}", table.rows[0].text);
+        assert!(table.rows[1].text.starts_with("2 Bayer 04 Leverkusen\t0:1\t\t3:0"), "{}", table.rows[1].text);
+        assert_eq!(table.rows[12].ink, [255, 0, 0], "{}", table.rows[12].text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {

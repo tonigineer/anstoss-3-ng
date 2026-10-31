@@ -1793,6 +1793,9 @@ const FINAL_TABLE_ROW_COLUMNS: [(u16, u16); 7] =
 /// 0x8080 — the Tabellen's values with red and blue the other way round.
 const FINAL_MARK_COLOURS: [[u8; 3]; 7] =
     [[0, 255, 255], [0, 128, 128], [0, 160, 0], [160, 160, 255], [0, 200, 0], [0, 0, 200], [128, 128, 0]];
+/// The Resultate's headers: the last season, and so many years ago.
+const ARCHIVED_RESULTS_LAST: u16 = 3033;
+const ARCHIVED_RESULTS_AGO: u16 = 3034;
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2497,6 +2500,11 @@ impl Statistics {
             Some(code) if self.category == HISTORY && statistics::FINAL_TABLE_PAGES.contains(&code) => {
                 self.final_table_page(cx, view, code)
             }
+            Some(code)
+                if self.category == HISTORY && statistics::ARCHIVED_RESULTS_PAGES.contains(&code) =>
+            {
+                self.archived_results_page(cx, view, code)
+            }
             Some(statistics::SCORES_PAGE) if self.category == HISTORY => self.scores_page(cx, view),
             Some(statistics::SACKED_PAGE) if self.category == HISTORY => self.sacked_page(cx, view),
             Some(statistics::LEADERS_PAGE) if self.category == HISTORY => {
@@ -2754,6 +2762,61 @@ impl Statistics {
                 centred: -1,
                 scroll: self.scrolled,
                 cross: None,
+                graph: None,
+            };
+        }
+        true
+    }
+
+    /// Resultate of a season gone by (`FUN_00463e8d`, archive slot 0x13
+    /// less the code): the league the strip stands on as the archive keeps
+    /// it, laid crosswise in the game's `CTabellenWnd` as the season's
+    /// results are — rows and columns in the archive's order, each cell
+    /// the row's home game against the column's —, under "Resultate
+    /// letzte Saison" (3033) or "Resultate vor %d Jahren" (3034).
+    fn archived_results_page(&self, cx: &Cx, view: &mut View, code: i16) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(&(country, level)) = self.leagues.get(self.chosen) else { return false };
+        let ago = usize::try_from(code - statistics::ARCHIVED_RESULTS_PAGES.start()).unwrap_or(0) + 1;
+        let slot = statistics::ARCHIVE_SEASONS - ago;
+        let Some(table) = statistics::final_table(records, country, level, slot) else { return false };
+        let header = if ago == 1 {
+            game.text(ARCHIVED_RESULTS_LAST).to_owned()
+        } else {
+            game.text(ARCHIVED_RESULTS_AGO).replace("%d", &ago.to_string())
+        };
+        set_header(view, dialog, header, &[(0, 0)]);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), t.number()));
+        let n = table.teams.len();
+        let last = (self.across + 10).min(n);
+        let rows = (0..n)
+            .map(|i| {
+                let team = table.teams[i];
+                let name = game.club_name(Some(records), table.country as u8, i16::from(team));
+                let mut text = format!("{} {}", i + 1, name);
+                for j in self.across..last {
+                    text.push('\t');
+                    if let Some((a, b)) = table.games[i][j] {
+                        text.push_str(&format!("{a}:{b}"));
+                    }
+                }
+                let ink = if own == Some((table.country, team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark: None, columns: None }
+            })
+            .collect();
+        let mut columns: Vec<(u16, u16)> = vec![(2, 138)];
+        for j in self.across..last {
+            columns.push((C | (139 + 31 * (j - self.across) as u16), 30));
+        }
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns,
+                rows,
+                width: CROSS_WIDTH,
+                centred: -1,
+                scroll: 0,
+                cross: Some(self.across),
                 graph: None,
             };
         }
