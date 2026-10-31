@@ -44,6 +44,7 @@ const TAKEN: usize = 0x4c;
 const BUYER: usize = 0xc84;
 const MARKETING: usize = 0xc88;
 const FANS_DISCOUNT: usize = 0xc8c;
+const STOCK_VALUE_AT_START: usize = 0xc90;
 const KEEPER_SET: usize = 0xc98;
 const OTHER_SET: usize = 0xc9a;
 const KEEPER_NAME: (usize, usize) = (0xc9c, 0x1e);
@@ -239,6 +240,11 @@ impl Range {
 
     pub fn set_marketing(&mut self, on: bool) {
         self.put_i32(MARKETING, on.into());
+    }
+
+    /// What the stock was worth when the season began (+0xc90).
+    pub fn stock_value_at_start(&self) -> i32 {
+        self.i32_(STOCK_VALUE_AT_START)
     }
 
     pub fn fans_discount(&self) -> i16 {

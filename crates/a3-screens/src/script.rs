@@ -8572,4 +8572,23 @@ mod tests {
         assert!(after.article(place).is_none());
         assert_eq!(after.articles().len(), 12);
     }
+
+    /// 56's "Details" tells the range's season (372): takings, costs and
+    /// the profit, a loss with its sign, after 500 scarves were bought.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_merchandise_info_tells_the_season() {
+        let game = game();
+        let then = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56\n\
+                    now row 1495 2\nnow press 1505\nnow press 1506\nuntil dialog 372";
+        let Some(runner) = on_save(&game, "A", then) else { return };
+        let dialog = &game.dialogs[&372];
+        let text = |id| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let figures = [4675, 4676, 4677, 4678, 4679].map(text);
+        assert_eq!(figures, ["314.572 €", " 0 €", "986.535 €", "- 671.963 €", " 0 €"]);
+        // Back on 56 its list keeps going as it was.
+        let back = format!("{then}\nnow ok\nuntil dialog 56");
+        on_save(&game, "A", &back).unwrap();
+    }
 }

@@ -25,6 +25,9 @@ pub(crate) const MERCHANDISE_RANGE: u16 = 56;
 /// given up (text 3836).
 const ARTICLE: u16 = 57;
 const GIVE_UP_QUESTION: u16 = 3836;
+/// The range's figures (`CFanartikelInfo`), behind 56's "Details".
+const INFO: u16 = 372;
+const INFO_BUTTON: u16 = 1506;
 
 const LIST: u16 = 1495;
 const BUYER: u16 = 1496;
@@ -66,6 +69,8 @@ pub struct MerchandiseRange {
     chosen: usize,
     /// Hired when the dialog opened: those cannot be sent away again.
     hired: (bool, bool),
+    /// An article's dialog is open, whose answer refills the rows.
+    article: bool,
 }
 
 impl Screen for MerchandiseRange {
@@ -113,11 +118,7 @@ impl Screen for MerchandiseRange {
             let text = super::finances::printf(&dialog.controls[c].text, &[&count]);
             view.set_text(c, text);
         }
-        // The information (CFanartikelInfo) is not built.
-        mark_inert(view, dialog, |t| match t {
-            Target::Button(c) => matches!(dialog.controls[c].id, Some(OK | BUY_ONE | BUY_ALL)),
-            _ => false,
-        });
+        mark_inert(view, dialog, |_| true);
     }
 
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, double: bool) -> Outcome {
@@ -147,12 +148,15 @@ impl Screen for MerchandiseRange {
                     // A double click opens the article (`OnDblClk_…_LISTE`).
                     if double {
                         let place = u16::try_from(place).unwrap_or(0);
+                        self.article = true;
                         return Outcome::Popup(Request::with(ARTICLE, Args::Record(place)));
                     }
                 }
             }
             Target::Button(c) if id(c) == BUY_ONE => self.buy(cx, view, Some(self.chosen)),
             Target::Button(c) if id(c) == BUY_ALL => self.buy(cx, view, None),
+            // `OnClicked_IDC_FANARTIKEL_KAUFEN_INFO`.
+            Target::Button(c) if id(c) == INFO_BUTTON => return Outcome::Popup(Request::new(INFO)),
             Target::Button(c) if id(c) == OK => {
                 self.write(cx, view);
                 return Outcome::Close(Reply::Ok);
@@ -162,9 +166,11 @@ impl Screen for MerchandiseRange {
         Outcome::Stay
     }
 
-    /// Back from the article: the rows anew.
+    /// Back from the article: the rows anew, whatever it answered.
     fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
-        self.rows(cx, view);
+        if std::mem::take(&mut self.article) {
+            self.rows(cx, view);
+        }
         Outcome::Stay
     }
 }
@@ -470,9 +476,55 @@ impl Article {
     }
 }
 
+/// The range's figures (dialog 372, `CFanartikelInfo`): the season's
+/// takings, what the stock was worth at its start, its costs, the profit
+/// and the profit planned.
+#[derive(Default)]
+pub struct Info;
+
+const TAKINGS: u16 = 4675;
+const STOCK_AT_START: u16 = 4676;
+const COSTS: u16 = 4677;
+const PROFIT: u16 = 4678;
+const PLANNED_PROFIT: u16 = 4679;
+/// The merchandise sold, as booked, and as planned (club +0x30c, +0x204).
+const SOLD_BOOKED: usize = 0x30c;
+const SOLD_PLANNED: usize = 0x204;
+
+impl Screen for Info {
+    fn ids(&self) -> &[u16] {
+        &[INFO]
+    }
+
+    /// `FUN_0049a73e`: the plan's figure is the one 56 shows in the
+    /// season (its flag +0x2f90 set).
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        set(view, dialog, CAPTION_ID, dialog.title.clone());
+        let Some(team) = super::squad::own_team(cx) else { return };
+        let club = |o: usize| team.get::<i32>(o + a3_core::finances::CLUB_TO_TEAM);
+        let money = |v: i32| super::playerinfo::money(game, v.into());
+        let (sold, bought) = (club(SOLD_BOOKED), club(BOUGHT));
+        let at_start = cx.state.merchandise.as_ref().map_or(0, Range::stock_value_at_start);
+        set(view, dialog, TAKINGS, money(sold));
+        set(view, dialog, STOCK_AT_START, money(at_start));
+        set(view, dialog, COSTS, money(bought));
+        set(view, dialog, PROFIT, money(sold.wrapping_sub(bought)));
+        set(view, dialog, PLANNED_PROFIT, money(club(SOLD_PLANNED)));
+        mark_inert(view, dialog, |_| true);
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if cx.dialog.controls[c].id == Some(OK) => Outcome::Close(Reply::Ok),
+            _ => Outcome::Stay,
+        }
+    }
+}
+
 /// Puts the dialogs' captions in their frames.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    for id in [MERCHANDISE_RANGE, ARTICLE] {
+    for id in [MERCHANDISE_RANGE, ARTICLE, INFO] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
         let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
         dialog.controls.insert(0, caption);
