@@ -3640,7 +3640,9 @@ mod tests {
     /// round 2 as drawn, and the human club's tie played with the rest —
     /// its home tie booking its gate on the club's cup takings and its
     /// men carrying the tie's marks: appearances in the career's cup
-    /// bytes, goals in the season's and the career's.
+    /// bytes, goals in the season's and the career's; its year calendar
+    /// fills the round's day with the new score and names the next
+    /// round's tie on its day — or drops it once the club is out.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_cup_round_plays_on_when_its_day_comes() {
@@ -3843,6 +3845,64 @@ mod tests {
                 before.2,
                 after.2
             );
+        }
+        // The human's year calendar kept the cup's days booked from the
+        // season's start; the played round fills its day (59) with the
+        // new score, its flags saying the result stands (0x20) and the
+        // tie a cup one (0x08), and the drawing names the human's next
+        // tie on the second round's day (115) — or drops the entry when
+        // he lost, as the original zeroes it for a club out of the cup.
+        let hum = usize::from(records.team(nation, cup_gate.0).unwrap().human()) - 1;
+        let cal = &records.calendars[hum];
+        let e = cal.entry(59);
+        assert_eq!(e[0], 6, "the round's day left the calendar");
+        assert_eq!(
+            u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+            0x4008_0001,
+            "the round's day lost its cup code"
+        );
+        let p = pairing(q);
+        assert_eq!(e[8], p[0], "the entry's home country");
+        assert_eq!(&e[10..12], &p[2..4], "the entry's home club");
+        assert_eq!(e[12], p[4], "the entry's away country");
+        assert_eq!(&e[14..16], &p[6..8], "the entry's away club");
+        assert_eq!(&e[0x10..0x12], &[hg, ag], "the entry's score");
+        assert_eq!(e[0x14] & 0x28, 0x28, "the entry's flags {:#02x}", e[0x14]);
+        assert_eq!(
+            &e[0x16..0x1a],
+            &[p[0], 0, p[2], p[3]],
+            "the entry's venue"
+        );
+        let won = p[0xd] == 0;
+        let e2 = cal.entry(115);
+        match (32..48).find(|&r| {
+            let p = pairing(r);
+            u16_at(p, 2) == cup_gate.0 || u16_at(p, 6) == cup_gate.0
+        }) {
+            Some(r) => {
+                let p = pairing(r);
+                assert!(won, "club {} plays round two without having won", cup_gate.0);
+                assert_eq!(e2[0], 6, "the second round's day left the calendar");
+                assert_eq!(
+                    u32::from_le_bytes([e2[4], e2[5], e2[6], e2[7]]),
+                    0x4008_0002,
+                    "the second round's day lost its cup code"
+                );
+                assert_eq!(e2[8], p[0], "the entry's home country");
+                assert_eq!(&e2[10..12], &p[2..4], "the entry's home club");
+                assert_eq!(e2[12], p[4], "the entry's away country");
+                assert_eq!(&e2[14..16], &p[6..8], "the entry's away club");
+                assert_eq!(&e2[0x10..0x14], &[0, 0, 0, 0], "the entry already holds a result");
+                assert_eq!(
+                    &e2[0x16..0x1a],
+                    &[p[0], 0, p[2], p[3]],
+                    "the entry's venue"
+                );
+            }
+            None => {
+                assert!(!won, "club {} won and vanished from round two", cup_gate.0);
+                assert_eq!(e2[0], 0, "the out club kept its cup day");
+            }
         }
     }
 

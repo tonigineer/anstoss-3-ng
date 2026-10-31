@@ -8,7 +8,7 @@ use crate::cards;
 use crate::finances::CLUB_TO_TEAM;
 use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS, cup_pairings};
 use crate::random::Random;
-use crate::records::{Records, Team};
+use crate::records::{PLANNER_DAYS, PLANNER_ENTRY, Records, Team};
 use crate::season::Season;
 use crate::statistics::{self, ALL};
 use crate::tickets;
@@ -80,6 +80,21 @@ const CUP_RESULT: u8 = 0x20;
 const CUP_EXTRA: u8 = 0x80;
 const CUP_SHOOT: u8 = 0x40;
 
+/// The year calendar's entry of a fixture: kind 6, its code at +4, the
+/// clubs at +8 and +0xc, the score at +0x10, the flags at +0x14 — 0x20
+/// for a result that stands, 0x08 on a cup tie — and the hosting club
+/// again at +0x16 (`FUN_0062a0ad`). The season's booking keeps every
+/// cup day from the start, a not-yet-drawn round naming no club; when
+/// a club leaves the cup its day's entry falls away (`FUN_0072ded2`).
+const YEAR_MATCH: u8 = 6;
+const YEAR_HOME: usize = 8;
+const YEAR_AWAY: usize = 0xc;
+const YEAR_GOALS: usize = 0x10;
+const YEAR_FLAGS: usize = 0x14;
+const YEAR_VENUE: usize = 0x16;
+const YEAR_RESULT: u8 = 0x20;
+const YEAR_CUP: u8 = 0x08;
+
 /// Play the country's cup round when the day is one: every drawn and still
 /// open pairing is scored single-leg, the home side with its edge; a tie
 /// runs to extra time, whose goals join the score, and from there to a
@@ -88,7 +103,9 @@ const CUP_SHOOT: u8 = 0x40;
 /// and paired anew — the home side drawn too — where the next round's row
 /// says, and the block's last drawn round (the byte at +0x28) follows.
 /// Each home club books its gate: a crowd as in the league, the money on
-/// its season's cup takings (club +0x234).
+/// its season's cup takings (club +0x234). The human's year calendar keeps
+/// its entries: the played round fills its score into the day's entry, the
+/// new drawing names his next tie there — and drops it once he is out.
 fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     let Some(row) = calendar.row(nation, 0) else {
         return;
@@ -187,9 +204,34 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         }
     }
     // What the ties leave on the men who played them.
-    for (hc, hn, ac, an, hg, ag) in marks {
+    for &(hc, hn, ac, an, hg, ag) in &marks {
         mark_cup(records, hc, hn, ac, an, hg, ag, random);
     }
+    // On the human's year calendar the round's day fills its score, the
+    // flags saying the result stands (0x20) and the tie a cup one (0x08);
+    // the calendar slots its human clubs hold are kept for the drawing.
+    let mut slots: Vec<usize> = Vec::new();
+    for (hc, hn, ac, an, hg, ag) in &marks {
+        for (country, number) in [(*hc, *hn), (*ac, *an)] {
+            let Some(slot) = human_slot(records, country, number) else {
+                continue;
+            };
+            slots.push(slot);
+            if let Some(cal) = records.calendars.get_mut(slot) {
+                let mut e = cal.entry(day);
+                if e[0] == YEAR_MATCH
+                    && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) & 0x7f00_0000 == CUP_CODE
+                {
+                    e[YEAR_GOALS] = *hg;
+                    e[YEAR_GOALS + 1] = *ag;
+                    e[YEAR_FLAGS] |= YEAR_RESULT | YEAR_CUP;
+                    cal.set_entry(day, e);
+                }
+            }
+        }
+    }
+    slots.sort();
+    slots.dedup();
     // The round is through when its every drawn pairing stands played; the
     // final's winner needs no drawing on.
     if round >= 6 {
@@ -242,6 +284,68 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             *p = u8::try_from(round + 1).unwrap_or(u8::MAX);
         }
     }
+    // The next round's day on the country's first row carries the human's
+    // new tie — both clubs, the home one as venue again — while the club
+    // gone from the cup sees its entry fall away to nothing.
+    let Some(next_day) = (0..PLANNER_DAYS).find(|&d| {
+        let entry = calendar.entry(row, d);
+        entry & 0x7f00_0000 == CUP_CODE && usize::try_from(entry & 0xffff).unwrap_or(0) == round + 1
+    }) else {
+        return;
+    };
+    let mut ties: Vec<(usize, (u8, u16, u8, u16))> = Vec::new();
+    for j in 0..pairs {
+        let Some(p) = records.block(&name).and_then(|cup| {
+            cup.get(PAIRINGS + (next + j) * PAIRING..PAIRINGS + (next + j + 1) * PAIRING)
+        }) else {
+            continue;
+        };
+        if p[0] == 0 {
+            continue;
+        }
+        let tie = (p[0], u16_at(p, 2), p[4], u16_at(p, 6));
+        for (country, number) in [(tie.0, tie.1), (tie.2, tie.3)] {
+            if let Some(slot) = human_slot(records, country, number) {
+                ties.push((slot, tie));
+            }
+        }
+    }
+    for slot in slots {
+        let Some(cal) = records.calendars.get_mut(slot) else {
+            continue;
+        };
+        let Some((_, tie)) = ties.iter().find(|(s, _)| *s == slot) else {
+            cal.set_entry(next_day, [0; PLANNER_ENTRY]);
+            continue;
+        };
+        let (hc, hn, ac, an) = *tie;
+        let mut e = cal.entry(next_day);
+        if e[0] != YEAR_MATCH {
+            e = [0; PLANNER_ENTRY];
+            e[0] = YEAR_MATCH;
+            e[1] = 1;
+            let code = CUP_CODE | u32::try_from(round + 1).unwrap_or(0);
+            e[4..8].copy_from_slice(&code.to_le_bytes());
+        }
+        e[YEAR_HOME] = hc;
+        e[YEAR_HOME + 2..YEAR_HOME + 4].copy_from_slice(&hn.to_le_bytes());
+        e[YEAR_AWAY] = ac;
+        e[YEAR_AWAY + 2..YEAR_AWAY + 4].copy_from_slice(&an.to_le_bytes());
+        e[YEAR_VENUE] = hc;
+        e[YEAR_VENUE + 2..YEAR_VENUE + 4].copy_from_slice(&hn.to_le_bytes());
+        e[YEAR_GOALS] = 0;
+        e[YEAR_GOALS + 1] = 0;
+        e[YEAR_FLAGS] = 0;
+        cal.set_entry(next_day, e);
+    }
+}
+
+/// The calendar slot of a cup club's human manager, if it has one.
+fn human_slot(records: &Records, country: u8, number: u16) -> Option<usize> {
+    records
+        .team(u16::from(country), number)
+        .filter(|team| team.human() > 0)
+        .map(|team| usize::from(team.human()) - 1)
 }
 
 /// What a cup tie leaves on its men: the eleven each side puts on the
