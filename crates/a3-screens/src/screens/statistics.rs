@@ -1796,6 +1796,46 @@ const FINAL_MARK_COLOURS: [[u8; 3]; 7] =
 /// The Resultate's headers: the last season, and so many years ago.
 const ARCHIVED_RESULTS_LAST: u16 = 3033;
 const ARCHIVED_RESULTS_AGO: u16 = 3034;
+/// The international competitions' strip: text 3008 "E.Supercup" and 3009
+/// "Klub-WM  " after the two cups' names.
+const EUROPEAN_SUPERCUP: u16 = 3008;
+const CLUB_WORLD_CUP: u16 = 3009;
+/// The Int. Wettbewerbe's headers and columns (`FUN_0045feac`): the club
+/// world cup's two legs (text 3018) — though its rows hold one score —,
+/// else one result (3019).
+const INTERNATIONAL_HEADER: u16 = 3019;
+const INTERNATIONAL_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 60), (60, 0), (195, 0), (C | 355, 50), (410, 0)];
+const INTERNATIONAL_ROW_COLUMNS: [(u16, u16); 8] =
+    [(0, 0), (60, 0), (190, 0), (195, 0), (R | 360, 20), (382, 0), (385, 0), (410, 0)];
+const WORLD_CUP_HEADER: u16 = 3018;
+const WORLD_CUP_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(C, 60), (60, 0), (195, 0), (C | 310, 50), (C | 360, 50), (415, 0)];
+const WORLD_CUP_ROW_COLUMNS: [(u16, u16); 11] = [
+    (0, 0),
+    (60, 0),
+    (190, 0),
+    (195, 0),
+    (R | 320, 20),
+    (342, 0),
+    (345, 0),
+    (R | 360, 20),
+    (382, 0),
+    (385, 0),
+    (415, 0),
+];
+const WORLD_CUP: usize = 3;
+/// The Torschützenkönige's and Torrekorde's headers (texts 3020 and 3021,
+/// "Saison\tName\tVerein\tTreffer") and columns.
+const KINGS_HEADER: u16 = 3020;
+const TALLIES_HEADER: u16 = 3021;
+const TALLIES_HEADER_COLUMNS: [(u16, u16); 4] = [(C, 60), (60, 0), (200, 0), (C | 355, 70)];
+const TALLIES_ROW_COLUMNS: [(u16, u16); 4] = [(0, 0), (60, 0), (200, 0), (R | 370, 30)];
+/// The Rekordnationalspieler's header (text 3024 "Nr.\tName\tSpiele\tNoch
+/// aktiv") and columns.
+const CAPS_HEADER: u16 = 3024;
+const CAPS_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (C | 250, 40), (C | 290, 70)];
+const CAPS_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (R | 240, 35), (C | 310, 30)];
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2352,6 +2392,13 @@ impl Statistics {
             }
             // The Europa League: as many round names as are played, the
             // counter at 0xb5d166 one below the round being played.
+            // The international competitions (`FUN_004599d8` kind 12): the
+            // Champions League's and the UEFA cup's names as the new game
+            // set them, the European Supercup and the club world cup.
+            statistics::INTERNATIONAL_STRIP => {
+                let [champions, uefa] = records.countries.cup_names();
+                vec![champions, uefa, text(EUROPEAN_SUPERCUP), text(CLUB_WORLD_CUP)]
+            }
             k if k == statistics::UEFA_STRIP => {
                 let n = statistics::uefa_round_count(records);
                 statistics::UEFA_ROUND_NAMES[..n].iter().map(|&r| text(r)).collect()
@@ -2505,6 +2552,15 @@ impl Statistics {
             {
                 self.archived_results_page(cx, view, code)
             }
+            Some(statistics::INTERNATIONAL_PAGE) if self.category == HISTORY => {
+                self.international_page(cx, view)
+            }
+            Some(code @ (statistics::KINGS_PAGE | statistics::TALLIES_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tallies_page(cx, view, code == statistics::KINGS_PAGE)
+            }
+            Some(statistics::CAPS_PAGE) if self.category == HISTORY => self.caps_page(cx, view),
             Some(statistics::SCORES_PAGE) if self.category == HISTORY => self.scores_page(cx, view),
             Some(statistics::SACKED_PAGE) if self.category == HISTORY => self.sacked_page(cx, view),
             Some(statistics::LEADERS_PAGE) if self.category == HISTORY => {
@@ -2821,6 +2877,118 @@ impl Statistics {
             };
         }
         true
+    }
+
+    /// Int. Wettbewerbe (`FUN_0045feac`): the finals of the competition
+    /// the strip stands at, the newest at the top, each "%s\t%s\t-\t%s\t%d
+    /// \t:\t%d\t%s" of the season, both clubs, the goals and "n.E.", "n.V."
+    /// or a blank; red where the own club played it.
+    fn international_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let list = self.chosen;
+        let (header, header_columns, columns): (u16, &[(u16, u16)], &[(u16, u16)]) = if list == WORLD_CUP {
+            (WORLD_CUP_HEADER, &WORLD_CUP_HEADER_COLUMNS, &WORLD_CUP_ROW_COLUMNS)
+        } else {
+            (INTERNATIONAL_HEADER, &INTERNATIONAL_HEADER_COLUMNS, &INTERNATIONAL_ROW_COLUMNS)
+        };
+        set_header(view, dialog, game.text(header).to_owned(), header_columns);
+        let own = own_team(cx).map(|t: &Team| (t.country(), i16::from(t.number())));
+        let rows = statistics::international_finals(records, list)
+            .iter()
+            .map(|f| {
+                let club = |(c, n): (u8, i16)| game.club_name(Some(records), c, n);
+                let note = if f.penalties {
+                    game.text(PENALTIES)
+                } else if f.extra_time {
+                    game.text(EXTRA_TIME)
+                } else {
+                    " "
+                };
+                let text = format!(
+                    "{}\t{}\t-\t{}\t{}\t:\t{}\t{note}",
+                    season_text(i32::from(f.year)),
+                    club(f.a),
+                    club(f.b),
+                    f.goals.0,
+                    f.goals.1
+                );
+                let ours = own == Some(f.a) || own == Some(f.b);
+                TableRow { text, ink: if ours { OWN_INK } else { INK }, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, columns, rows);
+        true
+    }
+
+    /// Torschützenkönige (`FUN_004608ce`) and Torrekorde (`FUN_00460c7a`)
+    /// of the country the strip stands at: the seasons' top scorers, the
+    /// newest first, or the ten best tallies; each "%s\t%s\t%s\t%d" of the
+    /// season, the player, his club and his goals, the own club's red.
+    fn tallies_page(&self, cx: &Cx, view: &mut View, kings: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        let header = if kings { KINGS_HEADER } else { TALLIES_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &TALLIES_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), i16::from(t.number())));
+        let list = if kings {
+            statistics::top_scorers(records, country)
+        } else {
+            statistics::best_tallies(records, country)
+        };
+        let rows = list
+            .iter()
+            .map(|t| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}",
+                    season_text(i32::from(t.year)),
+                    spelled(records, t.names[0], t.names[1]),
+                    game.club_name(Some(records), country as u8, t.team),
+                    t.goals
+                );
+                let ink = if own == Some((country, t.team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TALLIES_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordnationalspieler (`FUN_00461e6a`): the country's most capped
+    /// players, "%d.\t%s\t%d\t%s" of the place, the name, the caps and a
+    /// star for one still playing, in black.
+    fn caps_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(CAPS_HEADER).to_owned(), &CAPS_HEADER_COLUMNS);
+        let rows = statistics::most_capped(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, &(names, caps, active))| {
+                let star = if active { "*" } else { " " };
+                let text = format!("{}.\t{}\t{caps}\t{star}", i + 1, spelled(records, names[0], names[1]));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CAPS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Fills the page's table with plain rows in its columns.
+    fn fill_list(&self, view: &mut View, dialog: &Dialog, columns: &[(u16, u16)], rows: Vec<TableRow>) {
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns: columns.to_vec(),
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: None,
+            };
+        }
     }
 
     /// Zuschauer Liga (`CStatistikWnd` over the attendance kept at

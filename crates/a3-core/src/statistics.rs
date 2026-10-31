@@ -1864,6 +1864,119 @@ pub fn league_cup_finals(records: &Records, country: u16) -> Vec<(i16, CupPairin
         .collect()
 }
 
+/// The Historisches' Int. Wettbewerbe (`FUN_0045feac`), Torschützenkönige
+/// (`FUN_004608ce`), Torrekorde (`FUN_00460c7a`) and Rekordnationalspieler
+/// (`FUN_00461e6a`), and the international competitions' strip (kind 12).
+pub const INTERNATIONAL_PAGE: i16 = 0x14;
+pub const KINGS_PAGE: i16 = 0x19;
+pub const TALLIES_PAGE: i16 = 0x1a;
+pub const CAPS_PAGE: i16 = 0x1c;
+pub const INTERNATIONAL_STRIP: i16 = 12;
+
+/// The finals of the Champions League, the UEFA cup, the European
+/// Supercup and the club world cup in the lists block (`DAT_00b1a348`,
+/// `DAT_00b1a5c8`, `DAT_00b1a708`, `DAT_00b1a848`): twenty entries each,
+/// the year and the final's pairing, the newest last (`FUN_00424207`).
+const INTERNATIONAL_FINALS: [usize; 4] = [0xec90, 0xef10, 0xf050, 0xf190];
+
+/// An international final: the year, both clubs by country and number,
+/// the goals (the pairing's first leg, +0xa and +0xb) and how it was
+/// decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InternationalFinal {
+    pub year: i16,
+    pub a: (u8, i16),
+    pub b: (u8, i16),
+    pub goals: (u8, u8),
+    pub penalties: bool,
+    pub extra_time: bool,
+}
+
+/// The finals of the competition at `list` (0 to 3) kept so far, the
+/// newest first, as the page adds them at its head.
+pub fn international_finals(records: &Records, list: usize) -> Vec<InternationalFinal> {
+    let Some(&at) = INTERNATIONAL_FINALS.get(list) else { return Vec::new() };
+    let Some(b) = records.block(LISTS).and_then(|b| b.get(at..at + FINALS_KEPT * 0x10)) else {
+        return Vec::new();
+    };
+    let word = |e: &[u8], k: usize| i16::from_le_bytes([e[k], e[k + 1]]);
+    (0..FINALS_KEPT)
+        .rev()
+        .map(|k| &b[k * 0x10..(k + 1) * 0x10])
+        .filter(|e| word(e, 0) != 0)
+        .map(|e| InternationalFinal {
+            year: word(e, 0),
+            a: (e[2], word(e, 4)),
+            b: (e[6], word(e, 8)),
+            goals: (e[0xa], e[0xb]),
+            penalties: e[0xe] & 0x40 != 0,
+            extra_time: e[0xe] & 0x80 != 0,
+        })
+        .collect()
+}
+
+/// A season's top scorer or a best tally: his names in the pool, his
+/// club's number in the country, his goals and the season's year.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tally {
+    pub names: [u16; 2],
+    pub team: i16,
+    pub goals: i16,
+    pub year: i16,
+}
+
+/// The lists block's ten-byte tallies of a country (`DAT_00b19790`, 600
+/// bytes a country by its slot: twenty seasons of up to three top scorers,
+/// written at the season's end by `FUN_0071cd6f`; `DAT_00b1797c`, 100
+/// bytes a slot: the ten best tallies of a season).
+const KINGS: (usize, usize) = (0xe0d8, 600);
+const TALLIES: (usize, usize) = (0xc2c4, 100);
+const KING_SEASON: usize = 0x1e;
+const KINGS_PER_SEASON: usize = 3;
+
+fn tally(e: &[u8]) -> Tally {
+    let word = |k: usize| i16::from_le_bytes([e[k], e[k + 1]]);
+    Tally { names: [word(0) as u16, word(2) as u16], team: word(4), goals: word(6), year: word(8) }
+}
+
+fn country_list(records: &Records, country: u16, (at, per_slot): (usize, usize)) -> Option<&[u8]> {
+    let from = at + usize::from(records.countries.slot(country.into())) * per_slot;
+    records.block(LISTS).and_then(|b| b.get(from..from + per_slot))
+}
+
+/// The Torschützenkönige: the seasons from the newest down to the second
+/// kept — the oldest is never shown —, up to three tied top scorers each.
+pub fn top_scorers(records: &Records, country: u16) -> Vec<Tally> {
+    let Some(b) = country_list(records, country, KINGS) else { return Vec::new() };
+    (1..b.len() / KING_SEASON)
+        .rev()
+        .flat_map(|s| (0..KINGS_PER_SEASON).map(move |k| s * KING_SEASON + k * 10))
+        .map(|at| tally(&b[at..at + 10]))
+        .filter(|t| t.year != 0)
+        .collect()
+}
+
+/// The Torrekorde: the ten best tallies, best first.
+pub fn best_tallies(records: &Records, country: u16) -> Vec<Tally> {
+    let Some(b) = country_list(records, country, TALLIES) else { return Vec::new() };
+    (0..10).map(|k| tally(&b[k * 10..k * 10 + 10])).filter(|t| t.year != 0).collect()
+}
+
+/// The Rekordnationalspieler of a country (`DAT_00b1af00`, 200 bytes a
+/// slot): twenty entries of a player's id, his names, his caps and
+/// whether he still plays; those with an id.
+const CAPS: (usize, usize) = (0xf848, 200);
+
+pub fn most_capped(records: &Records, country: u16) -> Vec<([u16; 2], u8, bool)> {
+    let Some(b) = country_list(records, country, CAPS) else { return Vec::new() };
+    let word = |k: usize| u16::from_le_bytes([b[k], b[k + 1]]);
+    (0..20)
+        .map(|k| k * 10)
+        .filter(|&at| word(at) != 0)
+        .map(|at| ([word(at + 2), word(at + 4)], b[at + 8], b[at + 9] != 0))
+        .collect()
+}
+
 /// A player of a country's all-time lists, kept for its first league
 /// (`FUN_005dbf39`, `FUN_005db9b7`): his names in the pool, whether he
 /// still plays in the country, his club's number there, and the list's

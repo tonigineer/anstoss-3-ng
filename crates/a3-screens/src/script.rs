@@ -7638,6 +7638,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The Historisches' kept lists on S2c, as the original shows them:
+    /// the Champions League's final of 2025/26 (Int. Wettbewerbe, the
+    /// newest at the top), the UEFA cup's decided on penalties, the
+    /// Bundesliga's top scorers of the season gone by, its best tallies and
+    /// Germany's most capped players.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_historisches_show_the_kept_lists() {
+        let Some((root, game)) = second_season("kept-lists") else { return };
+        let dialog = &game.dialogs[&18];
+        let rows = |page: usize, steps: usize| {
+            let then = format!(
+                "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}{}",
+                "\nnow click at 546 436".repeat(steps)
+            );
+            let runner = on_save(&game, "kept-lists", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(rows(2, 0), ["2025/26\tJuventus Turin\t-\tFC Arsenal\t1\t:\t0\t "]);
+        assert_eq!(rows(2, 1), ["2025/26\tReal Betis Sevilla\t-\tFeyenoord Rotterdam\t3\t:\t4\tn.E."]);
+        assert_eq!(rows(7, 0), ["2025/26\tTim Kleindienst\tBorussia M'gladbach\t17"]);
+        assert_eq!(
+            rows(8, 0)[..2],
+            ["2025/26\tTim Kleindienst\tBorussia M'gladbach\t17", "2025/26\tMarvin Pieringer\t1.FC Heidenheim\t16"]
+        );
+        assert_eq!(rows(9, 0)[..2], ["1.\tNico Schlotterbeck\t18\t*", "2.\tLeroy Sané\t17\t*"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {
