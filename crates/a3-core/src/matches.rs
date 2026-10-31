@@ -108,9 +108,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         return;
     };
     let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
-    // The scores drawn before the block is written, as in the leagues, and
-    // the gate money the home clubs book with them.
+    // The scores drawn before the block is written, as in the leagues, the
+    // sides they mark, and the gate money the home clubs book with them.
     let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
+    let mut marks: Vec<(u8, u16, u8, u16, u8, u8)> = Vec::new();
     let mut gates: Vec<(u8, u16, i32)> = Vec::new();
     for q in start..start + count {
         let Some(p) = records
@@ -154,6 +155,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         }
         let winner = u8::from(won == std::cmp::Ordering::Less);
         scored.push((q, [hg, ag, flags, winner]));
+        marks.push((p[0], u16_at(p, 2), p[4], u16_at(p, 6), hg, ag));
         // The home club's gate: a crowd as in the league, and the money it
         // brings — the played match's reckoning (FUN_0078b26c) at a mark
         // no cup round holds, which leaves it as it is.
@@ -183,6 +185,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
             t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
         }
+    }
+    // What the ties leave on the men who played them.
+    for (hc, hn, ac, an, hg, ag) in marks {
+        mark_cup(records, hc, hn, ac, an, hg, ag, random);
     }
     // The round is through when its every drawn pairing stands played; the
     // final's winner needs no drawing on.
@@ -234,6 +240,120 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         }
         if let Some(p) = cup.get_mut(0x28 - 0x20) {
             *p = u8::try_from(round + 1).unwrap_or(u8::MAX);
+        }
+    }
+}
+
+/// What a cup tie leaves on its men: the eleven each side puts on the
+/// pitch — its own suspended men (+0x234) held off the round — stand for
+/// their season's cup appearances in the career's five bytes (+0x25f),
+/// and every goal, drawn over the eleven as in the league, stands in the
+/// season's cup goals (+0x23d) and the career's (+0x23f). Cards follow
+/// the league's odds into the cup's counts (+0x231: yellow, red, yellow-
+/// red) and the country's cup rule (cards::cup); a suspending card marks
+/// the cup's suspension byte (+0x234: 0x80 red, 0x40 yellow-red, else a
+/// yellow accumulation) and holds its man off the next round, where the
+/// tie clears it. The league's 46 matchday rows hold its games alone, so
+/// a cup tie leaves no row there, and the season's cup grade (+0x233)
+/// and the substitutes' shares are the original's match engine, still
+/// unportrayed.
+fn mark_cup(
+    records: &mut Records,
+    hc: u8,
+    hn: u16,
+    ac: u8,
+    an: u16,
+    full: u8,
+    a_full: u8,
+    random: &mut Random,
+) {
+    for (country, team, goals) in [(hc, hn, full), (ac, an, a_full)] {
+        let nation = u16::from(country);
+        let squad = records
+            .team(nation, team)
+            .map(|t| t.players())
+            .unwrap_or_default();
+        let fit: Vec<u16> = squad
+            .iter()
+            .copied()
+            .filter(|&id| {
+                records.player(id).is_some_and(|p| available(records, id) && p.cup_ban() == 0)
+            })
+            .collect();
+        let eleven = eleven(&fit, records);
+        let weights: Vec<u32> = eleven
+            .iter()
+            .map(|&id| {
+                records.player(id).map_or(0, |p| {
+                    u32::from(p.strength()) * KIND_WEIGHTS[usize::from(p.positions()[0]).min(10)]
+                })
+            })
+            .collect();
+        let mut scored = vec![0u8; eleven.len()];
+        for _ in 0..u32::from(goals) {
+            let Some(k) = draw(&weights, random) else {
+                break;
+            };
+            scored[k] = scored[k].saturating_add(1);
+        }
+        // A fresh card's suspension of this round's marking stands over
+        // the serving of the last; the men who wore one into the tie sat
+        // it out and stand free of it now.
+        let mut carded: Vec<u16> = Vec::new();
+        for (&id, &n) in eleven.iter().zip(&scored) {
+            let card = if random.below(110) == 0 {
+                3
+            } else if random.below(340) == 0 {
+                2
+            } else if random.below(9) == 0 {
+                1
+            } else {
+                0
+            };
+            let suspends_yellow = card == 1
+                && records.player(id).is_some_and(|p| {
+                    let mut q = p.clone();
+                    let mut counted = q.cup_cards();
+                    counted[0] = counted[0].saturating_add(1);
+                    q.set_cup_cards(counted);
+                    cards::cup(records, nation, &q)
+                });
+            if let Some(p) = records.player_mut(id) {
+                let mut apps = p.career_cup_appearances();
+                apps[0] = apps[0].saturating_add(1);
+                p.set_career_cup_appearances(apps);
+                if n > 0 {
+                    let mut goals = p.goals();
+                    goals[1] = goals[1].saturating_add(n);
+                    p.set_goals(goals);
+                    p.set_career_cup_goals(p.career_cup_goals().saturating_add(n));
+                }
+                if card != 0 {
+                    let mut cards = p.cup_cards();
+                    match card {
+                        1 => cards[0] = cards[0].saturating_add(1),
+                        2 => cards[2] = cards[2].saturating_add(1),
+                        _ => cards[1] = cards[1].saturating_add(1),
+                    }
+                    p.set_cup_cards(cards);
+                    if card >= 2 || suspends_yellow {
+                        p.set_cup_ban(match card {
+                            3 => 0x80,
+                            2 => 0x40,
+                            _ => 1,
+                        });
+                        carded.push(id);
+                    }
+                }
+            }
+        }
+        for id in squad {
+            if carded.contains(&id) {
+                continue;
+            }
+            if let Some(p) = records.player_mut(id) {
+                p.set_cup_ban(0);
+            }
         }
     }
 }

@@ -3638,13 +3638,16 @@ mod tests {
     /// to the score — a shootout's score staying even — the second round's
     /// rows hold the winners, each once and unplayed, the block names
     /// round 2 as drawn, and the human club's tie played with the rest —
-    /// its home tie booking its gate on the club's cup takings.
+    /// its home tie booking its gate on the club's cup takings and its
+    /// men carrying the tie's marks: appearances in the career's cup
+    /// bytes, goals in the season's and the career's.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_cup_round_plays_on_when_its_day_comes() {
         use a3_core::opponent::{CUPS_AT, PAIRING, PAIRINGS};
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let mut cup_gate = (0u16, 0i32);
+        let mut cup_marks: Vec<(u16, (i64, i64, i64))> = Vec::new();
         let root = patched(&dir, "A", "cup-days", |records| {
             records.globals.set_day(56);
             // The save's planner still holds the talks and visits booked in
@@ -3664,7 +3667,27 @@ mod tests {
             let cup = format!("{CUPS_AT:#x}[{}]", records.countries.slot(nation));
             // The human club plays its first-round tie at home on this
             // save; keep its number and the cup takings the save holds
-            // from the round it lived through, to see the gate come on.
+            // from the round it lived through, to see the gate come on,
+            // and the men's cup marks — season goals, career goals and
+            // the career's five appearance bytes — to see the tie leave
+            // its marks on them.
+            let totals = |records: &a3_core::records::Records, num: u16| -> (i64, i64, i64) {
+                let mut marks = (0i64, 0i64, 0i64);
+                if let Some(t) = records.team(nation as u16, num) {
+                    for id in t.players() {
+                        if let Some(p) = records.player(id) {
+                            marks.0 += i64::from(p.goals()[1]);
+                            marks.1 += i64::from(p.career_cup_goals());
+                            marks.2 += p
+                                .career_cup_appearances()
+                                .iter()
+                                .map(|&a| i64::from(a))
+                                .sum::<i64>();
+                        }
+                    }
+                }
+                marks
+            };
             if let Some(b) = records.block(&cup) {
                 for q in 0..32 {
                     let p = &b[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
@@ -3681,6 +3704,10 @@ mod tests {
                                     0x234 + a3_core::finances::CLUB_TO_TEAM,
                                 ),
                             );
+                        }
+                        let away = u16::from_le_bytes([p[6], p[7]]);
+                        for &n in &[num, away] {
+                            cup_marks.push((n, totals(records, n)));
                         }
                     }
                 }
@@ -3771,6 +3798,52 @@ mod tests {
             "the cup tie booked no gate: {} -> {booked}",
             cup_gate.1
         );
+        // And the tie marked its men: the eleven each side sent out stand
+        // in the career's cup appearances (+0x25f), and its goals — all
+        // of the tie's, drawn over the eleven — in the season's cup
+        // goals (+0x23d) and the career's (+0x23f).
+        let q = (0..32)
+            .find(|&q| {
+                let p = pairing(q);
+                usize::from(p[0]) == usize::from(nation) && u16_at(p, 2) == cup_gate.0
+            })
+            .expect("the human club's home tie");
+        let (hg, ag) = (pairing(q)[8], pairing(q)[9]);
+        for (num, before) in cup_marks {
+            let mut after = (0i64, 0i64, 0i64);
+            for id in records.team(nation, num).unwrap().players() {
+                if let Some(p) = records.player(id) {
+                    after.0 += i64::from(p.goals()[1]);
+                    after.1 += i64::from(p.career_cup_goals());
+                    after.2 += p
+                        .career_cup_appearances()
+                        .iter()
+                        .map(|&a| i64::from(a))
+                        .sum::<i64>();
+                }
+            }
+            let score = i64::from(if num == cup_gate.0 { hg } else { ag });
+            assert_eq!(
+                after.0 - before.0,
+                score,
+                "club {num}'s season cup goals: {} -> {}, tie {hg}:{ag}",
+                before.0,
+                after.0
+            );
+            assert_eq!(
+                after.1 - before.1,
+                score,
+                "club {num}'s career cup goals: {} -> {}, tie {hg}:{ag}",
+                before.1,
+                after.1
+            );
+            assert!(
+                after.2 - before.2 >= 11,
+                "club {num}'s cup appearances: {} -> {}",
+                before.2,
+                after.2
+            );
+        }
     }
 
     #[test]
