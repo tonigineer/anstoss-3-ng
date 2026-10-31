@@ -3341,8 +3341,10 @@ mod tests {
     /// more — every game with a result, half time within full time, the
     /// clubs' records agreeing with the table the results reckon, the
     /// gates: a crowd to every matchday, money booked and a gate held for
-    /// every home game, the attendance rows keeping step — and the
-    /// players': new appearances and goals over the save, the league's
+    /// every home game, the attendance rows keeping step, the away games
+    /// counted and the human club's extra rows filled — visiting fans,
+    /// gate incomes, travelling gates matching the home club's own — and
+    /// the players': new appearances and goals over the save, the league's
     /// top-scorers list grown by exactly the new goals. Played on
     /// a copy: ten days cross week ends, and their autosaves roll into the
     /// game's own `saves` — which would shuffle the list the other tests
@@ -3456,6 +3458,55 @@ mod tests {
             let row = att_rows[place];
             assert_eq!(usize::try_from(row.games).unwrap(), held, "team {number}: row out of step");
             assert!(row.total > 0 && row.percent > 0 && row.percent <= 100, "team {number}: {row:?}");
+            // The away games stand counted too: home games plus away games
+            // is what the league has played against the club.
+            let aways = (0..league.played())
+                .flat_map(|md| league.games(md))
+                .filter(|&(_, away, _)| away == place)
+                .count();
+            assert_eq!(
+                usize::from(team.away_games()),
+                aways,
+                "team {number}: {} away games counted for {aways}",
+                team.away_games()
+            );
+            // The human club's extra block keeps its rows: visiting fans
+            // within the gate and incomes at every home game, and every
+            // travelling gate equal to the home club's own gate of that
+            // very game.
+            if team.human() > 0
+                && let Some(x) = records.extras.get(usize::from(team.human()) - 1)
+            {
+                for k in 0..held {
+                    let fans = x.fan_gates()[k];
+                    assert!(
+                        fans > 0 && fans <= team.gates()[k],
+                        "team {number}: {fans} visiting fans of a {}",
+                        team.gates()[k]
+                    );
+                    assert!(x.home_incomes()[k] > 0, "team {number}: income {k} nought");
+                }
+                let mut host_homes = vec![0usize; league.teams()];
+                let mut j = 0usize;
+                for md in 0..league.played() {
+                    for (home, away, _) in league.games(md) {
+                        if away == place {
+                            if md >= 3 {
+                                let host = records
+                                    .team(nation, league.team(usize::from(home)) as u16)
+                                    .expect("a league club");
+                                assert_eq!(
+                                    x.away_gates()[j],
+                                    host.gates()[host_homes[usize::from(home)]],
+                                    "team {number}: travelling gate {j}"
+                                );
+                            }
+                            j += 1;
+                        }
+                        host_homes[usize::from(home)] += 1;
+                    }
+                }
+            }
         }
         // The matches left their mark on the players: at least twenty of
         // the twenty-two stand per game even with injuries and suspensions,

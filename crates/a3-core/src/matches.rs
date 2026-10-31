@@ -70,6 +70,8 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
 /// money on its season's takings, and the league's attendance row
 /// follows. Each match leaves its mark on its players: appearances and
 /// scorers' goals in their records, and in the league's top-scorers list.
+/// Both clubs keep their gate figures: the home club its crowd, income and
+/// the visiting fans, the away club the travelling gate of the game.
 fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
     let Some(league) = League::of(records, nation, level) else {
         return;
@@ -136,9 +138,25 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
             slot.copy_from_slice(&crowd.to_le_bytes());
         }
     }
-    for ((home, _, _), (&team, (att, money, cap))) in
-        games.iter().zip(homes.iter().zip(booked))
+    for (((home, _, _), (&team, (att, money, cap))), &away) in
+        games.iter().zip(homes.iter().zip(booked)).zip(&aways)
     {
+        // The visiting fans: a part of the away club's own plan (save A
+        // reads 3926 with the away club planning 34000), never more than
+        // came to the ground. The original draws them inside the match
+        // (the match record's +0x54); the replica draws them over the plan.
+        let plan = records
+            .team(nation, away)
+            .map_or(0, |a| a.get::<i32>(PLAN_ATTENDANCE + CLUB_TO_TEAM));
+        let luck = 8 + i32::try_from(random.below(7)).unwrap_or(8);
+        let fans = plan.max(0).wrapping_mul(luck) / 100;
+        let fans = fans.clamp(0, att.max(0));
+        // The home club: its gate held among its gates, the money booked,
+        // and — where it has a human's extra block — the visiting fans and
+        // the gate's income of this home game, as the statistics pages
+        // read them (the match record's +0x54 and +0x3c into extra +0x3f4
+        // and +0x450, `FUN_007108d3`).
+        let mut host = (0usize, 0u8);
         if let Some(t) = records.team_mut(nation, team) {
             let old = t.get::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM);
             t.put::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM, old.wrapping_add(money));
@@ -149,6 +167,37 @@ fn settle(records: &mut Records, nation: u16, level: u8, random: &mut Random) {
                 t.set_gates(gates);
             }
             t.set_home_games(u8::try_from(held + 1).unwrap_or(u8::MAX));
+            host = (held, t.human());
+        }
+        if host.1 > 0
+            && let Some(x) = records.extras.get_mut(usize::from(host.1) - 1)
+        {
+            let mut fan_gates = x.fan_gates();
+            let mut incomes = x.home_incomes();
+            if let (Some(f), Some(m)) = (fan_gates.get_mut(host.0), incomes.get_mut(host.0)) {
+                *f = fans;
+                *m = money;
+                x.set_fan_gates(fan_gates);
+                x.set_home_incomes(incomes);
+            }
+        }
+        // The away club: its count of away games up, and the gate of the
+        // travelling — the whole gate at the opponent's ground, the match
+        // record's +0x34 into extra +0x398 (`FUN_0063f09b`).
+        let mut guest = (0usize, 0u8);
+        if let Some(a) = records.team_mut(nation, away) {
+            let held = usize::from(a.away_games());
+            a.set_away_games(u8::try_from(held + 1).unwrap_or(u8::MAX));
+            guest = (held, a.human());
+        }
+        if guest.1 > 0
+            && let Some(x) = records.extras.get_mut(usize::from(guest.1) - 1)
+        {
+            let mut away_gates = x.away_gates();
+            if let Some(entry) = away_gates.get_mut(guest.0) {
+                *entry = att;
+                x.set_away_gates(away_gates);
+            }
         }
         if let Some(slot) = att_slot {
             statistics::book_attendance(records, slot, *home, att, cap);
