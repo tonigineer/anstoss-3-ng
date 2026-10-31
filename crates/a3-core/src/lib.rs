@@ -27,6 +27,7 @@ pub mod lineup;
 pub mod load;
 pub mod market;
 pub mod marking;
+pub mod matches;
 pub mod medical;
 pub mod mood;
 pub mod newgame;

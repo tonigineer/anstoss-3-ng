@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use a3_files::an3::Save;
-use chrono::Datelike;
 use tracing::{info, warn};
 
 use crate::data::Data;
@@ -725,21 +724,38 @@ impl Cycle {
                 }
             }
             self.season(|s| s.before_match = false);
-            let Some(week) = self.season(|s| self.start_week(s)).flatten() else {
+            let Some(week) = self.season(|s| self.start_week(s)) else {
                 return Ok(());
             };
             self.ask(Request::new(week))?;
             for _ in 0..WEEK_DAYS {
                 self.appointments()?;
-                let week_start = self.season(|s| {
-                    s.pass_day();
-                    s.day += 1;
-                    let start = s.day % WEEK_DAYS == 0;
-                    if start {
-                        s.begin_week();
-                    }
-                    start.then_some(s.day / WEEK_DAYS)
-                });
+                let week_start = {
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    state.season.as_mut().map(|season| {
+                        season.pass_day();
+                        season.day += 1;
+                        // The day's league games: where the original lets
+                        // its clubs play them on the pitch, the replica
+                        // scores them into the league blocks and their
+                        // clubs' records — the human's game among them,
+                        // its 3D match being out of the replica's scope.
+                        if let Some(records) = state.records.as_mut() {
+                            crate::matches::play_day(
+                                records,
+                                &self.data.world,
+                                &self.data.calendar,
+                                season,
+                            );
+                        }
+                        let start = season.day % WEEK_DAYS == 0;
+                        if start {
+                            season.begin_week();
+                        }
+                        start.then_some(season.day / WEEK_DAYS)
+                    })
+                };
                 if let Some(Some(weeks)) = week_start
                     && let Some(records) = self.state().records.as_mut()
                 {
@@ -961,31 +977,13 @@ impl Cycle {
         Ok(())
     }
 
-    /// The week after the turns: its screen, or none in the week of the
-    /// first match, when the season stops.
-    fn start_week(&self, season: &mut Season) -> Option<u16> {
+    /// The week after the turns: its screen. The week of a match now runs
+    /// with the rest — the league matchdays are played as the days pass.
+    fn start_week(&self, season: &mut Season) -> u16 {
         season.current = 0;
-        let first_match = season
-            .managers
-            .iter()
-            .filter_map(|m| season.next_match(&self.data.world, &self.data.calendar, m.club?))
-            .min_by_key(|m| m.day);
-        if let Some(m) = first_match.filter(|m| m.day < season.day + WEEK_DAYS) {
-            let date = crate::calendar::date(season.year, m.day);
-            info!(
-                "{}, {}. Spieltag am {}.{}.{}: here the match would be played; back to the \
-                 start menu",
-                m.league,
-                m.matchday,
-                date.day(),
-                date.month(),
-                date.year()
-            );
-            return None;
-        }
         season.start_week();
         let clubs = season.managers.iter().filter(|m| m.club.is_some()).count();
-        Some(WEEKS[clubs.min(WEEKS.len() - 1)])
+        WEEKS[clubs.min(WEEKS.len() - 1)]
     }
 
     /// The current manager's turn, on the main screens with the menu bar or

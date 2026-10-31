@@ -672,8 +672,8 @@ mod tests {
         result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
         let state = runner.host.state();
         let season = state.season.as_ref().unwrap();
-        // The Bundesliga starts on day 48, in the seventh week: the season
-        // stops before its first match.
+        // The Bundesliga starts on day 48, in the seventh week; the script
+        // stops at the first turn of day 42, before it.
         assert_eq!(season.day, 42);
         assert!(season.managers[0].club.is_some() && season.managers[1].club.is_none());
         assert_eq!(seen(&runner, WEEK), 6, "{}", runner.log.join("\n"));
@@ -3334,6 +3334,69 @@ mod tests {
         assert_eq!((talk.kind, talk.flag), (0x10, 1), "no talk booked on Monday");
         let name = records.name(records.player(talk.player).unwrap().last_name()).to_owned();
         assert_eq!(season.planner_message, Some((5048, name)), "the talk is not announced");
+    }
+
+    /// The league's matchdays play on as the days pass: the save's first
+    /// league has played three matchdays, and ten days carry at least one
+    /// more — every game with a result, half time within full time, and the
+    /// clubs' records agreeing with the table the results reckon. Played on
+    /// a copy: ten days cross week ends, and their autosaves roll into the
+    /// game's own `saves` — which would shuffle the list the other tests
+    /// pick their save from.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_league_matchdays_play_on_as_the_days_pass() {
+        use a3_core::{opponent, statistics};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "league-days", |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+        let Some(runner) = on_save(&game, "league-days", play) else { return };
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let league = opponent::League::of(records, nation, 0).expect("the first league");
+        // The save opened on three played matchdays, and the days since
+        // each pair meet once a week at least.
+        assert!(league.played() > 3, "still only {} matchdays played", league.played());
+        for md in 3..league.played() {
+            for (home, away, result) in league.games(md) {
+                let [full, away_full, half, away_half] =
+                    result.unwrap_or_else(|| panic!("md {md}: {home}-{away} unwritten"));
+                assert!(
+                    half <= full && away_half <= away_full,
+                    "md {md}: {home}-{away} {full}:{away_full} ht {half}:{away_half}"
+                );
+            }
+        }
+        // The clubs carry what the reckoned table shows them.
+        let rows = statistics::table(records, &league, statistics::ALL);
+        for (rank, row) in rows.iter().enumerate() {
+            let team = records.team(nation, row.team as u16).expect("a league club");
+            assert_eq!(team.table_place(), rank as u8 + 1, "team {}", row.team);
+            assert_eq!(
+                team.record(),
+                [
+                    u8::try_from(row.won).unwrap(),
+                    u8::try_from(row.drawn).unwrap(),
+                    u8::try_from(row.lost).unwrap(),
+                ],
+                "team {}",
+                row.team
+            );
+            assert_eq!(
+                team.goals(),
+                [
+                    u8::try_from(row.goals_for).unwrap(),
+                    u8::try_from(row.goals_against).unwrap(),
+                ],
+                "team {}",
+                row.team
+            );
+        }
+        assert!(season.day > 63);
     }
 
     #[test]
@@ -7279,11 +7342,16 @@ mod tests {
         let before = received(&before);
         // Give the second human's club the 100.000 offered at first; the
         // refusal; then the manager ends his turn with the whistle — the
-        // second, not under contract, plays none.
-        let then = "on 384 press 4741\non 380 press 4731\n\
+        // second, not under contract, plays none. The week runs on past
+        // the whistles now that the season does not stop at a match, so
+        // its waiting screens are swept; the script ends a day into the
+        // new week, the store long since booked.
+        let then = "on 384 press 4741\non 380 press 4731\non 218 click bar 0\n\
+                    on 147 click bar 18\non 2 wait\non 381 wait\n\
                     now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63\n\
                     now choose 6022 1\nnow press 1\nuntil dialog 417\nnow press 2222\n\
-                    until dialog 380\nuntil dialog 417\nnow click bar 18\nuntil dialog 9";
+                    until dialog 380\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 2\nrepeat 1 day";
         let runner = on_save(&game, "second-human", then).unwrap();
         assert_eq!(received(&runner), before + 100_000, "{}", runner.log.join("\n"));
         assert!(runner.host.state().season.as_ref().unwrap().donations.is_empty());

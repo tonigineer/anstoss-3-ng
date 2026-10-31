@@ -165,9 +165,11 @@ const UNPLAYED: u8 = 0xff;
 const MARKS: usize = 0x1a08;
 /// The league's total attendance per matchday, 24 i32 (L+0x194c).
 const MATCHDAY_CROWDS: usize = 0x191c;
-/// The places held, matchday by matchday: L+0xd0, which is this far into
-/// the saved block, a row of 0x2e bytes for each team.
-const PLACES: usize = 0xd0 - 0x20;
+/// The places held, matchday by matchday (L+0x82): a row of 0x2e bytes
+/// for each team, its byte of matchday k counting from 0 holding the
+/// table place it reached that matchday — checked on a save by reckoning
+/// its table after every matchday played.
+const PLACES: usize = 0x82;
 const PLACES_ROW: usize = 0x2e;
 
 impl<'a> League<'a> {
@@ -234,14 +236,73 @@ impl<'a> League<'a> {
     }
 
     /// The place the team at `place` in the league held a matchday before
-    /// the last one played, 0 none (`FUN_00690fba`: the league's +0xd0, a
-    /// row of 0x2e bytes for each team, by matchdays played).
+    /// the last one played, 0 none. `FUN_00690fba` reads the rows from
+    /// L+0x80 — the byte at matchdays played less two, which is the place
+    /// the team reached after the matchday before the last one played.
     pub fn place_before(&self, place: usize) -> u8 {
         let played = self.played();
         if played <= 1 || played > self.rows() {
             return 0;
         }
-        self.data.get(PLACES + place * PLACES_ROW + played).copied().unwrap_or(0)
+        self.data
+            .get(LEAGUE_FIELDS + PLACES + place * PLACES_ROW + (played - 2))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The byte of the block where the team at `place` keeps its place
+    /// after the matchday that comes next, none past the league's rows.
+    pub fn place_slot(&self, place: usize) -> Option<usize> {
+        if place >= self.teams() || self.played() >= PLACES_ROW {
+            return None;
+        }
+        Some(LEAGUE_FIELDS + PLACES + place * PLACES_ROW + self.played())
+    }
+
+    /// The four bytes of the block where the matchday coming next writes
+    /// the game of a pair of its schedule: the home place, the away place,
+    /// and where the game stands — 0xff in all four while it is unplayed.
+    pub fn open_games(&self) -> Vec<(usize, usize, usize)> {
+        let n = self.teams();
+        let (mut matchday, mut offset) = (self.played(), 0);
+        if self.four_rounds() && n >= 1 && matchday >= 2 * n - 2 {
+            matchday -= 2 * n - 2;
+            offset = n;
+        }
+        if matchday >= self.rows() {
+            return Vec::new();
+        }
+        self.pairs(matchday)
+            .into_iter()
+            .map(|(home, away)| {
+                (home, away, LEAGUE_FIELDS + RESULTS + home * RESULT_ROW + (away + offset) * 4)
+            })
+            // The row only holds its 24 games; a league playing more
+            // rounds than that, and by places beyond, is not written yet.
+            .filter(|(home, away, at)| {
+                *home < n
+                    && *away < n
+                    && *at + 4 <= LEAGUE_FIELDS + RESULTS + (home + 1) * RESULT_ROW
+            })
+            .collect()
+    }
+
+    /// The field of the matchdays played (G+0x16), and the crowd total of
+    /// the matchday coming next, both in the block.
+    pub fn played_slot(&self) -> usize {
+        LEAGUE_FIELDS + 0x16
+    }
+
+    pub fn crowd_slot(&self) -> usize {
+        LEAGUE_FIELDS + MATCHDAY_CROWDS + 4 * self.played()
+    }
+
+    /// The name of the league's block in the save, to change it.
+    pub fn block_name(records: &Records, country: u16, level: u8) -> Option<String> {
+        let first = records.countries.first_league(country.into());
+        let index = i32::from(first) + i32::from(level);
+        let name = format!("{LEAGUE_AT:#x}[{index}]");
+        records.block(&name).map(|_| name)
     }
 
     /// The pairs of a matchday from 0, by places, with their results as
