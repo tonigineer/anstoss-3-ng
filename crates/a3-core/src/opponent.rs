@@ -739,6 +739,22 @@ const ROUNDS: [[(usize, usize); 6]; 6] = [
 /// text 1443.
 const ROUND_NAMES: [u16; 6] = [1528, 1519, 1520, 1521, 1521, 1522];
 const NO_ROUND: u16 = 1443;
+/// Where a cup round's pairings stand, by mode and round counted from 1;
+/// round 6 is the final, one pairing behind the last row entry.
+pub fn cup_pairings(mode: usize, round: usize) -> Option<(usize, usize)> {
+    let mode = mode.min(ROUNDS.len() - 1);
+    match round {
+        1..=5 => {
+            let (start, n) = ROUNDS[mode][round];
+            (n > 0).then_some((start, n))
+        }
+        6 => {
+            let (start, n) = ROUNDS[mode][5];
+            Some((start + n, 1))
+        }
+        _ => None,
+    }
+}
 pub const CUPS_AT: u32 = 0x1ba5390;
 pub const PAIRINGS: usize = 0x2c - 0x20;
 pub const PAIRING: usize = 0xe;

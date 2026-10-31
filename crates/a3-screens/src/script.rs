@@ -3628,6 +3628,113 @@ mod tests {
         assert!(season.day > 63);
     }
 
+    /// The country's cup round plays on when its day comes. The cup's days
+    /// stand coded on the country's first league row — for Germany round 1
+    /// at day 59 — and on save A, at day 63, the first round stands played
+    /// and the second already drawn; the patch sets the day back before
+    /// the round's, wipes the first round's scores, empties the second's
+    /// rows and sends the block back to round 1. Ten days cross the day:
+    /// every first-round pairing holds a result with its flags answering
+    /// to the score — a shootout's score staying even — the second round's
+    /// rows hold the winners, each once and unplayed, the block names
+    /// round 2 as drawn, and the human club's tie played with the rest.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_cup_round_plays_on_when_its_day_comes() {
+        use a3_core::opponent::{CUPS_AT, PAIRING, PAIRINGS};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "cup-days", |records| {
+            records.globals.set_day(56);
+            // The save's planner still holds the talks and visits booked in
+            // the days it lived through; rewound, they open their dialogs
+            // again — the talk's kind 0x19 and the visit's 0x0b — so the
+            // patch clears them for the days ahead.
+            if let Some(slot) = records.human_slot(0) {
+                if let Some(planner) = records.planners.get_mut(slot) {
+                    for day in 56..=66 {
+                        if matches!(planner.entry(day)[0], 0x19 | 0x0b) {
+                            planner.set_entry(day, [0; a3_core::records::PLANNER_ENTRY]);
+                        }
+                    }
+                }
+            }
+            let nation = usize::try_from(records.globals.main_country()).unwrap();
+            let cup = format!("{CUPS_AT:#x}[{}]", records.countries.slot(nation));
+            let Some(block) = records.block_mut(&cup) else {
+                panic!("the save's cup block");
+            };
+            for q in 0..32 {
+                block[PAIRINGS + q * PAIRING + 8..PAIRINGS + q * PAIRING + 14].fill(0);
+            }
+            for q in 32..48 {
+                block[PAIRINGS + q * PAIRING] = 0;
+            }
+            block[0x28 - 0x20] = 1;
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+        let Some(runner) = on_save(&game, "cup-days", play) else { return };
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        assert!(season.day > 63, "the days did not play on");
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let cup = records
+            .block(&format!("{CUPS_AT:#x}[{}]", records.countries.slot(usize::from(nation))))
+            .expect("the cup block");
+        let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
+        let pairing = |q: usize| &cup[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+        // The first round played out, the flags answering to the score.
+        let mut winners: Vec<(u8, u16)> = Vec::new();
+        let mut ties = 0;
+        for q in 0..32 {
+            let p = pairing(q);
+            assert_ne!(p[0], 0, "pairing {q} lost its clubs");
+            let (hg, ag, flags, winner) = (p[8], p[9], p[0xc], p[0xd]);
+            assert_eq!(flags & 0x28, 0x28, "pairing {q}: flags {flags:#02x}");
+            assert!(winner < 2, "pairing {q}: winner {winner}");
+            if hg == ag {
+                assert_eq!(flags & 0xc0, 0xc0, "pairing {q}: {hg}:{ag} flags {flags:#02x}");
+            } else {
+                assert_eq!(
+                    usize::from(winner),
+                    usize::from(hg < ag),
+                    "pairing {q}: {hg}:{ag} winner {winner}"
+                );
+            }
+            let at = usize::from(winner != 0) * 4;
+            winners.push((p[at], u16_at(p, at + 2)));
+            ties += usize::from(flags & 0xc0 != 0);
+        }
+        assert!(ties > 0, "not one of the thirty-two ties went past ninety minutes");
+        // The second round: the first's winners, drawn anew, none played.
+        let mut drawn: Vec<(u8, u16)> = Vec::new();
+        for q in 32..48 {
+            let p = pairing(q);
+            assert_ne!(p[0], 0, "pairing {q} stayed empty");
+            assert_eq!(p[0xc] & 0x20, 0, "pairing {q} played before its day");
+            drawn.push((p[0], u16_at(p, 2)));
+            drawn.push((p[4], u16_at(p, 6)));
+        }
+        winners.sort();
+        drawn.sort();
+        assert_eq!(drawn, winners, "the second round is not the first's winners");
+        assert_eq!(cup[0x28 - 0x20], 2, "the block's last drawn round");
+        // The human club's tie played with the rest.
+        let human = (0..32)
+            .filter(|&q| {
+                let p = pairing(q);
+                [p[0], p[4]].iter().zip([2, 6]).any(|(&c, at)| {
+                    records
+                        .team(u16::from(c), u16_at(p, at))
+                        .is_some_and(|t| t.human() > 0)
+                })
+            })
+            .count();
+        assert_eq!(human, 1, "the human club in the first round's pairings");
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn spiel_beenden_ends_the_game() {

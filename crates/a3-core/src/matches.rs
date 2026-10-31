@@ -6,7 +6,7 @@
 use crate::calendar::Calendar;
 use crate::cards;
 use crate::finances::CLUB_TO_TEAM;
-use crate::opponent::League;
+use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS, cup_pairings};
 use crate::random::Random;
 use crate::records::{Records, Team};
 use crate::season::Season;
@@ -32,9 +32,10 @@ const HOME_EDGE: i32 = 50;
 /// How much the difference of the strengths is worth a goal.
 const GOAL_UNITS: i32 = 200;
 
-/// Play the league games of the season's day: for every country the game
-/// follows, every league whose calendar row holds this day as one of its
-/// matchdays and has not played that matchday yet gets its pairs scored.
+/// Play the games of the season's day: for every country the game follows,
+/// every league whose calendar row holds this day as one of its matchdays
+/// and has not played that matchday yet gets its pairs scored, and so does
+/// the country's cup when the day is one of its rounds.
 pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, season: &mut Season) {
     let day = season.day;
     for slot in 0..world::SLOTS {
@@ -44,6 +45,7 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
         if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
             continue;
         }
+        cup_day(records, nation, calendar, day, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
             let level = level as u8;
             let Some(row) = calendar.row(nation, usize::from(level)) else {
@@ -58,6 +60,155 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
             if due {
                 settle(records, nation, level, &mut season.random);
             }
+        }
+    }
+}
+
+/// The cup's days sit on the country's first league row, coded 0x40 in the
+/// top bits with the round in the low ones (`FUN_004cea5a`); Germany's row
+/// names its six rounds at days 59, 115, 157, 234, 262 and 328. The round's
+/// pairings stand where the mode's row of the table at 0x8a5e10 says, the
+/// final one pairing behind the last of them.
+const CUP_CODE: u32 = 0x4000_0000;
+/// A pairing's flags: the result stands, the tie went to extra time (text
+/// 0x761) or to penalties (text 0x762), whose score stays as it was.
+const CUP_PLAYED: u8 = 0x08;
+const CUP_RESULT: u8 = 0x20;
+const CUP_EXTRA: u8 = 0x80;
+const CUP_SHOOT: u8 = 0x40;
+
+/// Play the country's cup round when the day is one: every drawn and still
+/// open pairing is scored single-leg, the home side with its edge; a tie
+/// runs to extra time, whose goals join the score, and from there to a
+/// shootout, which only names the winner in the byte at +0xd, 0 the home
+/// side. Once the round's last game is played its winners are shuffled
+/// and paired anew — the home side drawn too — where the next round's row
+/// says, and the block's last drawn round (the byte at +0x28) follows.
+fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
+    let Some(row) = calendar.row(nation, 0) else {
+        return;
+    };
+    let entry = calendar.entry(row, day);
+    if entry & 0x7f00_0000 != CUP_CODE {
+        return;
+    }
+    let round = usize::try_from(entry & 0xffff).unwrap_or(0);
+    let slot = records.countries.slot(usize::from(nation));
+    let name = format!("{CUPS_AT:#x}[{slot}]");
+    let Some(mode) = records.block(&name).and_then(|cup| cup.get(0x24 - 0x20)).copied() else {
+        return;
+    };
+    let mode = usize::from(mode).min(5);
+    let Some((start, count)) = cup_pairings(mode, round) else {
+        return;
+    };
+    let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
+    // The scores drawn before the block is written, as in the leagues.
+    let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
+    for q in start..start + count {
+        let Some(p) = records
+            .block(&name)
+            .and_then(|cup| cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING))
+            .filter(|p| p[0] != 0 && p[0xc] & CUP_RESULT == 0)
+        else {
+            continue;
+        };
+        let held = |country: u8, at: usize| {
+            records
+                .team(u16::from(country), u16_at(p, at))
+                .map(|team| team.strengths())
+                .unwrap_or(EVEN)
+        };
+        let home = held(p[0], 2);
+        let home = if home == [0; 4] { EVEN } else { home };
+        let away = held(p[4], 6);
+        let away = if away == [0; 4] { EVEN } else { away };
+        let (mut hg, _) = goals(home, away, HOME_EDGE, random);
+        let (mut ag, _) = goals(away, home, -HOME_EDGE, random);
+        let mut flags = CUP_PLAYED | CUP_RESULT;
+        let mut won = hg.cmp(&ag);
+        if hg == ag {
+            flags |= CUP_EXTRA;
+            let (et, _) = goals(home, away, 0, random);
+            let (at, _) = goals(away, home, 0, random);
+            hg = hg.saturating_add(et / 2 + u8::from(et % 2 != 0));
+            ag = ag.saturating_add(at / 2 + u8::from(at % 2 != 0));
+            won = hg.cmp(&ag);
+            if hg == ag {
+                flags |= CUP_SHOOT;
+                let sum = |s: &[i16; 4]| s.iter().map(|&v| i32::from(v)).sum::<i32>().max(1);
+                let (hs, as_) = (sum(&home), sum(&away));
+                won = if i32::try_from(random.below((hs + as_) as u32)).unwrap_or(0) < hs {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+            }
+        }
+        let winner = u8::from(won == std::cmp::Ordering::Less);
+        scored.push((q, [hg, ag, flags, winner]));
+    }
+    if let Some(cup) = records.block_mut(&name) {
+        for (q, [hg, ag, flags, winner]) in scored {
+            let at = PAIRINGS + q * PAIRING;
+            if let Some(p) = cup.get_mut(at + 8..at + 10) {
+                p.copy_from_slice(&[hg, ag]);
+            }
+            if let Some(p) = cup.get_mut(at + 0xc..at + 0xe) {
+                p.copy_from_slice(&[flags, winner]);
+            }
+        }
+    }
+    // The round is through when its every drawn pairing stands played; the
+    // final's winner needs no drawing on.
+    if round >= 6 {
+        return;
+    }
+    let mut winners: Vec<(u8, u16)> = Vec::new();
+    let drawn = records.block(&name).is_some_and(|cup| {
+        for q in start..start + count {
+            let Some(p) = cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING) else {
+                continue;
+            };
+            if p[0] == 0 {
+                continue;
+            }
+            if p[0xc] & CUP_RESULT == 0 {
+                return false;
+            }
+            let at = usize::from(p[0xd] != 0);
+            winners.push((p[at * 4], u16_at(p, at * 4 + 2)));
+        }
+        true
+    });
+    let Some((next, pairs)) = drawn.then(|| cup_pairings(mode, round + 1)).flatten() else {
+        return;
+    };
+    if winners.len() != 2 * pairs {
+        return;
+    }
+    for i in (1..winners.len()).rev() {
+        let j = usize::try_from(random.below(i as u32 + 1)).unwrap_or(i);
+        winners.swap(i, j);
+    }
+    if let Some(cup) = records.block_mut(&name) {
+        for (j, pair) in winners.chunks_exact(2).enumerate() {
+            let (a, b) = if random.below(2) == 1 {
+                (pair[1], pair[0])
+            } else {
+                (pair[0], pair[1])
+            };
+            let [alo, ahi] = a.1.to_le_bytes();
+            let [blo, bhi] = b.1.to_le_bytes();
+            let row = [a.0, 0, alo, ahi, b.0, 0, blo, bhi, 0, 0, 0, 0, 0, 0];
+            if let Some(p) = cup.get_mut(
+                PAIRINGS + (next + j) * PAIRING..PAIRINGS + (next + j + 1) * PAIRING,
+            ) {
+                p.copy_from_slice(&row);
+            }
+        }
+        if let Some(p) = cup.get_mut(0x28 - 0x20) {
+            *p = u8::try_from(round + 1).unwrap_or(u8::MAX);
         }
     }
 }
