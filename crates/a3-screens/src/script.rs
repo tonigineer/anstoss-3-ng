@@ -8498,22 +8498,20 @@ mod tests {
     }
 
     /// The season's end: A set one day before its top league's last
-    /// matchday, with 250.000 booked at the club's +0x310 as the season
-    /// end's settlement would (`FUN_006219d2`). Past the last matchday
-    /// the game brings its managers with a club the yearly statement —
-    /// the event 0x12d (`FUN_006742e0`, opened by `FUN_004a141c`):
-    /// dialog 417 without the bar, with its OK instead, hiding the
-    /// Spenden and black cash box buttons, keeping the Ermittlung combo on
-    /// "Aktuell", and below the rows text 2246 with the tax in words.
+    /// matchday. Past the last matchday every club settles its season
+    /// (`FUN_006219d2`) — Union's result taxed at the save's 29 %, the rest
+    /// its newest past result — and the game brings its managers with a
+    /// club the yearly statement — the event 0x12d (`FUN_006742e0`, opened
+    /// by `FUN_004a141c`): dialog 417 without the bar, with its OK instead,
+    /// hiding the Spenden and black cash box buttons, keeping the
+    /// Ermittlung combo on "Aktuell", and below the rows the tax booked,
+    /// in words and figures.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_season_end_statements_the_tax() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let root = patched(&dir, "A", "season-statement", |records| {
             records.globals.set_day(320);
-            let at = 0x310 + a3_core::finances::CLUB_TO_TEAM;
-            let team = usize::from(records.managers[0].team());
-            records.teams[team].put(at, 250_000i32);
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
@@ -8535,8 +8533,20 @@ mod tests {
         assert!(!shown(2222), "the statement hides the Spenden button");
         assert!(!shown(2224), "the statement hides the black cash box button");
         assert!(view.combo(control(dialog, 2226).unwrap()).unwrap().disabled, "{log}");
+        // The settlement's tax: 29 % of the result before it, which is
+        // what is left of it plus the tax.
+        let (tax, left, rate) = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let team = &records.teams[usize::from(records.managers[0].team())];
+            (a3_core::finances::tax_paid(team), team.get::<i64>(0x908), records.globals.get::<u8>(0xb5dfa9))
+        };
+        assert_eq!(rate, 29);
+        assert!(tax > 0, "Union's season is taxed");
+        assert_eq!(i64::from(tax), (f64::from(rate) * (left + i64::from(tax)) as f64 / 100.0) as i64);
         let line = view.text(control(dialog, 1621).unwrap());
-        assert!(line.contains("250.000 €"), "the tax line reads {line}");
+        let amount = crate::screens::finances::money32(&game, tax);
+        assert!(line.contains(&amount), "the tax line reads {line}, not {amount}");
         // The statement has shown itself once in this game.
         assert!(runner.host.state().season.as_ref().unwrap().statement, "{log}");
         let _ = std::fs::remove_dir_all(&root);

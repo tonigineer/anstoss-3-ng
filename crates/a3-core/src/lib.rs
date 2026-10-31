@@ -41,6 +41,7 @@ pub mod records;
 pub mod refit;
 pub mod rooms;
 pub mod season;
+pub mod settlement;
 pub mod squadlist;
 pub mod stadium;
 pub mod statistics;

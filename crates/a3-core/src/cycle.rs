@@ -780,9 +780,11 @@ impl Cycle {
     /// club, dialog 417 opened by the event 0x12d the season end posts
     /// (`FUN_006742e0` in `FUN_006da3a9`'s season-end block, `FUN_004a141c`
     /// for the dialog). It is due once the played country's top league has
-    /// no matchday ahead of the game; the block's settlement, promotions
-    /// and rollover into the new season are not built here, and the
-    /// statement shows once in a loaded game (`season.statement`).
+    /// no matchday ahead of the game. Every club of the countries played
+    /// settles its season before (`FUN_00621909`, [`crate::settlement`]),
+    /// so that the statement tells the tax booked; the promotions and the
+    /// rollover into the new season are not built here, and the statement
+    /// shows once in a loaded game (`season.statement`).
     fn statement(&mut self) -> Result<(), Gone> {
         let ready = {
             let state = self.state();
@@ -805,6 +807,9 @@ impl Cycle {
             return Ok(());
         }
         self.season(|s| s.statement = true);
+        if let Some(records) = self.state().records.as_mut() {
+            crate::settlement::settle_season(records);
+        }
         let humans = self.season(|s| {
             (0..s.managers.len())
                 .filter(|&m| s.managers[m].club.is_some())
