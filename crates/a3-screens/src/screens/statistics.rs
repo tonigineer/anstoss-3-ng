@@ -1836,6 +1836,61 @@ const TALLIES_ROW_COLUMNS: [(u16, u16); 4] = [(0, 0), (60, 0), (200, 0), (R | 37
 const CAPS_HEADER: u16 = 3024;
 const CAPS_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (C | 250, 40), (C | 290, 70)];
 const CAPS_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (R | 240, 35), (C | 310, 30)];
+/// The Nat. Meister's header (text 3027 "Saison\tVerein\tPunkte\tDiff
+/// \tTore") and its seven row columns.
+const CHAMPIONS_HEADER: u16 = 3027;
+const CHAMPIONS_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 75), (80, 0), (C | 200, 50), (C | 260, 40), (C | 308, 40)];
+const CHAMPIONS_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 65), (80, 0), (R | 200, 30), (R | 260, 30), (R | 305, 25), (332, 0), (337, 0)];
+/// The Nat. Pokalsieger's headers: two legs for Italy's cup (3029), else
+/// one result (3030); the rows' eleven columns.
+const CUP_WINNERS_TWO_LEGS: u16 = 3029;
+const CUP_WINNERS_TWO_LEGS_COLUMNS: [(u16, u16); 4] = [(0, 60), (C | 60, 240), (C | 310, 50), (C | 360, 60)];
+const CUP_WINNERS_HEADER: u16 = 3030;
+const CUP_WINNERS_HEADER_COLUMNS: [(u16, u16); 3] = [(0, 60), (C | 60, 240), (C | 300, 85)];
+const CUP_WINNERS_ROW_COLUMNS: [(u16, u16); 11] = [
+    (0, 0),
+    (60, 0),
+    (180, 0),
+    (185, 0),
+    (R | 315, 20),
+    (337, 0),
+    (342, 0),
+    (R | 365, 20),
+    (387, 0),
+    (392, 0),
+    (415, 0),
+];
+const ITALY: u16 = 28;
+/// Europameister and Weltmeister (text 3485 "Jahr\tGastgeber\tSieger
+/// \tFinalgegner\tErgebnis"), their top scorers (3484 "Jahr\tGastgeber
+/// \tSpieler\tTreffer").
+const TOURNAMENTS_HEADER: u16 = 3485;
+const TOURNAMENTS_HEADER_COLUMNS: [(u16, u16); 5] = [(0, 0), (40, 0), (130, 0), (230, 0), (R | 320, 50)];
+const TOURNAMENTS_ROW_COLUMNS: [(u16, u16); 8] =
+    [(0, 0), (40, 0), (130, 0), (225, 0), (230, 0), (R | 330, 18), (350, 0), (365, 0)];
+const TOURNAMENT_SCORERS_HEADER: u16 = 3484;
+const TOURNAMENT_SCORERS_COLUMNS: [(u16, u16); 4] = [(0, 0), (40, 0), (160, 0), (C | 340, 50)];
+/// The awards' headers: "Saison\tManager\tVerein" (0xe70) for the
+/// trainer, "Saison\tSpieler\tVerein" (0xe71) for the players.
+const TRAINER_AWARD_HEADER: u16 = 0xe70;
+const PLAYER_AWARD_HEADER: u16 = 0xe71;
+const AWARD_COLUMNS: [(u16, u16); 3] = [(R, 40), (60, 0), (250, 0)];
+/// The Erfolgreichste Trainer (0x1280 "Pl.\tTrainer\tMeister\tPokale\tEPs
+/// \tSonstige\tAufstiege").
+const SUCCESSFUL_HEADER: u16 = 0x1280;
+const SUCCESSFUL_HEADER_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (C | 190, 50), (C | 240, 40), (C | 280, 40), (C | 320, 40), (C | 370, 60)];
+const SUCCESSFUL_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (R | 190, 35), (R | 240, 30), (R | 280, 30), (R | 320, 30), (R | 370, 40)];
+/// The Beste Mannschaft (0x1295 "Saison\tVerein\tLand\tStärke\tSpieler
+/// \tSchnitt").
+const BEST_TEAMS_HEADER: u16 = 0x1295;
+const BEST_TEAMS_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(R, 60), (65, 0), (180, 0), (C | 300, 40), (C | 340, 40), (C | 380, 50)];
+const BEST_TEAMS_ROW_COLUMNS: [(u16, u16); 6] =
+    [(R, 60), (65, 0), (180, 0), (R | 300, 25), (R | 340, 25), (R | 380, 30)];
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2561,6 +2616,33 @@ impl Statistics {
                 self.tallies_page(cx, view, code == statistics::KINGS_PAGE)
             }
             Some(statistics::CAPS_PAGE) if self.category == HISTORY => self.caps_page(cx, view),
+            Some(statistics::CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.champions_page(cx, view)
+            }
+            Some(statistics::CUP_WINNERS_PAGE) if self.category == HISTORY => {
+                self.cup_winners_page(cx, view)
+            }
+            Some(code @ (statistics::EUROS_PAGE | statistics::WORLD_CUPS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tournaments_page(cx, view, code == statistics::WORLD_CUPS_PAGE)
+            }
+            Some(code @ (statistics::EURO_SCORERS_PAGE | statistics::WORLD_CUP_SCORERS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tournament_scorers_page(cx, view, code == statistics::WORLD_CUP_SCORERS_PAGE)
+            }
+            Some(code @ statistics::TRAINER_AWARD_PAGE..=statistics::EUROPE_AWARD_PAGE)
+                if self.category == HISTORY =>
+            {
+                self.awards_page(cx, view, (code - statistics::TRAINER_AWARD_PAGE) as usize)
+            }
+            Some(statistics::BEST_TEAMS_PAGE) if self.category == HISTORY => {
+                self.best_teams_page(cx, view)
+            }
+            Some(statistics::SUCCESSFUL_TRAINERS_PAGE) if self.category == HISTORY => {
+                self.successful_trainers_page(cx, view)
+            }
             Some(statistics::SCORES_PAGE) if self.category == HISTORY => self.scores_page(cx, view),
             Some(statistics::SACKED_PAGE) if self.category == HISTORY => self.sacked_page(cx, view),
             Some(statistics::LEADERS_PAGE) if self.category == HISTORY => {
@@ -2973,6 +3055,205 @@ impl Statistics {
             })
             .collect();
         self.fill_list(view, dialog, &CAPS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Nat. Meister (`FUN_004629fe`): the country's champions, the newest
+    /// first, "%s\t%s\t%d\t%d\t%d\t:\t%d" of the season, the club, its
+    /// points, difference and goals, in black.
+    fn champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(CHAMPIONS_HEADER).to_owned(), &CHAMPIONS_HEADER_COLUMNS);
+        let rows = statistics::champions(records, country)
+            .iter()
+            .map(|c| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t:\t{}",
+                    season_text(i32::from(c.year)),
+                    game.club_name(Some(records), c.club.0, c.club.1),
+                    c.points,
+                    c.goals_for - c.goals_against,
+                    c.goals_for,
+                    c.goals_against
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Nat. Pokalsieger (`FUN_00463213`): the country's cup finals, the
+    /// newest first, the year as stored and the pairing as the cup's
+    /// rounds show it (`FUN_0044893f`), in black; Italy's two-legged final
+    /// under its own header.
+    fn cup_winners_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        if country == ITALY {
+            set_header(view, dialog, game.text(CUP_WINNERS_TWO_LEGS).to_owned(), &CUP_WINNERS_TWO_LEGS_COLUMNS);
+        } else {
+            set_header(view, dialog, game.text(CUP_WINNERS_HEADER).to_owned(), &CUP_WINNERS_HEADER_COLUMNS);
+        }
+        let rows = statistics::cup_winners(records, country)
+            .iter()
+            .map(|(year, p)| {
+                let text = format!("{year}\t{}", pairing_text(game, records, p));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CUP_WINNERS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Europameister and Weltmeister (`FUN_0046445e`, `FUN_004647b4`): the
+    /// tournaments kept, the newest first — the year, the host, the
+    /// winner before the loser and the score the winner's way round
+    /// (equal goals put the second side first), and "n.V." or "n.E.".
+    fn tournaments_page(&self, cx: &Cx, view: &mut View, world: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(TOURNAMENTS_HEADER).to_owned(), &TOURNAMENTS_HEADER_COLUMNS);
+        let rows = statistics::tournaments(records, world)
+            .iter()
+            .map(|t| {
+                let f = &t.final_;
+                let a = game.club_name(Some(records), f.home_country, f.home);
+                let b = game.club_name(Some(records), f.away_country, f.away);
+                let (ga, gb) = f.first.unwrap_or((0, 0));
+                let (pairing, score) = if ga > gb {
+                    (format!("{a}\t-\t{b}"), f.first.map(|_| format!("{ga}\t:{gb}")))
+                } else {
+                    (format!("{b}\t-\t{a}"), f.first.map(|_| format!("{gb}\t:{ga}")))
+                };
+                let note = if f.penalties {
+                    game.text(PENALTIES)
+                } else if f.extra_time {
+                    game.text(EXTRA_TIME)
+                } else {
+                    " "
+                };
+                let text = format!(
+                    "{}\t{}\t{pairing}\t{}\t{note}",
+                    t.year,
+                    game.world.nation(t.host as u16),
+                    score.unwrap_or_else(|| "\t".to_owned())
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TOURNAMENTS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// EM- and WM-Torschützenkönige (`FUN_00464b0a`, `FUN_00464d01`): each
+    /// tournament's top scorer, the newest first, "%d\t%s\t%s (%s)\t%d" of
+    /// the year, the host, his last name and nation, and his goals.
+    fn tournament_scorers_page(&self, cx: &Cx, view: &mut View, world: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(
+            view,
+            dialog,
+            game.text(TOURNAMENT_SCORERS_HEADER).to_owned(),
+            &TOURNAMENT_SCORERS_COLUMNS,
+        );
+        let rows = statistics::tournaments(records, world)
+            .iter()
+            .map(|t| {
+                let text = format!(
+                    "{}\t{}\t{} ({})\t{}",
+                    t.year,
+                    game.world.nation(t.host as u16),
+                    records.name(t.scorer[1]),
+                    game.world.nation(u16::from(t.scorer_nation)),
+                    t.scorer_goals
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TOURNAMENT_SCORERS_COLUMNS, rows);
+        true
+    }
+
+    /// Trainer des Jahres, Spieler des Jahres (of the country the strip
+    /// stands at) and Fußballer Europas (`FUN_00464ef8`, `FUN_00465122`,
+    /// `FUN_0046534c`): the awards kept, the newest first, "%d\t%s\t%s" of
+    /// the year, the name and the club, in black.
+    fn awards_page(&self, cx: &Cx, view: &mut View, kind: usize) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let header = if kind == 0 { TRAINER_AWARD_HEADER } else { PLAYER_AWARD_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &AWARD_COLUMNS);
+        let country = self.strip_country(records);
+        let rows = statistics::awards(records, kind, country)
+            .iter()
+            .map(|a| {
+                let club = game.club_name(Some(records), a.club.0, a.club.1);
+                let text = format!("{}\t{}\t{club}", a.year, a.name);
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &AWARD_COLUMNS, rows);
+        true
+    }
+
+    /// Erfolgreichste Trainer (`FUN_00465abb`): the country's trainers with
+    /// the most titles, "%d.\t%s\t%d\t%d\t%d\t%d\t%d" of the place, the
+    /// name, titles, cups, European cups, the others and the promotions.
+    fn successful_trainers_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(SUCCESSFUL_HEADER).to_owned(), &SUCCESSFUL_HEADER_COLUMNS);
+        let country = self.strip_country(records);
+        let rows = statistics::successful_trainers(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let text = format!(
+                    "{}.\t{}\t{}\t{}\t{}\t{}\t{}",
+                    i + 1,
+                    t.name,
+                    t.titles,
+                    t.cups,
+                    t.european,
+                    t.others,
+                    t.promotions
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &SUCCESSFUL_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Beste Mannschaft (`FUN_004665dd`): each completed season's
+    /// strongest squad, the oldest first, "%s\t%s\t%s\t%d\t%d\t%2.1f" of
+    /// the season, the club, its country, the squad's strength, its size
+    /// and the strength a man, in black.
+    fn best_teams_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(BEST_TEAMS_HEADER).to_owned(), &BEST_TEAMS_HEADER_COLUMNS);
+        let rows = statistics::best_teams(records)
+            .iter()
+            .map(|t| {
+                let each = if t.squad > 0 { f64::from(t.strength) / f64::from(t.squad) } else { 0.0 };
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t{each:2.1}",
+                    season_text(i32::from(t.year)),
+                    game.club_name(Some(records), t.club.0, t.club.1),
+                    game.world.nation(u16::from(t.club.0)),
+                    t.strength,
+                    t.squad
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &BEST_TEAMS_ROW_COLUMNS, rows);
         true
     }
 

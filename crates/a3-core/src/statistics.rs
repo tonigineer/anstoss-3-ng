@@ -1977,6 +1977,218 @@ pub fn most_capped(records: &Records, country: u16) -> Vec<([u16; 2], u8, bool)>
         .collect()
 }
 
+/// The Historisches' Nat. Meister (`FUN_004629fe`) and Nat. Pokalsieger
+/// (`FUN_00463213`), Europameister and Weltmeister (`FUN_0046445e`,
+/// `FUN_004647b4`), their top scorers (`FUN_00464b0a`, `FUN_00464d01`),
+/// Trainer des Jahres, Spieler des Jahres and Fußballer Europas
+/// (`FUN_00464ef8`, `FUN_00465122`, `FUN_0046534c`) and the Erfolgreichste
+/// Trainer (`FUN_00465abb`).
+pub const CHAMPIONS_PAGE: i16 = 0x1f;
+pub const CUP_WINNERS_PAGE: i16 = 0x20;
+pub const EUROS_PAGE: i16 = 0x29;
+pub const WORLD_CUPS_PAGE: i16 = 0x2a;
+pub const EURO_SCORERS_PAGE: i16 = 0x2b;
+pub const WORLD_CUP_SCORERS_PAGE: i16 = 0x2c;
+pub const TRAINER_AWARD_PAGE: i16 = 0x2d;
+pub const PLAYER_AWARD_PAGE: i16 = 0x2e;
+pub const EUROPE_AWARD_PAGE: i16 = 0x2f;
+pub const SUCCESSFUL_TRAINERS_PAGE: i16 = 0x32;
+
+/// A country's champions (`DAT_00b181b0`, 0xf0 bytes a slot; written by
+/// `FUN_0071d54b`): twenty entries of 0xc bytes — the year, the club's
+/// country and number, its points and goals —, the newest last.
+const CHAMPIONS: (usize, usize) = (0xcaf8, 0xf0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Champion {
+    pub year: i16,
+    pub club: (u8, i16),
+    pub points: i16,
+    pub goals_for: i16,
+    pub goals_against: i16,
+}
+
+/// The kept champions, the newest first: as many as name a club, counted
+/// back from the last entry.
+pub fn champions(records: &Records, country: u16) -> Vec<Champion> {
+    let Some(b) = country_list(records, country, CHAMPIONS) else { return Vec::new() };
+    let entry = |k: usize| &b[k * 0xc..(k + 1) * 0xc];
+    let word = |e: &[u8], at: usize| i16::from_le_bytes([e[at], e[at + 1]]);
+    let count = (0..20).filter(|&k| entry(k)[2] != 0).count();
+    (20 - count..20)
+        .rev()
+        .map(entry)
+        .map(|e| Champion {
+            year: word(e, 0),
+            club: (e[2], word(e, 4)),
+            points: word(e, 6),
+            goals_for: word(e, 8),
+            goals_against: word(e, 0xa),
+        })
+        .collect()
+}
+
+/// A country's cup winners (`DAT_00b18b10`, 0x140 bytes a slot; written
+/// by `FUN_006ced69`): twenty finals of the year and the pairing, the
+/// newest first, as many as name a club counted back from the last.
+const CUP_WINNERS: (usize, usize) = (0xd458, 0x140);
+
+pub fn cup_winners(records: &Records, country: u16) -> Vec<(i16, CupPairing)> {
+    let Some(b) = country_list(records, country, CUP_WINNERS) else { return Vec::new() };
+    let entry = |k: usize| &b[k * 0x10..(k + 1) * 0x10];
+    let count = (0..20).filter(|&k| entry(k)[2] != 0).count();
+    (20 - count..20)
+        .rev()
+        .map(entry)
+        .map(|e| (i16::from_le_bytes([e[0], e[1]]), pairing(&e[2..])))
+        .collect()
+}
+
+/// The European championships' and the world cups' records (`DAT_00b1e832`
+/// and `DAT_00b1e650` in the lists block; written by `FUN_0067d229`): a
+/// count, then twenty of 0x18 bytes — the year, the host, the final's
+/// pairing and the top scorer's names, nation and goals.
+const EUROS: usize = 0x1317a;
+const WORLD_CUPS: usize = 0x12f98;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tournament {
+    pub year: i16,
+    pub host: i16,
+    pub final_: CupPairing,
+    pub scorer: [u16; 2],
+    pub scorer_nation: u8,
+    pub scorer_goals: u8,
+}
+
+/// The tournaments kept, the newest first.
+pub fn tournaments(records: &Records, world: bool) -> Vec<Tournament> {
+    let at = if world { WORLD_CUPS } else { EUROS };
+    let Some(b) = records.block(LISTS).and_then(|b| b.get(at..at + 2 + 20 * 0x18)) else {
+        return Vec::new();
+    };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    let count = usize::try_from(word(0)).unwrap_or(0).min(20);
+    (0..count)
+        .rev()
+        .map(|k| 2 + k * 0x18)
+        .map(|e| Tournament {
+            year: word(e),
+            host: word(e + 2),
+            final_: pairing(&b[e + 4..e + 0x12]),
+            scorer: [word(e + 0x12) as u16, word(e + 0x14) as u16],
+            scorer_nation: b[e + 0x16],
+            scorer_goals: b[e + 0x17],
+        })
+        .collect()
+}
+
+/// An award of a season: the year, the name as stored, the club by
+/// country and number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Award {
+    pub year: i16,
+    pub name: String,
+    pub club: (u8, i16),
+}
+
+/// The awards kept (`FUN_00748880`, `FUN_007488d4` a country by its slot
+/// at 0x2d2 bytes in the blocks `0x1c45838` and `0x1c449f8`;
+/// `FUN_00748928` one list in `0x1c44700`): a count, then twenty of 0x24
+/// bytes, the newest first. `kind` 0 the trainer, 1 the player of the
+/// year, 2 Europe's footballer; a country not played has none.
+pub fn awards(records: &Records, kind: usize, country: u16) -> Vec<Award> {
+    let (block, at) = match kind {
+        0 | 1 => {
+            let globals = &records.globals;
+            let more = usize::try_from(globals.more_count()).unwrap_or(0);
+            let played = globals.main_country() == country as i16
+                || globals.more_countries().iter().take(more).any(|&c| c == country as i16);
+            if !played {
+                return Vec::new();
+            }
+            let slot = usize::from(records.countries.slot(country.into()));
+            (if kind == 0 { "0x1c45838" } else { "0x1c449f8" }, slot * 0x2d2)
+        }
+        _ => ("0x1c44700", 0),
+    };
+    let Some(b) = records.block(block).and_then(|b| b.get(at..at + 2 + 20 * 0x24)) else {
+        return Vec::new();
+    };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    let count = usize::try_from(word(0)).unwrap_or(0).min(20);
+    (0..count)
+        .rev()
+        .map(|k| 2 + k * 0x24)
+        .map(|e| Award {
+            year: word(e),
+            name: crate::records::text(&b[e + 2..], 30),
+            club: (b[e + 0x20], word(e + 0x22)),
+        })
+        .collect()
+}
+
+/// The most successful trainers of a country (`FUN_0072134f`: the block
+/// `0xaf7450[slot]`), twenty of 0x2a bytes: a person's id or a manager's
+/// number negated, the name, the titles, cups, European cups, promotions
+/// and the others; those with an id, in the kept order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuccessfulTrainer {
+    pub name: String,
+    pub titles: i16,
+    pub cups: i16,
+    pub european: i16,
+    pub promotions: i16,
+    pub others: i16,
+}
+
+pub fn successful_trainers(records: &Records, country: u16) -> Vec<SuccessfulTrainer> {
+    let slot = records.countries.slot(country.into());
+    let Some(b) = records.block(&format!("0xaf7450[{slot}]")) else { return Vec::new() };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    (0..20)
+        .map(|k| k * 0x2a)
+        .filter(|&e| e + 0x2a <= b.len() && word(e) != 0)
+        .map(|e| SuccessfulTrainer {
+            name: crate::records::text(&b[e + 2..], 30),
+            titles: word(e + 0x20),
+            cups: word(e + 0x22),
+            european: word(e + 0x24),
+            promotions: word(e + 0x26),
+            others: word(e + 0x28),
+        })
+        .collect()
+}
+
+/// The Historisches' Beste Mannschaft (`FUN_004665dd`).
+pub const BEST_TEAMS_PAGE: i16 = 0x38;
+
+/// Each completed season's strongest squad (`FUN_007215e7`: the object
+/// `0xb07ff0`'s data, twenty of ten bytes — the season's year, the
+/// club by country and number, its squad's strength summed and how many;
+/// `FUN_00726660` at the season's end), the oldest first: as many as
+/// seasons have ended since the game began, nineteen at most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BestTeam {
+    pub year: i16,
+    pub club: (u8, i16),
+    pub strength: i16,
+    pub squad: i16,
+}
+
+pub fn best_teams(records: &Records) -> Vec<BestTeam> {
+    let Some(b) = records.block("0xb07ff0").and_then(|b| b.get(..200)) else {
+        return Vec::new();
+    };
+    let globals = &records.globals;
+    let ended = (i32::from(globals.start_year()) - i32::from(globals.year())).clamp(0, 19) as usize;
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    (0..ended)
+        .map(|k| k * 10)
+        .map(|e| BestTeam { year: word(e), club: (b[e + 2], word(e + 4)), strength: word(e + 6), squad: word(e + 8) })
+        .collect()
+}
+
 /// A player of a country's all-time lists, kept for its first league
 /// (`FUN_005dbf39`, `FUN_005db9b7`): his names in the pool, whether he
 /// still plays in the country, his club's number there, and the list's

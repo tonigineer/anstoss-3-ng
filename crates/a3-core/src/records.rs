@@ -118,7 +118,7 @@ macro_rules! record {
 }
 
 /// Text in a record: Windows-1252 up to the first NUL, within `len` bytes.
-fn text(bytes: &[u8], len: usize) -> String {
+pub(crate) fn text(bytes: &[u8], len: usize) -> String {
     let bytes = &bytes[..len.min(bytes.len())];
     cp1252(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
 }

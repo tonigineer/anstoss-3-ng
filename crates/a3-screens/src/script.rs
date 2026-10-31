@@ -7669,6 +7669,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The Historisches' honours on S2c, as the original shows them: the
+    /// Bundesliga's champions and the cup's winners, the world cup with
+    /// its top scorer, the trainer and the player of the year, Europe's
+    /// footballer, the most successful trainers and the season's best
+    /// squad, each page's first row.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_historisches_show_the_honours() {
+        let Some((root, game)) = second_season("honours") else { return };
+        let dialog = &game.dialogs[&18];
+        let first = |page: usize| {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}");
+            let runner = on_save(&game, "honours", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.first().map(|r| r.text.clone()).unwrap_or_default()
+        };
+        assert_eq!(
+            [11, 12, 17, 18, 19, 20, 21, 22, 24].map(first),
+            [
+                "2025/26\tFC St. Pauli\t54\t14\t41\t:\t27",
+                "2025\tFC Viktoria Köln\t-\t1.FSV Mainz 05\t0\t:\t2\t ",
+                "2026\tBelgien\tFrankreich\t-\tMexiko\t2\t:1\t ",
+                "2026\tBelgien\tMaeda (Japan)\t3",
+                "2025\tAlexander Blessin\tFC St. Pauli",
+                "2025\tSilvan Widmer\t1.FSV Mainz 05",
+                "2025\tKylian Mbappé\tReal Madrid",
+                "1.\tBlessin, A.\t1\t0\t0\t1\t0",
+                "2025/26\tFC Chelsea\tEngland\t314\t31\t10.1",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {
