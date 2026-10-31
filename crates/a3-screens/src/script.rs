@@ -7742,6 +7742,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The Mannschaft's Restprogramm in the last matchdays (S2late3: day
+    /// 300 of Union's second season, the original played on from S2c, the
+    /// department raised to 3): the six clubs from three above Union to two
+    /// below, each with its fixtures to come and an empty row; Union red,
+    /// and Werder's home game against it, as the original shows them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_restprogramm_shows_the_last_fixtures() {
+        let Some((root, game)) = kept_game("S2late3", "restprogramm") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 1\nnow row 1284 26";
+        let runner = on_save(&game, "restprogramm", then).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), r"Verein\tPlatz\tPunkte\tTore");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        let texts: Vec<&str> = table.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts[..7], ["FC Augsburg\t10\t39\t38\t:\t45", "A: Eintracht Frankfurt", "H: VfL Wolfsburg",
+            "A: TSG 1899 Hoffenheim", "H: FC Bayern München", "A: Bayer 04 Leverkusen", ""]);
+        assert_eq!(texts.len(), 6 * 7);
+        assert_eq!(texts[14], "SV Werder Bremen\t12\t36\t45\t:\t47");
+        assert_eq!((texts[15], table.rows[15].ink), ("H: 1.FC Union Berlin", [255, 0, 0]));
+        assert_eq!((texts[21], table.rows[21].ink), ("1.FC Union Berlin\t13\t35\t28\t:\t37", [255, 0, 0]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {

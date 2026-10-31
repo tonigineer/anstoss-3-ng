@@ -1919,6 +1919,17 @@ const MOST_PROMOTIONS_HEADER: u16 = 0x1296;
 const MOST_RELEGATIONS_HEADER: u16 = 0x1297;
 const MOST_MOVES_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (C | 200, 50), (250, 0)];
 const MOST_MOVES_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (R | 200, 30), (250, 0)];
+/// The Restprogramm (text 3042 "Verein\tPlatz\tPunkte\tTore"), the
+/// fixtures' "H: %s" and "A: %s" (2152, 2153), and how many clubs it
+/// shows around the own one.
+const REST_HEADER: u16 = 3042;
+const REST_HEADER_COLUMNS: [(u16, u16); 4] = [(0, 0), (C | 145, 40), (C | 185, 40), (C | 220, 50)];
+const REST_ROW_COLUMNS: [(u16, u16); 6] =
+    [(0, 0), (R | 140, 30), (R | 180, 30), (R | 220, 24), (245, 0), (250, 24)];
+const REST_HOME: u16 = 2152;
+const REST_AWAY: u16 = 2153;
+const REST_CLUBS: usize = 6;
+const REST_MATCHDAYS: usize = 6;
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2552,6 +2563,9 @@ impl Statistics {
             }
             Some(code) if self.category == MANNSCHAFT && squad_page(code).is_some() => {
                 self.squad_stats_page(cx, view, code)
+            }
+            Some(statistics::REST_PROGRAM_PAGE) if self.category == MANNSCHAFT => {
+                self.rest_program_page(cx, view)
             }
             Some(statistics::SQUAD_TRAITS_PAGE) if self.category == MANNSCHAFT => {
                 self.traits_page(cx, view)
@@ -3421,6 +3435,66 @@ impl Statistics {
             })
             .collect();
         self.fill_list(view, dialog, &MOST_MOVES_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Restprogramm (`FUN_0046d3d6`): in the last matchdays of the own
+    /// club's league, the six clubs around its place in the table — from
+    /// three above to two below, the window kept inside the table —, each
+    /// with its place, points and goals, then its fixtures still to come,
+    /// "H: %s" at home or "A: %s" away, and an empty row; the own club red,
+    /// and a fixture against it. Nothing while more matchdays are left.
+    fn rest_program_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(team) = own_team(cx) else { return false };
+        let (country, own) = (u16::from(team.country()), i16::from(team.number()));
+        let Some(league) = League::of(records, country, team.level()) else { return false };
+        let (played, total) = (league.played(), league.matchdays());
+        if played + REST_MATCHDAYS < total || played >= total {
+            return true;
+        }
+        set_header(view, dialog, game.text(REST_HEADER).to_owned(), &REST_HEADER_COLUMNS);
+        let table = statistics::table(records, &league, statistics::ALL);
+        let n = table.len();
+        let p = table.iter().position(|r| r.team == own).unwrap_or(0);
+        let mut start = p as i64 - 3;
+        if start + REST_CLUBS as i64 > n as i64 {
+            start = n as i64 - REST_CLUBS as i64;
+        }
+        let start = start.max(0) as usize;
+        let name = |t: i16| game.club_name(Some(records), country as u8, t);
+        let ink = |t: i16| if t == own { OWN_INK } else { INK };
+        let mut rows = Vec::new();
+        for (k, row) in table.iter().enumerate().skip(start).take(REST_CLUBS) {
+            let text = format!(
+                "{}\t{}\t{}\t{}\t:\t{}",
+                name(row.team),
+                k + 1,
+                row.points,
+                row.goals_for,
+                row.goals_against
+            );
+            rows.push(TableRow { text, ink: ink(row.team), mark: None, columns: None });
+            for md in played..total {
+                let fixture = league.games(md).into_iter().find_map(|(h, a, _)| {
+                    let (home, away) = (league.team(h), league.team(a));
+                    if home == row.team {
+                        Some((REST_HOME, away))
+                    } else if away == row.team {
+                        Some((REST_AWAY, home))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((side, other)) = fixture {
+                    let text = game.text(side).replace("%s", &name(other));
+                    rows.push(TableRow { text, ink: ink(other), mark: None, columns: None });
+                }
+            }
+            rows.push(TableRow { text: String::new(), ink: INK, mark: None, columns: None });
+        }
+        self.fill_list(view, dialog, &REST_ROW_COLUMNS, rows);
         true
     }
 

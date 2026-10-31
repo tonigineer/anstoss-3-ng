@@ -352,6 +352,9 @@ pub const SQUAD_OWN_GOALS_PAGE: i16 = 0xd;
 pub const SQUAD_YELLOW_PAGE: i16 = 0xe;
 /// The Spielereigenschaften under 4739 (`FUN_00471109`).
 pub const SQUAD_TRAITS_PAGE: i16 = 0x1d;
+/// The Mannschaft's Restprogramm (`FUN_0046d3d6`), for the last five
+/// matchdays of the own club's league.
+pub const REST_PROGRAM_PAGE: i16 = 0x1a;
 /// The Vereinsresultate under 3041 (`FUN_0046ce89`).
 pub const SQUAD_FIXTURES_PAGE: i16 = 0x19;
 /// The Notenschnitt Spieler under 3043 (`FUN_0046e649`).
