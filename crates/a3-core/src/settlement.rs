@@ -13,6 +13,12 @@
 //! dividends paid into the managers' own shares (`FUN_00406fea`). The
 //! season's bookings stay until the new season clears them
 //! (`FUN_00673131`), which the replica has not built yet.
+//!
+//! Checked against the original's last day before its season end and its
+//! first day after: 85 of the 212 clubs settle to the euro, 43 of them
+//! taxed. Nearly all clubs that won a title, went up or down or reached
+//! Europe differ — the season-end steps before the settlement, not built
+//! here, move their money first.
 
 use crate::finances::{CLUB_TO_TEAM, booked_result, result};
 use crate::records::{Records, Team};
@@ -21,11 +27,11 @@ use crate::records::{Records, Team};
 /// two at a time, within eight of its base (`DAT_00b5dfaa`).
 const TAX_RATE: usize = 0xb5dfa9;
 /// The season's achievements in the team record (`f_110`): bit 1 the
-/// title, 4 the class kept, 8 relegation, 0x10 a European place
+/// title, 4 promotion, 8 relegation, 0x10 a European place
 /// (`FUN_0069a161`, `FUN_0069a1e1`, `FUN_0069a221`, `FUN_0069a0e1`).
 const ACHIEVEMENTS: usize = 0x110;
 const TITLE: u16 = 0x1;
-const KEPT: u16 = 0x4;
+const PROMOTED: u16 = 0x4;
 const RELEGATED: u16 = 0x8;
 const EUROPE: u16 = 0x10;
 /// A public company's flag in the team record (`f_924` bit 1,
@@ -47,7 +53,7 @@ const TAX: usize = 0x310;
 const DIVIDENDS: usize = 0x2d4;
 const SHARES_SOLD: usize = 0x2d0;
 /// The main sponsor: whether there is one, the percent its money shrinks
-/// by on relegation, its extras for a title or the class kept and for a
+/// by on relegation, its extras for a title or a promotion and for a
 /// European place.
 const SPONSOR: usize = 0x509;
 const RELEGATION_CUT: usize = 0x50a;
@@ -55,11 +61,11 @@ const TITLE_EXTRA: usize = 0x514;
 const EUROPE_EXTRA: usize = 0x518;
 /// The team bonuses' mode (0 paid, 1 halved, others none; `FUN_0062266a`)
 /// and the bonuses each player gets for the title, a European place, the
-/// class kept and the last one, paid unless the club goes down.
+/// promotion and the last one, paid unless the club goes down.
 const BONUS_MODE: usize = 0x5b8;
 const TITLE_BONUS: usize = 0x5c8;
 const EUROPE_BONUS: usize = 0x5cc;
-const KEPT_BONUS: usize = 0x5d0;
+const PROMOTED_BONUS: usize = 0x5d0;
 const LAST_BONUS: usize = 0x5d4;
 /// The prize money by place the English first division pays
 /// (`FUN_0062286e`, `DAT_00a3b314`, `DAT_00a3b37c`): the club's country
@@ -134,8 +140,8 @@ pub fn settle(team: &mut Team, country: usize, rate: u8) {
         bonus(team, EUROPE_BONUS);
         extra(team, EUROPE_EXTRA);
     }
-    if achieved & KEPT != 0 {
-        bonus(team, KEPT_BONUS);
+    if achieved & PROMOTED != 0 {
+        bonus(team, PROMOTED_BONUS);
         extra(team, TITLE_EXTRA);
     }
     if achieved & RELEGATED == 0 {
@@ -226,17 +232,17 @@ mod tests {
     fn relegation_cuts_the_sponsor_and_a_loss_pays_no_tax() {
         let mut t = team();
         t.set_player_count(10);
-        t.put::<u16>(ACHIEVEMENTS, RELEGATED | KEPT);
+        t.put::<u16>(ACHIEVEMENTS, RELEGATED | PROMOTED);
         put::<u8>(&mut t, SPONSOR, 1);
         put::<u8>(&mut t, RELEGATION_CUT, 40);
         put::<i16>(&mut t, BONUS_MODE, 1);
-        put::<i32>(&mut t, KEPT_BONUS, 1_001);
+        put::<i32>(&mut t, PROMOTED_BONUS, 1_001);
         put::<i32>(&mut t, LAST_BONUS, 50_000);
         put::<i32>(&mut t, SPONSOR_MONEY, 1_000_050);
         put::<i32>(&mut t, BONUSES_PAID, 9_000_000);
         settle(&mut t, 14, 29);
         assert_eq!(club::<i32>(&t, BONUSES_PAID), 9_000_000 + 10 * 1_001 / 2);
-        // The extra for the class kept, then the cut in whole hundreds.
+        // The extra for the promotion, then the cut in whole hundreds.
         assert_eq!(club::<u32>(&t, SPONSOR_MONEY), (1_000_050 + 0) / 100 * 60);
         assert!(t.get::<i64>(PAST_RESULTS[0]) < 0);
         assert_eq!(club::<u32>(&t, TAX), 0);
