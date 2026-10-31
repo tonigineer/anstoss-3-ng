@@ -64,6 +64,8 @@ const ATTACK_OK: u16 = 5557;
 const REFEREE_TEXT: u16 = 4514;
 const OPPONENT_TEXT: u16 = 4515;
 const CHOOSE: u16 = 4945;
+/// The gates' takings as booked (club +0x230), which the books take.
+const TICKETS_BOOKED: usize = 0x230;
 /// The league's next match is of this kind (club +0xb4c).
 const LEAGUE_MATCH: u8 = 2;
 /// The club's league, 0 the first (club +0x105 from team +0x12e).
@@ -305,6 +307,8 @@ impl Screen for Illegal {
                     }
                 }
             }
+            Target::Button(c) if id(c) == BOOKS_OK => self.into_books(cx, view),
+            Target::Button(c) if id(c) == POCKET_OK => self.into_pocket(cx, view),
             Target::Button(c) if id(c) == 1 => return Outcome::Close(Reply::Ok),
             _ => {}
         }
@@ -313,6 +317,55 @@ impl Screen for Illegal {
 }
 
 impl Illegal {
+    /// "Geld in die Bilanz bringen" (`OnClicked_IDC_BILANZ_OK`): the
+    /// amount from the box to the gates' takings as booked (club +0x230);
+    /// its OK stays up at nought. The club's money is told anew, now by
+    /// `FUN_00621eac` (`FUN_004ca9f3`).
+    fn into_books(&mut self, cx: &mut Cx, view: &mut View) {
+        let v = std::mem::take(&mut self.amounts[Amount::Books as usize]) as i32;
+        if let Some(m) = own_manager_mut(cx) {
+            m.set_black_cash(m.black_cash().wrapping_sub(v));
+        }
+        let fund_prices = cx.state.records.as_ref().map(|r| r.globals.fund_prices());
+        if let Some(team) = super::squad::own_team_mut(cx) {
+            let at = TICKETS_BOOKED + finances::CLUB_TO_TEAM;
+            team.put(at, team.get::<i32>(at).wrapping_add(v));
+        }
+        self.after_use(cx, view, BOOKS_SLIDER, BOOKS_AMOUNT);
+        if let (Some(team), Some(prices)) = (super::squad::own_team(cx), fund_prices) {
+            set(view, cx.dialog, FORTUNE, money64(cx.game, finances::figure(team, prices)));
+        }
+    }
+
+    /// "Geld in die eigene Tasche bringen" (`OnClicked_IDC_TASCHE_OK`):
+    /// the amount from the box to the manager's own money (+0x118).
+    fn into_pocket(&mut self, cx: &mut Cx, view: &mut View) {
+        let v = std::mem::take(&mut self.amounts[Amount::Pocket as usize]) as i32;
+        if let Some(m) = own_manager_mut(cx) {
+            m.set_black_cash(m.black_cash().wrapping_sub(v));
+            m.set_cash(m.cash().wrapping_add(v));
+        }
+        self.after_use(cx, view, POCKET_SLIDER, POCKET_AMOUNT);
+    }
+
+    /// A use's slider back at nought, the box's money told anew, never
+    /// below nought (`FUN_004ca992`), and the sliders' reach.
+    fn after_use(&self, cx: &mut Cx, view: &mut View, slider: u16, amount: u16) {
+        let dialog = cx.dialog;
+        set(view, dialog, amount, money(cx.game, 0));
+        if let Some(s) = control(dialog, slider).and_then(|c| view.value_mut(c)) {
+            s.set(0);
+        }
+        if let Some(m) = own_manager_mut(cx)
+            && m.black_cash() < 0
+        {
+            m.set_black_cash(0);
+        }
+        let cash = own_manager(cx).map_or(0, |m| m.black_cash());
+        set(view, dialog, CASH, money(cx.game, cash.into()));
+        self.ranges(cx, view);
+    }
+
     /// Each slider reaches as far as the box holds less what the others
     /// are set at (`FUN_004cab8e`).
     fn ranges(&self, cx: &Cx, view: &mut View) {
@@ -329,10 +382,10 @@ impl Illegal {
     }
 }
 
-/// None of the uses is built yet: their OKs are crossed out as they show.
+/// The uses not built yet: their OKs are crossed out as they show.
 fn cross(view: &mut View, dialog: &Dialog) {
     mark_inert(view, dialog, |t| match t {
-        Target::Button(c) => dialog.controls[c].id == Some(1),
+        Target::Button(c) => matches!(dialog.controls[c].id, Some(1 | BOOKS_OK | POCKET_OK)),
         _ => true,
     });
 }

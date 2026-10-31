@@ -8624,4 +8624,26 @@ mod tests {
         let m = records.humans().next().unwrap();
         assert_eq!(((m.gate_kept() * 1000.0) as i32, (m.cup_share_kept() * 1000.0) as i32), (29, 49));
     }
+
+    /// The black cash box's money into the books — the gates' takings as
+    /// booked — and into the manager's own pocket.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_cash_goes_into_the_books_or_the_pocket() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let figures = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            (m.black_cash(), m.cash(), team.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM))
+        };
+        let Some(before) = on_save(&game, "A", open) else { return };
+        let (cash, own, gates) = figures(&before);
+        let then = format!("{open}\nnow slide 5533 3\nnow press 5555\nnow slide 5534 12\nnow press 5556");
+        let after = figures(&on_save(&game, "A", &then).unwrap());
+        // Three steps of a hundred to the books, twelve to the pocket.
+        assert_eq!(after, (cash - 300 - 1200, own + 1200, gates + 300));
+    }
 }
