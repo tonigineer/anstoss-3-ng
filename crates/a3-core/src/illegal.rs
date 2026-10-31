@@ -108,3 +108,22 @@ pub fn bribe_referee(
     let sure = corruptible && amount >= REFEREE_SURE * factor;
     (sure || i64::from(below(100)) < chance - 100, sure)
 }
+
+/// What the next opponent's captain asks (`FUN_004ca876`): 500.000; past
+/// the season's day 300, against a side in places 9 to 12, 500.000 and
+/// up to five more 100.000s by chance, times the league's factor.
+pub fn opponent_price(day: i16, place: u8, factor: i64, below: &mut impl FnMut(u32) -> u32) -> i64 {
+    const BASE: i64 = 500_000;
+    const MORE: i64 = 100_000;
+    if day > 300 && (9..=12).contains(&place) {
+        (i64::from(below(6)) * MORE + BASE) * factor
+    } else {
+        BASE
+    }
+}
+
+/// The opponent bribed to lose (+0x1a8), and the captain's answers:
+/// yes (4603, 4604, one of two by chance), no (4605-4607).
+pub const OPPONENT_BRIBED: u32 = 0x10;
+pub const OPPONENT_YES: [u16; 2] = [4604, 4603];
+pub const OPPONENT_NO: [u16; 3] = [4605, 4606, 4607];

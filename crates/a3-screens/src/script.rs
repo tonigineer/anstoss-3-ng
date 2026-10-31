@@ -8684,4 +8684,32 @@ mod tests {
         assert_eq!((closed & 0x1c00_0000).count_ones(), 1, "{closed:#x}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The next opponent's captain asks 500.000 on A's day: a hundred is
+    /// refused and costs nothing; 600.000 from a fuller box is taken.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_opponent_takes_the_black_money_above_his_price() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let ask = format!("{open}\nnow slide 5532 1\nnow press 5553\nuntil dialog 380");
+        let Some(refused) = on_save(&game, "A", &ask) else { return };
+        assert_eq!(state(&refused), (220_757, 0x20));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "rich-box", |records| {
+            records.managers[0].set_black_cash(700_000);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        // 600.000: step 100 + 90 + 50.
+        let ask = format!("{open}\nnow slide 5532 240\nnow press 5553\nuntil dialog 380");
+        let Some(taken) = on_save(&patched_game, "rich-box", &ask) else { return };
+        assert_eq!(state(&taken), (100_000, 0x30));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

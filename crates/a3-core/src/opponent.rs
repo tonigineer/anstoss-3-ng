@@ -250,6 +250,16 @@ impl<'a> League<'a> {
             .unwrap_or(0)
     }
 
+    /// The place a team number holds as `FUN_0063ee2a` reads it: its row's
+    /// byte at the matchdays played; 0 for a team not in the league.
+    pub fn place_of(&self, team: i16) -> u8 {
+        (0..MATCHDAY_PAIRS)
+            .find(|&c| self.team(c) == team)
+            .and_then(|c| self.data.get(LEAGUE_FIELDS + PLACES + c * PLACES_ROW + self.played()))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// The byte of the block where the team at `place` keeps its place
     /// after the matchday that comes next, none past the league's rows.
     pub fn place_slot(&self, place: usize) -> Option<usize> {
