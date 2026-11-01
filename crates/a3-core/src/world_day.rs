@@ -54,18 +54,134 @@ pub fn day(records: &Records, weekday: i32, random: &mut Random) {
 /// one roll of a hundred nudges the walk index at +0xb5df6a one step
 /// towards its phase's target ([`walk_next`], `FUN_00783dc3`), and the
 /// index then picks the day's rolls over the schedule table
-/// ([`schedule_day`], `FUN_00783ea3`). The rotation `FUN_007842a1`
-/// draws nothing, and the phase machine steps no phase boundary here —
-/// its table day counts at +0xb5cbda are read but not written back.
+/// ([`schedule_day`], `FUN_00783ea3`), which [`rotate`] has just
+/// shifted by the walk's pair (the rotation `FUN_007842a1` draws
+/// nothing); the day then re-rolls the table's fives ([`reroll_fives`])
+/// and in the late phases fades some of its threes ([`fade_threes`],
+/// `FUN_0078418b`). The phase machine steps no phase boundary at
+/// A.an3 — its table day counts at +0xb5cbda are read but not written
+/// back, and neither is the shifted table.
 fn schedule_walk(records: &Records, random: &mut Random) {
     /// The walk's target per phase (`DAT_008acfec`, `FUN_00675a73`'s
     /// `_DAT_00b5cbdc` index).
     const TARGETS: [i16; 13] = [0, 5, 4, 3, 3, 2, 1, 0, 0, 1, 2, 3, 4];
-    let phase = records.globals.get::<i16>(0xb5cbdc).max(0) as usize;
-    let target = TARGETS.get(phase).copied().unwrap_or(0);
+    /// The table's shift per walk index (`DAT_008ad008`, handed to
+    /// `FUN_007842a1` beside the index).
+    const SHIFTS: [(i16, i16); 6] = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1)];
+    let phase = records.globals.get::<i16>(0xb5cbdc);
+    let target = TARGETS.get(phase.max(0) as usize).copied().unwrap_or(0);
     let walk = records.globals.get::<i16>(0xb5df6a);
     let roll = i16::try_from(random.below(100)).unwrap();
-    schedule_day(walk_next(walk, target, roll), random);
+    let walk = walk_next(walk, target, roll);
+    let mut table: [u8; TABLE] = records.globals.get(0xb5d92a);
+    if let Some(&(dx, dy)) = usize::try_from(walk).ok().and_then(|w| SHIFTS.get(w)) {
+        rotate(&mut table, dx, dy);
+    }
+    schedule_day(walk, &mut table, random);
+    reroll_fives(&mut table, random);
+    if 5 < phase && phase < 9 {
+        fade_threes(&mut table, random);
+    }
+}
+
+/// The schedule table: forty rows of forty cells of small numbers,
+/// at +0xb5d92a in the globals.
+const TABLE: usize = 1600;
+
+/// The table's day shift (`FUN_007842a1`): its cells step by the walk's
+/// shift pair, and the rows and columns they shift out of keep their
+/// old numbers — the table is copied first, and only the shifted cells
+/// are written again.
+fn rotate(table: &mut [u8; TABLE], dx: i16, dy: i16) {
+    let source = *table;
+    let (x0, x1): (i32, i32) = if dx < 0 { (1, 40) } else if dx == 0 { (0, 40) } else { (0, 39) };
+    let (y0, y1): (i32, i32) = if dy < 0 { (1, 40) } else if dy == 0 { (0, 40) } else { (0, 39) };
+    for x in x0..x1 {
+        for y in y0..y1 {
+            let at = usize::try_from(y + x * 40).unwrap();
+            let to = usize::try_from(y + i32::from(dy) + (x + i32::from(dx)) * 40).unwrap();
+            table[to] = source[at];
+        }
+    }
+}
+
+/// The day's numbers over the schedule table (`FUN_00783ea3`): the walk
+/// index says which rows and columns get new numbers out of its rolls.
+fn schedule_day(walk: i16, table: &mut [u8; TABLE], random: &mut Random) {
+    let mut roll = |range: u32| u8::try_from(random.below(range)).unwrap();
+    match walk {
+        0 => {
+            for row in 0..40 {
+                table[39 + row * 40] = roll(2);
+            }
+        }
+        1 => {
+            for row in 0..40 {
+                table[39 + row * 40] = roll(2);
+            }
+            for column in 0..20 {
+                table[column] = roll(5) + 1;
+            }
+            for column in 20..40 {
+                table[column] = roll(3) + 1;
+            }
+        }
+        2 => {
+            for column in 0..20 {
+                table[column] = roll(5) + 1;
+            }
+            for column in 20..40 {
+                table[column] = roll(3) + 1;
+            }
+        }
+        3 => {
+            for column in 0..20 {
+                table[column] = roll(4);
+            }
+            for column in 20..40 {
+                table[column] = roll(3) + 1;
+            }
+            for row in 0..40 {
+                table[row * 40] = roll(4) + 1;
+            }
+        }
+        4 => {
+            for row in 0..40 {
+                table[row * 40] = roll(4) + 1;
+            }
+        }
+        5 => {
+            for row in 0..40 {
+                table[row * 40] = roll(3) + 1;
+            }
+            for column in 0..40 {
+                table[1560 + column] = roll(4);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The day's re-roll of the table's fives (`FUN_0078418b`'s first
+/// loop): every five over the whole table rolls a two and stands
+/// again as a two or a three.
+fn reroll_fives(table: &mut [u8; TABLE], random: &mut Random) {
+    for cell in table.iter_mut() {
+        if *cell == 5 {
+            *cell = 2 + u8::try_from(random.below(2)).unwrap();
+        }
+    }
+}
+
+/// The late season's fading of the table's threes (`FUN_0078418b`'s
+/// second loop, only in phases six to eight): every three rolls a
+/// hundred, and a ten of them turn the cell into a six.
+fn fade_threes(table: &mut [u8; TABLE], random: &mut Random) {
+    for cell in table.iter_mut() {
+        if *cell == 3 && random.below(100) < 10 {
+            *cell = 6;
+        }
+    }
 }
 
 /// A day's nudge of the walk index (`FUN_00783dc3`): below eighty it
@@ -89,64 +205,6 @@ fn walk_next(walk: i16, target: i16, roll: i16) -> i16 {
         walk - 1
     } else {
         walk
-    }
-}
-
-/// The day's rolls over the schedule table (`FUN_00783ea3`): the walk
-/// index says which rows of the 40×40 table at +0xb5d92a get new
-/// numbers — only the rolls of the rows' cells are ported, the numbers
-/// they answer to and the table itself are not.
-fn schedule_day(walk: i16, random: &mut Random) {
-    match walk {
-        0 => {
-            for _ in 0..40 {
-                random.below(2);
-            }
-        }
-        1 => {
-            for _ in 0..40 {
-                random.below(2);
-            }
-            for _ in 0..20 {
-                random.below(5);
-            }
-            for _ in 0..20 {
-                random.below(3);
-            }
-        }
-        2 => {
-            for _ in 0..20 {
-                random.below(5);
-            }
-            for _ in 0..20 {
-                random.below(3);
-            }
-        }
-        3 => {
-            for _ in 0..20 {
-                random.below(4);
-            }
-            for _ in 0..20 {
-                random.below(3);
-            }
-            for _ in 0..40 {
-                random.below(4);
-            }
-        }
-        4 => {
-            for _ in 0..40 {
-                random.below(4);
-            }
-        }
-        5 => {
-            for _ in 0..40 {
-                random.below(3);
-            }
-            for _ in 0..40 {
-                random.below(4);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -313,7 +371,8 @@ mod tests {
         for (walk, rows) in days {
             let mut random = Random::from_state(20261101, 8);
             let mut copy = random.clone();
-            schedule_day(walk, &mut random);
+            let mut table = [0u8; TABLE];
+            schedule_day(walk, &mut table, &mut random);
             for (range, count) in rows {
                 for _ in 0..*count {
                     copy.below(*range);
@@ -321,5 +380,51 @@ mod tests {
             }
             assert!(random == copy, "walk {walk}'s rolls");
         }
+    }
+
+    /// A shift of the table: its cells step by the pair, and the strip
+    /// they shift out of keeps its old numbers.
+    #[test]
+    fn the_table_shifts_its_cells() {
+        let mut table = [0u8; TABLE];
+        for x in 0..40 {
+            for y in 0..40 {
+                table[y + x * 40] = u8::try_from((x * 3 + y) % 20).unwrap();
+            }
+        }
+        let before = table;
+        rotate(&mut table, 1, -1);
+        for x in 1..40 {
+            for y in 0..39 {
+                assert_eq!(table[y + x * 40], before[y + 1 + (x - 1) * 40], "shifted cell");
+            }
+        }
+        for y in 0..40 {
+            assert_eq!(table[y], before[y], "the emptied column stays");
+        }
+        for x in 0..40 {
+            assert_eq!(table[39 + x * 40], before[39 + x * 40], "the emptied row stays");
+        }
+    }
+
+    /// The day's re-roll: every five of the table rolls a two, and no
+    /// other cell rolls at all.
+    #[test]
+    fn the_fives_reroll_and_nothing_else() {
+        let mut table = [0u8; TABLE];
+        table[7] = 5;
+        table[8] = 4;
+        table[500] = 3;
+        table[1599] = 5;
+        let mut random = Random::from_state(20261101, 9);
+        let mut copy = random.clone();
+        reroll_fives(&mut table, &mut random);
+        let first = copy.below(2);
+        let second = copy.below(2);
+        assert!(random == copy, "one two per five");
+        assert!(table[7] == 2 + u8::try_from(first).unwrap(), "a re-rolled five");
+        assert!(table[1599] == 2 + u8::try_from(second).unwrap(), "the last one too");
+        assert_eq!(table[8], 4, "a four sleeps");
+        assert_eq!(table[500], 3, "a three sleeps");
     }
 }
