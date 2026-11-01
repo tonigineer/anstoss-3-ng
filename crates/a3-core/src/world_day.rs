@@ -15,7 +15,10 @@
 //!
 //! The driver then rounds the human clubs of the globals' list once a
 //! day, seven rolls of ten per player ([`luck_round_of_list`]); which
-//! player state a 0-roll feeds is not ported.
+//! player state a 0-roll feeds is not ported. Behind the counter's
+//! increment the day walks its schedule table once ([`schedule_walk`]):
+//! a roll of a hundred steps the walk index and the index rolls over
+//! the table's rows ([`schedule_day`]).
 //!
 //! Not ported yet, and drawing in the original when they run: that
 //! hundred-roll on +0xa7, whose table no save hands the replica, and
@@ -44,6 +47,107 @@ pub fn day(records: &Records, weekday: i32, random: &mut Random) {
         _ => {}
     }
     luck_round_of_list(records, random);
+    schedule_walk(records, random);
+}
+
+/// The day's step behind the counter's increment (`FUN_00675a73(1)`):
+/// one roll of a hundred nudges the walk index at +0xb5df6a one step
+/// towards its phase's target ([`walk_next`], `FUN_00783dc3`), and the
+/// index then picks the day's rolls over the schedule table
+/// ([`schedule_day`], `FUN_00783ea3`). The rotation `FUN_007842a1`
+/// draws nothing, and the phase machine steps no phase boundary here —
+/// its table day counts at +0xb5cbda are read but not written back.
+fn schedule_walk(records: &Records, random: &mut Random) {
+    /// The walk's target per phase (`DAT_008acfec`, `FUN_00675a73`'s
+    /// `_DAT_00b5cbdc` index).
+    const TARGETS: [i16; 13] = [0, 5, 4, 3, 3, 2, 1, 0, 0, 1, 2, 3, 4];
+    let phase = records.globals.get::<i16>(0xb5cbdc).max(0) as usize;
+    let target = TARGETS.get(phase).copied().unwrap_or(0);
+    let walk = records.globals.get::<i16>(0xb5df6a);
+    let roll = i16::try_from(random.below(100)).unwrap();
+    schedule_day(walk_next(walk, target, roll), random);
+}
+
+/// A day's nudge of the walk index (`FUN_00783dc3`): below eighty it
+/// climbs towards the target, between eighty and ninety it only climbs
+/// out of the two lowest rows, and from ninety it sinks.
+fn walk_next(walk: i16, target: i16, roll: i16) -> i16 {
+    if walk == target && roll < 0x50 {
+        return walk;
+    }
+    if walk < target && roll < 0x50 {
+        walk + 1
+    } else if target < walk && roll < 0x50 {
+        walk - 1
+    } else if roll < 0x5a {
+        if walk < 2 {
+            walk + 1
+        } else {
+            walk
+        }
+    } else if 0 < walk {
+        walk - 1
+    } else {
+        walk
+    }
+}
+
+/// The day's rolls over the schedule table (`FUN_00783ea3`): the walk
+/// index says which rows of the 40×40 table at +0xb5d92a get new
+/// numbers — only the rolls of the rows' cells are ported, the numbers
+/// they answer to and the table itself are not.
+fn schedule_day(walk: i16, random: &mut Random) {
+    match walk {
+        0 => {
+            for _ in 0..40 {
+                random.below(2);
+            }
+        }
+        1 => {
+            for _ in 0..40 {
+                random.below(2);
+            }
+            for _ in 0..20 {
+                random.below(5);
+            }
+            for _ in 0..20 {
+                random.below(3);
+            }
+        }
+        2 => {
+            for _ in 0..20 {
+                random.below(5);
+            }
+            for _ in 0..20 {
+                random.below(3);
+            }
+        }
+        3 => {
+            for _ in 0..20 {
+                random.below(4);
+            }
+            for _ in 0..20 {
+                random.below(3);
+            }
+            for _ in 0..40 {
+                random.below(4);
+            }
+        }
+        4 => {
+            for _ in 0..40 {
+                random.below(4);
+            }
+        }
+        5 => {
+            for _ in 0..40 {
+                random.below(3);
+            }
+            for _ in 0..40 {
+                random.below(4);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The round the day's driver runs after the weekday switch, over the
@@ -176,5 +280,46 @@ mod tests {
         luck_round(Some(&team), &mut random);
         luck_round(None, &mut random);
         assert!(random == copy, "not one roll");
+    }
+
+    /// A day's nudge of the walk index: it climbs and sinks towards
+    /// the target below eighty, climbs out of the two lowest rows
+    /// between eighty and ninety, and sinks from ninety.
+    #[test]
+    fn the_walk_steps_one_per_roll() {
+        assert_eq!(walk_next(0, 1, 50), 1, "climb");
+        assert_eq!(walk_next(4, 1, 50), 3, "sink");
+        assert_eq!(walk_next(1, 1, 50), 1, "at the target");
+        assert_eq!(walk_next(1, 1, 84), 2, "a middling roll leaves the target");
+        assert_eq!(walk_next(0, 1, 84), 1, "out of the bottom");
+        assert_eq!(walk_next(3, 1, 84), 3, "only the bottom climbs");
+        assert_eq!(walk_next(3, 1, 95), 2, "from ninety it sinks");
+        assert_eq!(walk_next(0, 9, 95), 0, "and never below zero");
+    }
+
+    /// The walk index's day over the schedule table: which rows get
+    /// new numbers, and how many rolls that is.
+    #[test]
+    fn the_schedule_day_rolls_its_rows() {
+        let days: [(i16, &[(u32, usize)]); 7] = [
+            (0, &[(2, 40)]),
+            (1, &[(2, 40), (5, 20), (3, 20)]),
+            (2, &[(5, 20), (3, 20)]),
+            (3, &[(4, 20), (3, 20), (4, 40)]),
+            (4, &[(4, 40)]),
+            (5, &[(3, 40), (4, 40)]),
+            (6, &[]),
+        ];
+        for (walk, rows) in days {
+            let mut random = Random::from_state(20261101, 8);
+            let mut copy = random.clone();
+            schedule_day(walk, &mut random);
+            for (range, count) in rows {
+                for _ in 0..*count {
+                    copy.below(*range);
+                }
+            }
+            assert!(random == copy, "walk {walk}'s rolls");
+        }
     }
 }
