@@ -14,8 +14,11 @@
 //! whose word is set.
 //!
 //! The driver then rounds the human clubs of the globals' list once a
-//! day, seven rolls of ten per player ([`luck_round_of_list`]); which
-//! player state a 0-roll feeds is not ported. Behind the counter's
+//! day ([`luck_round_of_list`]): every squad player shifts his
+//! freshness, loses fifty of his condition, and rolls seven of the
+//! tens — a 0-roll nudges the contentment part it stands for a step
+//! nearer a hundred ([`nudge`], [`crate::mood::change`]). Behind the
+//! counter's
 //! increment the day walks its schedule table once ([`schedule_walk`]):
 //! a roll of a hundred steps the walk index and the index rolls over
 //! the table's rows ([`schedule_day`]).
@@ -28,26 +31,27 @@
 //! `FUN_00648e0d` with hundreds on the fourth, `FUN_00786931` on the
 //! second, `FUN_00786080` on the sixth).
 
+use crate::mood;
 use crate::random::Random;
-use crate::records::{Records, Team};
+use crate::records::{Player, Records, Team};
 
 /// The day of the world: `weekday` 0 sends the clubs of the more
 /// countries through [`club`], 1 those of the main country; the other
 /// weekdays' steps are not here.
-pub fn day(records: &Records, weekday: i32, random: &mut Random) {
+pub fn day(records: &mut Records, weekday: i32, random: &mut Random) {
     match weekday {
         0 => {
             let countries = records.globals.more_countries();
             let more = records.globals.more_count().max(0) as usize;
             for k in 0..more.min(countries.len()) {
-                clubs_of(records, countries[k], random);
+                clubs_of(&*records, countries[k], random);
             }
         }
-        1 => clubs_of(records, records.globals.main_country(), random),
+        1 => clubs_of(&*records, records.globals.main_country(), random),
         _ => {}
     }
     luck_round_of_list(records, random);
-    schedule_walk(records, random);
+    schedule_walk(&*records, random);
 }
 
 /// The day's step behind the counter's increment (`FUN_00675a73(1)`):
@@ -214,27 +218,65 @@ fn walk_next(walk: i16, target: i16, roll: i16) -> i16 {
 /// apart, the country's byte and the club's number two further — and its
 /// count at +0xb5cc02; on every club every squad player rolls seven of
 /// the tens, [`luck_round`].
-fn luck_round_of_list(records: &Records, random: &mut Random) {
+fn luck_round_of_list(records: &mut Records, random: &mut Random) {
     let list: [u8; 32] = records.globals.get(0xb5cbe2);
     let count = records.globals.get::<i16>(0xb5cc02).max(0) as usize;
     for entry in list.chunks(8).take(count) {
         let country = u16::from(entry[0]);
         let number = u16::from_le_bytes([entry[2], entry[3]]);
-        luck_round(records.team(country, number), random);
+        let Some(team) = records.team(country, number) else { continue };
+        let ids = team.players();
+        let human = team.humans() != [0, 0];
+        let manager = human
+            .then(|| records.managers.iter().find(|m| m.country() == country && m.team() == number))
+            .flatten();
+        let rank = manager.map_or(3, |m| (m.difficulty() & 0x7f).min(4) as usize);
+        for id in ids {
+            if let Some(player) = records.player_mut(id) {
+                luck_player(player, FRESHENED[rank], random);
+            }
+        }
     }
 }
 
-/// One club's round of tens (`FUN_007845aa`'s player loop): seven rolls
-/// of ten for every player of its squad. A 0-roll reads one of the
-/// player's states and raises or lowers it by one — the club's manager
-/// stands in the states' table, and its skill only feeds what the rolls
-/// answer to, not the rolls themselves; the states stay unported.
-fn luck_round(team: Option<&Team>, random: &mut Random) {
-    let Some(team) = team else { return };
-    for _ in 0..team.player_count() {
-        for _ in 0..7 {
-            random.below(10);
+/// The freshness a day's round adds to a squad player, by the class of
+/// his club's manager (`FUN_007845aa`'s table at `DAT_008ad040`); a
+/// club the game runs itself, with no manager of its own, sits at the
+/// fourth.
+const FRESHENED: [i16; 5] = [89, 85, 81, 70, 64];
+
+/// One player's turn in the round (`FUN_007845aa`'s player body): the
+/// last session's freshness stands in for the open one, that one drops
+/// to nought, the season's gains a manager's step and stop at ten
+/// thousand, and fifty of condition goes; then seven rolls of ten, a
+/// 0-roll nudging one contentment part ([`nudge`]) in the loop's order:
+/// trainer, team, private life, distractions, press, club, offers.
+fn luck_player(player: &mut Player, freshened: i16, random: &mut Random) {
+    let mut freshness = player.freshness();
+    freshness[1] = freshness[2];
+    freshness[2] = 0;
+    freshness[0] = freshness[0].wrapping_add(freshened);
+    if 10_000 < freshness[0] {
+        freshness[0] = 10_000;
+    }
+    player.set_freshness(freshness);
+    player.set_condition((i32::from(player.condition()) - 50).clamp(0, 10_000) as i16);
+    for slot in [0, 1, 4, 5, 3, 2, 6] {
+        if random.below(10) == 0 {
+            nudge(player, slot);
         }
+    }
+}
+
+/// A contentment part a step nearer a hundred, nought and the parts
+/// above it staying put; his morale moves with it (`FUN_007007a1` and
+/// its six twins, each called behind its slot's 0-roll).
+fn nudge(player: &mut Player, slot: usize) {
+    let value = i32::from(player.contentment()[slot]);
+    if value < 100 {
+        mood::change(player, slot, 1);
+    } else if 100 < value {
+        mood::change(player, slot, -1);
     }
 }
 
@@ -312,32 +354,50 @@ mod tests {
         assert!(random == copy, "no ten thousand, one three");
     }
 
-    /// The round over a club: seven rolls of ten for every squad
-    /// player — the 0-rolls' states are not ported, but their rolls are.
+    /// One player's turn: his freshness shifts, fifty of condition
+    /// goes, and he rolls seven of the tens — no more, whatever the
+    /// rolls answer to.
     #[test]
-    fn the_luck_round_rolls_seven_tens_per_player() {
-        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
-        team.set_players(&[5, 9, 12]);
+    fn a_players_turn_shifts_his_freshness_and_rolls() {
+        let mut player = Player::new(&vec![0u8; Player::SIZE]).unwrap();
+        player.set_freshness([500, 300, 700]);
+        player.set_condition(10_000);
         let mut random = Random::from_state(20261101, 6);
         let mut copy = random.clone();
-        luck_round(Some(&team), &mut random);
-        for _ in 0..21 {
+        luck_player(&mut player, 70, &mut random);
+        for _ in 0..7 {
             copy.below(10);
         }
-        assert!(random == copy, "seven tens for every player");
+        assert!(random == copy, "seven tens, no more");
+        assert_eq!(player.freshness(), [570, 700, 0]);
+        assert_eq!(player.condition(), 9_950);
     }
 
-    /// A club with no squad player — and an entry that finds no club —
-    /// rolls nothing at all.
+    /// A 0-roll's nudge: a part under a hundred climbs a step, one
+    /// above it sinks one — to the setter's ceiling at a hundred and
+    /// twenty — and a hundred stays; his morale follows the sum.
     #[test]
-    fn the_luck_round_rolls_nothing_for_a_small_squad() {
-        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
-        team.set_players(&[]);
-        let mut random = Random::from_state(20261101, 7);
-        let copy = random.clone();
-        luck_round(Some(&team), &mut random);
-        luck_round(None, &mut random);
-        assert!(random == copy, "not one roll");
+    fn a_nudge_walks_one_step_to_a_hundred() {
+        let mut player = Player::new(&vec![0u8; Player::SIZE]).unwrap();
+        player.set_contentment([50, 150, 100, 100, 100, 100, 100]);
+        nudge(&mut player, 0);
+        nudge(&mut player, 1);
+        nudge(&mut player, 2);
+        assert_eq!(player.contentment(), [51, 120, 100, 100, 100, 100, 100]);
+        assert_eq!(player.morale(), 71, "six hundred seventy one less six hundred");
+    }
+
+    /// A hundred and twenty of a part stays its ceiling, and nought
+    /// its floor, as the setter clamps both.
+    #[test]
+    fn a_nudge_never_leaves_nought_or_a_hundred_twenty() {
+        let mut player = Player::new(&vec![0u8; Player::SIZE]).unwrap();
+        player.set_contentment([0, 120, 101, 99, 100, 100, 100]);
+        nudge(&mut player, 0);
+        nudge(&mut player, 1);
+        nudge(&mut player, 2);
+        nudge(&mut player, 3);
+        assert_eq!(player.contentment(), [1, 119, 100, 100, 100, 100, 100]);
     }
 
     /// A day's nudge of the walk index: it climbs and sinks towards

@@ -92,13 +92,20 @@ pub fn morale(r: &Player) -> u8 {
     (sum - less).clamp(0, MOST) as u8
 }
 
+/// Moves one part of his contentment by `by`, and his morale with it
+/// (the seven setters `FUN_007007a1` … `FUN_00701347`): what would sink
+/// below 1 stands at nought, what would rise past 120 at 120.
+pub fn change(r: &mut Player, slot: usize, by: i32) {
+    let mut parts = r.contentment();
+    parts[slot] = (i32::from(parts[slot]) + by).clamp(0, MOST) as u8;
+    r.set_contentment(parts);
+    r.set_morale(morale(r));
+}
+
 /// Moves his contentment with the trainer by `by`, and his morale with it
 /// (`FUN_007007a1`).
 pub fn change_trainer(r: &mut Player, by: i32) {
-    let mut parts = r.contentment();
-    parts[0] = (i32::from(parts[0]) + by).clamp(0, MOST) as u8;
-    r.set_contentment(parts);
-    r.set_morale(morale(r));
+    change(r, 0, by);
 }
 
 /// How content he is, as one of four: happy, content, unhappy, wanting to
@@ -119,10 +126,7 @@ pub fn content_level(parts: [i32; 7]) -> usize {
 /// Moves his contentment with his private life by `by`, and his morale with
 /// it (`FUN_007010d9`).
 pub fn change_private(r: &mut Player, by: i32) {
-    let mut parts = r.contentment();
-    parts[4] = (i32::from(parts[4]) + by).clamp(0, MOST) as u8;
-    r.set_contentment(parts);
-    r.set_morale(morale(r));
+    change(r, 4, by);
 }
 
 /// Takes the reasons of `mask` from him, and reckons his morale anew
