@@ -341,9 +341,10 @@ fn first_price(
 /// shares to be had cut down to what no portfolio holds yet, the bonus on
 /// the price in percent, the floor of five euros, the price in the week's
 /// place of the ring, the change on the week before, and the highest and
-/// lowest kept up to date. What is missing against the original: a club
-/// priced at the floor has its shares taken up again by the human clubs
-/// (`FUN_00406917`).
+/// lowest kept up to date. What is missing against the original: an
+/// entry pushed down to the floor sends its watchers the news of it
+/// (the loop above `FUN_00406917`, events 0x7cd and 0x7ce) — drawing
+/// nothing, so no parity hangs on it.
 fn priced(
     records: &Records,
     market: &mut [u8],
