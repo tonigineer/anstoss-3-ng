@@ -768,11 +768,13 @@ impl Cycle {
                         // The human clubs' day starts it (`FUN_0064f981`):
                         // the event gates, then the day's ticket sales.
                         let today = season.day as i32;
-                        crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
+                        let slots =
+                            crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         if let Some(records) = state.records.as_mut() {
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
                             // The day's training at the human clubs
-                            // follows the sales (`FUN_00749508`).
+                            // follows the sales (`FUN_00749508`), and the
+                            // day's news its second club loop.
                             let date = season.date();
                             crate::training_day::day(
                                 records,
@@ -780,6 +782,7 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
+                                &slots,
                                 &mut season.random,
                             );
                         }

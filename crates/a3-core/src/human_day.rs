@@ -4,11 +4,16 @@
 //! one generator, so the replica draws these in the original's order even
 //! where what follows them is not built yet.
 //!
+//! The slot a live gate draws is that day's own (`param_1` of
+//! `FUN_0064f981`, the weekday it runs); a club meets the day's news
+//! when its slot stands for that day, and the training runs for all
+//! clubs in either case.
+//!
 //! Not ported yet, and drawing in the original when they run: the first
 //! weekday's bulk (`FUN_0074ca91`, on day % 7 == 1), the monthly steps
 //! (`FUN_00741829`, `FUN_00741672`, `FUN_007489cb`), the rare event of
-//! one in a hundred (`FUN_005ea5ce`), and everything after the sales —
-//! training, the events themselves, the rest of the day.
+//! one in a hundred (`FUN_005ea5ce`), and the events themselves and the
+//! rest of the day after the day's news picked its category.
 
 use crate::random::Random;
 

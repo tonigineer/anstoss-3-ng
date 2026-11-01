@@ -34,6 +34,7 @@ pub mod medical;
 pub mod merchandise;
 pub mod mood;
 pub mod newgame;
+pub mod news;
 pub mod noracsa;
 pub mod opponent;
 pub mod playtime;

@@ -9,9 +9,10 @@
 //! at the week's start and the units' position development with their
 //! rolls (`FUN_00747246`; nothing of it rolled in the day-63
 //! comparison, where draws 8 to 10 stand); the training gains
-//! (`FUN_0074ae97`, `FUN_00767225`); the news the day posts
-//! (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the rolls of
-//! `FUN_005ef842 follow next in the draw order); the events 100 to 110
+//! (`FUN_0074ae97`, `FUN_00767225`); what the day's news posts once its
+//! category is picked (`FUN_005ee5c0` with `FUN_005ef430` and
+//! `FUN_005f1eaf`; the pick itself stands in [`crate::news`]); the
+//! events 100 to 110
 //! of `FUN_0060c1c0`; the camp's own happenings (`FUN_0060ff69`); the
 //! writes of `FUN_0041828e` behind the secret flag; the flag helpers
 //! `FUN_0069851b` and friends; the player-manager's block behind the
@@ -101,14 +102,17 @@ const EVENTS: [(u32, u32); 11] = [
 /// for these six.
 const MANAGER_INJURIES: [(u8, i16); 6] = [(25, 7), (28, 7), (31, 3), (32, 7), (44, 7), (47, 3)];
 
-/// A training day at each human club. `today` is the day counter and
-/// `date` the day it stands on.
+/// A training day at each human club. `today` is the day counter,
+/// `date` the day it stands on and `slots` the day's event gates of
+/// [`crate::human_day::event_slots`], one per human club in the order of
+/// [`crate::statistics::human_clubs`].
 pub fn day(
     records: &mut Records,
     clubs: &mut BTreeMap<(usize, usize), ClubState>,
     world: &world::World,
     today: i32,
     date: NaiveDate,
+    slots: &[i16],
     random: &mut Random,
 ) {
     let weekday = today.rem_euclid(7) as usize;
@@ -220,6 +224,16 @@ pub fn day(
                     }
                 }
             }
+        }
+    }
+    // The day's news (`FUN_005ef842`, run by `FUN_0064f981` in a second
+    // loop over the human clubs after the training): a club meets it when
+    // the day's gates drew today for its slot. Only the category pick is
+    // here; what it posts, and the queue which can hold the pick back,
+    // stands in `crate::news`.
+    for (k, _) in statistics::human_clubs(records).iter().enumerate() {
+        if slots.get(k) == Some(&(today.rem_euclid(7) as i16)) {
+            crate::news::pick(random);
         }
     }
 }
