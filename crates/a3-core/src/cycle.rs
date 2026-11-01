@@ -773,11 +773,13 @@ impl Cycle {
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
                             // The day's training at the human clubs
                             // follows the sales (`FUN_00749508`).
+                            let date = season.date();
                             crate::training_day::day(
                                 records,
                                 &mut season.clubs,
                                 &self.data.world,
                                 today,
+                                date,
                                 &mut season.random,
                             );
                         }

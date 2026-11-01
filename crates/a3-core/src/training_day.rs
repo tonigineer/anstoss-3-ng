@@ -4,10 +4,7 @@
 //! (`FUN_00749508` with `FUN_0074a1ec`, which the day's advance
 //! `FUN_0064f981` runs after the ticket sales).
 //!
-//! What is not here yet: the luck chain of that picked player — its
-//! rank byte (+0x2), feet (+0x3 to +0x5) and inter-club flag (+0x10)
-//! stand in the first 0x20 bytes of the player record, which the save
-//! does not keep; the day's snapshot of the squad
+//! What is not here yet: the day's snapshot of the squad
 //! (`FUN_00746c48`) — and with it the block which decays the positions
 //! at the week's start and the units' position development with their
 //! rolls (`FUN_00747246`; nothing of it rolled in the day-63
@@ -22,6 +19,8 @@
 //! weighs two abilities.
 
 use std::collections::BTreeMap;
+
+use chrono::NaiveDate;
 
 use crate::lineup;
 use crate::random::Random;
@@ -102,12 +101,14 @@ const EVENTS: [(u32, u32); 11] = [
 /// for these six.
 const MANAGER_INJURIES: [(u8, i16); 6] = [(25, 7), (28, 7), (31, 3), (32, 7), (44, 7), (47, 3)];
 
-/// A training day at each human club. `today` is the day counter.
+/// A training day at each human club. `today` is the day counter and
+/// `date` the day it stands on.
 pub fn day(
     records: &mut Records,
     clubs: &mut BTreeMap<(usize, usize), ClubState>,
     world: &world::World,
     today: i32,
+    date: NaiveDate,
     random: &mut Random,
 ) {
     let weekday = today.rem_euclid(7) as usize;
@@ -191,6 +192,7 @@ pub fn day(
                 unit,
                 counter,
                 today,
+                date,
                 slot,
                 random,
             );
@@ -234,6 +236,7 @@ fn session(
     unit: usize,
     counter: u32,
     today: i32,
+    date: NaiveDate,
     slot: usize,
     random: &mut Random,
 ) {
@@ -244,10 +247,10 @@ fn session(
         if player.get::<i16>(0x2c) < 7 {
             // The national check (`FUN_006fef73`, `FUN_006feff8`) is
             // not in the corpus and caps nothing here; a 0x20 unit only
-            // trains its own kind — the run-time byte +0x3 for that is
-            // the save's main position at +0x58. `FUN_0074ae97`'s gains
+            // trains its own kind — the record's scratch byte +0x3,
+            // kept at +0x21d by the load copies. `FUN_0074ae97`'s gains
             // are not here.
-            if unit != 0x20 || player.get::<u8>(0x58) == 1 {
+            if unit != 0x20 || player.get::<u8>(0x21d) == 1 {
                 trainable.push(id);
             }
         } else {
@@ -355,9 +358,7 @@ fn session(
         if event == 0 && !trainable.is_empty() {
             let at = random.below(trainable.len() as u32) as usize;
             let id = trainable[at];
-            // The luck's chain is not here: its rank byte (+0x2), feet
-            // (+0x3 to +0x5) and line-up flag (+0x10) stand in front of
-            // the save record and the replica has not rebuilt them.
+            luck(records, id, date, random);
             if id > 17_000 {
                 let rival = records.managers.get(slot).map_or(-1, |m| m.rival());
                 if rival >= 0 {
@@ -388,6 +389,83 @@ fn session(
             }
         }
     }
+}
+
+/// The luck of one trained player (`FUN_0074a1ec`'s chain): a young
+/// one rises, a good day rests him, else his rank stands or falls. The
+/// chain works on the record's scratch bytes before the save begins —
+/// the load copies give their kept places: the rank byte (+0x2) at
+/// +0x21c, the feet (+0x3 to +0x5) at +0x21d to +0x21f, the line-up
+/// flag (+0x10) at +0x1c8 (`FUN_00636638` and friends). The news of
+/// each turn (`FUN_005ee5c0` and friends) is not posted.
+fn luck(records: &mut Records, id: u16, date: NaiveDate, random: &mut Random) {
+    let Some(player) = records.player_mut(id) else { return };
+    let age = statistics::age_on(player, date);
+    let mut rank = player.get::<u8>(0x21c);
+    if rank < 5 {
+        if random.below(0x4b0) == 0 {
+            rank += 1;
+        }
+    } else if statistics::form_today(player) < 0xc {
+        if random.below(0x2ee) == 0 {
+            train_condition(player, 5);
+        }
+    } else if !(statistics::form_today(player) < 0xb || random.below(0x1c2) != 0) {
+        train_freshness(player, -5);
+    } else {
+        let played = player.get::<u8>(0x1c8);
+        let willing = played & 4 == 0
+            || rank < 2
+            || rank > 5
+            || statistics::form_today(player) > 8
+            || random.below(400) != 0;
+        if !willing {
+            rank -= 1;
+        } else {
+            let going = age < 0x20
+                || statistics::form_today(player) > 8
+                || rank < 2
+                || rank > 6
+                || random.below(200) != 0;
+            if !going {
+                rank -= 1;
+            } else {
+                let mut grew = false;
+                if rank < 4
+                    && statistics::form_today(player) > 7
+                    && age < 0x18
+                    && random.below(200) == 0
+                {
+                    rank += 1;
+                    grew = true;
+                }
+                if !grew && rank > 7 {
+                    let side = player.get::<u8>(0x21e);
+                    if side == 0 && age > 0x1e && random.below(400) == 0 {
+                        let foot = player.get::<u8>(0x21d);
+                        let other = player.get::<u8>(0x21f);
+                        if foot != 1 && foot != 2 && other != 2 {
+                            // `FUN_00745d3c(p, 2)`; the weighing of two
+                            // abilities is not here.
+                            if player.get::<u8>(0x21e) == 0 {
+                                player.put::<u8>(0x21e, 2);
+                            } else if player.get::<u8>(0x21f) == 0 {
+                                player.put::<u8>(0x21f, 2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    player.put::<u8>(0x21c, rank);
+}
+
+/// And of freshness (`FUN_005e5f40`).
+fn train_freshness(player: &mut Player, steps: i32) {
+    let mut fresh = player.freshness();
+    fresh[0] = (i32::from(fresh[0]) + steps * 100).clamp(0, 10_000) as i16;
+    player.set_freshness(fresh);
 }
 
 /// `FUN_0060be4d`: one roll over the weights; the first entry heavier
