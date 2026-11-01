@@ -228,12 +228,19 @@ pub fn day(
     }
     // The day's news (`FUN_005ef842`, run by `FUN_0064f981` in a second
     // loop over the human clubs after the training): a club meets it when
-    // the day's gates drew today for its slot. Only the category pick is
-    // here; what it posts, and the queue which can hold the pick back,
-    // stands in `crate::news`.
-    for (k, _) in statistics::human_clubs(records).iter().enumerate() {
+    // the day's gates drew today for its slot. The category pick, and
+    // category 19's pick of one of the club's own players over its squad,
+    // stand in `crate::news`.
+    for (k, (country, number)) in statistics::human_clubs(records).into_iter().enumerate() {
         if slots.get(k) == Some(&(today.rem_euclid(7) as i16)) {
-            crate::news::pick(random);
+            let code = crate::news::pick(random);
+            if code == 19 {
+                let (country, number) = (u16::from(country), number as u16);
+                let squad = records
+                    .team(country, number)
+                    .map_or(0, |team| team.player_count());
+                crate::news::about_a_player(squad, random);
+            }
         }
     }
 }

@@ -3,16 +3,17 @@
 //! advance `FUN_0064f981` runs it for the clubs whose slot its gates
 //! drew today, after the training).
 //!
-//! What is not here yet: the club's own queue of posted news — the gate
-//! `FUN_006a700a` lets the day's pick through only while the club has
-//! nothing of its own waiting, and the picked category 19 (`FUN_005fed08`)
-//! draws over the queue's length; the group news `FUN_005e3885` rolls
-//! 400 off the club's fan byte (+0x9e), which the replica has no part
-//! of — on the compared days of save A it stands at 100 or above, so no
-//! roll runs before the pick; the rest gate `FUN_005ef56c` reads two
-//! run-time flags beside the day counter; and the player-manager blocks
-//! behind the club's bytes +0x8a and +0x8b, and the handlers of the
-//! other categories.
+//! What is not here yet: the club's waiting-event gate `FUN_006a700a`,
+//! which draws once only in one of its late cases and finds nothing in
+//! the replica; the group news `FUN_005e3885` rolls 400 off the club's
+//! fan byte (+0x9e), which the replica has no part of — on the compared
+//! days of save A it stands at 100 or above, so no roll runs before the
+//! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
+//! the day counter; the player-manager blocks behind the club's bytes
+//! +0x8a and +0x8b; and the handlers of the other categories — nearest
+//! category 18 (`FUN_005fd4ae`), which rolls over the club's squad as
+//! 19 does and then picks one more weighted table when the talked-about
+//! player has no news flag yet, and the postings themselves.
 
 use crate::random::Random;
 
@@ -61,6 +62,21 @@ pub fn pick(random: &mut Random) -> u16 {
     0
 }
 
+/// The picked category 19 (`case 0x13` with `FUN_005fed08`): one of the
+/// club's own players is talked about, drawn over the club's squad —
+/// the club's +0xe2, the team record's `player_count` at +0x112, over
+/// its squad list (the club's +0xb50, built from the record at +0x1f2).
+///
+/// Whether the news is then posted rests on two run-time parts the
+/// replica holds no part of: the player must not be a player-manager
+/// (its id below 17 001), and the posting `FUN_005fd59d` runs only for
+/// a player whose news flag (its +0x28d) an earlier news already set —
+/// no save keeps that flag, so out of a loaded save the pick of the
+/// player stands as the day's whole draw here.
+pub fn about_a_player(squad: u16, random: &mut Random) {
+    random.below(u32::from(squad));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +101,25 @@ mod tests {
             walked -= weight;
         }
         assert_eq!(code, expected);
+    }
+
+    /// Category 19 takes one draw over the club's squad and no more:
+    /// the posting behind it needs the player's run-time news flag,
+    /// which stands open out of every save.
+    #[test]
+    fn category_19_rolls_the_squad_once() {
+        let mut seed = 7i64;
+        let mut random = Random::from_state(seed, 3);
+        while pick(&mut random.clone()) != 19 {
+            seed += 1;
+            random = Random::from_state(seed, 3);
+        }
+        let mut copy = random.clone();
+        copy.below(10_000);
+        let code = pick(&mut random);
+        assert_eq!(code, 19);
+        about_a_player(26, &mut random);
+        let _next = copy.below(26);
+        assert!(random == copy, "the pick of the player, one draw");
     }
 }
