@@ -1561,6 +1561,16 @@ impl Countries {
         self.get(0xae61ae + country)
     }
 
+    /// Whether a market entry of this country and number is a club whose
+    /// team the game keeps (`FUN_00405024`'s first look): the countries of
+    /// the first two kinds keep their teams; a country with clubs abroad
+    /// only while the number stays below `DAT_00ae5c22`.
+    pub fn keeps_club(&self, country: usize, number: i16) -> bool {
+        matches!(self.kind(country), 1 | 2)
+            || (self.abroad(country) != 0
+                && number < i16::from(self.get::<u8>(0xae5c22 + country)))
+    }
+
     /// Which of the country's crest files a club of it shows, from 0
     /// (`FUN_00696161`): its clubs keep their crests as their numbers change
     /// (`DAT_00ae6bb6` by the country's slot, `DAT_00ae670e` for a country

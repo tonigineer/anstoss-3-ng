@@ -330,13 +330,31 @@ fn first_price(
     let drift = drift.clamp(-DRIFT_MOST, DRIFT_MOST);
     put_word(entry, DRIFT, drift);
     base = (f64::from(drift) + f64::from(base)) as f32;
-    let ring = |w: i16| PRICES_AT + usize::try_from(w).unwrap_or(0) % PRICES * 4;
-    let mut price = (f64::from(random.below(100)) / 100.0 + f64::from(base)) as f32;
+    let price = (f64::from(random.below(100)) / 100.0 + f64::from(base)) as f32;
     let to_be_had = random.below(0x97) + random.below(0x47) + 0x5a + random.below(0x1f);
     let to_be_had = to_be_had as i32 * 10;
     put_long(entry, TO_BE_HAD, to_be_had);
+    priced(records, market, e, i16::from(team.country()), i16::from(team.number()), price)
+}
+
+/// What every price for a new week ends with (`FUN_00405024`'s tail): the
+/// shares to be had cut down to what no portfolio holds yet, the bonus on
+/// the price in percent, the floor of five euros, the price in the week's
+/// place of the ring, the change on the week before, and the highest and
+/// lowest kept up to date. What is missing against the original: a club
+/// priced at the floor has its shares taken up again by the human clubs
+/// (`FUN_00406917`).
+fn priced(
+    records: &Records,
+    market: &mut [u8],
+    e: usize,
+    country: i16,
+    number: i16,
+    mut price: f32,
+) -> f32 {
+    let week = word(&market[e..], CLUB_WEEK);
     let held: i32 = (0..crate::records::MANAGERS as i16)
-        .map(|slot| held(records, market, slot + 1, team))
+        .map(|slot| held(records, market, slot + 1, country, number))
         .fold(0, i32::wrapping_add);
     let entry = &mut market[e..e + MARKET_ENTRY];
     let free = long(entry, CLUB_SHARES).wrapping_sub(held);
@@ -347,6 +365,7 @@ fn first_price(
     if price < LEAST_PRICE {
         price = LEAST_PRICE;
     }
+    let ring = |w: i16| PRICES_AT + usize::try_from(w).unwrap_or(0) % PRICES * 4;
     entry[ring(week)..ring(week) + 4].copy_from_slice(&price.to_le_bytes());
     let before = float(entry, ring((week + 1) % PRICES as i16));
     let change = if before == 0.0 {
@@ -363,6 +382,102 @@ fn first_price(
         entry[LOW..LOW + 4].copy_from_slice(&price.to_le_bytes());
     }
     price
+}
+
+/// An entry no country keeps a club of takes its price for the new week
+/// from last week's, walked by the weekday (`FUN_00405024`'s other half):
+/// the day of the week rolls its drift. A club of a country that keeps no
+/// teams also re-rolls its shares to be had; what is missing: the index
+/// entries' re-roll stands in a table the game only keeps at
+/// `0xbdeea0`, and its draws are not taken yet.
+fn index_price(market: &mut [u8], e: usize, day: i32, random: &mut Random) -> f32 {
+    let mut week = word(&market[e..], CLUB_WEEK) - 1;
+    if week < 0 {
+        week = NEW_WEEK;
+    }
+    put_word(&mut market[e..], CLUB_WEEK, week);
+    let (n, off) = match (day % 7 + 7) % 7 {
+        0 => (0x3e9, -5.0),
+        1 => (0x3e9, -4.0),
+        2 => (0x4b1, -4.0),
+        3 => (0x579, -4.0),
+        4 => (0x3e9, -6.0),
+        5 => (0x321, -4.0),
+        _ => (0x259, -4.0),
+    };
+    let ring = |w: i16| PRICES_AT + usize::try_from(w).unwrap_or(0) % PRICES * 4;
+    let before = float(&market[e..e + MARKET_ENTRY], ring((week + 1) % PRICES as i16));
+    (f64::from(random.below(n)) / 100.0 + off) as f32 + before
+}
+
+/// The week's end on the market (`FUN_00405c5e`, before the advance sales
+/// open): every entry takes its price for the new week, the mean of them
+/// moves the market's own index — the change on the week before, its run,
+/// and the index line at five thousand about the run's middle — and the
+/// entries' bonuses go back to nought for the week to come.
+pub fn roll_week(records: &mut Records, day: i32, random: &mut Random) {
+    let Some(mut market) = records.block(&format!("{MARKET_AT:#x}")).map(<[u8]>::to_vec) else {
+        return;
+    };
+    let count = usize::try_from(long(&market, MARKET_COUNT)).unwrap_or(0);
+    if count == 0 {
+        return;
+    }
+    let mut mean = 0.0f32;
+    for k in 0..count {
+        let e = MARKET_FIRST + k * MARKET_ENTRY;
+        if market.len() < e + MARKET_ENTRY {
+            break;
+        }
+        let (country, number) = (word(&market[e..], CLUB_COUNTRY), word(&market[e..], CLUB_NUMBER));
+        let price = if country >= 0 && records.countries.keeps_club(usize::from(country as u8), number)
+        {
+            match records.team(u16::try_from(country).unwrap_or(0), u16::try_from(number).unwrap_or(0))
+            {
+                Some(team) => first_price(records, team, &mut market, e, random),
+                None => index_price(&mut market, e, day, random),
+            }
+        } else {
+            let price = index_price(&mut market, e, day, random);
+            if country >= 0 {
+                let to_be_had =
+                    random.below(0x97) + random.below(0x47) + 0x5a + random.below(0x1f);
+                put_long(&mut market[e..], TO_BE_HAD, to_be_had as i32 * 10);
+            }
+            priced(records, &mut market, e, country, number, price)
+        };
+        mean += price;
+    }
+    let mean = mean / count as f32;
+    let before = float(&market, PREV_MEAN);
+    let change = ((mean - before) * 100.0) / before;
+    let run = float(&market, RUN) + change / 100.0;
+    put_float(&mut market, INDEX, run * 5000.0 + 5000.0);
+    put_float(&mut market, RUN, run);
+    put_float(&mut market, CHANGE_ON, change);
+    put_float(&mut market, PREV_MEAN, mean);
+    for k in 0..count {
+        let e = MARKET_FIRST + k * MARKET_ENTRY;
+        if market.len() < e + MARKET_ENTRY {
+            break;
+        }
+        put_long(&mut market, e + BONUS, 0);
+    }
+    if let Some(block) = records.block_mut(&format!("{MARKET_AT:#x}")) {
+        block.copy_from_slice(&market);
+    }
+}
+
+/// The market's own index in its header (`FUN_00405c5e`): the index line,
+/// the mean of the prices it stands on, the change on the week before in
+/// percent, and the run of those changes.
+const INDEX: usize = 0x4;
+const PREV_MEAN: usize = 0x8;
+const CHANGE_ON: usize = 0xc;
+const RUN: usize = 0x10;
+
+fn put_float(b: &mut [u8], at: usize, v: f32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
 /// The club's league: how many teams it has (`FUN_00692a88`) and how many
@@ -392,7 +507,7 @@ fn holds_cup(records: &Records, team: &Team) -> bool {
 /// What the human at this place among the managers holds of a club, by
 /// the first of his places that holds it (`FUN_0040689a`), reading the
 /// market as it now is.
-fn held(records: &Records, market: &[u8], slot: i16, team: &Team) -> i32 {
+fn held(records: &Records, market: &[u8], slot: i16, country: i16, number: i16) -> i32 {
     let Some(b) = records.block(&format!("{PORT_AT:#x}[{}]", slot - 1)) else {
         return 0;
     };
@@ -401,8 +516,29 @@ fn held(records: &Records, market: &[u8], slot: i16, team: &Team) -> i32 {
             let at = PORT_ENTRY + k * PORT_STEP;
             let e = (long(b, at) as usize).wrapping_mul(MARKET_ENTRY).wrapping_add(MARKET_FIRST);
             b.get(PORT_USED + k).is_some_and(|&u| u != 0)
-                && word(market, e.wrapping_add(CLUB_COUNTRY)) == i16::from(team.country())
-                && word(market, e.wrapping_add(CLUB_NUMBER)) == i16::from(team.number())
+                && word(market, e.wrapping_add(CLUB_COUNTRY)) == country
+                && word(market, e.wrapping_add(CLUB_NUMBER)) == number
         })
         .map_or(0, |k| long(b, PORT_SHARES + k * PORT_STEP))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_index_entry_walks_from_last_weeks_price() {
+        let mut market = vec![0u8; MARKET_ENTRY];
+        put_word(&mut market, CLUB_WEEK, 10);
+        market[PRICES_AT + 10 * 4..PRICES_AT + 10 * 4 + 4]
+            .copy_from_slice(&100.0f32.to_le_bytes());
+        let mut random = Random::new(7);
+        let price = index_price(&mut market, 0, 0, &mut random);
+        assert_eq!(word(&market, CLUB_WEEK), 9);
+        assert!((95.0..105.0).contains(&price), "{price}");
+        // What `priced` will store for the new week, the next day walked on.
+        market[PRICES_AT + 9 * 4..PRICES_AT + 9 * 4 + 4].copy_from_slice(&price.to_le_bytes());
+        let walked = index_price(&mut market, 0, 4, &mut random);
+        assert!((price - 6.0..price + 4.0).contains(&walked), "{walked}");
+    }
 }

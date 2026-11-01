@@ -296,6 +296,11 @@ pub struct Season {
     /// Whether the season's statement — dialog 417 as the season end
     /// posts it — has come up in this game.
     pub statement: bool,
+    /// Whether the week's end stands held: the original's load (`CDiLoad`,
+    /// `DAT_00b5cc04`) holds the market roll and the week-end steps about
+    /// it back, and the week's advance sales clear it (`FUN_0064e40f`) —
+    /// so the first week end after a load rolls no market.
+    pub week_hold: bool,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -667,6 +672,7 @@ impl Season {
             random,
             donations: Vec::new(),
             statement: false,
+            week_hold: false,
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

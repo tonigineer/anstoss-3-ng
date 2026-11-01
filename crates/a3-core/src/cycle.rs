@@ -708,9 +708,27 @@ impl Cycle {
                     return Ok(());
                 }
             }
+            // The week's end first rolls the market (`FUN_00405c5e`):
+            // every entry takes its price for the new week and the mean
+            // of them moves the market's index. A freshly loaded game
+            // holds that roll back (`DAT_00b5cc04`, `CDiLoad`) until its
+            // advance sales below clear the hold — the traced original
+            // week end, running just after a load, rolled no market.
+            {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                if let (Some(season), Some(records)) =
+                    (state.season.as_mut(), state.records.as_mut())
+                {
+                    if !season.week_hold {
+                        crate::stock::roll_week(records, season.day as i32, &mut season.random);
+                    }
+                }
+            }
             // The week's end opens the advance sales of each human club's
             // league matches of the next four weeks (`FUN_0064e40f` ->
-            // `FUN_0077d4ea`), drawing as the original does.
+            // `FUN_0077d4ea`), drawing as the original does; the sales
+            // clear the load's hold (`DAT_00b5cc04`).
             {
                 let mut guard = self.state();
                 let state = &mut *guard;
@@ -728,6 +746,7 @@ impl Cycle {
                             &self.data.presale,
                         );
                     }
+                    season.week_hold = false;
                 }
             }
             // The careers ended in the turns end before the week does
@@ -879,9 +898,10 @@ impl Cycle {
     /// of the three kept under `saves` the oldest goes, its two fellows
     /// move up a place, and the game writes itself afresh into the
     /// newest. The week's end asks for them before its announcement
-    /// (`FUN_0064e40f`); the original also holds them back while a load
-    /// runs (`DAT_00b5cc04`, which `CDiLoad` sets), which never meets the
-    /// replica's week boundary. The counter the original weighs, "half
+    /// (`FUN_0064e40f`); the original also holds them back while its load
+    /// stands uncleared (`DAT_00b5cc04`, which `CDiLoad` sets and the
+    /// sales clear), the same hold as `Season::week_hold`. The counter the
+    /// original weighs, "half
     /// weeks since the start" at `0xb5cbd2`, ticks on the week's middle
     /// day and its end, so half of it is the whole weeks counted here.
     fn autosave(&self, records: &Records, weeks: usize) {
