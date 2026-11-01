@@ -6726,6 +6726,71 @@ mod tests {
         );
     }
 
+    // The same two pages on the kept second-season save, shot at the original
+    // there (S2late3, day 300 of Union's second season, the department raised
+    // to three): the comparison counts the archived games of the season
+    // before as well, the away rows over both seasons — two games against FC
+    // Bayern München away, none of them won. Both pages show their first two
+    // sections on the original; its third one (Alle Ligaspiele) is not shot
+    // there yet. The original's category is again the second one, and its
+    // list holds the two pages at its rows 24 and 25.
+    #[test]
+    #[ignore = "needs the kept save S2late3"]
+    fn the_second_season_names_the_foes_of_the_seasons_before() {
+        let Some((root, game)) = kept_game("S2late3", "foes") else { return };
+        let dialog = &game.dialogs[&18];
+        let red = [170, 0, 0];
+        let foe = [
+            ("Angstgegner", 24, [
+                "Borussia Dortmund\t2\t0\t-4\t1\t:\t5",
+                "Borussia M'gladbach\t1\t0\t-2\t0\t:\t2",
+                "SC Freiburg\t1\t0\t-1\t0\t:\t1",
+                "FC Bayern München\t2\t1\t-3\t3\t:\t6",
+                "Eintracht Frankfurt\t2\t1\t-1\t0\t:\t1",
+            ], [
+                "VfL Wolfsburg\t2\t0\t-4\t0\t:\t4",
+                "FC Bayern München\t2\t0\t-3\t2\t:\t5",
+                "SC Freiburg\t1\t0\t-2\t0\t:\t2",
+                "Hannover 96\t1\t0\t-1\t0\t:\t1",
+            ]),
+            ("Lieblingsgegner", 25, [
+                "VfB Stuttgart\t2\t6\t3\t4\t:\t1",
+                "TSG 1899 Hoffenheim\t2\t6\t2\t5\t:\t3",
+                "SV Werder Bremen\t2\t4\t2\t4\t:\t2",
+                "FC St. Pauli\t2\t4\t1\t1\t:\t0",
+                "1.FC Köln\t1\t3\t1\t2\t:\t1",
+            ], [
+                "RB Leipzig\t2\t6\t2\t3\t:\t1",
+                "SV Werder Bremen\t1\t3\t2\t2\t:\t0",
+                "1.FC Köln\t1\t3\t1\t2\t:\t1",
+                "FC St. Pauli\t1\t3\t1\t2\t:\t1",
+            ]),
+        ];
+        for (page, row, heim, auswaerts) in foe {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 1\nnow row 1284 {row}");
+            let Some(runner) = on_save(&game, "foes", &then) else { return };
+            let view = runner.host.view();
+            let head = format!("{page}\\tSpiele\\tPkt\\tDiff\\tTore");
+            assert_eq!(view.text(control(dialog, 1292).unwrap()), head);
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            let lines = |name: &str, rows: &[&str]| {
+                assert!(
+                    table.rows.iter().any(|r| r.text == name && r.ink == red),
+                    "{page}: no {name} head"
+                );
+                for line in rows {
+                    assert!(
+                        table.rows.iter().any(|r| r.text == *line && r.ink == [0, 0, 0]),
+                        "{page}: no {line}"
+                    );
+                }
+            };
+            lines("Heimbegegnungen", &heim);
+            lines("Auswärtsbegegnungen", &auswaerts);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The Mannschaft category's Spielertrends groups the squad by its
     /// chances of a downgrade or an upgrade, the goals still needed beside.
     #[test]
