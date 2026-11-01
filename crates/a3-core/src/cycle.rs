@@ -785,6 +785,15 @@ impl Cycle {
                                 &slots,
                                 &mut season.random,
                             );
+                            // The day of the world closes it
+                            // (`FUN_006504b6` with the weekday); the
+                            // original's day of matches and its job
+                            // steps stand between, unported.
+                            crate::world_day::day(
+                                records,
+                                today.rem_euclid(7),
+                                &mut season.random,
+                            );
                         }
                         season.pass_day();
                         season.day += 1;

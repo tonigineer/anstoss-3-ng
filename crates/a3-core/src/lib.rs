@@ -61,5 +61,6 @@ pub mod value;
 pub mod words;
 pub mod youth_league;
 pub mod world;
+pub mod world_day;
 pub mod year;
 pub mod youth;
