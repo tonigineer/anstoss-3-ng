@@ -54,6 +54,7 @@ pub mod talk;
 pub mod tickets;
 pub mod trainers;
 pub mod training;
+pub mod training_day;
 pub mod transfers;
 pub mod value;
 pub mod words;

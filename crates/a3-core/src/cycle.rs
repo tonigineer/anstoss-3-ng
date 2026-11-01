@@ -771,6 +771,15 @@ impl Cycle {
                         crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         if let Some(records) = state.records.as_mut() {
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
+                            // The day's training at the human clubs
+                            // follows the sales (`FUN_00749508`).
+                            crate::training_day::day(
+                                records,
+                                &mut season.clubs,
+                                &self.data.world,
+                                today,
+                                &mut season.random,
+                            );
                         }
                         season.pass_day();
                         season.day += 1;
