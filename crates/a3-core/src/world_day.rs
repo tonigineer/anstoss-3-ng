@@ -13,6 +13,10 @@
 //! roll of a hundred on its run-time word +0xa7 stands for every club
 //! whose word is set.
 //!
+//! The driver then rounds the human clubs of the globals' list once a
+//! day, seven rolls of ten per player ([`luck_round_of_list`]); which
+//! player state a 0-roll feeds is not ported.
+//!
 //! Not ported yet, and drawing in the original when they run: that
 //! hundred-roll on +0xa7, whose table no save hands the replica, and
 //! what the rolls answer to — the moods, the play and the club's
@@ -38,6 +42,37 @@ pub fn day(records: &Records, weekday: i32, random: &mut Random) {
         }
         1 => clubs_of(records, records.globals.main_country(), random),
         _ => {}
+    }
+    luck_round_of_list(records, random);
+}
+
+/// The round the day's driver runs after the weekday switch, over the
+/// globals' list of human clubs (`FUN_007845aa` behind the wrapper
+/// `FUN_007848f0`): the list stands at +0xb5cbe2 — one entry eight bytes
+/// apart, the country's byte and the club's number two further — and its
+/// count at +0xb5cc02; on every club every squad player rolls seven of
+/// the tens, [`luck_round`].
+fn luck_round_of_list(records: &Records, random: &mut Random) {
+    let list: [u8; 32] = records.globals.get(0xb5cbe2);
+    let count = records.globals.get::<i16>(0xb5cc02).max(0) as usize;
+    for entry in list.chunks(8).take(count) {
+        let country = u16::from(entry[0]);
+        let number = u16::from_le_bytes([entry[2], entry[3]]);
+        luck_round(records.team(country, number), random);
+    }
+}
+
+/// One club's round of tens (`FUN_007845aa`'s player loop): seven rolls
+/// of ten for every player of its squad. A 0-roll reads one of the
+/// player's states and raises or lowers it by one — the club's manager
+/// stands in the states' table, and its skill only feeds what the rolls
+/// answer to, not the rolls themselves; the states stay unported.
+fn luck_round(team: Option<&Team>, random: &mut Random) {
+    let Some(team) = team else { return };
+    for _ in 0..team.player_count() {
+        for _ in 0..7 {
+            random.below(10);
+        }
     }
 }
 
@@ -113,5 +148,33 @@ mod tests {
         }
         copy.below(3);
         assert!(random == copy, "no ten thousand, one three");
+    }
+
+    /// The round over a club: seven rolls of ten for every squad
+    /// player — the 0-rolls' states are not ported, but their rolls are.
+    #[test]
+    fn the_luck_round_rolls_seven_tens_per_player() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        team.set_players(&[5, 9, 12]);
+        let mut random = Random::from_state(20261101, 6);
+        let mut copy = random.clone();
+        luck_round(Some(&team), &mut random);
+        for _ in 0..21 {
+            copy.below(10);
+        }
+        assert!(random == copy, "seven tens for every player");
+    }
+
+    /// A club with no squad player — and an entry that finds no club —
+    /// rolls nothing at all.
+    #[test]
+    fn the_luck_round_rolls_nothing_for_a_small_squad() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        team.set_players(&[]);
+        let mut random = Random::from_state(20261101, 7);
+        let copy = random.clone();
+        luck_round(Some(&team), &mut random);
+        luck_round(None, &mut random);
+        assert!(random == copy, "not one roll");
     }
 }
