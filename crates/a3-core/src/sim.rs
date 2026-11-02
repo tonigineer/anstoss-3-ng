@@ -226,6 +226,12 @@ pub struct Side {
     /// whose live byte +0x47 takes the goal; the same men the ledger's
     /// own-goal bit marks.
     pub own_book: [u16; LEDGER_SLOTS],
+    /// The side's takers of big chances and set pieces in order — every
+    /// shot book (`FUN_00740996`, `FUN_00740a07`) the original follows
+    /// with `FUN_00740a66`, which lifts the taker's live byte +0x52 at
+    /// the chance's moment, the save's chances counter at +0x251; the
+    /// replica waits these names for `post_match_books` as well.
+    pub chance_book: [u16; LEDGER_SLOTS],
 }
 
 /// A match as the original keeps it: the 0x498-byte record, one of the
@@ -796,8 +802,10 @@ fn chance_for(
 /// The set piece of a kind 90..97 chance (`FUN_00659b85`, and side two's
 /// `FUN_0065a23a`): with its taker found the side's chance is counted, and
 /// a perfect shot — quality 1, drawn back in the frame — is a goal; the
-/// event itself draws nothing. The shot's books (`FUN_00740a07`,
-/// `FUN_00740a66`) and the scorer's (`FUN_00740aad`), the post-goal talk
+/// event itself draws nothing. The taker's chances counter follows his
+/// shot book as `FUN_00740a66` follows `FUN_00740a07`, waiting in the
+/// side's book list; the shot's own counters (`FUN_00740a07`) and the
+/// scorer's (`FUN_00740aad`), the post-goal talk
 /// (`FUN_0065e118`), the crowd's shout (`FUN_0069e224`, `FUN_0069e2b9`,
 /// and `FUN_004fc297` for a national side) and the club's own counters at
 /// +0xdeb/+0xdee are seams; none of them draws either. A human side's
@@ -805,9 +813,12 @@ fn chance_for(
 /// kick list, read by `FUN_0069ac7d` and put in every reader's order by
 /// `FUN_006dc332` — see `set_taker` below.
 fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
-    if taker.is_none() {
+    let Some(taker) = taker else {
         return;
-    }
+    };
+    // `FUN_00740a66` follows the shot book before the shot is judged:
+    // every found taker takes the chance, the goal or miss aside
+    book_in(&mut m.sides[which].chance_book, taker);
     if quality == 1 {
         score(m, which);
     }
@@ -821,10 +832,11 @@ fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
 /// taker's shot stands in the record's ledger before the roll —
 /// `FUN_00740996` marks him whichever way the ball goes; its counters for
 /// the man at +0x26 and the club at +0xdea wait for a league match of the
-/// plain kind (the record's short at +0x24 and the kind's upper byte), as
-/// do the miss's books (`FUN_00740a66`, `FUN_00740f33`) and the foe's
-/// assist man read out of the defending club's eleven (`FUN_00740fb6`,
-/// `FUN_00741038`). As in the set piece a human side's man comes from his
+/// plain kind (the record's short at +0x24 and the kind's upper byte);
+/// the taker's chances counter (`FUN_00740a66` right behind the book)
+/// waits in the side's book list, while the miss's book (`FUN_00740f33`)
+/// and the foe's assist man read out of the defending club's eleven
+/// (`FUN_00740fb6`, `FUN_00741038`) stay seams. As in the set piece a human side's man comes from his
 /// club's list — for the big chance the penalty list, read by
 /// `FUN_0069b17b`; see `big_taker` below.
 fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Random) {
@@ -832,6 +844,7 @@ fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Rand
         return;
     };
     book_event(m, taker, LEDGER_SHOT);
+    book_in(&mut m.sides[which].chance_book, taker);
     if (random.below(100) as i32) < if which == 0 { 0x50 } else { 0x46 } {
         score(m, which);
     }
@@ -863,10 +876,12 @@ fn book_in(list: &mut [u16; LEDGER_SLOTS], id: u16) {
 /// chances and the plain event of qualities two and three (`FUN_00659311`,
 /// not ported). The assist's and own-goal man's counters (`FUN_00740dc4`,
 /// and `FUN_00740d68` beyond its ledger bit) stand booked through the
-/// side's lists; the keeper's and the scorer's counters (`FUN_00740a66`,
-/// `FUN_00740aad`), the post-goal talk (`FUN_0065e118`) and the crowd's
-/// shout (`FUN_0069e224`, `FUN_0069e2b9`, `FUN_004fc297` for a national
-/// tie) draw nothing; who scored waits with them.
+/// side's lists; this event names no chance taker and books no chance
+/// count (`FUN_00740a66` belongs to the set pieces and big chances
+/// alone); the scorer's counters (`FUN_00740aad`), the post-goal talk
+/// (`FUN_0065e118`) and the crowd's shout (`FUN_0069e224`, `FUN_0069e2b9`,
+/// `FUN_004fc297` for a national tie) draw nothing; who scored waits
+/// with them.
 fn shot_event(
     m: &mut Match,
     which: usize,
@@ -1478,7 +1493,10 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// bytes. `FUN_00740dc4` sets an assist man's two bytes +0x48 and +0x4b
 /// one higher, which the save keeps as the record's assist and
 /// last-assist counters; `FUN_00740d68` beyond its ledger bit sets the
-/// blamed man's byte +0x47, the record's own-goal counter. The pair runs
+/// blamed man's byte +0x47, the record's own-goal counter; and
+/// `FUN_00740a66`, right behind every set-piece and big-chance shot
+/// book, sets the taker's byte +0x52, the record's chances counter at
+/// +0x251. All three run
 /// only while the match's kind code sits below 0x3f or stands at 0x10 —
 /// a national tie carries its counters in its own block instead — and
 /// the match's short at +0x24 stands nought, which the replica's kind
@@ -1486,6 +1504,11 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// books through the tie's `nat_bits`. Nothing here draws a number.
 pub fn post_match_books(m: &Match, records: &mut Records) {
     for which in 0..2 {
+        for &id in m.sides[which].chance_book.iter().take_while(|&&id| id != 0) {
+            if let Some(p) = records.player_mut(id) {
+                p.set_chances(p.chances().wrapping_add(1));
+            }
+        }
         for &id in m.sides[which].assist_book.iter().take_while(|&&id| id != 0) {
             if let Some(p) = records.player_mut(id) {
                 p.set_assists(p.assists().wrapping_add(1));
@@ -2272,12 +2295,15 @@ mod tests {
         let mut m = fixture();
         set_piece(&mut m, 1, 1, Some(4));
         assert_eq!([m.goals[1], m.sides[1].chances.into()], [1, 1]);
+        assert_eq!(m.sides[1].chance_book[0], 4, "the taker takes the chance in his byte too");
         let mut m = fixture();
         set_piece(&mut m, 0, 2, Some(4));
         assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
+        assert_eq!(m.sides[0].chance_book[0], 4, "a wide set piece still books the chance");
         let mut m = fixture();
         set_piece(&mut m, 0, 1, None);
         assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 0]);
+        assert_eq!(m.sides[0].chance_book, [0; LEDGER_SLOTS], "no taker, no chance");
     }
 
     #[test]
@@ -2504,14 +2530,19 @@ mod tests {
         big_chance(&mut m, 0, Some(7), &mut Random::new(miss));
         assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
         assert_eq!(m.sides[0].ledger[3], LEDGER_SHOT);
+        assert_eq!(m.sides[0].chance_book[0], 7, "the taker's chance byte stands booked alike");
         // a taker the record does not name books nothing, and the mark
         // reaches the second side's entered slot as well
         let mut m = fixture();
         big_chance(&mut m, 0, Some(7), &mut Random::new(miss));
         assert_eq!(m.sides[0].ledger, [0; LEDGER_SLOTS]);
+        // the chance byte needs no entered slot: the man himself stands
+        // booked even where the ledger finds no place for him
+        assert_eq!(m.sides[0].chance_book[0], 7);
         m.sides[1].entries[17] = 7;
         big_chance(&mut m, 1, Some(7), &mut Random::new(miss));
         assert_eq!(m.sides[1].ledger[17], LEDGER_SHOT);
+        assert_eq!(m.sides[1].chance_book[0], 7);
     }
 
     #[test]
@@ -3002,7 +3033,7 @@ mod tests {
 
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
-    fn the_walk_books_its_assists_and_own_goals_on_the_save() {
+    fn the_walk_books_its_counters_on_the_save() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let read = || Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
@@ -3010,57 +3041,58 @@ mod tests {
         let squad = records.team(0, 0).unwrap().players();
         let men = crate::matches::eleven(&squad, &records);
         let (a, b, c, d) = (men[0], men[1], men[2], men[3]);
-        let book_of = |id: u16| {
-            let r = read();
-            let p = r.player(id).unwrap();
-            (p.assists(), p.last_assists(), p.own_goals())
-        };
-        // one seeded name per book on each tie; the walk's own shot
-        // events fill the same lists with their picks beside these
+        // one seeded name per book on each tie; the walk's own events
+        // fill the same lists with their picks beside these
         let mut club = fixture();
         club.ids = [0, 0, 0, 0];
+        club.sides[0].chance_book[0] = a;
         club.sides[0].assist_book[0] = a;
         club.sides[1].own_book[0] = b;
         let mut tie = fixture();
         tie.ids = [0, 0, 0, 0];
         tie.nat_bits = 1;
+        tie.sides[0].chance_book[0] = c;
         tie.sides[0].assist_book[0] = c;
         tie.sides[1].own_book[0] = d;
         let mut row = [club, tie];
         let mut records = read();
+        let counters = |r: &Records, id: u16| {
+            let p = r.player(id).unwrap();
+            (p.chances(), p.assists(), p.last_assists(), p.own_goals())
+        };
+        let (before_a, before_b) = (counters(&records, a), counters(&records, b));
+        let (before_c, before_d) = (counters(&records, c), counters(&records, d));
         play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
         let (seen_club, seen_tie) = (row[0], row[1]);
         // every name standing in the walked club's lists meets the
         // records once — the seeded one and the walk's own picks alike
-        let walked = |m: &Match, id: u16, assists: bool| -> u8 {
+        let listed = |m: &Match, id: u16, which: u8| -> u8 {
             m.sides
                 .iter()
-                .flat_map(|s| if assists { s.assist_book.iter() } else { s.own_book.iter() })
+                .flat_map(|s| match which {
+                    0 => s.chance_book.iter(),
+                    1 => s.assist_book.iter(),
+                    _ => s.own_book.iter(),
+                })
                 .filter(|&&x| x == id)
                 .count() as u8
         };
-        let got = |id: u16| {
-            let p = records.player(id).unwrap();
-            (p.assists(), p.last_assists(), p.own_goals())
-        };
-        assert_eq!(
-            got(a),
+        // each counter stands exactly as many higher as its name meets
+        // the walked lists — chance, assist, and own-goal books alike
+        let expect = |before: (u8, u8, u8, u8), id: u16| {
             (
-                book_of(a).0.wrapping_add(walked(&seen_club, a, true)),
-                book_of(a).1.wrapping_add(walked(&seen_club, a, true)),
-                book_of(a).2,
-            ),
-                "the assist man stands one higher in both counters"
-        );
-        assert_eq!(
-            got(b),
-            (book_of(b).0, book_of(b).1, book_of(b).2.wrapping_add(walked(&seen_club, b, false))),
-            "the blamed man takes the own goal"
-        );
+                before.0.wrapping_add(listed(&seen_club, id, 0)),
+                before.1.wrapping_add(listed(&seen_club, id, 1)),
+                before.2.wrapping_add(listed(&seen_club, id, 1)),
+                before.3.wrapping_add(listed(&seen_club, id, 2)),
+            )
+        };
+        assert_eq!(counters(&records, a), expect(before_a, a), "the seeded names meet the records once");
+        assert_eq!(counters(&records, b), expect(before_b, b), "the walk's own picks likewise");
         // the national tie sits out the books as it sits out the wear:
         // its lists stay full, its men's counters stand as they were
         assert_eq!(seen_tie.sides[0].assist_book[0], c);
-        assert_eq!(got(c), book_of(c), "the national tie's assist man is not booked");
-        assert_eq!(got(d), book_of(d), "the national tie's own-goal man is not booked");
+        assert_eq!(counters(&records, c), before_c, "the national tie's man is not booked");
+        assert_eq!(counters(&records, d), before_d, "the national tie's own-goal man is not booked");
     }
 }
