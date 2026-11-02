@@ -22,7 +22,10 @@
 //! too: the walk's penalty minute calls `penalty_shootout` (`FUN_005ddea7`
 //! — the coin, the five takers a side draws out of its men, the sudden
 //! death and the kick's roll) over the sides' men as the records keep
-//! them, and draws nothing without the save. The chances'
+//! them, and draws nothing without the save. When the walk is over the
+//! day's plain wear pass (`FUN_006f8f44` with the fifth parameter nought)
+//! lands on the played men: `play_matches` runs `post_match_wear` over
+//! each match the walk ran, and the wear draws no number either. The chances'
 //! rest lands as seams — the quality-one shot's own goal
 //! (`FUN_00659d2b` and its eleven siblings, the scorer pick
 //! `FUN_0077db3a`), the national-side path's set pieces (`FUN_006f543f`)
@@ -307,15 +310,20 @@ struct Clock {
 /// also enters both sides' men in the record's slots before its first
 /// minute, so the events' books find their places. `today` is the day
 /// the fixtures stand on; the shootout reads the men's years against it.
+/// The records stand mutable for the wear pass the day loop runs over
+/// each match of the row once the minutes have walked
+/// (`FUN_006f8f44` with the fifth parameter nought); the graded pass and
+/// the clubs' ledgers in that loop (`FUN_00714236`, `FUN_00744d02`) wait
+/// with the club objects.
 pub fn play_matches(
     matches: &mut [Match],
     live: bool,
-    records: Option<&Records>,
+    mut records: Option<&mut Records>,
     today: NaiveDate,
     random: &mut Random,
 ) {
     let mut clock = Clock::default();
-    if let Some(records) = records {
+    if let Some(records) = records.as_deref() {
         for m in matches.iter_mut() {
             for which in 0..2 {
                 fill_entries(m, which, records);
@@ -323,7 +331,8 @@ pub fn play_matches(
         }
     }
     let mut minute = 1;
-    while minute < 0x31 && tick(matches, live, minute, &mut clock, records, today, random) {
+    while minute < 0x31 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random)
+    {
         minute += 1;
     }
     clock.minute = 45;
@@ -335,7 +344,7 @@ pub fn play_matches(
     }
     clock.half2 = 1;
     let mut minute = 46;
-    while minute < 99 && tick(matches, live, minute, &mut clock, records, today, random) {
+    while minute < 99 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
         minute += 1;
     }
     clock.minute = 90;
@@ -346,12 +355,24 @@ pub fn play_matches(
         clock.half2 = 0;
         clock.extra = 1;
         let mut minute = 90;
-        while minute < 0x7e && tick(matches, live, minute, &mut clock, records, today, random) {
+        while minute < 0x7e && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
             minute += 1;
         }
         if after_extra_time(matches, live) {
             clock.extra = 2;
-            tick(matches, live, 0x78, &mut clock, records, today, random);
+            tick(matches, live, 0x78, &mut clock, records.as_deref(), today, random);
+        }
+    }
+    // The day loop's per-match wear pass: what the ninety minutes leave
+    // on the men who stood the pitch. It runs on the walk's own matches,
+    // the way the loop walks the row after `FUN_006f352e` ended it; the
+    // national ties bulk-simulated at pre-match wait with their lists.
+    // Nothing here draws a number.
+    if let Some(records) = records.as_deref_mut() {
+        for m in matches.iter() {
+            if live || m.nat_bits == 0 {
+                post_match_wear(m, records);
+            }
         }
     }
 }
@@ -2648,13 +2669,13 @@ mod tests {
     fn the_walk_enters_its_men_before_the_minutes() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         // the first German club's eleven on both pitches: the walk's
         // first act with the records stands them in the entered slots,
         // so from the first minute the books find their men
         let mut m = fixture();
         m.ids = [0, 0, 0, 0];
-        play_matches(std::slice::from_mut(&mut m), false, Some(&records), test_day(), &mut Random::new(5));
+        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), test_day(), &mut Random::new(5));
         for which in 0..2 {
             let men = side_men(&m, which, &records);
             let entered: Vec<u16> = men.iter().map(|p| p.id()).collect();
@@ -2704,5 +2725,64 @@ mod tests {
         assert!(!run);
         assert_eq!(m.goals, [2, 2]);
         assert_eq!(r, Random::new(4), "the empty minute draws no coin");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_walked_match_wears_its_men_on_the_save() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // the first German club's eleven stands on both pitches of a
+        // plain fixture the walk runs to full time, its sides weary past
+        // the top band: the day loop's plain wear pass lands on every
+        // played man per pitch — ninety minutes of the fourth row at the
+        // twelvefold, arithmetic on the save with no number drawn — so
+        // here each man takes it twice; the national tie in the same
+        // row, which the walk leaves to the bulk pre-match simulation,
+        // adds nothing, and the club's reserve stands unworn
+        let squad = records.team(0, 0).unwrap().players();
+        let men = crate::matches::eleven(&squad, &records);
+        let bench: Vec<u16> = squad.iter().copied().filter(|id| !men.contains(id)).take(3).collect();
+        let before: Vec<(i16, [i16; 3])> = men
+            .iter()
+            .chain(&bench)
+            .map(|id| {
+                let p = records.player(*id).unwrap();
+                (p.condition(), p.freshness())
+            })
+            .collect();
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 0];
+        m.sides[0].fatigue = 12600;
+        m.sides[1].fatigue = 12600;
+        let mut tie = fixture();
+        tie.ids = [0, 0, 0, 0];
+        tie.nat_bits = 1;
+        let mut r = Random::new(6);
+        play_matches(&mut [m, tie], false, Some(&mut records), test_day(), &mut r);
+        // top wear band through the side's fatigue, ninety minutes on
+        // the men: the fourth row scaled twelve tenths, twice over for
+        // the eleven that stands on both of this fixture's pitches
+        let moved = |d: i32| 2 * (d * 12 / 10);
+        for (id, (cond, fresh)) in men.iter().zip(&before) {
+            let p = records.player(*id).unwrap();
+            assert_eq!(
+                (p.condition(), p.freshness()),
+                (
+                    (i32::from(*cond) + moved(100)).clamp(0, 10_000) as i16,
+                    [
+                        (i32::from(fresh[0]) + moved(-225)).clamp(0, 10_000) as i16,
+                        (i32::from(fresh[1]) + moved(-630)).clamp(-10_000, 10_000) as i16,
+                        (i32::from(fresh[2]) + moved(-315)).clamp(-10_000, 10_000) as i16,
+                    ],
+                ),
+                "the eleven of club one stands worn by its two pitches"
+            );
+        }
+        for (id, (cond, fresh)) in bench.iter().zip(&before[men.len()..]) {
+            let p = records.player(*id).unwrap();
+            assert_eq!((p.condition(), p.freshness()), (*cond, *fresh), "the reserve {id} stands untouched");
+        }
     }
 }
