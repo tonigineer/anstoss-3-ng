@@ -13,7 +13,7 @@ use std::sync::Mutex;
 const M1: i64 = 2_147_483_563;
 const M2: i64 = 2_147_483_399;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Random {
     s1: i64,
     s2: i64,
