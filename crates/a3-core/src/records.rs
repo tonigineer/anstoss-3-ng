@@ -293,6 +293,13 @@ record! {
     0x251 => chances, set_chances: u8;
     0x252 => home_goals, set_home_goals: u8;
     0x24d => free_kicks, set_free_kicks: [u8; 2];
+    /// The foe keeper's big chance counts: saved when a big chance went
+    /// wide, conceded when it went in — the defending line-up's first
+    /// man takes the big chance both ways (`FUN_00741038` at the miss,
+    /// `FUN_00740fb6` at the goal, live bytes +0x50/+0x51). No screen
+    /// names either byte.
+    0x24f => saves, set_saves: u8;
+    0x250 => conceded, set_conceded: u8;
     /// Appearances in all his career: in the cups, in the European cups.
     0x25f => career_cup_appearances, set_career_cup_appearances: [u8; 5];
     0x265 => career_europe_appearances, set_career_europe_appearances: u8;
