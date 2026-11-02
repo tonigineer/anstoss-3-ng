@@ -7,8 +7,10 @@
 //! `Side` name the record's fields, keeping the original's offsets in the
 //! comments.
 //!
-//! This is the engine's skeleton: the minute walk, the added time, full
-//! time's extra-time and penalty decisions, and the rated strengths. A
+//! This is the engine's skeleton: the day's pre-match walk (`pre_match`,
+//! a plain fixture at chance slot and added byte 5, no referee), the
+//! minute walk, the added time, full time's extra-time and penalty
+//! decisions, and the rated strengths. A
 //! club minute then runs its chance frame (`FUN_006f6007`): the chooser of
 //! the minute (`FUN_006f6857`), the two sides' chance rolls out of their
 //! rated attack pair, the shot's quality (`FUN_0040b8c9`) and the trailing
@@ -168,12 +170,22 @@ pub struct Match {
     pub chance_slot: u8,
     /// +0x451: byte 6 down by two places selects the added time's draw.
     pub added_draw: u8,
-    /// +0x474: the live marker — the match the viewer watches; zero for a
-    /// match only scored. The original draws its live match's minutes out
-    /// of its own clock and lets the viewer's club adjust the sides;
-    /// everywhere below a match with this set is passed over unless the
-    /// whole day runs live.
-    pub live: u16,
+    /// +0x458: the referee, a record index; the pre-match walk draws one
+    /// only for a national tie and leaves a plain fixture at 0xffff.
+    pub referee: i16,
+    /// +0x468: this match's place in the day's row, set by the pre-match
+    /// walk.
+    pub index: u16,
+    /// +0x474: the national marker — a side standing in the saved national
+    /// teams raises bit 1 or 2 (`FUN_00677428`), in the regional
+    /// selections bit 4 or 8 (`FUN_0067764c`); the two sides' places in
+    /// the national list sit in the short's upper bytes (`FUN_00677574`,
+    /// read three bits each), and the walk's third loop numbers the day's
+    /// national ties from bit 4 up. A plain club fixture stays at nought;
+    /// a tie carrying a national side is simulated in bulk at pre-match
+    /// (`FUN_0070c334`) and joins the minute walk only when the whole day
+    /// runs watched.
+    pub nat_bits: u16,
 }
 
 /// The day's clock, `DAT_01bad044` and its state globals: minute (+0xe),
@@ -190,7 +202,9 @@ struct Clock {
 /// halves, added time, extra time and penalties when the tie needs them.
 /// `live` is the original's flag for a day whose matches are watched; the
 /// replica plays all its matches to themselves, so it passes false with
-/// every `Match::live` zero.
+/// every `Match::nat_bits` zero — a tie carrying a national side is
+/// simulated in bulk at pre-match (`FUN_0070c334`) and joins the walk
+/// only on a watched day.
 ///
 /// All the day's matches walk together, one minute at a time, and the
 /// added time is drawn for every match of the row — the original draws
@@ -232,6 +246,51 @@ pub fn play_matches(matches: &mut [Match], live: bool, random: &mut Random) {
     }
 }
 
+/// The day's pre-match walk (`FUN_006ef296`), run once over the row
+/// before the minutes. Its first loop numbers the row and tests each
+/// side's id pair against the saved national teams (`FUN_00677428`) and
+/// the regional selections (`FUN_0067764c`), keeping the sides' places in
+/// the national list in the marker's upper bytes (`FUN_00677574`); the
+/// replica has no national lists, so its ids stand for clubs and every
+/// fixture stays plain. The second loop hands both sides' staff the
+/// talk (+0x150/+0x344) and lays the plain fixture's defaults: chance
+/// slot and added-time byte at 5 — two places down that byte is
+/// `added_time`'s selector one, so a plain fixture's stoppage sits a
+/// touch before the hour — and no referee, the record's 0xffff. Nothing here
+/// draws a random number: the league day's draw stream starts at its
+/// first minute, as the week's trace shows. The walk's third loop — the
+/// national call-ups, the squads summed into the sides by `FUN_0078b26c`
+/// and their totals at +0x50/+0x54 settling the favourite byte at +0x58,
+/// and the referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by
+/// `FUN_0063161e` into +0x44a..+0x458 for a national tie — works on the
+/// clubs and their squads and waits there.
+pub fn pre_match(row: &mut [Match]) {
+    for (index, m) in row.iter_mut().enumerate() {
+        m.index = index as u16;
+        let national = [is_national(m.ids[1]), is_national(m.ids[3])];
+        m.nat_bits = 0;
+        if national[0] || national[1] {
+            // the regional bits 4 and 8, the list places in bytes two
+            // and three, and the day's national-tie number from bit 4
+            // up wait with the lists
+            m.nat_bits = national[0] as u16 + 2 * national[1] as u16;
+        }
+    }
+    for m in row.iter_mut() {
+        m.sides[0].assistant = 1;
+        m.sides[1].assistant = 1;
+        if m.nat_bits == 0 {
+            m.added_draw = 5;
+            m.chance_slot = 5;
+            m.referee = -1;
+        } else {
+            // the assistants drop where the club has none (its f_08a and
+            // f_084 flags), and the referee drawn out of the two clubs
+            // fills the slot, the added byte and +0x44a..+0x454
+        }
+    }
+}
+
 /// One minute of the day's matches, `FUN_006f2d4f` without its
 /// presentation; true while some open match still runs before its end of
 /// half. The display clocks (+0x1c, +0x0c) are left out.
@@ -240,7 +299,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         clock.minute = minute;
         let mut run = false;
         for m in matches.iter_mut() {
-            if m.flags & FINISHED == 0 && (live || m.live == 0) {
+            if m.flags & FINISHED == 0 && (live || m.nat_bits == 0) {
                 if minute == 10 {
                     m.score10 = [m.goals[0] as u8, m.goals[1] as u8];
                 }
@@ -257,7 +316,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         clock.minute = minute;
         let mut run = false;
         for m in matches.iter_mut() {
-            if live || m.live == 0 {
+            if live || m.nat_bits == 0 {
                 if m.flags & FINISHED == 0 {
                     minute_play(m, clock, random);
                     if minute < m.ends_at.max(90) {
@@ -283,7 +342,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         }
         let mut run = false;
         for m in matches.iter_mut() {
-            if (live || m.live == 0) && m.flags & FINISHED == 0 && m.flags & EXTRA != 0 {
+            if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & EXTRA != 0 {
                 minute_play(m, clock, random);
                 if minute < m.ends_at.max(120) {
                     run = true;
@@ -295,7 +354,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         run
     } else {
         for m in matches.iter_mut() {
-            if (live || m.live == 0) && m.flags & FINISHED == 0 && m.flags & PENS != 0 {
+            if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & PENS != 0 {
                 penalties(m, clock, random);
             }
         }
@@ -311,13 +370,13 @@ fn minute_play(m: &mut Match, clock: &Clock, random: &mut Random) {
     if m.flags & (MINUTE_UP | OVER) != 0 {
         return;
     }
-    // The viewer's club adjusts its side as the match runs (`FUN_006fb8f5`
-    // with the live marker's two three-bit fields) — not ported.
-    if m.live & 1 != 0 {
-        live_adjust(&mut m.sides[0], (m.live as i16 >> 8) & 7);
+    // A national side's own tactic, which the association's table sets
+    // for the minute from the side's place in the list — not ported.
+    if m.nat_bits & 1 != 0 {
+        national_tactic(&mut m.sides[0], (m.nat_bits as i16 >> 8) & 7);
     }
-    if m.live & 2 != 0 {
-        live_adjust(&mut m.sides[1], (m.live as i16 >> 12) & 7);
+    if m.nat_bits & 2 != 0 {
+        national_tactic(&mut m.sides[1], (m.nat_bits as i16 >> 12) & 7);
     }
     let extra = m.flags & EXTRA != 0;
     if m.advantage < 0 {
@@ -454,9 +513,11 @@ fn rate_side(m: &mut Match, which: usize, _extra: bool) {
     r[4] = (r[4] as i32 + r[4] as i32 * mental / 100) as i16;
 }
 
-/// What the viewer's club does to its side mid-minute (`FUN_006fb8f5`) —
-/// not ported; it only ever runs for a live match.
-fn live_adjust(_side: &mut Side, _what: i16) {}
+/// The association's national-side table (`FUN_006fb8f5`) overwriting a
+/// national side's tactic byte at +0x30 with the entry at its list place
+/// less one, from the exe table at DAT_01bdd6d8 — not ported; it only
+/// ever runs for a tie carrying that side.
+fn national_tactic(_side: &mut Side, _place: i16) {}
 
 /// Which side has the minute's set moment, `FUN_006f6857`: the record's
 /// chance slot at +0x450 (the pre-match walk leaves a plain fixture at 5)
@@ -641,9 +702,9 @@ fn morale_talk(m: &mut Match, clock: &Clock, random: &mut Random) {
             // runs FUN_006f6c20 and FUN_006fae69, re-draws the +0x444
             // strength difference (FUN_006f6c35) and the live news.
             let _ = (l, behind, which);
-        } else if m.live & (4 << which) == 0 {
-            // FUN_0042c574 seam: the club takes the talk itself when the
-            // match is not the viewer's live one.
+        } else if m.nat_bits & (4 << which) == 0 {
+            // FUN_0042c574 seam: the club takes the talk itself for a
+            // side standing in no regional selection.
         }
     }
 }
@@ -698,7 +759,7 @@ pub fn lead(m: &Match) -> i32 {
 fn time_out(matches: &mut [Match], live: bool) -> bool {
     let mut extra = false;
     for m in matches.iter_mut() {
-        if live || m.live == 0 {
+        if live || m.nat_bits == 0 {
             m.half_score = (((m.goals[0] as i32) << 4) as i8).wrapping_add(m.goals[1] as u16 as i8);
             if m.kind & MAY_EXTRA == 0 {
                 m.flags |= OVER;
@@ -719,7 +780,7 @@ fn time_out(matches: &mut [Match], live: bool) -> bool {
 fn after_extra_time(matches: &mut [Match], live: bool) -> bool {
     let mut pens = false;
     for m in matches.iter_mut() {
-        if (live || m.live == 0) && m.flags & OVER == 0 {
+        if (live || m.nat_bits == 0) && m.flags & OVER == 0 {
             if level(m) {
                 m.flags |= PENS;
                 pens = true;
@@ -736,8 +797,9 @@ mod tests {
     use super::*;
 
     /// A plain fixture: both sides alike, one leg, the stance that changes
-    /// nothing (index 4 sits at 100 %), the chance slot and tier a league
-    /// fixture stands at in the original's week (slot 5, tier 2, class 0).
+    /// nothing (index 4 sits at 100 %), the tier a league fixture stands
+    /// at in the original's week (tier 2, class 0), and everything the
+    /// pre-match walk lays: slot 5, added byte 5, staff on, no referee.
     fn fixture() -> Match {
         let side = Side {
             strengths: [100, 100, 100, 100, 100],
@@ -747,12 +809,9 @@ mod tests {
             tier: 2,
             ..Side::default()
         };
-        Match {
-            sides: [side, side],
-            ends_at: 0,
-            chance_slot: 5,
-            ..Match::default()
-        }
+        let mut m = Match { sides: [side, side], ends_at: 0, ..Match::default() };
+        pre_match(std::slice::from_mut(&mut m));
+        m
     }
 
     #[test]
@@ -761,8 +820,9 @@ mod tests {
         let mut r = Random::new(12345);
         play_matches(std::slice::from_mut(&mut m), false, &mut r);
         // the added time now sits behind the minutes' chance draws in the
-        // stream, so it is checked in its band, not by pre-drawing it
-        assert!((89..=91).contains(&m.ends_at), "{}", m.ends_at);
+        // stream, so it is checked in its band, not by pre-drawing it:
+        // the plain fixture's byte 5 gives selector one, 88 up
+        assert!((88..=90).contains(&m.ends_at), "{}", m.ends_at);
         assert_eq!(m.flags, MINUTE_UP | OVER);
         assert_eq!(m.goals, [0, 0]);
         assert_eq!(m.half_score, 0);
@@ -796,7 +856,7 @@ mod tests {
         let mut r = Random::new(99);
         play_matches(&mut ms, false, &mut r);
         assert!((87..=90).contains(&ms[0].ends_at), "{}", ms[0].ends_at);
-        assert!((89..=91).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
+        assert!((88..=90).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
         assert_eq!(ms[1].half_score, 0x32);
         assert_eq!(ms[1].score10, [3, 2]); // the goals stood before the walk
         assert_eq!(ms[1].score90, [3, 2]);
@@ -811,8 +871,8 @@ mod tests {
         play_matches(std::slice::from_mut(&mut m), false, &mut r);
         assert_eq!(m.flags, MINUTE_UP | EXTRA | PENS);
         // the extra time's fresh added-time draw, behind the chances,
-        // lands on 120 floored or one over
-        assert!((120..=121).contains(&m.ends_at), "{}", m.ends_at);
+        // adds the plain fixture's selector one to 120
+        assert!((118..=120).contains(&m.ends_at), "{}", m.ends_at);
     }
 
     #[test]
@@ -1151,5 +1211,51 @@ mod tests {
         assert_eq!(trailing(&m), 1);
         m.sides[1].rated[1] = 51; // now the sums carry the first side back
         assert_eq!(trailing(&m), 0);
+    }
+
+    #[test]
+    fn the_pre_match_walk_lays_the_plain_fixture() {
+        let mut row = [Match::default(), Match::default()];
+        pre_match(&mut row);
+        for (index, m) in row.iter().enumerate() {
+            assert_eq!(m.index, index as u16); // +0x468, the place in the row
+            assert_eq!(m.nat_bits, 0); // +0x474: no national side stands in
+            assert_eq!([m.sides[0].assistant, m.sides[1].assistant], [1, 1]);
+            assert_eq!(m.chance_slot, 5);
+            assert_eq!(m.added_draw, 5); // selector one for `added_time`
+            assert_eq!(m.referee, -1); // 0xffff: no referee was drawn
+        }
+    }
+
+    #[test]
+    fn the_pre_match_walk_draws_nothing() {
+        // the league day's stream of draws starts at its first minute
+        let mut row = [Match::default(), Match::default()];
+        let mut r = Random::new(9);
+        pre_match(&mut row);
+        assert_eq!(r, Random::new(9));
+    }
+
+    #[test]
+    fn a_quiet_day_leaves_the_national_tie_to_its_sums() {
+        // a tie carrying a national side is bulk-simulated at pre-match;
+        // an unwatched day's minute walk passes it by
+        let mut tie = fixture();
+        tie.nat_bits = 3;
+        let mut plain = fixture();
+        let mut ms = [tie, plain];
+        let mut r = Random::new(3);
+        play_matches(&mut ms, false, &mut r);
+        assert_eq!(ms[0].sides[0].fatigue, 0);
+        assert!(ms[1].sides[0].fatigue > 0);
+    }
+
+    #[test]
+    fn a_watched_day_runs_the_national_tie_by_the_minute() {
+        let mut tie = fixture();
+        tie.nat_bits = 1;
+        let mut r = Random::new(3);
+        play_matches(std::slice::from_mut(&mut tie), true, &mut r);
+        assert!(tie.sides[0].fatigue > 0);
     }
 }
