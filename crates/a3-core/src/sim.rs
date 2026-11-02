@@ -18,10 +18,11 @@
 //! piece and the big chance already land: the taker is picked out of the
 //! side's men (`FUN_005ded54`, `FUN_005def60`), and a goal moves the
 //! score and the minute's mood as the original writes it (`FUN_007410ca`,
-//! `FUN_007411ea`). A tie that extra time left level now settles on
-//! penalties too (`penalty_shootout`, `FUN_005ddea7` — the coin, the five
-//! takers a side draws out of its men, the sudden death and the kick's
-//! roll; the walk's penalty minute does not call it yet). The chances'
+//! `FUN_007411ea`). A tie that extra time left level settles on penalties
+//! too: the walk's penalty minute calls `penalty_shootout` (`FUN_005ddea7`
+//! — the coin, the five takers a side draws out of its men, the sudden
+//! death and the kick's roll) over the sides' men as the records keep
+//! them, and draws nothing without the save. The chances'
 //! rest lands as seams — the quality-one shot's own goal
 //! (`FUN_00659d2b` and its eleven siblings, the scorer pick
 //! `FUN_0077db3a`), the national-side path's set pieces (`FUN_006f543f`)
@@ -300,17 +301,20 @@ struct Clock {
 /// added time is drawn for every match of the row — the original draws
 /// from the one generator, so the order of these draws is part of the
 /// port. `records` is the save's, so the set pieces and big chances can
-/// find their takers among the sides' men; without it those events come
-/// to nothing, and pickers draw no number.
+/// find their takers among the sides' men and the penalty minute can
+/// stand its kicks on them; without it those events come to nothing and
+/// neither the pickers nor the kicks draw a number. `today` is the day
+/// the fixtures stand on; the shootout reads the men's years against it.
 pub fn play_matches(
     matches: &mut [Match],
     live: bool,
     records: Option<&Records>,
+    today: NaiveDate,
     random: &mut Random,
 ) {
     let mut clock = Clock::default();
     let mut minute = 1;
-    while minute < 0x31 && tick(matches, live, minute, &mut clock, records, random) {
+    while minute < 0x31 && tick(matches, live, minute, &mut clock, records, today, random) {
         minute += 1;
     }
     clock.minute = 45;
@@ -322,7 +326,7 @@ pub fn play_matches(
     }
     clock.half2 = 1;
     let mut minute = 46;
-    while minute < 99 && tick(matches, live, minute, &mut clock, records, random) {
+    while minute < 99 && tick(matches, live, minute, &mut clock, records, today, random) {
         minute += 1;
     }
     clock.minute = 90;
@@ -333,12 +337,12 @@ pub fn play_matches(
         clock.half2 = 0;
         clock.extra = 1;
         let mut minute = 90;
-        while minute < 0x7e && tick(matches, live, minute, &mut clock, records, random) {
+        while minute < 0x7e && tick(matches, live, minute, &mut clock, records, today, random) {
             minute += 1;
         }
         if after_extra_time(matches, live) {
             clock.extra = 2;
-            tick(matches, live, 0x78, &mut clock, records, random);
+            tick(matches, live, 0x78, &mut clock, records, today, random);
         }
     }
 }
@@ -402,6 +406,7 @@ fn tick(
     minute: i16,
     clock: &mut Clock,
     records: Option<&Records>,
+    today: NaiveDate,
     random: &mut Random,
 ) -> bool {
     if clock.extra == 0 && clock.half2 == 0 && minute < 0x78 {
@@ -464,7 +469,7 @@ fn tick(
     } else {
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & PENS != 0 {
-                penalties(m, clock, random);
+                penalties(m, records, today, random);
             }
         }
         false
@@ -1157,12 +1162,20 @@ fn morale_talk(m: &mut Match, clock: &Clock, random: &mut Random) {
     }
 }
 
-/// The walk's penalty minute for a match flagged `PENS`: the day loop
-/// settles such a tie on penalties (`penalty_shootout`, `FUN_005ddea7`,
-/// ported) with the record and the clock's day — the kicks read the
-/// men's ages, so the call waits with threading the day's date, the
-/// line-up's men and `matches::play_day` into the engine.
-fn penalties(_m: &mut Match, _clock: &Clock, _random: &mut Random) {}
+/// The walk's penalty minute for a match flagged `PENS` (`FUN_005ddea7`
+/// run right after the minute walk in the original's day loop): the tie
+/// settles on penalties over the sides' men as the save's records keep
+/// them — the kicks read the men's years, so the minute needs the day's
+/// date. Without the records the minute comes to nothing and draws no
+/// number, as the pickers' events do.
+fn penalties(m: &mut Match, records: Option<&Records>, today: NaiveDate, random: &mut Random) {
+    let Some(records) = records else {
+        return;
+    };
+    let att = side_men(m, 0, records);
+    let def = side_men(m, 1, records);
+    penalty_shootout(m, (&att, &def), today, random);
+}
 
 /// Whether an id is a national side (`FUN_00677428`) — not ported; every
 /// fixture runs the club path until it is.
@@ -1518,11 +1531,17 @@ mod tests {
         m
     }
 
+    /// The day the fixtures stand on; the shootout reads the men's years
+    /// against it, and the men the tests give them are years on it.
+    fn test_day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2000, 6, 15).unwrap()
+    }
+
     #[test]
     fn a_goalless_afternoon_ends_by_the_book() {
         let mut m = fixture();
         let mut r = Random::new(12345);
-        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
         // the added time now sits behind the minutes' chance draws in the
         // stream, so it is checked in its band, not by pre-drawing it:
         // the plain fixture's byte 5 gives selector one, 88 up
@@ -1558,7 +1577,7 @@ mod tests {
         b.added_draw = 2 << 2; // its band is the wider one, 87 up
         let mut ms = [b, a];
         let mut r = Random::new(99);
-        play_matches(&mut ms, false, None, &mut r);
+        play_matches(&mut ms, false, None, test_day(), &mut r);
         assert!((87..=90).contains(&ms[0].ends_at), "{}", ms[0].ends_at);
         assert!((88..=90).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
         assert_eq!(ms[1].half_score, 0x32);
@@ -1572,7 +1591,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 2];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | EXTRA | PENS);
         // the extra time's fresh added-time draw, behind the chances,
         // adds the plain fixture's selector one to 120
@@ -1585,7 +1604,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 1];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | OVER);
     }
 
@@ -1613,11 +1632,11 @@ mod tests {
         m.goals = [3, 2];
         let mut clock = Clock::default();
         let mut r = Random::new(1);
-        tick(std::slice::from_mut(&mut m), false, 10, &mut clock, None, &mut r);
+        tick(std::slice::from_mut(&mut m), false, 10, &mut clock, None, test_day(), &mut r);
         assert_eq!(m.score10, [0, 0]);
         // a half-2 mark is taken whatever the match's own state
         clock = Clock { half2: 1, minute: 90, ..Clock::default() };
-        tick(std::slice::from_mut(&mut m), false, 90, &mut clock, None, &mut r);
+        tick(std::slice::from_mut(&mut m), false, 90, &mut clock, None, test_day(), &mut r);
         assert_eq!(m.score90, [3, 2]);
     }
 
@@ -1950,7 +1969,7 @@ mod tests {
         let mut plain = fixture();
         let mut ms = [tie, plain];
         let mut r = Random::new(3);
-        play_matches(&mut ms, false, None, &mut r);
+        play_matches(&mut ms, false, None, test_day(), &mut r);
         assert_eq!(ms[0].sides[0].fatigue, 0);
         assert!(ms[1].sides[0].fatigue > 0);
     }
@@ -1960,7 +1979,7 @@ mod tests {
         let mut tie = fixture();
         tie.nat_bits = 1;
         let mut r = Random::new(3);
-        play_matches(std::slice::from_mut(&mut tie), true, None, &mut r);
+        play_matches(std::slice::from_mut(&mut tie), true, None, test_day(), &mut r);
         assert!(tie.sides[0].fatigue > 0);
     }
 
@@ -2568,5 +2587,52 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
         penalty_shootout(&mut m, (&att, &def), today, &mut Random::new(7));
         assert!(m.goals[0] != m.goals[1], "{:?}", m.goals);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_walks_penalty_minute_settles_the_saved_tie() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // the first German club's eleven on both pitches, a level tie
+        // after extra time: the walk's penalty minute now calls the
+        // shootout itself, and the saved men's ages make the kicks dice
+        // from the first — the tie comes out decided
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 0];
+        m.goals = [2, 2];
+        m.flags = PENS;
+        let mut clock = Clock { extra: 2, minute: 0x78, ..Clock::default() };
+        let mut r = Random::new(7);
+        let run = tick(
+            std::slice::from_mut(&mut m),
+            false,
+            0x78,
+            &mut clock,
+            Some(&records),
+            test_day(),
+            &mut r,
+        );
+        assert!(!run, "the penalty minute is the walk's last word");
+        assert_ne!(m.goals[0], m.goals[1], "{:?}", m.goals);
+        assert_ne!(r, Random::new(7), "the minute rolled the kicks' dice");
+    }
+
+    #[test]
+    fn the_penalty_minute_draws_nothing_without_the_save() {
+        // the same minute over a row the records cannot name: as the
+        // pickers' events come to nothing, so do the kicks — no number
+        // drawn, the tie left level for the day's own settling
+        let mut m = fixture();
+        m.goals = [2, 2];
+        m.flags = PENS;
+        let mut clock = Clock { extra: 2, minute: 0x78, ..Clock::default() };
+        let mut r = Random::new(4);
+        let run =
+            tick(std::slice::from_mut(&mut m), false, 0x78, &mut clock, None, test_day(), &mut r);
+        assert!(!run);
+        assert_eq!(m.goals, [2, 2]);
+        assert_eq!(r, Random::new(4), "the empty minute draws no coin");
     }
 }
