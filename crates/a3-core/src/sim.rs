@@ -14,20 +14,27 @@
 //! club minute then runs its chance frame (`FUN_006f6007`): the chooser of
 //! the minute (`FUN_006f6857`), the two sides' chance rolls out of their
 //! rated attack pair, the shot's quality (`FUN_0040b8c9`) and the trailing
-//! side's morale talk (`FUN_0041321d`). The chances land as seams — the
-//! events that turn a chance into a goal or an event (`FUN_00659945` and
-//! its eleven siblings), the national-side path's set pieces
+//! side's morale talk (`FUN_0041321d`). From the frame's kinds the set
+//! piece and the big chance already land: the taker is picked out of the
+//! side's men (`FUN_005ded54`, `FUN_005def60`), and a goal moves the
+//! score and the minute's mood as the original writes it (`FUN_007410ca`,
+//! `FUN_007411ea`). The chances' rest lands as seams — the quality-one
+//! shot's own goal (`FUN_00659d2b` and its eleven siblings, the scorer
+//! pick `FUN_0077db3a`), the national-side path's set pieces
 //! (`FUN_006f543f`) and open play (`FUN_006f562b`), the talk's staff
-//! question (`FUN_004134d0`) and the penalty shootout (`FUN_005ddea7`) are
-//! the next pieces, called from the places the original calls them. The
+//! question (`FUN_004134d0`) and the penalty shootout (`FUN_005ddea7`) —
+//! called from the places the original calls them. The
 //! original's presentation (the 3D match, its commentary and clock
 //! displays: `FUN_0073f1a6` and the `DAT_01bad050`/`01bad060` displays) has
 //! no replica and is left out.
 //!
-//! Not wired into `matches::play_day` yet: until the events land, this
-//! would only play goalless games.
+//! Not wired into `matches::play_day` yet: the quality-one shot and the
+//! scorer's books still wait, so these games would end thin beside the
+//! stand-in's.
 
 use crate::random::Random;
+use crate::records::{Player, Records};
+use crate::{statistics, world};
 
 /// The record's flag byte at +0x1d.
 /// The match is over; its score stands and the minute walk passes it by.
@@ -62,6 +69,13 @@ const MENTAL: [i32; 5] = [0, 2, 1, -2, -3];
 /// support by a fifth (`FUN_006f9788`); its name stays tentative until the
 /// screen that sets it is ported.
 const PRESS_BIT: u16 = 0x10;
+/// The good word's (record 0x1c4) bit worth a hundred to the big chance's
+/// taker (`FUN_005ded54`); its meaning waits with the screen that hands
+/// out abilities.
+const BIG_WORD: u16 = 0x10;
+/// The free-kick ability (`duties::FREE_KICKS`) worth the same to the set
+/// piece's taker (`FUN_005def60`).
+const FREE_KICKS: u16 = 0x20;
 
 /// One side of a match: the record's side block at +0x5c (first side) or
 /// +0x250 (second). The offsets in the comments are from the block's start.
@@ -71,6 +85,10 @@ pub struct Side {
     /// The engine names them only by these offsets; strength 4 feeds attack
     /// and strength 3 support, and 1 and 5 trade under a tilted tactic.
     pub strengths: [i16; 5],
+    /// +0x0a (+0x66/+0x25a): the standing a goal counts against the foe's,
+    /// a sixth of the two apart added to the minute's mood (`FUN_007410ca`);
+    /// no ported walk fills it, so the replica keeps it at nought.
+    pub nerve: i16,
     /// +0x0c: the mood of the minute, `minute_play` sinks it when the side
     /// trails through the half.
     pub morale: i16,
@@ -209,11 +227,18 @@ struct Clock {
 /// All the day's matches walk together, one minute at a time, and the
 /// added time is drawn for every match of the row — the original draws
 /// from the one generator, so the order of these draws is part of the
-/// port.
-pub fn play_matches(matches: &mut [Match], live: bool, random: &mut Random) {
+/// port. `records` is the save's, so the set pieces and big chances can
+/// find their takers among the sides' men; without it those events come
+/// to nothing, and pickers draw no number.
+pub fn play_matches(
+    matches: &mut [Match],
+    live: bool,
+    records: Option<&Records>,
+    random: &mut Random,
+) {
     let mut clock = Clock::default();
     let mut minute = 1;
-    while minute < 0x31 && tick(matches, live, minute, &mut clock, random) {
+    while minute < 0x31 && tick(matches, live, minute, &mut clock, records, random) {
         minute += 1;
     }
     clock.minute = 45;
@@ -225,7 +250,7 @@ pub fn play_matches(matches: &mut [Match], live: bool, random: &mut Random) {
     }
     clock.half2 = 1;
     let mut minute = 46;
-    while minute < 99 && tick(matches, live, minute, &mut clock, random) {
+    while minute < 99 && tick(matches, live, minute, &mut clock, records, random) {
         minute += 1;
     }
     clock.minute = 90;
@@ -236,12 +261,12 @@ pub fn play_matches(matches: &mut [Match], live: bool, random: &mut Random) {
         clock.half2 = 0;
         clock.extra = 1;
         let mut minute = 90;
-        while minute < 0x7e && tick(matches, live, minute, &mut clock, random) {
+        while minute < 0x7e && tick(matches, live, minute, &mut clock, records, random) {
             minute += 1;
         }
         if after_extra_time(matches, live) {
             clock.extra = 2;
-            tick(matches, live, 0x78, &mut clock, random);
+            tick(matches, live, 0x78, &mut clock, records, random);
         }
     }
 }
@@ -294,7 +319,14 @@ pub fn pre_match(row: &mut [Match]) {
 /// One minute of the day's matches, `FUN_006f2d4f` without its
 /// presentation; true while some open match still runs before its end of
 /// half. The display clocks (+0x1c, +0x0c) are left out.
-fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, random: &mut Random) -> bool {
+fn tick(
+    matches: &mut [Match],
+    live: bool,
+    minute: i16,
+    clock: &mut Clock,
+    records: Option<&Records>,
+    random: &mut Random,
+) -> bool {
     if clock.extra == 0 && clock.half2 == 0 && minute < 0x78 {
         clock.minute = minute;
         let mut run = false;
@@ -303,7 +335,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
                 if minute == 10 {
                     m.score10 = [m.goals[0] as u8, m.goals[1] as u8];
                 }
-                minute_play(m, clock, random);
+                minute_play(m, clock, records, random);
                 if minute < m.ends_at.max(45) {
                     run = true;
                 } else {
@@ -318,7 +350,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         for m in matches.iter_mut() {
             if live || m.nat_bits == 0 {
                 if m.flags & FINISHED == 0 {
-                    minute_play(m, clock, random);
+                    minute_play(m, clock, records, random);
                     if minute < m.ends_at.max(90) {
                         run = true;
                     } else {
@@ -343,7 +375,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
         let mut run = false;
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & EXTRA != 0 {
-                minute_play(m, clock, random);
+                minute_play(m, clock, records, random);
                 if minute < m.ends_at.max(120) {
                     run = true;
                 } else {
@@ -366,7 +398,7 @@ fn tick(matches: &mut [Match], live: bool, minute: i16, clock: &mut Clock, rando
 /// both sides' rated strengths come out of their strengths, stance, tactic,
 /// mood and the foe's form, fatigue accumulates — and what the minute is
 /// worth in chances follows.
-fn minute_play(m: &mut Match, clock: &Clock, random: &mut Random) {
+fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
     if m.flags & (MINUTE_UP | OVER) != 0 {
         return;
     }
@@ -465,7 +497,7 @@ fn minute_play(m: &mut Match, clock: &Clock, random: &mut Random) {
     // walk), the set pieces (`FUN_006f543f`) and, when those come to
     // nothing, open play (`FUN_006f562b`) — that path is a later piece.
     if !is_national(m.ids[0]) && !is_national(m.ids[2]) {
-        chance_minute(m, clock, random);
+        chance_minute(m, clock, records, random);
         morale_talk(m, clock, random);
     } else {
         // FUN_0063dd1c()/FUN_0063df96() pair the clubs, FUN_00658b30(club,
@@ -550,7 +582,7 @@ fn chance_chooser(m: &Match, random: &mut Random) -> u8 {
 /// first side's attack an eighth. A roll under the side's share opens the
 /// chance — its shape by the minute kind and the shot's quality — and the
 /// frame closes with the bookings the last minute left.
-fn chance_minute(m: &mut Match, clock: &Clock, random: &mut Random) {
+fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
     // The chooser's set moment becomes an event at the match's club:
     // FUN_0065b0b5 when it picked the first side, FUN_0065bd27 the second
     // (each through the club slot FUN_0063dd1c) — the events piece.
@@ -578,8 +610,8 @@ fn chance_minute(m: &mut Match, clock: &Clock, random: &mut Random) {
         attack *= 1.08;
     }
     let defend = w[1][0] + w[1][1];
-    chance_for(m, 0, attack, random);
-    chance_for(m, 1, defend, random);
+    chance_for(m, 0, attack, records, random);
+    chance_for(m, 1, defend, records, random);
     // What the last minute's booking left (`FUN_00413115`): the match-day
     // state takes it (`FUN_00412cf2` per side, its bit +0x80 saying
     // red), then both marks clear; `FUN_0070c1a9` keeps the live clocks —
@@ -592,9 +624,16 @@ fn chance_minute(m: &mut Match, clock: &Clock, random: &mut Random) {
 /// past it (or past fifteen goals for the side) no chance, though the
 /// roll's own marks 699 and 900..903 set events off (seams). Inside, the
 /// minute kind under 90 is a plain chance — the quality-one shot through
-/// `FUN_00659d2b` counts and every imperfect shot counts — 90..97 an
-/// `FUN_00659b85` shape, and from 98 the full `FUN_00659945`.
-fn chance_for(m: &mut Match, which: usize, weight: f32, random: &mut Random) {
+/// `FUN_00659d2b` counts and every imperfect shot counts — 90..97 sends
+/// the `FUN_00659b85` set piece and from 98 the big chance `FUN_00659945`
+/// runs, each with its taker picked out of the saved records.
+fn chance_for(
+    m: &mut Match,
+    which: usize,
+    weight: f32,
+    records: Option<&Records>,
+    random: &mut Random,
+) {
     let roll = random.below(1000);
     if weight <= roll as f32 || 15 < m.goals[which] {
         // roll 699: FUN_0065b894; 899 < roll < 904: FUN_0065cd8a (side
@@ -605,16 +644,135 @@ fn chance_for(m: &mut Match, which: usize, weight: f32, random: &mut Random) {
     let quality = shot_quality(m, which, random);
     if kind < 90 {
         if quality == 1 {
-            // FUN_00659d2b — the shot on goal: the events piece.
+            // FUN_00659d2b — the shot on goal; its scorer pick FUN_0077db3a
+            // draws the eleven's weights: the events piece.
             m.sides[which].chances += 1;
         } else if quality < 4 {
             m.sides[which].chances += 1;
         }
     } else if kind < 98 {
-        // FUN_00659b85(m, quality, clock) — seam.
+        set_piece(m, which, quality, records.and_then(|r| set_taker(&side_men(m, which, r))));
     } else {
-        // FUN_00659945(m, clock) — seam.
+        big_chance(m, which, records.and_then(|r| big_taker(&side_men(m, which, r))), random);
     }
+}
+
+/// The set piece of a kind 90..97 chance (`FUN_00659b85`, and side two's
+/// `FUN_0065a23a`): with its taker found the side's chance is counted, and
+/// a perfect shot — quality 1, drawn back in the frame — is a goal; the
+/// event itself draws nothing. The shot's books (`FUN_00740a07`,
+/// `FUN_00740a66`) and the scorer's (`FUN_00740aad`), the post-goal talk
+/// (`FUN_0065e118`), the crowd's shout (`FUN_0069e224`, `FUN_0069e2b9`,
+/// and `FUN_004fc297` for a national side) and the club's own counters at
+/// +0xdeb/+0xdee are seams; none of them draws either. A human side's
+/// taker is the manager's designated man, listed at his club — the
+/// original asks `FUN_0069b17b`/`FUN_006dc332`/`FUN_0069b268`; that waits
+/// with the duties.
+fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
+    if taker.is_none() {
+        return;
+    }
+    if quality == 1 {
+        score(m, which);
+    }
+    m.sides[which].chances += 1;
+}
+
+/// The big chance from kind 98 (`FUN_00659945`, side two's `FUN_00659ff9`):
+/// with its taker found, one hundred-wide roll; under 0x50 the first
+/// side's chance is a goal, under 0x46 only the second's — the visitor's
+/// big chance lies more often. A chance is counted either way; the shot's
+/// and miss's books (`FUN_00740996`, `FUN_00740a66`, `FUN_00740f33`) and
+/// the foe's assist man, read out of the defending club's eleven
+/// (`FUN_00740fb6`, `FUN_00741038`), are seams. As in the set piece the
+/// human side's designated taker waits.
+fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Random) {
+    if taker.is_none() {
+        return;
+    }
+    if (random.below(100) as i32) < if which == 0 { 0x50 } else { 0x46 } {
+        score(m, which);
+    }
+    m.sides[which].chances += 1;
+}
+
+/// The goal as the match record takes it (`FUN_007410ca`, mirrored by
+/// `FUN_007411ea`): the side's count at +0x0e/+0x10, and a sixth of the
+/// two sides' standing at +0x66/+0x25a apart added to the minute's mood.
+/// Who fills that standing is not ported, so it holds at nought and the
+/// mood stands; the scorer's books and the clubs' counters wait.
+fn score(m: &mut Match, which: usize) {
+    let drift = (m.sides[which].nerve - m.sides[1 - which].nerve) / 6;
+    m.sides[which].morale += drift as i16;
+    m.goals[which] += 1;
+}
+
+/// The side's men on the pitch, as records: its club's squad through the
+/// replica's eleven (`crate::matches::eleven` — the original reads the
+/// manager's saved formation from the club at +0xa9a, which the replica
+/// does not keep; the deviation matches the stand-in's).
+fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
+    let at = which * 2;
+    let squad = records.team(m.ids[at], m.ids[at + 1]).map(|t| t.players()).unwrap_or_default();
+    crate::matches::eleven(&squad, records)
+        .into_iter()
+        .filter_map(|id| records.player(id))
+        .collect()
+}
+
+/// The big chance's man (`FUN_005ded54`, on an AI club): the highest
+/// rated of the eleven — strength ten times over plus his form today
+/// (`statistics::form_today`, the very `FUN_006ff037` the lists show) —
+/// the keeper half so fit, the good word's bit 0x10 a hundred better, and
+/// a marked weakness in the bad word leaving a man only his doubled
+/// strength. Nobody above nought found means no taker at all; the
+/// original scans the club's saved eleven at +0xa9a and its keeper byte.
+fn big_taker(men: &[&Player]) -> Option<u16> {
+    let mut best = -1i32;
+    let mut pick = 0;
+    for &p in men {
+        let worth = i32::from(p.strength()) * 10 + statistics::form_today(p);
+        let rating = if p.positions()[0] == world::GOALKEEPER {
+            worth / 2
+        } else if p.good() & BIG_WORD != 0 {
+            worth + 100
+        } else if p.bad() != 0 {
+            i32::from(p.strength()) << 1
+        } else {
+            worth
+        };
+        if best < rating {
+            best = rating;
+            pick = p.id();
+        }
+    }
+    (pick != 0).then_some(pick)
+}
+
+/// The set piece's man (`FUN_005def60`, on an AI club): the same rating —
+/// free kicks, the good word's bit 0x20, a hundred better — but the
+/// keeper stands unrated and is chosen only when nothing else beats him.
+/// No weakness is marked down here.
+fn set_taker(men: &[&Player]) -> Option<u16> {
+    let mut best = -1i32;
+    let mut pick = 0;
+    for &p in men {
+        let rating = if p.positions()[0] == world::GOALKEEPER {
+            0
+        } else {
+            let worth = i32::from(p.strength()) * 10 + statistics::form_today(p);
+            if p.good() & FREE_KICKS != 0 {
+                worth + 100
+            } else {
+                worth
+            }
+        };
+        if best < rating {
+            best = rating;
+            pick = p.id();
+        }
+    }
+    (pick != 0).then_some(pick)
 }
 
 /// How good the chance's shot is (`FUN_0040b8c9`): the sides' attitudes
@@ -818,7 +976,7 @@ mod tests {
     fn a_goalless_afternoon_ends_by_the_book() {
         let mut m = fixture();
         let mut r = Random::new(12345);
-        play_matches(std::slice::from_mut(&mut m), false, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
         // the added time now sits behind the minutes' chance draws in the
         // stream, so it is checked in its band, not by pre-drawing it:
         // the plain fixture's byte 5 gives selector one, 88 up
@@ -854,7 +1012,7 @@ mod tests {
         b.added_draw = 2 << 2; // its band is the wider one, 87 up
         let mut ms = [b, a];
         let mut r = Random::new(99);
-        play_matches(&mut ms, false, &mut r);
+        play_matches(&mut ms, false, None, &mut r);
         assert!((87..=90).contains(&ms[0].ends_at), "{}", ms[0].ends_at);
         assert!((88..=90).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
         assert_eq!(ms[1].half_score, 0x32);
@@ -868,7 +1026,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 2];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
         assert_eq!(m.flags, MINUTE_UP | EXTRA | PENS);
         // the extra time's fresh added-time draw, behind the chances,
         // adds the plain fixture's selector one to 120
@@ -881,7 +1039,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 1];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, &mut r);
         assert_eq!(m.flags, MINUTE_UP | OVER);
     }
 
@@ -909,11 +1067,11 @@ mod tests {
         m.goals = [3, 2];
         let mut clock = Clock::default();
         let mut r = Random::new(1);
-        tick(std::slice::from_mut(&mut m), false, 10, &mut clock, &mut r);
+        tick(std::slice::from_mut(&mut m), false, 10, &mut clock, None, &mut r);
         assert_eq!(m.score10, [0, 0]);
         // a half-2 mark is taken whatever the match's own state
         clock = Clock { half2: 1, minute: 90, ..Clock::default() };
-        tick(std::slice::from_mut(&mut m), false, 90, &mut clock, &mut r);
+        tick(std::slice::from_mut(&mut m), false, 90, &mut clock, None, &mut r);
         assert_eq!(m.score90, [3, 2]);
     }
 
@@ -923,11 +1081,11 @@ mod tests {
         m.sides[0].strengths = [100, 200, 300, 400, 500];
         let mut clock = Clock::default();
         let mut r = Random::new(1);
-        minute_play(&mut m, &clock, &mut r);
+        minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated, [100, 300, 300, 400, 500]);
         m.sides[0].stance = 0; // 110 %
         m.sides[0].tilt = 0; // all the way forward
-        minute_play(&mut m, &clock, &mut r);
+        minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated, [110, 451, 330, 440, 418]);
     }
 
@@ -938,17 +1096,17 @@ mod tests {
         m.form = -20;
         let mut clock = Clock::default();
         let mut r = Random::new(1);
-        minute_play(&mut m, &clock, &mut r);
+        minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated[3], 132); // (100 + 200/20) = 110, plus 20 % form
         assert_eq!(m.sides[0].rated[4], 120); // 100 plus the same 20 %
         assert_eq!(m.sides[1].rated[3], 100); // side two feels no negative form
         m.form = 20;
-        minute_play(&mut m, &clock, &mut r);
+        minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated[3], 110); // and no positive form either
         assert_eq!(m.sides[1].rated[3], 120);
         // a mental of −3 cuts the attack pair back a further 3 %
         m.sides[1].mental = 4;
-        minute_play(&mut m, &clock, &mut r);
+        minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[1].rated[3], 120 - 3);
         assert_eq!(m.sides[1].rated[4], 117); // its hold, form-lifted too
     }
@@ -958,17 +1116,17 @@ mod tests {
         let mut m = fixture();
         m.advantage = -50;
         let mut r = Random::new(1);
-        minute_play(&mut m, &Clock { minute: 30, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 30, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].morale, 0);
-        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].morale, -15);
         m.flags = EXTRA;
-        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].morale, -15 - 8); // (−50 · 15) / 90
         // and the other side when it lies behind
         let mut m = fixture();
         m.advantage = 50;
-        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 100, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[1].morale, -15);
     }
 
@@ -976,20 +1134,21 @@ mod tests {
     fn fatigue_accrues_until_the_half_runs_out() {
         let mut m = fixture();
         let mut r = Random::new(1);
-        minute_play(&mut m, &Clock { minute: 45, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 45, ..Clock::default() }, None, &mut r);
         assert_eq!([m.sides[0].fatigue, m.sides[1].fatigue], [100, 100]);
-        minute_play(&mut m, &Clock { minute: 46, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 46, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].fatigue, 100);
         minute_play(
             &mut m,
             &Clock { minute: 90, half2: 1, ..Clock::default() },
+            None,
             &mut r,
         );
         assert_eq!(m.sides[0].fatigue, 200);
-        minute_play(&mut m, &Clock { minute: 91, half2: 1, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 91, half2: 1, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].fatigue, 200);
         m.flags = EXTRA;
-        minute_play(&mut m, &Clock { minute: 120, half2: 1, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 120, half2: 1, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].fatigue, 300);
     }
 
@@ -1000,7 +1159,7 @@ mod tests {
         m.sides[0].press_to = 30;
         m.sides[0].press_from = 10;
         let mut r = Random::new(1);
-        minute_play(&mut m, &Clock { minute: 20, ..Clock::default() }, &mut r);
+        minute_play(&mut m, &Clock { minute: 20, ..Clock::default() }, None, &mut r);
         assert_eq!(m.sides[0].rated[3], 120);
         assert_eq!(m.sides[0].rated[2], 120);
         assert_eq!(m.sides[0].pressed, 1);
@@ -1009,7 +1168,7 @@ mod tests {
         m2.sides[0].style = PRESS_BIT;
         m2.sides[0].press_to = 30;
         m2.sides[0].press_from = 10;
-        minute_play(&mut m2, &Clock { minute: 40, ..Clock::default() }, &mut r);
+        minute_play(&mut m2, &Clock { minute: 40, ..Clock::default() }, None, &mut r);
         assert_eq!(m2.sides[0].rated[3], 100);
         assert_eq!(m2.sides[0].pressed, 0);
     }
@@ -1019,12 +1178,12 @@ mod tests {
         let mut m = fixture();
         m.sides[0].style = 0x380;
         let mut r = Random::new(1);
-        minute_play(&mut m, &Clock::default(), &mut r);
+        minute_play(&mut m, &Clock::default(), None, &mut r);
         assert_eq!(m.sides[0].rated[3], 80);
         assert_eq!(m.sides[1].rated[3], 85);
         let mut m = fixture();
         m.sides[1].style = 0x300;
-        minute_play(&mut m, &Clock::default(), &mut r);
+        minute_play(&mut m, &Clock::default(), None, &mut r);
         assert_eq!(m.sides[0].rated[3], 120);
         assert_eq!(m.sides[1].rated[3], 115);
     }
@@ -1035,7 +1194,7 @@ mod tests {
         m.sides[0].strengths = [0, 1000, 0, 0, 0];
         m.sides[0].tilt = 0;
         let mut r = Random::new(1);
-        minute_play(&mut m, &Clock::default(), &mut r);
+        minute_play(&mut m, &Clock::default(), None, &mut r);
         assert_eq!(m.sides[0].rated[3], 10);
         assert_eq!(m.sides[0].rated[4], 3);
     }
@@ -1084,7 +1243,7 @@ mod tests {
         expect.below(1000);
         expect.below(1000);
         let mut r = Random::new(771);
-        chance_minute(&mut m, &Clock::default(), &mut r);
+        chance_minute(&mut m, &Clock::default(), None, &mut r);
         assert_eq!(r, expect, "the chooser's three draws, then one roll each");
         assert_eq!(m.goals, [0, 0]);
         assert_eq!(m.sides[0].chances, 0);
@@ -1097,7 +1256,7 @@ mod tests {
         m.sides[1].rated[3] = 92; // the four sum to 184, scaled onto 92
         let mut r = Random::new(7);
         for _ in 0..60 {
-            chance_minute(&mut m, &Clock { minute: 30, ..Clock::default() }, &mut r);
+            chance_minute(&mut m, &Clock { minute: 30, ..Clock::default() }, None, &mut r);
         }
         assert_eq!(m.goals, [0, 0]); // FUN_00659d2b and siblings turn counts into goals
         assert!(0 < m.sides[0].chances + m.sides[1].chances);
@@ -1135,10 +1294,10 @@ mod tests {
         host.home_nation = 7;
         host.sides[0].rated[3] = 92;
         let mut rp = Random::new(seed);
-        chance_minute(&mut plain, &Clock::default(), &mut rp);
+        chance_minute(&mut plain, &Clock::default(), None, &mut rp);
         assert_eq!(rp, expect, "without the ground the frame is five draws");
         let mut rh = Random::new(seed);
-        chance_minute(&mut host, &Clock::default(), &mut rh);
+        chance_minute(&mut host, &Clock::default(), None, &mut rh);
         assert_ne!(rh, expect, "the host's roll opened a chance");
     }
 
@@ -1245,7 +1404,7 @@ mod tests {
         let mut plain = fixture();
         let mut ms = [tie, plain];
         let mut r = Random::new(3);
-        play_matches(&mut ms, false, &mut r);
+        play_matches(&mut ms, false, None, &mut r);
         assert_eq!(ms[0].sides[0].fatigue, 0);
         assert!(ms[1].sides[0].fatigue > 0);
     }
@@ -1255,7 +1414,107 @@ mod tests {
         let mut tie = fixture();
         tie.nat_bits = 1;
         let mut r = Random::new(3);
-        play_matches(std::slice::from_mut(&mut tie), true, &mut r);
+        play_matches(std::slice::from_mut(&mut tie), true, None, &mut r);
         assert!(tie.sides[0].fatigue > 0);
+    }
+
+    /// A man of the eleven as the record keeps him, with only what the
+    /// taker's rating reads: strength (1 to 12), main position, the good
+    /// and bad words, and his mood — the rest naught, which stands for
+    /// fit and fresh, form then half his mood.
+    fn squad_player(id: u16, strength: u8, position: u8, good: u16, bad: u16, mood: i8) -> Player {
+        let mut p = Player::new(&vec![0; Player::SIZE]).unwrap();
+        p.set_id(id);
+        p.set_strength(strength);
+        p.set_positions([position, 0, 0]);
+        p.set_good(good);
+        p.set_bad(bad);
+        p.set_mood(mood);
+        p
+    }
+
+    #[test]
+    fn the_big_chance_takes_its_man_from_the_eleven() {
+        // strength ten times over plus the form today (mood 10 stands at
+        // form 5): 75 over 55, the keeper's 105 halved to 52
+        let strong = squad_player(1, 7, 4, 0, 0, 10);
+        let small = squad_player(2, 5, 6, 0, 0, 10);
+        let keeper = squad_player(3, 10, world::GOALKEEPER, 0, 0, 10);
+        assert_eq!(big_taker(&[&strong, &small, &keeper]), Some(1));
+        // the good word's bit 0x10 lifts a lesser man over all of them
+        let willing = squad_player(4, 4, 7, BIG_WORD, 0, 10);
+        assert_eq!(big_taker(&[&strong, &small, &keeper, &willing]), Some(4));
+        // a marked weakness leaves the strong man his doubled strength
+        let shaky = squad_player(5, 9, 8, 0, 0x20, 10);
+        assert_eq!(big_taker(&[&shaky, &small]), Some(2));
+        // nobody above nought rated means no taker at all
+        let spent = squad_player(6, 0, 4, 0, 0, -100);
+        let keeper2 = squad_player(7, 0, world::GOALKEEPER, 0, 0, -100);
+        assert_eq!(big_taker(&[&spent, &keeper2]), None);
+    }
+
+    #[test]
+    fn the_set_piece_takes_its_free_kick_man() {
+        let keeper = squad_player(1, 10, world::GOALKEEPER, 0, 0, 10);
+        let field = squad_player(2, 1, 4, 0, 0, 10);
+        assert_eq!(set_taker(&[&keeper, &field]), Some(2));
+        // with nothing else standing, the keeper takes it after all
+        assert_eq!(set_taker(std::slice::from_ref(&&keeper)), Some(1));
+        // free kicks lift the weaker man, and no weakness is marked down
+        let kicker = squad_player(3, 5, 8, FREE_KICKS, 0, 10);
+        let shaky = squad_player(4, 9, 6, 0, 0x20, 10);
+        assert_eq!(set_taker(&[&kicker, &shaky]), Some(3));
+        assert_eq!(set_taker(&[&shaky, &field]), Some(4));
+    }
+
+    #[test]
+    fn the_big_chance_lies_to_the_second_side_more() {
+        // the first side converts below 0x50, the second only below 0x46:
+        // a seed whose first hundred-wide draw sits between the two
+        let seed = (1u64..)
+            .find(|&s| {
+                let d = Random::new(s).below(100);
+                0x46 <= d && d < 0x50
+            })
+            .unwrap();
+        let mut m = fixture();
+        let mut r = Random::new(seed);
+        big_chance(&mut m, 0, Some(3), &mut r);
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [1, 1]);
+        let mut m = fixture();
+        let mut r = Random::new(seed);
+        big_chance(&mut m, 1, Some(3), &mut r);
+        assert_eq!([m.goals[1], m.sides[1].chances.into()], [0, 1]);
+        // a chance whose taker is missing comes to nothing — and draws
+        // nothing, so the day's stream is untouched
+        let mut m = fixture();
+        let mut r = Random::new(seed);
+        big_chance(&mut m, 0, None, &mut r);
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 0]);
+        assert_eq!(r, Random::new(seed));
+    }
+
+    #[test]
+    fn the_set_piece_scores_only_on_a_perfect_shot() {
+        let mut m = fixture();
+        set_piece(&mut m, 1, 1, Some(4));
+        assert_eq!([m.goals[1], m.sides[1].chances.into()], [1, 1]);
+        let mut m = fixture();
+        set_piece(&mut m, 0, 2, Some(4));
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
+        let mut m = fixture();
+        set_piece(&mut m, 0, 1, None);
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 0]);
+    }
+
+    #[test]
+    fn a_goal_bends_the_mood_by_the_sides_apart() {
+        let mut m = fixture();
+        m.sides[0].nerve = 30;
+        m.sides[1].nerve = 12;
+        score(&mut m, 0);
+        assert_eq!([m.goals[0], m.sides[0].morale], [1, 3]);
+        score(&mut m, 1);
+        assert_eq!([m.goals[1], m.sides[1].morale], [1, -3]);
     }
 }

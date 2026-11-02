@@ -951,7 +951,7 @@ fn available(records: &Records, id: u16) -> bool {
 /// and the ten strongest field players beside him. The original follows
 /// the manager's formation; the replica has none of his yet and takes
 /// the strongest.
-fn eleven(squad: &[u16], records: &Records) -> Vec<u16> {
+pub(crate) fn eleven(squad: &[u16], records: &Records) -> Vec<u16> {
     let strength = |id: u16| u32::from(records.player(id).map_or(0, |p| p.strength()));
     let mut fit: Vec<u16> = squad.iter().copied().filter(|&id| available(records, id)).collect();
     fit.sort_by_key(|&id| std::cmp::Reverse(strength(id)));
