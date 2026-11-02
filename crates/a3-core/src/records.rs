@@ -311,6 +311,11 @@ record! {
     0x25b => match_bits, set_match_bits: u8;
     /// His grade in the last match, twice it, in the low four bits.
     0x273 => grade, set_grade: u8;
+    /// A count the scorer's own counters `FUN_00740aad` lift before any
+    /// gate — once for every shot that named its man, goals and the wide
+    /// or saved ones alike, own goals and name-less shots aside (meaning
+    /// not traced).
+    0x277 => scorer_marks, set_scorer_marks: u8;
     /// His partner: her kind in the low two bits (0 none, girlfriend,
     /// fiancée, wife), how they stand in bits 2 to 4.
     0x27e => partner, set_partner: u8;
