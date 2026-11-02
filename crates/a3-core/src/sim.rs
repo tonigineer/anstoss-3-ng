@@ -201,10 +201,10 @@ pub struct Side {
     /// +0xf6 (record +0x152/+0x346): set while the press window is open.
     pub pressed: u16,
     /// +0xfa (record +0x156/+0x34a): the side's entered men, short ids.
-    /// Nothing in the corpus writes these slots — they arrive with the
-    /// line-up, through the record copy on save and load (runtime +0x8e)
-    /// or the pre-match squads in `FUN_0078b26c`; until that fill is
-    /// ported the ledger below stays empty and `book_event` marks no man.
+    /// The original copies these from its line-up (runtime +0x8e) or the
+    /// pre-match squads in `FUN_0078b26c`; the replica stands its eleven
+    /// in when a walk with the records starts (`fill_entries`), the seven
+    /// reserve places left nought with the stand-in.
     pub entries: [u16; LEDGER_SLOTS],
     /// +0x1c0 (record +0x21c/+0x410): one ledger byte per entered man,
     /// read together with `entries` by `book_event`, `own_goal_mark` and
@@ -303,7 +303,9 @@ struct Clock {
 /// port. `records` is the save's, so the set pieces and big chances can
 /// find their takers among the sides' men and the penalty minute can
 /// stand its kicks on them; without it those events come to nothing and
-/// neither the pickers nor the kicks draw a number. `today` is the day
+/// neither the pickers nor the kicks draw a number. With them the walk
+/// also enters both sides' men in the record's slots before its first
+/// minute, so the events' books find their places. `today` is the day
 /// the fixtures stand on; the shootout reads the men's years against it.
 pub fn play_matches(
     matches: &mut [Match],
@@ -313,6 +315,13 @@ pub fn play_matches(
     random: &mut Random,
 ) {
     let mut clock = Clock::default();
+    if let Some(records) = records {
+        for m in matches.iter_mut() {
+            for which in 0..2 {
+                fill_entries(m, which, records);
+            }
+        }
+    }
     let mut minute = 1;
     while minute < 0x31 && tick(matches, live, minute, &mut clock, records, today, random) {
         minute += 1;
@@ -1013,6 +1022,21 @@ fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player
         .into_iter()
         .filter_map(|id| records.player(id))
         .collect()
+}
+
+/// Enter the side's men in the record's entered slots (the original's
+/// +0xfa, filled from the line-up at runtime +0x8e or by the pre-match
+/// squads in `FUN_0078b26c` — both work on club objects the replica has
+/// not). The original enters eighteen men, eleven on the pitch and seven
+/// at the reserve's place; the replica's stand-in enters its eleven and
+/// leaves the rest nought. The slots are where `book_event` hangs its
+/// ledger bytes, and the halftime dialog walks them; the fill draws
+/// nothing.
+fn fill_entries(m: &mut Match, which: usize, records: &Records) {
+    let men = side_men(m, which, records);
+    for (slot, p) in m.sides[which].entries.iter_mut().zip(men) {
+        *slot = p.id();
+    }
 }
 
 /// The big chance's man (`FUN_005ded54`, on an AI club): the highest
@@ -2617,6 +2641,52 @@ mod tests {
         assert!(!run, "the penalty minute is the walk's last word");
         assert_ne!(m.goals[0], m.goals[1], "{:?}", m.goals);
         assert_ne!(r, Random::new(7), "the minute rolled the kicks' dice");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_walk_enters_its_men_before_the_minutes() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // the first German club's eleven on both pitches: the walk's
+        // first act with the records stands them in the entered slots,
+        // so from the first minute the books find their men
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 0];
+        play_matches(std::slice::from_mut(&mut m), false, Some(&records), test_day(), &mut Random::new(5));
+        for which in 0..2 {
+            let men = side_men(&m, which, &records);
+            let entered: Vec<u16> = men.iter().map(|p| p.id()).collect();
+            assert_eq!(
+                &m.sides[which].entries[..entered.len()],
+                entered.as_slice(),
+                "side {which} stands entered"
+            );
+            assert!(m.sides[which].entries[entered.len()..].iter().all(|id| *id == 0));
+        }
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_entered_man_takes_his_ledgers_mark() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // with the eleven entered, the big chance's marking call before
+        // the roll (`FUN_00740996`) finds the taker's own slot at
+        // +0x21c: the best-rated man of the saved club stands there, and
+        // whichever way the hundred-wide roll falls his shot is booked
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 0];
+        fill_entries(&mut m, 0, &records);
+        let men = side_men(&m, 0, &records);
+        let taker = big_taker(&men).expect("a man rated above nought");
+        let slot = men.iter().position(|p| p.id() == taker).unwrap();
+        big_chance(&mut m, 0, Some(taker), &mut Random::new(3));
+        assert_eq!(m.sides[0].ledger[slot], LEDGER_SHOT);
+        assert!(!own_goal_mark(&m, taker), "the mark is the shot's bit alone");
+        assert_eq!(m.sides[1].ledger, [0; LEDGER_SLOTS], "side one stands unentered");
     }
 
     #[test]
