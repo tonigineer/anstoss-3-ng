@@ -76,6 +76,25 @@ const BIG_WORD: u16 = 0x10;
 /// The free-kick ability (`duties::FREE_KICKS`) worth the same to the set
 /// piece's taker (`FUN_005def60`).
 const FREE_KICKS: u16 = 0x20;
+/// The post-match wear multipliers (`DAT_008a6f4c`, peeked from the .bss
+/// table block beside `MENTAL`), indexed by the side's pressure band.
+const WEAR_MULT: [i32; 5] = [8, 9, 10, 11, 12];
+/// What a played match writes per minute band, held times ten and scaled
+/// by the multiplier over ten (`DAT_008a6efc`): the condition, then the
+/// three freshness values — a full match lifts the man's condition a
+/// little and drains his freshness well below it, the shorter bands lift
+/// and drain less. `FUN_006f8b3f` takes the sibling
+/// rows at `DAT_008a6f24` (a third of the size, condition barely lifted)
+/// when the record's short at +0x24 stands above nought — no ported walk
+/// ever raises that byte, so the played rows always answer; the seam waits
+/// with whatever fixture would.
+const WEAR_ROWS: [[i32; 4]; 5] = [
+    [10, -30, -60, -25],
+    [40, -90, -270, -135],
+    [70, -162, -450, -225],
+    [100, -225, -630, -315],
+    [120, -340, -810, -405],
+];
 
 /// One side of a match: the record's side block at +0x5c (first side) or
 /// +0x250 (second). The offsets in the comments are from the block's start.
@@ -950,6 +969,75 @@ fn after_extra_time(matches: &mut [Match], live: bool) -> bool {
     pens
 }
 
+/// The side's pressure band (`FUN_006f8e73`): its fatigue at +0x2c divided
+/// by the ninety minutes — a hundred and twenty once the match went to
+/// extra time — and whatever stands past ninety to the minute is banded in
+/// fives, never past the top band.
+fn wear_band(fatigue: i16, extra: bool) -> usize {
+    let minutes = if extra { 120 } else { 90 };
+    (((i32::from(fatigue) / minutes - 90) / 5).clamp(0, 4)) as usize
+}
+
+/// What the match leaves on one played man (`FUN_006f8b3f`): the row of
+/// his minutes band scaled by ten through the side's multiplier lifts his
+/// condition, kept at 0..10000 by `FUN_00654ff0`, and moves the three
+/// freshness values, kept by `FUN_006fc330` at 0..10000 on the first and
+/// −10000..10000 on the other two. The original halves the multiplier for
+/// the men at player byte +0x28 == 1, and takes it down to eight tenths
+/// when the club's fitness trainer — the runtime staff array `DAT_00a58402`
+/// behind the club's slot at +0x11de, asked by `FUN_0069bec0` — is exactly
+/// this man; both wait with the club objects and their staff, seam here.
+fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
+    let band = if minutes < 30 {
+        0
+    } else if minutes < 60 {
+        1
+    } else if minutes < 80 {
+        2
+    } else if minutes < 100 {
+        3
+    } else {
+        4
+    };
+    let row = WEAR_ROWS[band];
+    let scaled = |d: i32| d * mult / 10;
+    let cond = i32::from(p.condition()) + scaled(row[0]);
+    p.set_condition(cond.clamp(0, 10_000) as i16);
+    let mut fresh = p.freshness();
+    for i in 0..3 {
+        let (low, high) = if i == 0 { (0, 10_000) } else { (-10_000, 10_000) };
+        let moved = i32::from(fresh[i]) + scaled(row[i + 1]);
+        fresh[i] = moved.clamp(low, high) as i16;
+    }
+    p.set_freshness(fresh);
+}
+
+/// What a played match leaves on the men who stood on its pitch: the plain
+/// pass the day loop runs over every finished match before the graded one
+/// (`FUN_006f8f44` with the fifth parameter nought, its `FUN_006f8e73`
+/// walking each club's squad at +0xb50). Nothing is drawn here — the wear
+/// is arithmetic on the save. The original weighs each man's minutes byte
+/// at +0x58, which `FUN_006f8dc7` fills from the played flags at +0x57:
+/// the eleven stand ninety minutes, a hundred and twenty with extra time,
+/// and a substitute at minute m plays ninety minus m; the replica knows no
+/// substitutions yet, so its eleven stands whole and the bench stays
+/// untouched.
+pub fn post_match_wear(m: &Match, records: &mut Records) {
+    let extra = m.flags & EXTRA != 0;
+    let minutes = if extra { 120 } else { 90 };
+    for which in 0..2 {
+        let mult = WEAR_MULT[wear_band(m.sides[which].fatigue, extra)];
+        let at = which * 2;
+        let squad =
+            records.team(m.ids[at], m.ids[at + 1]).map(|t| t.players()).unwrap_or_default();
+        for id in crate::matches::eleven(&squad, records) {
+            if let Some(p) = records.player_mut(id) {
+                wear_man(p, minutes, mult);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1516,5 +1604,107 @@ mod tests {
         assert_eq!([m.goals[0], m.sides[0].morale], [1, 3]);
         score(&mut m, 1);
         assert_eq!([m.goals[1], m.sides[1].morale], [1, -3]);
+    }
+
+    #[test]
+    fn the_pressure_of_the_minutes_bands_the_wear() {
+        // fatigue is the minutes' percentages summed: an even hundred a
+        // minute over ninety stands at 9000, two bands past the calm
+        // ninety; easy walking stays at the smallest multiplier of eight
+        // and pressing a hundred and ten a minute reaches the greatest 12
+        assert_eq!(WEAR_MULT[wear_band(8100, false)], 8);
+        assert_eq!(WEAR_MULT[wear_band(9000, false)], 10);
+        assert_eq!(WEAR_MULT[wear_band(9900, false)], 12);
+        // extra time divides its fuller fatigue by a hundred and twenty:
+        // a hundred and five a minute stands three bands up at 11
+        assert_eq!(WEAR_MULT[wear_band(12600, true)], 11);
+    }
+
+    #[test]
+    fn the_minutes_lift_the_man_and_drain_his_freshness() {
+        // the man stands the whole ninety: the fourth band, its row scaled
+        // by ten through the multiplier ten lifts his condition a hundred
+        // and sinks the freshness by 225, 630 and 315 — the first value
+        // only down to nought, where `FUN_006fc330` holds it
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_freshness([5000, 0, 0]);
+        wear_man(&mut p, 90, 10);
+        assert_eq!(p.condition(), 100);
+        assert_eq!(p.freshness(), [4775, -630, -315]);
+        // a hundred and twenty minutes past a hundred take the last row
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_freshness([5000, 0, 0]);
+        wear_man(&mut p, 120, 10);
+        assert_eq!(p.condition(), 120);
+        assert_eq!(p.freshness(), [4660, -810, -405]);
+        // an hour stands in the band below; the division truncates toward
+        // nought, as the twenty minutes' −25 · 11 / 10 shows at −27
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        wear_man(&mut p, 70, 8);
+        assert_eq!(p.condition(), 56);
+        assert_eq!(p.freshness(), [0, -360, -180]);
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        wear_man(&mut p, 20, 11);
+        assert_eq!(p.condition(), 11);
+        assert_eq!(p.freshness(), [0, -66, -27]);
+    }
+
+    #[test]
+    fn the_wear_holds_its_three_numbers_within_band() {
+        // `FUN_00654ff0` keeps the condition at 0..10000 and `FUN_006fc330`
+        // the freshness at 0..10000 on the first value, −10000..10000 on
+        // the other two: an overplayed man sinks no lower and a fresh one
+        // lifts no higher, and the condition is lifted even from nought
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_condition(9950);
+        p.set_freshness([50, -9900, 9900]);
+        wear_man(&mut p, 120, 12); // +144, −408, −972, −486
+        assert_eq!(p.condition(), 10_000);
+        assert_eq!(p.freshness(), [0, -10_000, 9414]);
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_condition(3000);
+        wear_man(&mut p, 90, 8);
+        assert_eq!(p.condition(), 3080);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_wears_its_eleven_on_the_save() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // the first German club's eleven, on a side that walked its minutes
+        // at an even hundred a minute — the multiplier ten, the ninety's row
+        let ids = crate::matches::eleven(&records.team(0, 0).unwrap().players(), &records);
+        assert!(!ids.is_empty());
+        let before: Vec<(i16, [i16; 3])> = ids
+            .iter()
+            .map(|id| {
+                let p = records.player(*id).unwrap();
+                (p.condition(), p.freshness())
+            })
+            .collect();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500]; // the second side stands in no club here
+        m.sides[0].fatigue = 9000;
+        post_match_wear(&m, &mut records);
+        for (id, (c, f)) in ids.iter().zip(&before) {
+            let p = records.player(*id).unwrap();
+            assert_eq!(p.condition(), (i32::from(*c) + 100).clamp(0, 10_000) as i16);
+            assert_eq!(
+                p.freshness().map(i32::from),
+                [
+                    (i32::from(f[0]) - 225).clamp(0, 10_000),
+                    (i32::from(f[1]) - 630).clamp(-10_000, 10_000),
+                    (i32::from(f[2]) - 315).clamp(-10_000, 10_000),
+                ]
+            );
+        }
+        // and the men really moved — one at full condition may stand, but
+        // nobody on a fresh save stays put
+        assert!(ids
+            .iter()
+            .zip(&before)
+            .any(|(id, (c, _))| records.player(*id).unwrap().condition() != *c));
     }
 }
