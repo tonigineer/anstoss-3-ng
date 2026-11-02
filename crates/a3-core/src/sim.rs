@@ -80,6 +80,16 @@ const FREE_KICKS: u16 = 0x20;
 /// read from the exe): the keeper stands at nought, the full backs and
 /// half-backs most at risk, the forward least (`FUN_0077e3e8`).
 const OWN_GOAL_W: [i32; 11] = [0, 0, 2, 5, 5, 4, 4, 2, 2, 3, 1];
+/// The record's ledger slots per side — the eighteen men it enters, eleven
+/// on the pitch and seven at the reserve's place.
+const LEDGER_SLOTS: usize = 0x12;
+/// The ledger bits `book_event` (`FUN_0065847f`) keeps per entered man: a
+/// shot (`FUN_00740996`) and an own goal (`FUN_00740d68`). The halftime
+/// talk (`FUN_0065d044`) adds bit 8 for a man unhurt in the record's mark
+/// at +0xc3; bits 0 and 1 its `FUN_00658583` reads as "entered, no shot
+/// taken" have no writer found in the corpus.
+const LEDGER_SHOT: u8 = 2;
+const LEDGER_OWN: u8 = 4;
 /// The post-match wear multipliers (`DAT_008a6f4c`, peeked from the .bss
 /// table block beside `MENTAL`), indexed by the side's pressure band.
 const WEAR_MULT: [i32; 5] = [8, 9, 10, 11, 12];
@@ -160,6 +170,16 @@ pub struct Side {
     pub press_from: u8,
     /// +0xf6 (record +0x152/+0x346): set while the press window is open.
     pub pressed: u16,
+    /// +0xfa (record +0x156/+0x34a): the side's entered men, short ids.
+    /// Nothing in the corpus writes these slots — they arrive with the
+    /// line-up, through the record copy on save and load (runtime +0x8e)
+    /// or the pre-match squads in `FUN_0078b26c`; until that fill is
+    /// ported the ledger below stays empty and `book_event` marks no man.
+    pub entries: [u16; LEDGER_SLOTS],
+    /// +0x1c0 (record +0x21c/+0x410): one ledger byte per entered man,
+    /// read together with `entries` by `book_event`, `own_goal_mark` and
+    /// the halftime talk's dialog.
+    pub ledger: [u8; LEDGER_SLOTS],
 }
 
 /// A match as the original keeps it: the 0x498-byte record, one of the
@@ -713,15 +733,20 @@ fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
 /// The big chance from kind 98 (`FUN_00659945`, side two's `FUN_00659ff9`):
 /// with its taker found, one hundred-wide roll; under 0x50 the first
 /// side's chance is a goal, under 0x46 only the second's — the visitor's
-/// big chance lies more often. A chance is counted either way; the shot's
-/// and miss's books (`FUN_00740996`, `FUN_00740a66`, `FUN_00740f33`) and
-/// the foe's assist man, read out of the defending club's eleven
-/// (`FUN_00740fb6`, `FUN_00741038`), are seams. As in the set piece the
-/// human side's designated taker waits.
+/// big chance lies more often. A chance is counted either way, and the
+/// taker's shot stands in the record's ledger before the roll —
+/// `FUN_00740996` marks him whichever way the ball goes; its counters for
+/// the man at +0x26 and the club at +0xdea wait for a league match of the
+/// plain kind (the record's short at +0x24 and the kind's upper byte), as
+/// do the miss's books (`FUN_00740a66`, `FUN_00740f33`) and the foe's
+/// assist man read out of the defending club's eleven (`FUN_00740fb6`,
+/// `FUN_00741038`). As in the set piece the human side's designated taker
+/// waits.
 fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Random) {
-    if taker.is_none() {
+    let Some(taker) = taker else {
         return;
-    }
+    };
+    book_event(m, taker, LEDGER_SHOT);
     if (random.below(100) as i32) < if which == 0 { 0x50 } else { 0x46 } {
         score(m, which);
     }
@@ -738,11 +763,15 @@ fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Rand
 /// concern alone) and the goal write (`FUN_007410ca`/`FUN_007411ea`) lands
 /// unconditionally: a quality-one shot not turned into an own goal is a
 /// goal, and only a scorer-less eleven keeps the net clean. The event's own
-/// chance count closes it. The keeper's books, the scorer's and the
-/// assist's (`FUN_00740a66`, `FUN_00740aad`, `FUN_00740dc4`, `FUN_00740d68`),
-/// the post-goal talk (`FUN_0065e118`) and the crowd's shout
-/// (`FUN_0069e224`, `FUN_0069e2b9`, `FUN_004fc297` for a national tie)
-/// draw nothing; who scored waits with them.
+/// chance count closes it. A found own man is marked in the record's
+/// ledger (`FUN_00740d68` before the goal write) — the first event to book
+/// one; this event marks no shot: the shot's ledger bit comes from the big
+/// chances and the plain event of qualities two and three (`FUN_00659311`,
+/// not ported). The keeper's books, the scorer's and the assist's counters
+/// (`FUN_00740a66`, `FUN_00740aad`, `FUN_00740dc4`), the post-goal talk
+/// (`FUN_0065e118`) and the crowd's shout (`FUN_0069e224`, `FUN_0069e2b9`,
+/// `FUN_004fc297` for a national tie) draw nothing; who scored waits with
+/// them.
 fn shot_event(
     m: &mut Match,
     which: usize,
@@ -753,6 +782,7 @@ fn shot_event(
         if random.below(200) == 0 {
             let own = own_goal_pick(def, random);
             if own != 0 {
+                book_event(m, own, LEDGER_OWN);
                 score(m, which);
             }
         } else {
@@ -896,6 +926,41 @@ fn score(m: &mut Match, which: usize) {
     let drift = (m.sides[which].nerve - m.sides[1 - which].nerve) / 6;
     m.sides[which].morale += drift as i16;
     m.goals[which] += 1;
+}
+
+/// What a man did in the match, kept on the record beside his entry slot
+/// (`FUN_0065847f`): the id is looked for in both sides' entered lists,
+/// and the bits are set in the ledger byte of every slot that names him;
+/// a man the record does not name books nothing. The events book him as
+/// they happen — the big chances their taker's shot before the roll
+/// (`FUN_00740996`, in both sides' events), the quality-one event the
+/// own-goal man (`FUN_00740d68`); the plain event of qualities two and
+/// three (`FUN_00659311`, not ported) books shots the same way.
+fn book_event(m: &mut Match, id: u16, bits: u8) {
+    for i in 0..LEDGER_SLOTS {
+        if m.sides[0].entries[i] == id {
+            m.sides[0].ledger[i] |= bits;
+        }
+        if m.sides[1].entries[i] == id {
+            m.sides[1].ledger[i] |= bits;
+        }
+    }
+}
+
+/// Whether the record names this man as the one who put the ball in his
+/// own net (`FUN_0065850d`, what the halftime talk asks to pick its
+/// subject): the two sides' lists are walked slot by slot together, and
+/// the first list naming the man answers with bit 4 of its ledger byte.
+pub fn own_goal_mark(m: &Match, id: u16) -> bool {
+    for i in 0..LEDGER_SLOTS {
+        if m.sides[0].entries[i] == id {
+            return m.sides[0].ledger[i] & LEDGER_OWN != 0;
+        }
+        if m.sides[1].entries[i] == id {
+            return m.sides[1].ledger[i] & LEDGER_OWN != 0;
+        }
+    }
+    false
 }
 
 /// The side's men on the pitch, as records: its club's squad through the
@@ -1977,5 +2042,64 @@ mod tests {
         m.ids = [0, 0, 0, 500];
         shot_event(&mut m, 0, Some((&att, &def)), &mut Random::new(seed));
         assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
+    }
+
+    #[test]
+    fn the_big_chance_marks_its_taker_whichever_way_the_ball_goes() {
+        // the record's entered lists arrive with the line-up; the slots
+        // stand in for that fill here
+        let mut m = fixture();
+        m.sides[0].entries[3] = 7;
+        // the book runs before the hundred-wide roll, so a miss still
+        // leaves the taker's shot in the ledger
+        let miss = (1u64..).find(|&s| Random::new(s).below(100) >= 0x50).unwrap();
+        big_chance(&mut m, 0, Some(7), &mut Random::new(miss));
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
+        assert_eq!(m.sides[0].ledger[3], LEDGER_SHOT);
+        // a taker the record does not name books nothing, and the mark
+        // reaches the second side's entered slot as well
+        let mut m = fixture();
+        big_chance(&mut m, 0, Some(7), &mut Random::new(miss));
+        assert_eq!(m.sides[0].ledger, [0; LEDGER_SLOTS]);
+        m.sides[1].entries[17] = 7;
+        big_chance(&mut m, 1, Some(7), &mut Random::new(miss));
+        assert_eq!(m.sides[1].ledger[17], LEDGER_SHOT);
+    }
+
+    #[test]
+    fn the_own_goal_marks_its_man_and_the_mark_is_read_back() {
+        let back = squad_player(9, 5, 3, 0, 0, 10);
+        let def = [&back as &Player];
+        let throw = (1u64..).find(|&s| Random::new(s).below(200) == 0).unwrap();
+        let mut m = fixture();
+        m.sides[1].entries[5] = 9;
+        shot_event(&mut m, 0, Some((&[], def.as_slice())), &mut Random::new(throw));
+        assert_eq!(m.goals[0], 1);
+        assert_eq!(m.sides[1].ledger[5], LEDGER_OWN);
+        assert!(own_goal_mark(&m, 9));
+        // the quality-one event marks no shot at all: the scorer's slot
+        // stays clean; only the big chances and the plain event book them
+        let struck = (1u64..).find(|&s| Random::new(s).below(200) != 0).unwrap();
+        let mut m = fixture();
+        m.sides[0].entries[0] = 9;
+        shot_event(&mut m, 0, Some((def.as_slice(), &[])), &mut Random::new(struck));
+        assert_eq!(m.goals[0], 1);
+        assert_eq!(m.sides[0].ledger, [0; LEDGER_SLOTS]);
+        // a man the record names nowhere reads back unmarked
+        assert!(!own_goal_mark(&m, 42));
+    }
+
+    #[test]
+    fn the_ledger_gathers_its_bits_in_the_naming_slot() {
+        let mut m = fixture();
+        book_event(&mut m, 11, LEDGER_SHOT);
+        assert_eq!(m.sides[0].ledger, [0; LEDGER_SLOTS]);
+        m.sides[1].entries[4] = 11;
+        book_event(&mut m, 11, LEDGER_SHOT);
+        assert_eq!(m.sides[1].ledger[4], LEDGER_SHOT);
+        book_event(&mut m, 11, LEDGER_OWN);
+        assert_eq!(m.sides[1].ledger[4], LEDGER_SHOT | LEDGER_OWN);
+        assert!(own_goal_mark(&m, 11));
+        assert!(!own_goal_mark(&m, 12));
     }
 }
