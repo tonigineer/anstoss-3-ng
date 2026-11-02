@@ -41,6 +41,7 @@
 
 use chrono::NaiveDate;
 
+use crate::duties::{self, Duty};
 use crate::random::Random;
 use crate::records::{Player, Records};
 use crate::{statistics, world};
@@ -772,9 +773,9 @@ fn chance_for(
             m.sides[which].chances += 1;
         }
     } else if kind < 98 {
-        set_piece(m, which, quality, records.and_then(|r| set_taker(&side_men(m, which, r))));
+        set_piece(m, which, quality, records.and_then(|r| set_taker(m, which, r)));
     } else {
-        big_chance(m, which, records.and_then(|r| big_taker(&side_men(m, which, r))), random);
+        big_chance(m, which, records.and_then(|r| big_taker(m, which, r)), random);
     }
 }
 
@@ -786,9 +787,9 @@ fn chance_for(
 /// (`FUN_0065e118`), the crowd's shout (`FUN_0069e224`, `FUN_0069e2b9`,
 /// and `FUN_004fc297` for a national side) and the club's own counters at
 /// +0xdeb/+0xdee are seams; none of them draws either. A human side's
-/// taker is the manager's designated man, listed at his club — the
-/// original asks `FUN_0069b17b`/`FUN_006dc332`/`FUN_0069b268`; that waits
-/// with the duties.
+/// taker is the manager's designated man: his club's saved direct free
+/// kick list, read by `FUN_0069ac7d` and put in every reader's order by
+/// `FUN_006dc332` — see `set_taker` below.
 fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
     if taker.is_none() {
         return;
@@ -809,8 +810,9 @@ fn set_piece(m: &mut Match, which: usize, quality: u8, taker: Option<u16>) {
 /// plain kind (the record's short at +0x24 and the kind's upper byte), as
 /// do the miss's books (`FUN_00740a66`, `FUN_00740f33`) and the foe's
 /// assist man read out of the defending club's eleven (`FUN_00740fb6`,
-/// `FUN_00741038`). As in the set piece the human side's designated taker
-/// waits.
+/// `FUN_00741038`). As in the set piece a human side's man comes from his
+/// club's list — for the big chance the penalty list, read by
+/// `FUN_0069b17b`; see `big_taker` below.
 fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Random) {
     let Some(taker) = taker else {
         return;
@@ -1060,14 +1062,72 @@ fn fill_entries(m: &mut Match, which: usize, records: &Records) {
     }
 }
 
-/// The big chance's man (`FUN_005ded54`, on an AI club): the highest
-/// rated of the eleven — strength ten times over plus his form today
+/// The designated man for a duty, as the original picks him at a human
+/// club: the manager's saved list (`FUN_0069ac7d`/`FUN_0069b17b`), put in
+/// every reader's order (`FUN_006dc332`, here [`duties::from_ids`] and
+/// [`duties::normalise`]), and the first listed man standing in the
+/// eleven — the set piece scans only behind the keeper's slot, the big
+/// chance from that slot itself. With no listed man on the pitch the
+/// eleven's first man takes it, as the original's fallback at +0xa9a. The
+/// ordered list's copy back into the club object (`FUN_0069ad46`/
+/// `FUN_0069b268`) touches the runtime record alone, and a national
+/// side's lists sit in the national block the replica does not read —
+/// those ties and the computer clubs, which list nothing, fall to the
+/// argmax. The pick draws no number.
+fn designated_taker(m: &Match, which: usize, records: &Records, duty: Duty, from: usize) -> Option<u16> {
+    if m.nat_bits != 0 {
+        return None;
+    }
+    let at = which * 2;
+    let team = records.team(m.ids[at], m.ids[at + 1])?;
+    let extra = records.extras.get(usize::from(team.human()).checked_sub(1)?)?;
+    let squad = team.players();
+    let list = duties::from_ids(&squad, &extra.duty_lists()[duty.stored()]);
+    // normalise orders a squad by strength and main position; it reads
+    // nothing else of the men, whose names the save's record keeps.
+    let men: Vec<world::Player> = squad
+        .iter()
+        .map(|&id| {
+            let p = records.player(id);
+            world::Player {
+                last_name: String::new(),
+                first_name: String::new(),
+                strength: p.map_or(0, |p| p.strength() as u8),
+                positions: p.map_or([0; 3], |p| p.positions()),
+                abilities: [0, 0],
+                traits: [0, 0],
+                birthday: None,
+                shirt: 0,
+                feet: 0,
+            }
+        })
+        .collect();
+    let eleven = crate::matches::eleven(&squad, records);
+    let pitch = eleven.get(from..).unwrap_or(&[]);
+    duties::normalise(&men, &list)
+        .into_iter()
+        .filter_map(|p| squad.get(p).copied())
+        .find(|id| pitch.contains(id))
+        .or_else(|| eleven.first().copied())
+}
+
+/// The big chance's man: at a human club the manager's penalty list, at
+/// a computer club the argmax below — the original branches on the
+/// manager's number at the club's +0x8a (`FUN_005ded54`).
+fn big_taker(m: &Match, which: usize, records: &Records) -> Option<u16> {
+    designated_taker(m, which, records, Duty::Penalty, 0)
+        .or_else(|| ai_big_taker(&side_men(m, which, records)))
+}
+
+/// The big chance's man at a computer club (`FUN_005ded54`, +0x8a
+/// nought): the highest rated of the eleven — strength ten times over
+/// plus his form today
 /// (`statistics::form_today`, the very `FUN_006ff037` the lists show) —
 /// the keeper half so fit, the good word's bit 0x10 a hundred better, and
 /// a marked weakness in the bad word leaving a man only his doubled
 /// strength. Nobody above nought found means no taker at all; the
 /// original scans the club's saved eleven at +0xa9a and its keeper byte.
-fn big_taker(men: &[&Player]) -> Option<u16> {
+fn ai_big_taker(men: &[&Player]) -> Option<u16> {
     let mut best = -1i32;
     let mut pick = 0;
     for &p in men {
@@ -1089,11 +1149,18 @@ fn big_taker(men: &[&Player]) -> Option<u16> {
     (pick != 0).then_some(pick)
 }
 
-/// The set piece's man (`FUN_005def60`, on an AI club): the same rating —
-/// free kicks, the good word's bit 0x20, a hundred better — but the
-/// keeper stands unrated and is chosen only when nothing else beats him.
-/// No weakness is marked down here.
-fn set_taker(men: &[&Player]) -> Option<u16> {
+/// The set piece's man: at a human club the manager's direct free kick
+/// list, at a computer club the argmax below (`FUN_005def60`).
+fn set_taker(m: &Match, which: usize, records: &Records) -> Option<u16> {
+    designated_taker(m, which, records, Duty::ShotFreeKick, 1)
+        .or_else(|| ai_set_taker(&side_men(m, which, records)))
+}
+
+/// The set piece's man at a computer club (`FUN_005def60`, +0x8a nought):
+/// the same rating — free kicks, the good word's bit 0x20, a hundred
+/// better — but the keeper stands unrated and is chosen only when nothing
+/// else beats him. No weakness is marked down here.
+fn ai_set_taker(men: &[&Player]) -> Option<u16> {
     let mut best = -1i32;
     let mut pick = 0;
     for &p in men {
@@ -2084,31 +2151,31 @@ mod tests {
         let strong = squad_player(1, 7, 4, 0, 0, 10);
         let small = squad_player(2, 5, 6, 0, 0, 10);
         let keeper = squad_player(3, 10, world::GOALKEEPER, 0, 0, 10);
-        assert_eq!(big_taker(&[&strong, &small, &keeper]), Some(1));
+        assert_eq!(ai_big_taker(&[&strong, &small, &keeper]), Some(1));
         // the good word's bit 0x10 lifts a lesser man over all of them
         let willing = squad_player(4, 4, 7, BIG_WORD, 0, 10);
-        assert_eq!(big_taker(&[&strong, &small, &keeper, &willing]), Some(4));
+        assert_eq!(ai_big_taker(&[&strong, &small, &keeper, &willing]), Some(4));
         // a marked weakness leaves the strong man his doubled strength
         let shaky = squad_player(5, 9, 8, 0, 0x20, 10);
-        assert_eq!(big_taker(&[&shaky, &small]), Some(2));
+        assert_eq!(ai_big_taker(&[&shaky, &small]), Some(2));
         // nobody above nought rated means no taker at all
         let spent = squad_player(6, 0, 4, 0, 0, -100);
         let keeper2 = squad_player(7, 0, world::GOALKEEPER, 0, 0, -100);
-        assert_eq!(big_taker(&[&spent, &keeper2]), None);
+        assert_eq!(ai_big_taker(&[&spent, &keeper2]), None);
     }
 
     #[test]
     fn the_set_piece_takes_its_free_kick_man() {
         let keeper = squad_player(1, 10, world::GOALKEEPER, 0, 0, 10);
         let field = squad_player(2, 1, 4, 0, 0, 10);
-        assert_eq!(set_taker(&[&keeper, &field]), Some(2));
+        assert_eq!(ai_set_taker(&[&keeper, &field]), Some(2));
         // with nothing else standing, the keeper takes it after all
-        assert_eq!(set_taker(std::slice::from_ref(&&keeper)), Some(1));
+        assert_eq!(ai_set_taker(std::slice::from_ref(&&keeper)), Some(1));
         // free kicks lift the weaker man, and no weakness is marked down
         let kicker = squad_player(3, 5, 8, FREE_KICKS, 0, 10);
         let shaky = squad_player(4, 9, 6, 0, 0x20, 10);
-        assert_eq!(set_taker(&[&kicker, &shaky]), Some(3));
-        assert_eq!(set_taker(&[&shaky, &field]), Some(4));
+        assert_eq!(ai_set_taker(&[&kicker, &shaky]), Some(3));
+        assert_eq!(ai_set_taker(&[&shaky, &field]), Some(4));
     }
 
     #[test]
@@ -2702,7 +2769,7 @@ mod tests {
         m.ids = [0, 0, 0, 0];
         fill_entries(&mut m, 0, &records);
         let men = side_men(&m, 0, &records);
-        let taker = big_taker(&men).expect("a man rated above nought");
+        let taker = ai_big_taker(&men).expect("a man rated above nought");
         let slot = men.iter().position(|p| p.id() == taker).unwrap();
         big_chance(&mut m, 0, Some(taker), &mut Random::new(3));
         assert_eq!(m.sides[0].ledger[slot], LEDGER_SHOT);
@@ -2784,5 +2851,53 @@ mod tests {
             let p = records.player(*id).unwrap();
             assert_eq!((p.condition(), p.freshness()), (*cond, *fresh), "the reserve {id} stands untouched");
         }
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_manager_names_his_men_for_their_set_pieces() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/Toni.an3")).unwrap()).unwrap();
+        // the manager in play stands his club on both pitches: the big
+        // chance goes to the first man of his saved penalty list who
+        // stands in the eleven, the set piece to the first of the direct
+        // free kick list behind the keeper's slot — and on this save his
+        // named man outranks the strongest, where a computer club's
+        // argmax would take the kick himself
+        let manager = records.humans().next().expect("Toni.an3 has a manager");
+        let mut m = fixture();
+        m.ids = [manager.country(), manager.team(), manager.country(), manager.team()];
+        let team = records.team(m.ids[0], m.ids[1]).expect("the manager's club");
+        assert_ne!(team.human(), 0, "the manager's club names him at +0xb5");
+        let squad = team.players();
+        let eleven = crate::matches::eleven(&squad, &records);
+        let extra = &records.extras[usize::from(team.human()) - 1];
+        for (from, duty) in [(0, Duty::Penalty), (1, Duty::ShotFreeKick)] {
+            let want = extra.duty_lists()[duty.stored()]
+                .iter()
+                .copied()
+                .take_while(|&id| id != 0)
+                .find(|id| eleven.iter().skip(from).any(|&e| e == *id))
+                .or_else(|| eleven.first().copied());
+            let got =
+                if from == 0 { big_taker(&m, 0, &records) } else { set_taker(&m, 0, &records) };
+            assert_eq!(got, want, "the {duty:?} list names its standing man");
+            assert!(got.is_some_and(|t| eleven.contains(&t)), "{duty:?} on the pitch");
+            let argmax = if from == 0 {
+                ai_big_taker(&side_men(&m, 0, &records))
+            } else {
+                ai_set_taker(&side_men(&m, 0, &records))
+            };
+            assert_ne!(got, argmax, "the list outranks the strongest here");
+        }
+        // a national side keeps its lists in its own block, which the
+        // replica does not read: the very club now falls to the argmax
+        m.nat_bits = 1;
+        assert_eq!(
+            big_taker(&m, 0, &records),
+            ai_big_taker(&side_men(&m, 0, &records)),
+            "the national tie lists nobody"
+        );
     }
 }
