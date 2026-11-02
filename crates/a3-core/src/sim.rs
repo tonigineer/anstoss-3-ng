@@ -76,6 +76,10 @@ const BIG_WORD: u16 = 0x10;
 /// The free-kick ability (`duties::FREE_KICKS`) worth the same to the set
 /// piece's taker (`FUN_005def60`).
 const FREE_KICKS: u16 = 0x20;
+/// The own-goal danger by position kind (`DAT_008acc6c`, the .data table
+/// read from the exe): the keeper stands at nought, the full backs and
+/// half-backs most at risk, the forward least (`FUN_0077e3e8`).
+const OWN_GOAL_W: [i32; 11] = [0, 0, 2, 5, 5, 4, 4, 2, 2, 3, 1];
 /// The post-match wear multipliers (`DAT_008a6f4c`, peeked from the .bss
 /// table block beside `MENTAL`), indexed by the side's pressure band.
 const WEAR_MULT: [i32; 5] = [8, 9, 10, 11, 12];
@@ -642,10 +646,12 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
 /// One side's half of the frame: a thousand-wide roll against its share;
 /// past it (or past fifteen goals for the side) no chance, though the
 /// roll's own marks 699 and 900..903 set events off (seams). Inside, the
-/// minute kind under 90 is a plain chance — the quality-one shot through
-/// `FUN_00659d2b` counts and every imperfect shot counts — 90..97 sends
-/// the `FUN_00659b85` set piece and from 98 the big chance `FUN_00659945`
-/// runs, each with its taker picked out of the saved records.
+/// minute kind under 90 is a plain chance — the quality-one shot runs the
+/// `FUN_00659d2b` event (side two's `FUN_0065a3e1`) and counts twice, once
+/// in the event and once in the frame; every other imperfect shot counts
+/// once — 90..97 sends the `FUN_00659b85` set piece and from 98 the big
+/// chance `FUN_00659945` runs, each with its taker picked out of the
+/// saved records.
 fn chance_for(
     m: &mut Match,
     which: usize,
@@ -663,8 +669,15 @@ fn chance_for(
     let quality = shot_quality(m, which, random);
     if kind < 90 {
         if quality == 1 {
-            // FUN_00659d2b — the shot on goal; its scorer pick FUN_0077db3a
-            // draws the eleven's weights: the events piece.
+            // The shot event raises the byte itself; the frame raises once
+            // more, so a quality-one chance costs the side two counts.
+            let men = records.map(|r| (side_men(m, which, r), side_men(m, 1 - which, r)));
+            shot_event(
+                m,
+                which,
+                men.as_ref().map(|(a, d)| (a.as_slice(), d.as_slice())),
+                random,
+            );
             m.sides[which].chances += 1;
         } else if quality < 4 {
             m.sides[which].chances += 1;
@@ -713,6 +726,165 @@ fn big_chance(m: &mut Match, which: usize, taker: Option<u16>, random: &mut Rand
         score(m, which);
     }
     m.sides[which].chances += 1;
+}
+
+/// The quality-one shot's event (`FUN_00659d2b`, side two's `FUN_0065a3e1`):
+/// one two-hundred-wide roll; on its very first throw the foe heads it into
+/// his own keeper's net — one own man drawn out of the defending eleven
+/// (`FUN_0077e3e8`) and the goal counts for the attacking side. Otherwise
+/// the scorer and his assist come out of the attacking eleven
+/// (`FUN_0077db3a`), the shot's outcome is drawn (`FUN_00740899`: under 30
+/// a headed goal, under 50 a struck one, else wide or saved — the books'
+/// concern alone) and the goal write (`FUN_007410ca`/`FUN_007411ea`) lands
+/// unconditionally: a quality-one shot not turned into an own goal is a
+/// goal, and only a scorer-less eleven keeps the net clean. The event's own
+/// chance count closes it. The keeper's books, the scorer's and the
+/// assist's (`FUN_00740a66`, `FUN_00740aad`, `FUN_00740dc4`, `FUN_00740d68`),
+/// the post-goal talk (`FUN_0065e118`) and the crowd's shout
+/// (`FUN_0069e224`, `FUN_0069e2b9`, `FUN_004fc297` for a national tie)
+/// draw nothing; who scored waits with them.
+fn shot_event(
+    m: &mut Match,
+    which: usize,
+    men: Option<(&[&Player], &[&Player])>,
+    random: &mut Random,
+) {
+    if let Some((att, def)) = men {
+        if random.below(200) == 0 {
+            let own = own_goal_pick(def, random);
+            if own != 0 {
+                score(m, which);
+            }
+        } else {
+            let (scorer, _assist) = scorer_pick(att, random);
+            random.below(100); // FUN_00740899's outcome: books alone
+            if scorer != 0 {
+                score(m, which);
+            }
+        }
+    }
+    m.sides[which].chances += 1;
+}
+
+/// The man's rating in the pick (`FUN_006a144e`): his class in tens bent by
+/// the position he's stood at and his age's curve, capped at 1400 in tenths
+/// — the original reads the runtime object's bytes +2, +3..+5 and +0xca,
+/// whose save-side age curve is not mapped, and the man's runtime marks
+/// (`f_003`, `f_00c`: worth two apiece, the 0x80 a fifth more) sit in no
+/// record. `strength` ten times over plus his form today stands in, the
+/// taker pick's own measure.
+fn shot_rating(p: &Player) -> i32 {
+    (i32::from(p.strength()) * 10 + statistics::form_today(p)).clamp(0, 1_400)
+}
+
+/// The shot's band of the man's position kind (`FUN_00696cc5`'s field
+/// classifier, then `FUN_0077db3a`'s bands): the keeper takes no shot at
+/// goal at all, the back pair stands at one, the half pair at one or two
+/// (two when the slot sits on the half line — the formation slot's place
+/// waits with `matches::eleven`'s stand-in), the half-forward pair at three,
+/// the runner at two, the forward at four, the spearhead at six; the
+/// original drops a marked man on the side's bit at +0x40 one band down.
+fn shot_band(kind: u8) -> i32 {
+    match kind {
+        0 => 2, // unclassified — the classifier's fallback band
+        1 => 0,
+        2 | 3 | 4 | 5 => 1,
+        6 | 7 => 3,
+        8 => 2,
+        9 => 4,
+        10 => 6,
+        _ => 2,
+    }
+}
+
+/// Scorer and assist of the shot (`FUN_0077db3a`): every slot of the
+/// attacking club's eleven at +0xa9a — its keeper bandless and out of the
+/// list — weighs `band × (rating + 5)`, the fitness trainer's own man at
+/// seven-tenths, each line's strength a factor (`FUN_0077e590`: the two
+/// sides' six line shorts at +0x7c.. and +0x270.. apart, three base values
+/// 30/40/30 — or 35/30/35 for the attacking style — bent a third of the way
+/// by each line's deviation, thence `pow(x/100, 0.33)` for the scorer's
+/// list and `sqrt(x/100)` for the assist's). Those line shorts wait with
+/// `FUN_0078b26c`'s squad sums, and with them the factors fall away: both
+/// lists carry the same whole-number weights. The scorer is drawn below the
+/// first list's total — first cumulative above the draw, the head when
+/// none; the assist below the second list's, the scorer lifted out with the
+/// list rebased below his weight and the total with it. With no listed man
+/// nothing is drawn at all.
+fn scorer_pick(men: &[&Player], random: &mut Random) -> (u16, u16) {
+    let mut ids: Vec<u16> = Vec::new();
+    let mut cums: Vec<i32> = Vec::new();
+    for &p in men {
+        let band = shot_band(p.positions()[0]);
+        if band == 0 {
+            continue;
+        }
+        let weight = band * (shot_rating(p) + 50) / 10;
+        cums.push(cums.last().unwrap_or(&0) + weight);
+        ids.push(p.id());
+    }
+    if ids.is_empty() {
+        return (0, 0);
+    }
+    let total = cums.last().copied().unwrap_or(0).max(0);
+    let draw = random.below(total as u32);
+    let mut j = 0;
+    while j < ids.len() && cums[j] <= draw as i32 {
+        j += 1;
+    }
+    if j == ids.len() {
+        j = 0;
+    }
+    let scorer = ids[j];
+    if ids.len() == 1 {
+        return (scorer, 0);
+    }
+    // lift the scorer out: the list above him shifts down by his weight
+    let own = if j == 0 { cums[0] } else { cums[j] - cums[j - 1] };
+    for i in j + 1..ids.len() {
+        cums[i] -= own;
+    }
+    ids.remove(j);
+    cums.remove(j);
+    let total = cums.last().copied().unwrap_or(0).max(0);
+    let draw = random.below(total as u32);
+    let mut k = 0;
+    while k < ids.len() && cums[k] <= draw as i32 {
+        k += 1;
+    }
+    (scorer, ids[if k == ids.len() { 0 } else { k }])
+}
+
+/// The own-goal man out of the defending eleven (`FUN_0077e3e8`): each
+/// slot weighed by its kind's danger (`OWN_GOAL_W`, the keeper and the
+/// unclassified at nought) times hundred against the man's rating; one draw
+/// below the total, first cumulative above it, the head when none; nothing
+/// drawn when the weighted list stands empty.
+fn own_goal_pick(men: &[&Player], random: &mut Random) -> u16 {
+    let mut ids: Vec<u16> = Vec::new();
+    let mut cums: Vec<i32> = Vec::new();
+    for &p in men {
+        let kind = p.positions()[0] as usize;
+        let danger = OWN_GOAL_W.get(kind).copied().unwrap_or(0);
+        if danger == 0 {
+            continue;
+        }
+        let weight = danger * (1_000 - shot_rating(p)) / 10;
+        cums.push(cums.last().unwrap_or(&0) + weight);
+        ids.push(p.id());
+    }
+    if ids.is_empty() {
+        return 0;
+    }
+    // a better man than hundred weighs pulls his own-goal danger below
+    // nought; the draw then simply has no choice left
+    let total = cums.last().copied().unwrap_or(0).max(0);
+    let draw = random.below(total as u32);
+    let mut j = 0;
+    while j < ids.len() && cums[j] <= draw as i32 {
+        j += 1;
+    }
+    ids[if j == ids.len() { 0 } else { j }]
 }
 
 /// The goal as the match record takes it (`FUN_007410ca`, mirrored by
@@ -1706,5 +1878,104 @@ mod tests {
             .iter()
             .zip(&before)
             .any(|(id, (c, _))| records.player(*id).unwrap().condition() != *c));
+    }
+
+    #[test]
+    fn the_keeper_takes_no_shot_at_goal_at_all() {
+        let keeper = squad_player(1, 10, world::GOALKEEPER, 0, 0, 10);
+        let mut r = Random::new(5);
+        assert_eq!(scorer_pick(&[&keeper], &mut r), (0, 0));
+        assert_eq!(r, Random::new(5), "an unweighed list draws nothing");
+    }
+
+    #[test]
+    fn the_spearhead_outweighs_the_back() {
+        // the back at band one weighs 45, the spearhead at band six 153
+        // (strength ten times over plus form 5, mood 10 again): one seed
+        // below the first cumulative, one above it
+        let back = squad_player(1, 40, 4, 0, 0, 10);
+        let head = squad_player(2, 20, world::STRIKER, 0, 0, 10);
+        let men = [&back as &Player, &head];
+        let low = (1u64..).find(|&s| Random::new(s).below(198) < 45).unwrap();
+        let high = (1u64..).find(|&s| Random::new(s).below(198) >= 45).unwrap();
+        assert_eq!(scorer_pick(&men, &mut Random::new(low)).0, 1);
+        assert_eq!(scorer_pick(&men, &mut Random::new(high)).0, 2);
+    }
+
+    #[test]
+    fn the_assist_list_loses_the_scorer() {
+        // 55 and 75 weigh the two half backs; a scorer from the head of
+        // the list leaves the other alone under 75 — rebased by his weight
+        let first = squad_player(1, 50, 2, 0, 0, 10);
+        let second = squad_player(2, 70, 2, 0, 0, 10);
+        let seed = (1u64..)
+            .find(|&s| Random::new(s).below(130) < 55)
+            .unwrap();
+        let mut expect = Random::new(seed);
+        expect.below(130);
+        expect.below(75);
+        let mut r = Random::new(seed);
+        assert_eq!(scorer_pick(&[&first, &second], &mut r), (1, 2));
+        assert_eq!(r, expect, "the scorer draw and the assist draw");
+        // a lone listed man gets no assist and costs the one draw
+        let mut r = Random::new(seed);
+        expect = Random::new(seed);
+        expect.below(55);
+        assert_eq!(scorer_pick(&[&first], &mut r), (1, 0));
+        assert_eq!(r, expect);
+    }
+
+    #[test]
+    fn the_keeper_heads_nothing_into_his_own_net() {
+        let keeper = squad_player(1, 10, world::GOALKEEPER, 0, 0, 10);
+        let mut r = Random::new(9);
+        assert_eq!(own_goal_pick(&[&keeper], &mut r), 0);
+        assert_eq!(r, Random::new(9));
+        // a back at five danger weighs 247, the spearhead at one 49 —
+        // the form 5 comes off the thousand as well
+        let back = squad_player(2, 50, 3, 0, 0, 10);
+        let head = squad_player(3, 50, world::STRIKER, 0, 0, 10);
+        let men = [&back as &Player, &head];
+        let low = (1u64..).find(|&s| Random::new(s).below(296) < 247).unwrap();
+        let high = (1u64..).find(|&s| Random::new(s).below(296) >= 247).unwrap();
+        assert_eq!(own_goal_pick(&men, &mut Random::new(low)), 2);
+        assert_eq!(own_goal_pick(&men, &mut Random::new(high)), 3);
+    }
+
+    #[test]
+    fn the_shot_event_counts_the_chance_without_an_eleven() {
+        let mut m = fixture();
+        let mut r = Random::new(3);
+        shot_event(&mut m, 0, None, &mut r);
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
+        assert_eq!(r, Random::new(3), "the event draws nothing it cannot weigh");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_quality_one_shot_is_a_goal_on_the_save() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500]; // the second side stands in no club here
+        let att = side_men(&m, 0, &records);
+        let def = side_men(&m, 1, &records);
+        assert_eq!(att.len(), 11);
+        assert!(def.is_empty());
+        // the plain throw: the pick's draws, the outcome's, and the goal —
+        // a seed anywhere, the eleven all weighed
+        let seed = (1u64..).find(|&s| Random::new(s).below(200) != 0).unwrap();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500];
+        shot_event(&mut m, 0, Some((&att, &def)), &mut Random::new(seed));
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [1, 1]);
+        // and the rarest throw of all: an own goal none of the empty
+        // defending side can be blamed for, so no goal stands
+        let seed = (1u64..).find(|&s| Random::new(s).below(200) == 0).unwrap();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500];
+        shot_event(&mut m, 0, Some((&att, &def)), &mut Random::new(seed));
+        assert_eq!([m.goals[0], m.sides[0].chances.into()], [0, 1]);
     }
 }
