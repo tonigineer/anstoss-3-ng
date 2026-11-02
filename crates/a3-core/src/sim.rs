@@ -18,12 +18,15 @@
 //! piece and the big chance already land: the taker is picked out of the
 //! side's men (`FUN_005ded54`, `FUN_005def60`), and a goal moves the
 //! score and the minute's mood as the original writes it (`FUN_007410ca`,
-//! `FUN_007411ea`). The chances' rest lands as seams — the quality-one
-//! shot's own goal (`FUN_00659d2b` and its eleven siblings, the scorer
-//! pick `FUN_0077db3a`), the national-side path's set pieces
-//! (`FUN_006f543f`) and open play (`FUN_006f562b`), the talk's staff
-//! question (`FUN_004134d0`) and the penalty shootout (`FUN_005ddea7`) —
-//! called from the places the original calls them. The
+//! `FUN_007411ea`). A tie that extra time left level now settles on
+//! penalties too (`penalty_shootout`, `FUN_005ddea7` — the coin, the five
+//! takers a side draws out of its men, the sudden death and the kick's
+//! roll; the walk's penalty minute does not call it yet). The chances'
+//! rest lands as seams — the quality-one shot's own goal
+//! (`FUN_00659d2b` and its eleven siblings, the scorer pick
+//! `FUN_0077db3a`), the national-side path's set pieces (`FUN_006f543f`)
+//! and open play (`FUN_006f562b`) and the talk's staff question
+//! (`FUN_004134d0`) — called from the places the original calls them. The
 //! original's presentation (the 3D match, its commentary and clock
 //! displays: `FUN_0073f1a6` and the `DAT_01bad050`/`01bad060` displays) has
 //! no replica and is left out.
@@ -31,6 +34,8 @@
 //! Not wired into `matches::play_day` yet: the quality-one shot and the
 //! scorer's books still wait, so these games would end thin beside the
 //! stand-in's.
+
+use chrono::NaiveDate;
 
 use crate::random::Random;
 use crate::records::{Player, Records};
@@ -76,6 +81,11 @@ const BIG_WORD: u16 = 0x10;
 /// The free-kick ability (`duties::FREE_KICKS`) worth the same to the set
 /// piece's taker (`FUN_005def60`).
 const FREE_KICKS: u16 = 0x20;
+/// The words' bit of holding the line, read off the shootout keeper
+/// (`FUN_005ddcc5`): a keeper whose bad word marks it lets in fifteen
+/// more from the spot, whose good word fifteen less; its name waits with
+/// the screen that hands out abilities, as `BIG_WORD`'s does.
+const KEEPER_GIFT: u16 = 1;
 /// The own-goal danger by position kind (`DAT_008acc6c`, the .data table
 /// read from the exe): the keeper stands at nought, the full backs and
 /// half-backs most at risk, the forward least (`FUN_0077e3e8`).
@@ -109,6 +119,18 @@ const WEAR_ROWS: [[i32; 4]; 5] = [
     [100, -225, -630, -315],
     [120, -340, -810, -405],
 ];
+/// A shootout's regulation round lists five takers a side
+/// (`FUN_005ddea7`'s `FUN_005de669(club, list, 0, 5)` on each side).
+const SHOOTOUT_TAKERS: usize = 5;
+/// Its taker lists hold a slot per man on the pitch — eleven — the
+/// sudden death adding one per round at the round's place wrapped round
+/// the side's men (`Side::men`).
+const SHOOTOUT_SLOTS: usize = 0xb;
+/// Past twelve goals the sudden death stops rolling the dice — weighed
+/// over the record's goals plus the side's shootout score, which counts
+/// the shootout's own goals twice over, since its goals land in both
+/// tallies; the original's own arithmetic, kept as it stands.
+const SHOOTOUT_PAST: i32 = 0xc;
 
 /// One side of a match: the record's side block at +0x5c (first side) or
 /// +0x250 (second). The offsets in the comments are from the block's start.
@@ -152,6 +174,13 @@ pub struct Side {
     pub aggr: i8,
     /// +0x34 (+0x90/+0x284): how often this side's trailing talk has run.
     pub talks: u8,
+    /// +0x35 (+0x91/+0x285): the men standing on the side's pitch. The
+    /// pre-match squad walk — its third loop, summing over the eleven
+    /// formation slots — sets eleven, and the sending-off events take one
+    /// away with the man's slot in the club's formation; those wait, so
+    /// the count stands whole. The shootout wraps its sudden-death takers
+    /// round it.
+    pub men: u8,
     /// +0x39 (+0x95/+0x289): the count of the side's plain chances.
     pub chances: u8,
     /// +0xb2 (+0x10e/+0x302): how many talks the side has left.
@@ -347,6 +376,11 @@ pub fn pre_match(row: &mut [Match]) {
     for m in row.iter_mut() {
         m.sides[0].assistant = 1;
         m.sides[1].assistant = 1;
+        // the squad walk stood the eleven: each side's pitch holds eleven
+        // men — the sending-offs that take one away with the formation
+        // slot wait with those events
+        m.sides[0].men = 11;
+        m.sides[1].men = 11;
         if m.nat_bits == 0 {
             m.added_draw = 5;
             m.chance_slot = 5;
@@ -1123,7 +1157,11 @@ fn morale_talk(m: &mut Match, clock: &Clock, random: &mut Random) {
     }
 }
 
-/// The shootout of one match (`FUN_005ddea7`) — the next piece.
+/// The walk's penalty minute for a match flagged `PENS`: the day loop
+/// settles such a tie on penalties (`penalty_shootout`, `FUN_005ddea7`,
+/// ported) with the record and the clock's day — the kicks read the
+/// men's ages, so the call waits with threading the day's date, the
+/// line-up's men and `matches::play_day` into the engine.
 fn penalties(_m: &mut Match, _clock: &Clock, _random: &mut Random) {}
 
 /// Whether an id is a national side (`FUN_00677428`) — not ported; every
@@ -1273,6 +1311,189 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
             }
         }
     }
+}
+
+/// Settle a tie that extra time left level, the way the day loop does for
+/// every match its penalty decision leaves over (`FUN_005ddea7`, run with
+/// the record and the day's clock right after the minute walk). Fewer than
+/// seven men standing on either pitch and the tie is handed over whole:
+/// three goals for the fuller one, one for the other — an equal count
+/// gives them to the first side — and no kick is taken, no number drawn.
+/// Else a coin drawn below two says which side steps up first, both sides
+/// list their five takers out of their own men (the first side's list
+/// filled first, `FUN_005de669`), and the kicks alternate: every goal
+/// lands in the record's count and in the shootout's own, and the round
+/// is given up the moment the trailing side can no longer reach the
+/// other's lead. Level after those ten, the sudden death adds a round at
+/// a time, its taker listed at the round's place wrapped round the side's
+/// men on the pitch, until one kick lands and the other does not; once a
+/// side's goals — the record's plus its shootout score, so the shootout's
+/// goals count twice over — stand past `SHOOTOUT_PAST`, the dice fall
+/// away and the round's first kicker misses while its second scores, the
+/// original's arithmetic kept as it stands. The shootout writes nothing
+/// else: the morale stays, the ledger sees no shot, and the original's
+/// two book calls (`FUN_006fca60`, `FUN_006fcada`) answer for national
+/// clubs alone. A national side's kicks run instead on its designated
+/// takers (`FUN_005de952`) and a detailed roll (`FUN_0073e017`); both
+/// wait, the replica's ties stand on clubs.
+pub fn penalty_shootout(
+    m: &mut Match,
+    men: (&[&Player], &[&Player]),
+    today: NaiveDate,
+    random: &mut Random,
+) {
+    let men = [men.0, men.1];
+    if men[0].len() < 7 || men[1].len() < 7 {
+        // the original counts each club's eleven formation slots; the
+        // replica counts its men lists, the same eleven once the line-up
+        // has stood them
+        if men[0].len() < men[1].len() {
+            m.goals[0] += 1;
+            m.goals[1] += 3;
+        } else {
+            m.goals[0] += 3;
+            m.goals[1] += 1;
+        }
+        return;
+    }
+    let mut first = usize::from(random.below(2) != 0);
+    let mut list = [[0u16; SHOOTOUT_SLOTS]; 2];
+    for side in 0..2 {
+        fill_takers(men[side], &mut list[side], 0, SHOOTOUT_TAKERS, random);
+    }
+    let mut kicks = [0usize; 2];
+    let mut scored = [0i32; 2];
+    let mut winner: Option<usize> = None;
+    while winner.is_none() && kicks[0] + kicks[1] < 2 * SHOOTOUT_TAKERS {
+        let taker = listed(men[first], list[first][kicks[first]]);
+        if penalty_kick(taker, men[1 - first].first().copied(), 0, today, random) {
+            m.goals[first] += 1;
+            scored[first] += 1;
+        }
+        kicks[first] += 1;
+        for side in 0..2 {
+            let left = scored[side] + SHOOTOUT_TAKERS as i32 - kicks[side] as i32;
+            if left < scored[1 - side] {
+                winner = Some(1 - side);
+            }
+        }
+        first = 1 - first;
+    }
+    while winner.is_none() {
+        let mut slot = [0usize; 2];
+        for side in 0..2 {
+            slot[side] = kicks[side] % usize::from(m.sides[side].men.max(1));
+            fill_takers(men[side], &mut list[side], slot[side], 1, random);
+        }
+        let past = i32::from(m.goals[0]) + scored[0] > SHOOTOUT_PAST
+            || i32::from(m.goals[1]) + scored[1] > SHOOTOUT_PAST;
+        let certain = i16::from(past);
+        for _ in 0..2 {
+            let taker = listed(men[first], list[first][slot[first]]);
+            // the weight sits on each side by its place, not on the round
+            // as a whole: the first kicker of the pair is lifted, its
+            // second pressed down — over twelve the first side therefore
+            // takes the round whichever way the coin fell
+            let pressure = if first == 0 { certain } else { -certain };
+            if penalty_kick(taker, men[1 - first].first().copied(), pressure, today, random) {
+                m.goals[first] += 1;
+                scored[first] += 1;
+            }
+            kicks[first] += 1;
+            first = 1 - first;
+        }
+        if scored[0] != scored[1] {
+            winner = Some(if scored[0] > scored[1] { 0 } else { 1 });
+        }
+    }
+}
+
+/// The shootout's taker picker (`FUN_005de669`'s club path): `need` more
+/// men listed from `start` on, drawn one below the pool's shrinking size
+/// out of the side's men not already listed ahead — five from eleven
+/// gives below eleven, ten, nine, eight, seven. A pool too thin for the
+/// order takes the first standing man for every slot instead, and an
+/// empty pitch leaves the slots as they were. A national side hands the
+/// order to its designated takers (`FUN_005de952`), which waits.
+fn fill_takers(
+    men: &[&Player],
+    list: &mut [u16],
+    start: usize,
+    need: usize,
+    random: &mut Random,
+) {
+    let mut pool: Vec<u16> =
+        men.iter().map(|p| p.id()).filter(|id| !list[..start].contains(id)).collect();
+    if pool.len() < need {
+        if let Some(first) = men.first() {
+            for slot in list[start..start + need].iter_mut() {
+                *slot = first.id();
+            }
+        }
+        return;
+    }
+    for i in 0..need {
+        let pick = random.below(pool.len() as u32) as usize;
+        list[start + i] = pool.remove(pick);
+    }
+}
+
+/// The listed man by his short id; nought names nobody, and a national
+/// side's designated list can name a man off the pitch — his kick then
+/// finds no taker.
+fn listed<'a>(men: &[&'a Player], id: u16) -> Option<&'a Player> {
+    men.iter().copied().find(|p| id != 0 && p.id() == id)
+}
+
+/// One kick (`FUN_005ddcc5`'s dice for a club tie; the national path's
+/// detailed roll waits): the pressure the sudden death puts on settles it
+/// before anything rolls — the side it weighs down misses, the side it
+/// lifts scores — and an unlisted taker misses while an empty keeper's
+/// place on the foe's side buries it. Else the roll goes a hundred wide
+/// under a threshold: four times the taker's age past sixty, a man unafraid
+/// of the spot (`BIG_WORD` in his good word) striking from seventy past
+/// four times his, one marked down for it from fifty; every year of the
+/// keeper's age takes two off, and a keeper who holds his line fifteen
+/// more or less by `KEEPER_GIFT` in his bad or good word. Below the
+/// threshold, the ball is in. The original reads the ages off runtime
+/// bytes; the replica weighs them from the men's birthdays.
+fn penalty_kick(
+    taker: Option<&Player>,
+    keeper: Option<&Player>,
+    pressure: i16,
+    today: NaiveDate,
+    random: &mut Random,
+) -> bool {
+    if pressure < 0 {
+        return false;
+    }
+    if pressure > 0 {
+        return true;
+    }
+    let Some(taker) = taker else {
+        return false;
+    };
+    let Some(keeper) = keeper else {
+        return true;
+    };
+    let years = crate::autolineup::age(taker.birthday(), today);
+    let mut thr = years * 4 + 0x3c;
+    if taker.positions()[0] != world::GOALKEEPER {
+        if taker.good() & BIG_WORD != 0 {
+            thr = years * 4 + 0x46;
+        } else if taker.bad() & BIG_WORD != 0 {
+            thr = years * 4 + 0x32;
+        }
+    }
+    thr -= crate::autolineup::age(keeper.birthday(), today) * 2;
+    if keeper.positions()[0] == world::GOALKEEPER {
+        if keeper.good() & KEEPER_GIFT == 0 && keeper.bad() & KEEPER_GIFT != 0 {
+            thr += 0xf;
+        } else if keeper.good() & KEEPER_GIFT != 0 {
+            thr -= 0xf;
+        }
+    }
+    (random.below(100) as i32) < thr
 }
 
 #[cfg(test)]
@@ -1758,6 +1979,40 @@ mod tests {
         p
     }
 
+    /// The same man with his birthday set, so he stands `age` on `today`
+    /// — the shootout's roll reads his years where the original reads a
+    /// runtime byte.
+    fn aged_player(
+        id: u16,
+        strength: u8,
+        position: u8,
+        age: i32,
+        good: u16,
+        bad: u16,
+        today: NaiveDate,
+    ) -> Player {
+        use chrono::Datelike;
+        let mut p = squad_player(id, strength, position, good, bad, 10);
+        p.set_birth_year((today.year() - age) as u16);
+        p.set_birth_month(today.month() as u8);
+        p.set_birth_day(today.day() as u8);
+        p
+    }
+
+    /// The eleven as the shootout sees them: the keeper's place first, the
+    /// ten after him, all aged and the field men carrying `bad`.
+    fn aged_eleven(
+        base: u16,
+        keeper_age: i32,
+        field_age: i32,
+        bad: u16,
+        today: NaiveDate,
+    ) -> Vec<Player> {
+        let mut men = vec![aged_player(base, 10, world::GOALKEEPER, keeper_age, 0, 0, today)];
+        men.extend((1..11u16).map(|i| aged_player(base + i, 5, 4, field_age, 0, bad, today)));
+        men
+    }
+
     #[test]
     fn the_big_chance_takes_its_man_from_the_eleven() {
         // strength ten times over plus the form today (mood 10 stands at
@@ -2101,5 +2356,217 @@ mod tests {
         assert_eq!(m.sides[1].ledger[4], LEDGER_SHOT | LEDGER_OWN);
         assert!(own_goal_mark(&m, 11));
         assert!(!own_goal_mark(&m, 12));
+    }
+
+    #[test]
+    fn a_thin_pitch_hands_the_tie_over_whole() {
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        let many = aged_eleven(1, 25, 25, 0, today);
+        let few: Vec<Player> =
+            (30..36).map(|id| aged_player(id, 5, 4, 25, 0, 0, today)).collect();
+        let also: Vec<Player> =
+            (40..46).map(|id| aged_player(id, 5, 4, 25, 0, 0, today)).collect();
+        let many: Vec<&Player> = many.iter().collect();
+        let few: Vec<&Player> = few.iter().collect();
+        let also: Vec<&Player> = also.iter().collect();
+        let mut m = fixture();
+        assert_eq!([m.sides[0].men, m.sides[1].men], [11, 11]);
+        let mut r = Random::new(11);
+        penalty_shootout(&mut m, (&few, &many), today, &mut r);
+        assert_eq!([m.goals[0], m.goals[1]], [1, 3]);
+        // an equal pair of thin pitches gives the three to the first side,
+        // and neither walk draws a number
+        let mut m = fixture();
+        penalty_shootout(&mut m, (&few, &also), today, &mut r);
+        assert_eq!([m.goals[0], m.goals[1]], [3, 1]);
+        assert_eq!(r, Random::new(11), "the away-hand walk draws nothing");
+    }
+
+    #[test]
+    fn the_shootout_draws_its_takers_without_replacement() {
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        let men = aged_eleven(1, 25, 25, 0, today);
+        let men: Vec<&Player> = men.iter().collect();
+        let mut list = [0u16; SHOOTOUT_SLOTS];
+        let mut r = Random::new(5);
+        fill_takers(&men, &mut list, 0, SHOOTOUT_TAKERS, &mut r);
+        assert!(list[..SHOOTOUT_TAKERS].iter().all(|id| *id != 0));
+        for i in 0..SHOOTOUT_TAKERS {
+            for j in i + 1..SHOOTOUT_TAKERS {
+                assert_ne!(list[i], list[j], "no man steps up twice");
+            }
+        }
+        let mut expect = Random::new(5);
+        for n in [11u32, 10, 9, 8, 7] {
+            expect.below(n);
+        }
+        assert_eq!(r, expect, "one draw below the pool's shrinking size");
+        // the sudden death's one taker skips the five already listed
+        fill_takers(&men, &mut list, SHOOTOUT_TAKERS, 1, &mut r);
+        expect.below(6);
+        assert_ne!(list[SHOOTOUT_TAKERS], 0);
+        assert!(!list[..SHOOTOUT_TAKERS].contains(&list[SHOOTOUT_TAKERS]));
+        assert_eq!(r, expect);
+        // a pitch thinner than the order takes its first standing man for
+        // every slot, and rolls nothing
+        let few: Vec<Player> =
+            (30..33).map(|id| aged_player(id, 5, 4, 25, 0, 0, today)).collect();
+        let few: Vec<&Player> = few.iter().collect();
+        let mut list = [0u16; SHOOTOUT_SLOTS];
+        fill_takers(&few, &mut list, 0, SHOOTOUT_TAKERS, &mut r);
+        assert_eq!(&list[..SHOOTOUT_TAKERS], &[30u16; SHOOTOUT_TAKERS]);
+        assert_eq!(r, expect, "the fallback draws nothing");
+    }
+
+    #[test]
+    fn the_shootout_kick_weighs_its_pressure_before_the_dice() {
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        let taker = aged_player(1, 5, 4, 25, 0, 0, today);
+        let keeper = aged_player(2, 8, world::GOALKEEPER, 25, 0, 0, today);
+        let mut r = Random::new(4);
+        // the sudden death's weight settles the kick before anything else,
+        // and draws nothing
+        assert!(!penalty_kick(Some(&taker), Some(&keeper), -1, today, &mut r));
+        assert!(penalty_kick(Some(&taker), Some(&keeper), 1, today, &mut r));
+        // nobody listed misses, and an empty keeper's place buries it
+        assert!(!penalty_kick(None, Some(&keeper), 0, today, &mut r));
+        assert!(penalty_kick(Some(&taker), None, 0, today, &mut r));
+        assert_eq!(r, Random::new(4), "none of these reaches the dice");
+        // the dice themselves, each on its own stream
+        let mut r = Random::new(4);
+        assert!(penalty_kick(Some(&taker), Some(&keeper), 0, today, &mut r));
+        let mut expect = Random::new(4);
+        // at twenty-five the strike stands at a hundred and sixty under a
+        // twenty-five-year-old keeper's fifty: below a hundred, always in
+        expect.below(100);
+        assert_eq!(r, expect);
+        let mut r = Random::new(4);
+        let shaky = aged_player(3, 5, 4, 17, 0, BIG_WORD, today);
+        let old = aged_player(4, 8, world::GOALKEEPER, 64, 0, 0, today);
+        assert!(!penalty_kick(Some(&shaky), Some(&old), 0, today, &mut r));
+        // a seventeen-year-old marked down for the spot before a
+        // sixty-four-year-old keeper falls ten below the reach: out under
+        // any throw
+        let mut expect = Random::new(4);
+        expect.below(100);
+        assert_eq!(r, expect);
+        // the keeper's line: the same young man unafraid of the spot
+        // strikes from a hundred and thirty-eight under the old keeper's
+        // a hundred and twenty-eight — out under nought, but a keeper
+        // who cannot hold his line lets fifteen through
+        let brave = aged_player(5, 5, 4, 17, BIG_WORD, 0, today);
+        let gift = aged_player(6, 8, world::GOALKEEPER, 64, 0, KEEPER_GIFT, today);
+        let narrow = (1u64..).find(|&s| (10..15).contains(&Random::new(s).below(100))).unwrap();
+        assert!(!penalty_kick(Some(&brave), Some(&old), 0, today, &mut Random::new(narrow)));
+        assert!(penalty_kick(Some(&brave), Some(&gift), 0, today, &mut Random::new(narrow)));
+        // and one who holds it shuts fifteen out again
+        let stout = aged_player(7, 8, world::GOALKEEPER, 64, KEEPER_GIFT, 0, today);
+        assert!(!penalty_kick(Some(&brave), Some(&stout), 0, today, &mut Random::new(narrow)));
+    }
+
+    #[test]
+    fn a_shootout_of_certain_kicks_needs_three_sudden_rounds() {
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        // men of twenty-five before keepers of twenty-five strike from a
+        // hundred and sixty under fifty: every dice kick lands
+        let a = aged_eleven(1, 25, 25, 0, today);
+        let b = aged_eleven(20, 25, 25, 0, today);
+        let a: Vec<&Player> = a.iter().collect();
+        let b: Vec<&Player> = b.iter().collect();
+        let mut m = fixture();
+        let mut r = Random::new(7);
+        penalty_shootout(&mut m, (&a, &b), today, &mut r);
+        // five apiece in the round, then the sudden death decides in its
+        // third one: at seven and seven the past-twelve weight lifts the
+        // first side's kick and weighs the second's down, so the first
+        // side takes it whichever way the coin fell
+        assert_eq!([m.goals[0], m.goals[1]], [8, 7]);
+        // the stream: the coin, the five takers a side out of eleven, the
+        // round's ten rolls, and only then every sudden round's one taker
+        // at the pool's shrinking size before its two rolls — the third
+        // round rolls no dice
+        let mut expect = Random::new(7);
+        expect.below(2);
+        for n in [11u32, 10, 9, 8, 7] {
+            expect.below(n);
+        }
+        for n in [11, 10, 9, 8, 7] {
+            expect.below(n);
+        }
+        for _ in 0..10 {
+            expect.below(100);
+        }
+        expect.below(6);
+        expect.below(6);
+        expect.below(100);
+        expect.below(100);
+        expect.below(5);
+        expect.below(5);
+        expect.below(100);
+        expect.below(100);
+        expect.below(4);
+        expect.below(4);
+        assert_eq!(r, expect, "the shootout's whole draw stream");
+    }
+
+    #[test]
+    fn the_shootout_gives_up_while_the_trailing_side_can_no_longer_reach() {
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        // the first side's men of twenty-five reach a hundred and twenty-six
+        // over the second side's young keeper, and their keeper's own sixty-
+        // four years reach further still; the second side's men of seventeen
+        // marked down for the spot strike from fifty past sixty-eight under
+        // the first side's old keeper's a hundred and twenty-eight — out,
+        // and their own young keeper no better off; every kick is settled
+        let a = aged_eleven(1, 64, 25, 0, today);
+        let b = aged_eleven(20, 17, 17, BIG_WORD, today);
+        let a: Vec<&Player> = a.iter().collect();
+        let b: Vec<&Player> = b.iter().collect();
+        // whichever side steps up first, the walk gives up on the sixth
+        // kick: the first side has three, the second none, and two kicks
+        // left reach no more than two — the check after the sixth spare the
+        // rest, whoever took it
+        let seeds = [
+            (1u64..).find(|&s| Random::new(s).below(2) == 0).unwrap(),
+            (1u64..).find(|&s| Random::new(s).below(2) != 0).unwrap(),
+        ];
+        for seed in seeds {
+            let mut m = fixture();
+            let mut r = Random::new(seed);
+            penalty_shootout(&mut m, (&a, &b), today, &mut r);
+            assert_eq!([m.goals[0], m.goals[1]], [3, 0], "seed {seed}");
+            let mut expect = Random::new(seed);
+            expect.below(2);
+            for n in [11u32, 10, 9, 8, 7] {
+                expect.below(n);
+            }
+            for n in [11, 10, 9, 8, 7] {
+                expect.below(n);
+            }
+            for _ in 0..6 {
+                expect.below(100);
+            }
+            assert_eq!(r, expect, "six kicks and their rolls, seed {seed}");
+        }
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_saved_eleven_takes_its_shootout_to_a_decision() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        // the first German club's eleven standing on both pitches: real
+        // ages, so the kicks are dice from the first — and the walk
+        // reaches a decision, the past-twelve weight ending any run of
+        // equal kicks
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 0];
+        let att = side_men(&m, 0, &records);
+        let def = side_men(&m, 1, &records);
+        assert_eq!([att.len(), def.len()], [11, 11]);
+        let today = NaiveDate::from_ymd_opt(2000, 6, 15).unwrap();
+        penalty_shootout(&mut m, (&att, &def), today, &mut Random::new(7));
+        assert!(m.goals[0] != m.goals[1], "{:?}", m.goals);
     }
 }
