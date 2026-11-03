@@ -460,6 +460,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::statistics::open_lists(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
+    crate::finances::keep_last_season(records);
     clear_bookings(records);
 }
 

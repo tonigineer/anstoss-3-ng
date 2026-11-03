@@ -583,6 +583,46 @@ pub fn this_week(team: &Team, manager: &Manager) -> [i64; SLOTS] {
     })
 }
 
+/// The club's season block the new season keeps as last season's
+/// (`FUN_006720d8`): its club offsets +0x210 to +0x5f8 — the cash and
+/// accounts, the transfers and the rest — into the extra data from +0x4b0
+/// (the club object's +0x5f8).
+const SEASON_BLOCK: usize = 0x210;
+const SEASON_BLOCK_LEN: usize = 0x3e8;
+const LAST_SEASON_BLOCK: usize = 0x4b0;
+/// The kept accounts' field the copy overwrites with the season plan's
+/// other costs and the departments (club +0x6a8, `FUN_006743db` on the
+/// plan).
+const LAST_OTHER_COSTS: usize = LAST_SEASON + 0x98;
+const PLAN_OTHER_COSTS: [usize; 5] = [0x90, 0x98, 0xa0, 0xe8, 0x8c];
+
+/// The new season keeps each human club's closing season as its last
+/// (the season start's event 0x82, `FUN_00671d57` → `FUN_006720d8`): the
+/// club's season block copied into its extra data, the kept accounts'
+/// other costs set to the plan's with the departments, and from the
+/// second season on the mark that a last season stands. The season start's
+/// negotiations it then opens (`CSaisonstartVerhandlungen`, the European
+/// TV talks) are not built.
+pub fn keep_last_season(records: &mut Records) {
+    let second = records.globals.seasons() > 1;
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(slot) = records.human_slot(n) else { continue };
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        let Some(team) = u16::try_from(number).ok().and_then(|t| records.team(country as u16, t)) else { continue };
+        let block = team.bytes()[at(SEASON_BLOCK) - TEAM_BASE..at(SEASON_BLOCK) - TEAM_BASE + SEASON_BLOCK_LEN].to_vec();
+        let plan = Accounts::plan(team);
+        let other = PLAN_OTHER_COSTS.iter().fold(0i32, |s, &f| s.wrapping_add(plan.i32_(f))).wrapping_add(departments(team));
+        let Some(extra) = records.extras.get_mut(slot) else { continue };
+        for (k, &b) in block.iter().enumerate() {
+            extra.put::<u8>(LAST_SEASON_BLOCK + k, b);
+        }
+        extra.put::<i32>(LAST_OTHER_COSTS, other);
+        if second {
+            extra.put::<i16>(HAS_LAST_SEASON, 1);
+        }
+    }
+}
+
 /// The slots of last season's figures (the screen's "Vergleich mit
 /// Vorjahr"), the departments at their levels now; the first part of the
 /// other income is the one already in `slots`, which the game leaves
@@ -1233,6 +1273,37 @@ mod season_tests {
     use super::*;
     use crate::random::Random;
     use crate::records::Globals;
+
+    /// The human club's last season over the original's pair: SeasonEnd364
+    /// settled and its new season's copy made by the replica, the human
+    /// club's extra data holds last season's block as NewSeason000 keeps it
+    /// but for seven bytes — the cash word the season start moves on, one
+    /// field set later, and the main sponsor's and two more contracts'
+    /// flags the original ends with the season (not built) — the other
+    /// costs and the mark of a last season among the same.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_keeps_the_human_clubs_last_season_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = crate::league::LeagueTables::load(&exe).unwrap();
+        crate::settlement::settle_season(&mut ours, &tables);
+        ours.globals.set_seasons(2);
+        keep_last_season(&mut ours);
+        let slot = ours.human_slot(0).unwrap();
+        let (x, y) = (&ours.extras[slot], &theirs.extras[slot]);
+        let differ: Vec<usize> = (LAST_SEASON_BLOCK..LAST_SEASON_BLOCK + SEASON_BLOCK_LEN)
+            .filter(|&at| x.get::<u8>(at) != y.get::<u8>(at))
+            .collect();
+        assert!(differ.len() <= 7, "{} bytes differ: {differ:x?}", differ.len());
+        assert_eq!(x.get::<i32>(LAST_OTHER_COSTS), y.get::<i32>(LAST_OTHER_COSTS));
+        assert_eq!(x.get::<i16>(HAS_LAST_SEASON), 1);
+        assert_eq!(y.get::<i16>(HAS_LAST_SEASON), 1);
+    }
 
     /// Whether a season's rates keep `FUN_00648a99`'s bands: the loans'
     /// rate on the year's wave less fifties, the rest by its band.
