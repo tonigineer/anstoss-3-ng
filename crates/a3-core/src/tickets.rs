@@ -523,8 +523,19 @@ pub fn cup_winner(records: &Records, country: u8, tables: &TicketTables) -> Opti
     if cup.get(FINAL_FLAGS + at)? & played != played {
         return None;
     }
-    let winner = if *cup.get(FINAL_WINNER + at)? == 0 { 0xe } else { 0x12 };
-    Some(word(cup, winner + at) as u16)
+    cup_final(records, country, tables).map(|(winner, _)| winner)
+}
+
+/// The two clubs of a country's cup final as its winner and its loser go,
+/// asked without regard to whether it is played (`FUN_006d144b`,
+/// `FUN_006d14ae`: the side the final's winner byte names, and the other).
+pub fn cup_final(records: &Records, country: u8, tables: &TicketTables) -> Option<(u16, u16)> {
+    let slot = records.countries.slot(usize::from(country));
+    let cup = records.block(&format!("{CUP_AT:#x}[{slot}]"))?;
+    let cup_type = usize::try_from(word(cup, CUP_TYPE_AT)).ok()?;
+    let at = usize::try_from(tables.final_pairing(cup_type)).ok()? * PAIRING;
+    let (home, away) = (word(cup, 0xe + at) as u16, word(cup, 0x12 + at) as u16);
+    Some(if *cup.get(FINAL_WINNER + at)? == 0 { (home, away) } else { (away, home) })
 }
 
 /// The matchdays of a club's league, and those played: none for a low or

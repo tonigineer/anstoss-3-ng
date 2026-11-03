@@ -220,6 +220,14 @@ pub struct Row {
     flags: u16,
 }
 
+impl Row {
+    /// Whether the club is sent to the bottom of its table (its flags'
+    /// 0x80): it goes down whatever its place.
+    pub fn sent_down(&self) -> bool {
+        self.flags & LAST != 0
+    }
+}
+
 const PENALTY: u16 = 3;
 const PENALTY_POINTS: i32 = 3;
 const LAST: u16 = 0x80;

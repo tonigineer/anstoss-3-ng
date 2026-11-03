@@ -8914,6 +8914,7 @@ mod tests {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let mut before = None;
         let (mut eternal, mut running, mut closed) = (Vec::new(), 0, Vec::new());
+        let mut moved: (Vec<i16>, Vec<i16>) = (Vec::new(), Vec::new());
         let root = patched(&dir, "A", "season-kept", |records| {
             records.globals.set_day(320);
             let nation = u16::try_from(records.globals.main_country()).unwrap();
@@ -8926,6 +8927,12 @@ mod tests {
                 .map(|r| (r.team as u8, r.games as i16, r.points as i16, r.goals_for as i16, r.goals_against as i16))
                 .collect();
             closed.sort();
+            let level1 = a3_core::opponent::League::of(records, nation, 1).unwrap();
+            let second = a3_core::statistics::table(records, &level1, a3_core::statistics::ALL);
+            moved = (
+                table.iter().rev().take(3).map(|r| r.team).collect(),
+                second.iter().take(3).map(|r| r.team).collect(),
+            );
             let id = kept_player(records).expect("a kept country's player");
             let year = records.globals.start_year();
             let p = records.player_mut(id).unwrap();
@@ -8968,6 +8975,19 @@ mod tests {
             archived.rows.iter().map(|r| (r.team, r.games, r.points, r.goals_for, r.goals_against)).collect();
         rows.sort();
         assert_eq!(rows, closed, "the closed season archived");
+        // The Bundesliga's bottom three play the 2. Bundesliga now, its
+        // top three the Bundesliga, and every club stands at its list's
+        // level and place.
+        let level = |team: i16| records.team(nation, team as u16).unwrap().level();
+        assert!(moved.0.iter().all(|&t| level(t) == 1), "relegated {:?}", moved.0);
+        assert!(moved.1.iter().all(|&t| level(t) == 0), "promoted {:?}", moved.1);
+        for l in 0..records.countries.leagues(usize::from(nation)) as u8 {
+            let league = a3_core::opponent::League::of(records, nation, l).unwrap();
+            for place in 0..league.teams() {
+                let team = records.team(nation, league.team(place) as u16).unwrap();
+                assert_eq!((team.level(), usize::from(team.league_place())), (l, place));
+            }
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

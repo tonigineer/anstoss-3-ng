@@ -36,10 +36,11 @@
 //! national-team money — it has not built.
 //!
 //! Checked against the original's last day before its season end and its
-//! first day after: 86 of the 212 clubs settle to the euro, 43 of them
-//! taxed. Nearly all clubs that won a title, went up or down or reached
-//! Europe differ — the season-end steps before the settlement, not built
-//! here, move their money first.
+//! first day after: with the season's flags booked before it
+//! ([`crate::promotion::flag`]) 109 of the 212 clubs settle to the euro
+//! (86 without). Most of the others reached Europe or are moved by the
+//! season-end steps before the settlement that are not built here — the
+//! European places' flags (`FUN_0041a3ef`) among them.
 
 use chrono::{Datelike, NaiveDate};
 
@@ -445,6 +446,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::opponent::open_leagues(records);
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
+    crate::promotion::place(records);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
     clear_bookings(records);

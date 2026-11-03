@@ -44,6 +44,7 @@ pub mod refit;
 pub mod rollover;
 pub mod rooms;
 pub mod presale;
+pub mod promotion;
 pub mod season;
 pub mod settlement;
 pub mod sim;
