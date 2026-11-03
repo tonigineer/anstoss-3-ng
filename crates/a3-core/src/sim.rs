@@ -207,10 +207,11 @@ pub struct Side {
     /// +0xf6 (record +0x152/+0x346): set while the press window is open.
     pub pressed: u16,
     /// +0xfa (record +0x156/+0x34a): the side's entered men, short ids.
-    /// The original copies these from its line-up (runtime +0x8e) or the
-    /// pre-match squads in `FUN_0078b26c`; the replica stands its eleven
-    /// in when a walk with the records starts (`fill_entries`), the seven
-    /// reserve places left nought with the stand-in.
+    /// The original copies these from its line-up (runtime +0x8e, the
+    /// manager's saved eleven and bench) or the pre-match squads in
+    /// `FUN_0078b26c`; the walk enters the saved formation when the
+    /// team record keeps one and its own eleven otherwise
+    /// (`fill_entries`), the reserve places nought with the stand-in.
     pub entries: [u16; LEDGER_SLOTS],
     /// +0x1c0 (record +0x21c/+0x410): one ledger byte per entered man,
     /// read together with `entries` by `book_event`, `own_goal_mark` and
@@ -947,13 +948,14 @@ fn book_goal(m: &mut Match, which: usize, id: u16, kind: i16) {
 /// him in both of the event's branches — `FUN_00741038` his saved byte
 /// at the miss, `FUN_00740fb6` the conceded one at the goal, both
 /// behind the usual kind gate and asking a club man by the player
-/// object's type byte +0x3. The replica's walk stands its own eleven
-/// in the entry slots before its first minute (`fill_entries`), the
-/// keeper first (`matches::eleven`), so the defending side's first
-/// entered man stands for the line-up's first short, and its nought
-/// matches the line-up's; a national tie's keeper fails the type byte,
-/// and the replica stands national ties off the books through
-/// `nat_bits` besides.
+/// object's type byte +0x3. The replica's walk enters the side's
+/// formation in the entry slots before its first minute
+/// (`fill_entries`), the keeper first — the saved eleven's first place,
+/// `matches::eleven` standing when none is saved — so the defending
+/// side's first entered man stands for the line-up's first short, and
+/// its nought matches the line-up's; a national tie's keeper fails the
+/// type byte, and the replica stands national ties off the books
+/// through `nat_bits` besides.
 fn book_keeper(m: &mut Match, which: usize, saved: bool) {
     let id = m.sides[1 - which].entries[0];
     if id == 0 {
@@ -1063,8 +1065,9 @@ fn shot_rating(p: &Player) -> i32 {
 /// The shot's band of the man's position kind (`FUN_00696cc5`'s field
 /// classifier, then `FUN_0077db3a`'s bands): the keeper takes no shot at
 /// goal at all, the back pair stands at one, the half pair at one or two
-/// (two when the slot sits on the half line — the formation slot's place
-/// waits with `matches::eleven`'s stand-in), the half-forward pair at three,
+/// (two when the slot sits on the half line — the walk plays the
+/// manager's eleven but the band still reads his main position, not the
+/// formation's spot at the record's +0x194), the half-forward pair at three,
 /// the runner at two, the forward at four, the spearhead at six; the
 /// original drops a marked man on the side's bit at +0x40 one band down.
 fn shot_band(kind: u8) -> i32 {
@@ -1216,31 +1219,75 @@ pub fn own_goal_mark(m: &Match, id: u16) -> bool {
     false
 }
 
-/// The side's men on the pitch, as records: its club's squad through the
-/// replica's eleven (`crate::matches::eleven` — the original reads the
-/// manager's saved formation from the club at +0xa9a, which the replica
-/// does not keep; the deviation matches the stand-in's).
-fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
+/// The side's team record's saved formation, when it stands complete:
+/// the manager's eleven at the record's +0x148 and his bench at +0x15e
+/// (`Player ids of the eleven and the bench, 0 an empty place`). The
+/// save's club block carries the same eleven at +0xa9a: the loader
+/// `FUN_0063b75a` copies the 0xaa bytes there from the record
+/// (134811ff), the save-back copies them home (134954), and the walk
+/// copies the eleven into the match's side block at +0x8e
+/// (`memcpy(side + 0x8e, club + 0xa9a, 0x16)`, _global.c 221842). A
+/// side whose record lists an incomplete eleven — a computer club or a
+/// national selection, which the pre-match squads in `FUN_0078b26c`
+/// stand in the original's way — stands none.
+fn saved_formation(team: &crate::records::Team) -> Option<([u16; 11], [u16; 7])> {
+    (team.lineup().iter().all(|&id| id != 0)).then(|| (team.lineup(), team.bench()))
+}
+
+/// The side's eleven on the pitch: the manager's saved eleven when his
+/// record stands one, the replica's strongest otherwise (the stand-in
+/// in `crate::matches::eleven` for the pre-match squads the replica
+/// does not run). The original keeps the formation's place order; the
+/// list's first short is the keeper, and the taker fallbacks read
+/// exactly that (`+0xa9a`'s first place). The line-up screen's
+/// substitution helpers — they replace an injured or suspended listed
+/// man — run when the manager visits, not in the walk; the replica
+/// stands the listed man as saved.
+fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
     let at = which * 2;
-    let squad = records.team(m.ids[at], m.ids[at + 1]).map(|t| t.players()).unwrap_or_default();
-    crate::matches::eleven(&squad, records)
+    let team = match records.team(m.ids[at], m.ids[at + 1]) {
+        Some(team) => team,
+        None => return Vec::new(),
+    };
+    match saved_formation(team) {
+        Some((lineup, _)) => lineup.to_vec(),
+        None => crate::matches::eleven(&team.players(), records),
+    }
+}
+
+/// The side's men on the pitch, as records: its eleven in the
+/// formation's place order (or the stand-in's strongest), each looked
+/// up in its record.
+fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
+    saved_eleven(m, which, records)
         .into_iter()
         .filter_map(|id| records.player(id))
         .collect()
 }
 
 /// Enter the side's men in the record's entered slots (the original's
-/// +0xfa, filled from the line-up at runtime +0x8e or by the pre-match
-/// squads in `FUN_0078b26c` — both work on club objects the replica has
-/// not). The original enters eighteen men, eleven on the pitch and seven
-/// at the reserve's place; the replica's stand-in enters its eleven and
-/// leaves the rest nought. The slots are where `book_event` hangs its
-/// ledger bytes, and the halftime dialog walks them; the fill draws
-/// nothing.
+/// +0xfa, filled from the line-up at runtime +0x8e — the saved eleven —
+/// or by the pre-match squads in `FUN_0078b26c`, which work on club
+/// objects the replica has not). The original enters eighteen men,
+/// eleven on the pitch and seven at the reserve's place: the saved
+/// formation's eleven and bench, the record's +0x148 and +0x15e, an
+/// empty place nought. Without a saved formation the replica's
+/// stand-in enters its eleven and leaves the rest nought. The slots are
+/// where `book_event` hangs its ledger bytes, and the halftime dialog
+/// walks them; the fill draws nothing.
 fn fill_entries(m: &mut Match, which: usize, records: &Records) {
-    let men = side_men(m, which, records);
-    for (slot, p) in m.sides[which].entries.iter_mut().zip(men) {
-        *slot = p.id();
+    let at = which * 2;
+    let ids = records
+        .team(m.ids[at], m.ids[at + 1])
+        .and_then(|t| saved_formation(&t))
+        .map(|(lineup, bench)| {
+            let mut ids: Vec<u16> = lineup.to_vec();
+            ids.extend_from_slice(&bench);
+            ids
+        })
+        .unwrap_or_else(|| saved_eleven(m, which, records));
+    for (slot, id) in m.sides[which].entries.iter_mut().zip(ids) {
+        *slot = id;
     }
 }
 
@@ -1284,7 +1331,7 @@ fn designated_taker(m: &Match, which: usize, records: &Records, duty: Duty, from
             }
         })
         .collect();
-    let eleven = crate::matches::eleven(&squad, records);
+    let eleven = saved_eleven(m, which, records);
     let pitch = eleven.get(from..).unwrap_or(&[]);
     duties::normalise(&men, &list)
         .into_iter()
@@ -1602,17 +1649,14 @@ fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
 /// at +0x58, which `FUN_006f8dc7` fills from the played flags at +0x57:
 /// the eleven stand ninety minutes, a hundred and twenty with extra time,
 /// and a substitute at minute m plays ninety minus m; the replica knows no
-/// substitutions yet, so its eleven stands whole and the bench stays
-/// untouched.
+/// substitutions yet, so its formation's eleven stands whole and its
+/// bench — the saved seven at the record's +0x15e — stays untouched.
 pub fn post_match_wear(m: &Match, records: &mut Records) {
     let extra = m.flags & EXTRA != 0;
     let minutes = if extra { 120 } else { 90 };
     for which in 0..2 {
         let mult = WEAR_MULT[wear_band(m.sides[which].fatigue, extra)];
-        let at = which * 2;
-        let squad =
-            records.team(m.ids[at], m.ids[at + 1]).map(|t| t.players()).unwrap_or_default();
-        for id in crate::matches::eleven(&squad, records) {
+        for id in saved_eleven(m, which, records) {
             if let Some(p) = records.player_mut(id) {
                 wear_man(p, minutes, mult);
             }
@@ -2662,10 +2706,11 @@ mod tests {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
-        // the first German club's eleven, on a side that walked its minutes
-        // at an even hundred a minute — the multiplier ten, the ninety's row
-        let ids = crate::matches::eleven(&records.team(0, 0).unwrap().players(), &records);
-        assert!(!ids.is_empty());
+        // the first German club's saved eleven, on a side that walked its
+        // minutes at an even hundred a minute — the multiplier ten, the
+        // ninety's row; the save's manager stands his full formation
+        let ids: Vec<u16> = records.team(0, 0).unwrap().lineup().into_iter().collect();
+        assert_eq!(ids.iter().filter(|&&id| id != 0).count(), 11);
         let before: Vec<(i16, [i16; 3])> = ids
             .iter()
             .map(|id| {
@@ -3118,21 +3163,30 @@ mod tests {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
-        // the first German club's eleven on both pitches: the walk's
-        // first act with the records stands them in the entered slots,
-        // so from the first minute the books find their men
+        // the first German club's manager on both pitches: the walk's
+        // first act with the records enters his saved eighteen — the
+        // eleven at the record's +0x148 and the bench at +0x15e — so
+        // from the first minute the books find their men
         let mut m = fixture();
         m.ids = [0, 0, 0, 0];
         play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), test_day(), &mut Random::new(5));
         for which in 0..2 {
-            let men = side_men(&m, which, &records);
-            let entered: Vec<u16> = men.iter().map(|p| p.id()).collect();
+            let team = records
+                .team(m.ids[which * 2], m.ids[which * 2 + 1])
+                .expect("the save's first club");
+            let saved: Vec<u16> = team.lineup().into_iter().chain(team.bench()).collect();
             assert_eq!(
-                &m.sides[which].entries[..entered.len()],
-                entered.as_slice(),
-                "side {which} stands entered"
+                &m.sides[which].entries[..],
+                saved.as_slice(),
+                "side {which} stands its manager's eighteen entered"
             );
-            assert!(m.sides[which].entries[entered.len()..].iter().all(|id| *id == 0));
+            let keeper = records.player(m.sides[which].entries[0]);
+            assert!(
+                keeper.is_some_and(|p| p.positions()[0] == world::GOALKEEPER),
+                "the line-up's first short names the keeper"
+            );
+            let pitch: Vec<u16> = side_men(&m, which, &records).iter().map(|p| p.id()).collect();
+            assert_eq!(pitch, team.lineup().to_vec(), "side {which} plays its manager's eleven");
         }
     }
 
@@ -3189,9 +3243,9 @@ mod tests {
         // here each man takes it twice; the national tie in the same
         // row, which the walk leaves to the bulk pre-match simulation,
         // adds nothing, and the club's reserve stands unworn
-        let squad = records.team(0, 0).unwrap().players();
-        let men = crate::matches::eleven(&squad, &records);
-        let bench: Vec<u16> = squad.iter().copied().filter(|id| !men.contains(id)).take(3).collect();
+        let team = records.team(0, 0).unwrap();
+        let men: Vec<u16> = team.lineup().into_iter().collect();
+        let bench: Vec<u16> = team.bench()[..3].to_vec();
         let before: Vec<(i16, [i16; 3])> = men
             .iter()
             .chain(&bench)
@@ -3251,8 +3305,7 @@ mod tests {
         m.ids = [manager.country(), manager.team(), manager.country(), manager.team()];
         let team = records.team(m.ids[0], m.ids[1]).expect("the manager's club");
         assert_ne!(team.human(), 0, "the manager's club names him at +0xb5");
-        let squad = team.players();
-        let eleven = crate::matches::eleven(&squad, &records);
+        let eleven = saved_eleven(&m, 0, &records);
         let extra = &records.extras[usize::from(team.human()) - 1];
         for (from, duty) in [(0, Duty::Penalty), (1, Duty::ShotFreeKick)] {
             let want = extra.duty_lists()[duty.stored()]

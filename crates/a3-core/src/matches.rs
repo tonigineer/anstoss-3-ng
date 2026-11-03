@@ -944,13 +944,15 @@ fn available(records: &Records, id: u16) -> bool {
     })
 }
 
-/// The eleven a side puts on the pitch: of the players it lists, those
-/// fit and free — no injury (+0x228), no match suspension (+0x229) or
-/// weeks of a ban (+0x22a), and not marked suspended for the match
-/// (+0x26b bit 4) — the keeper first, the strongest who names him one,
-/// and the ten strongest field players beside him. The original follows
-/// the manager's formation; the replica has none of his yet and takes
-/// the strongest.
+/// The eleven a side puts on the pitch when no formation stands: of the
+/// players it lists, those fit and free — no injury (+0x228), no match
+/// suspension (+0x229) or weeks of a ban (+0x22a), and not marked
+/// suspended for the match (+0x26b bit 4) — the keeper first, the
+/// strongest who names him one, and the ten strongest field players
+/// beside him. The engine walk reads the manager's saved eleven instead
+/// (`sim::saved_eleven`); this stands for the sides whose record lists
+/// none, and for the fixture paths (`mark_match`, the cup ties), where
+/// the original still picks from its own squads.
 pub(crate) fn eleven(squad: &[u16], records: &Records) -> Vec<u16> {
     let strength = |id: u16| u32::from(records.player(id).map_or(0, |p| p.strength()));
     let mut fit: Vec<u16> = squad.iter().copied().filter(|&id| available(records, id)).collect();
