@@ -448,6 +448,7 @@ fn clear_club(team: &mut Team) {
 /// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
     roll_globals(&mut records.globals, random);
+    clear_objects(records);
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
@@ -460,6 +461,33 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
     clear_bookings(records);
+}
+
+/// The objects the new season clears whole (`FUN_0065e659`'s
+/// `FUN_007cff4b` calls): three without a reader in the replica, the
+/// eleven of the year (`0xa2e0d8`), the extension talks
+/// (`0x1c53ee8`), the negotiation appointments (`0x1c54000`) and
+/// `0x8eabe8`. The tables of the countries kept in short start afresh,
+/// each its country's number only (`FUN_006815cf`).
+const CLEARED_OBJECTS: [&str; 7] = ["0x1c51940", "0x1c4be78", "0x1baa1e0", "0x8eabe8", "0xa2e0d8", "0x1c54000", "0x1c53ee8"];
+const KEPT_TABLES: &str = "0xb9f8f8";
+const KEPT_TABLE: usize = 0xc;
+const KEPT_COUNTRIES: usize = 0x75;
+
+fn clear_objects(records: &mut Records) {
+    for name in CLEARED_OBJECTS {
+        if let Some(b) = records.block_mut(name) {
+            b.fill(0);
+        }
+    }
+    if let Some(b) = records.block_mut(KEPT_TABLES) {
+        b.fill(0);
+        for country in 1..KEPT_COUNTRIES {
+            if let Some(w) = b.get_mut(country * KEPT_TABLE..country * KEPT_TABLE + 2) {
+                w.copy_from_slice(&(country as i16).to_le_bytes());
+            }
+        }
+    }
 }
 
 /// The counters and the July calendar of the new season, as the original
@@ -977,6 +1005,27 @@ mod tests {
             );
             assert_eq!((g.europe_stage(), g.uefa_round()), (0, -1));
             assert!(g.lottery() < 1000, "a lottery drawn for the season after");
+        }
+    }
+
+    /// The objects the new season clears, over the original's pair: the
+    /// eleven of the year, the talks booked, the appointments and the
+    /// others stand as NewSeason000 keeps them, and so do the tables of the
+    /// countries kept in short, their country numbers only (`0x1c4be78`,
+    /// which the original fills again, aside).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_clears_its_objects_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        clear_objects(&mut ours);
+        for name in CLEARED_OBJECTS.into_iter().filter(|&n| n != "0x1c4be78").chain([KEPT_TABLES]) {
+            assert_eq!(ours.block(name), theirs.block(name), "{name}");
         }
     }
 
