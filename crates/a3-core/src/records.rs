@@ -959,6 +959,21 @@ record! {
     /// `FUN_006ddc1b` reads them for dialog 211's Vertrag (`FUN_006a426b`).
     0x15c => pay_fixed, set_pay_fixed: i32;
     0x160 => pay_point, set_pay_point: i32;
+    /// The premiums the same contract carries: the cup rounds pay the
+    /// trainer one for every round he reaches (`FUN_006cebcd`), a title, a
+    /// promotion or a cup final pay the manager one (`FUN_006228c0`), and
+    /// reaching the class goal pays him one (`FUN_0062292a`) — all into
+    /// [`Manager::cash`] and into the club's bonuses paid. The manager
+    /// object's +0x58, +0x5c and +0x60, the three behind the pay in
+    /// `FUN_006a426b`'s copy of twenty bytes from +0x15c.
+    0x164 => cup_premium, set_cup_premium: i32;
+    0x168 => title_premium, set_title_premium: i32;
+    0x16c => goal_premium, set_goal_premium: i32;
+    /// The class his goal asks for: what the club's own season goal
+    /// (team +0x136) stands at when the board sets it, copied into the
+    /// manager object's +0x64; `FUN_0062292a` pays [`Manager::goal_premium`]
+    /// once the place reaches it.
+    0x170 => goal_class, set_goal_class: i16;
     /// What the game counts as his money, the first mark of the
     /// comparison with the other managers: the manager object's +0x98
     /// (`FUN_006dda52`; ERFOLGE.md §A.6).
