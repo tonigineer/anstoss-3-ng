@@ -2765,6 +2765,135 @@ const ARCHIVE_ROW: usize = 0x60;
 const PLACES_AT: usize = 0x46 - 0x20;
 const PLACES_ROW: usize = 0x18;
 
+/// Every club's squad strength by season (`0xaf9660[slot]`, from +0x20):
+/// 108 clubs of five entries of four bytes — the league's level, a naught,
+/// the sum of the squad's strengths —, the newest last; and its table
+/// place by season (`0xafc130[slot]`): twenty entries of four bytes — the
+/// level, a naught, the place —, the newest last.
+const STRENGTHS_AT: u32 = 0xaf9660;
+const PLACES_BY_SEASON_AT: u32 = 0xafc130;
+const HISTORY_CLUBS: usize = 0x6c;
+const STRENGTH_ENTRY: usize = 0x14;
+const PLACE_ENTRY: usize = 0x50;
+/// The strongest squad of each season of the game (`0xb07ff0`, from +0x20):
+/// twenty entries of ten bytes — the year, the country, the club, the sum
+/// of strengths, the squad's size —; the year it last moved on at +0xbe.
+const STRONGEST_AT: &str = "0xb07ff0";
+const STRONGEST: usize = 10;
+const STRONGEST_SEASONS: i32 = 20;
+const STRONGEST_MOVED: usize = 0xbe;
+/// The year the game began (`DAT_00b5cbcc`).
+const FIRST_YEAR: usize = 0xb5cbcc;
+/// A player's goals season by season (R+0x2a9): bit 7 that the season
+/// counts, at most 63 goals; twenty seasons, then moving on.
+const SEASON_GOALS: usize = 0x2a9;
+const SEASON_GOALS_LEN: usize = 20;
+
+/// The season's goals into his history (`FUN_007042ec` → `FUN_0070518c`):
+/// his goals of every kind, at most 63, with the season's bit. A full
+/// history moves on by a byte first — and the original then writes one
+/// byte behind it, into the first of the strengths', as the replica does.
+fn note_season_goals(p: &mut Player) {
+    if p.career_count() <= 0 {
+        return;
+    }
+    let goals = p.goal_kinds().iter().map(|&g| u16::from(g)).sum::<u16>().min(0x3f) as u8;
+    let byte = |p: &Player, k: usize| p.get::<u8>(SEASON_GOALS + k);
+    let mut k = (0..SEASON_GOALS_LEN).find(|&k| byte(p, k) == 0).unwrap_or(SEASON_GOALS_LEN);
+    if k == SEASON_GOALS_LEN {
+        for i in 0..SEASON_GOALS_LEN - 1 {
+            let next = byte(p, i + 1);
+            p.put::<u8>(SEASON_GOALS + i, next);
+        }
+        k = SEASON_GOALS_LEN;
+    }
+    p.put::<u8>(SEASON_GOALS + k, goals.wrapping_add(0x80));
+}
+
+/// The season's end keeps each played club's strength and place
+/// (`FUN_007255a1`, per country `FUN_00725460`): both histories move on by
+/// a season for all 108 clubs; then each club's squad strength (the sum of
+/// its players' — every one with a career noting his season's goals) and
+/// its table place go into the newest entries with its level, and the
+/// strongest squad of the season so far into its record list.
+pub fn archive_strengths(records: &mut Records) {
+    let year = records.globals.start_year() as i16;
+    let season = i32::from(year) - i32::from(records.globals.get::<i16>(FIRST_YEAR));
+    for country in crate::opponent::played_nations(records) {
+        let slot = records.countries.slot(usize::from(country));
+        let strengths = format!("{STRENGTHS_AT:#x}[{slot}]");
+        let places = format!("{PLACES_BY_SEASON_AT:#x}[{slot}]");
+        if let Some(b) = records.block_mut(&strengths).filter(|b| b.len() >= HISTORY_CLUBS * STRENGTH_ENTRY) {
+            for club in 0..HISTORY_CLUBS {
+                let at = club * STRENGTH_ENTRY;
+                b.copy_within(at + 4..at + STRENGTH_ENTRY, at);
+            }
+        }
+        if let Some(b) = records.block_mut(&places).filter(|b| b.len() >= HISTORY_CLUBS * PLACE_ENTRY) {
+            for club in 0..HISTORY_CLUBS {
+                let at = club * PLACE_ENTRY;
+                b.copy_within(at + 4..at + PLACE_ENTRY, at);
+            }
+        }
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let (level, place, squad) = (team.level(), team.table_place(), team.players());
+            let mut sum: i16 = 0;
+            for &id in &squad {
+                if let Some(p) = records.player_mut(id) {
+                    sum = sum.wrapping_add(i16::from(p.strength()));
+                    note_season_goals(p);
+                }
+            }
+            let club = usize::from(number);
+            if let Some(b) = records.block_mut(&strengths).filter(|b| club < HISTORY_CLUBS && b.len() >= HISTORY_CLUBS * STRENGTH_ENTRY) {
+                let at = club * STRENGTH_ENTRY + 0x10;
+                b[at] = level;
+                b[at + 1] = 0;
+                b[at + 2..at + 4].copy_from_slice(&sum.to_le_bytes());
+            }
+            if sum > 0 {
+                note_strongest(records, season, year, (country as u8, number), sum, squad.len() as i16);
+            }
+            if let Some(b) = records.block_mut(&places).filter(|b| club < HISTORY_CLUBS && b.len() >= HISTORY_CLUBS * PLACE_ENTRY) {
+                let at = club * PLACE_ENTRY + 0x4c;
+                b[at] = level;
+                b[at + 1] = 0;
+                b[at + 2..at + 4].copy_from_slice(&u16::from(place).to_le_bytes());
+            }
+        }
+    }
+}
+
+/// A squad into the season's strongest if it beats the one standing
+/// (`FUN_00726660`); past twenty seasons the list moves on once a year.
+fn note_strongest(records: &mut Records, season: i32, year: i16, club: (u8, u16), sum: i16, size: i16) {
+    let Some(b) = records.block_mut(STRONGEST_AT).filter(|b| b.len() >= STRONGEST_MOVED + 2) else { return };
+    let word = |b: &[u8], at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
+    let mut k = season;
+    if k >= STRONGEST_SEASONS {
+        if word(b, STRONGEST_MOVED) != year {
+            let n = STRONGEST_SEASONS as usize;
+            b.copy_within(STRONGEST..n * STRONGEST, 0);
+            // The original clears the sum one entry past the list.
+            let past = n * STRONGEST + 6;
+            if past + 2 <= b.len() {
+                b[past..past + 2].fill(0);
+            }
+        }
+        k = STRONGEST_SEASONS - 1;
+    }
+    let Ok(k) = usize::try_from(k) else { return };
+    let at = k * STRONGEST;
+    if word(b, at + 6) < sum {
+        b[at..at + 2].copy_from_slice(&year.to_le_bytes());
+        b[at + 2] = club.0;
+        b[at + 4..at + 6].copy_from_slice(&club.1.to_le_bytes());
+        b[at + 6..at + 8].copy_from_slice(&sum.to_le_bytes());
+        b[at + 8..at + 10].copy_from_slice(&size.to_le_bytes());
+    }
+}
+
 /// The season's end archives the played leagues' seasons (`FUN_006b3111`
 /// from `FUN_006b2eed`: the main country's every league, a more
 /// country's first): a league's ten kept seasons move on by one, the
@@ -4742,6 +4871,43 @@ mod tests {
             assert_eq!(x, y, "country {country}'s all-time tables");
         }
         assert!(moved > 0, "the season moved the tables");
+    }
+
+    /// The season's end over the original's pair: the played clubs'
+    /// strengths and places archived by the replica stand in SeasonEnd364
+    /// byte for byte as NewSeason000 keeps them, so does the season's
+    /// strongest squad, and every player's goals by season but one's (whom
+    /// a step before, `FUN_0074d52b`, not built, takes from his club).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_keeps_the_clubs_strengths_and_places_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        archive_strengths(&mut ours);
+        for country in crate::opponent::played_nations(&before) {
+            let slot = before.countries.slot(usize::from(country));
+            for at in [STRENGTHS_AT, PLACES_BY_SEASON_AT] {
+                let name = format!("{at:#x}[{slot}]");
+                assert_eq!(ours.block(&name), theirs.block(&name), "{name}");
+            }
+        }
+        assert_eq!(ours.block(STRONGEST_AT), theirs.block(STRONGEST_AT), "the strongest squads");
+        let (mut same, mut differ) = (0, 0);
+        for id in 1..crate::records::PLAYERS as u16 {
+            let (Some(o), Some(x), Some(y)) = (before.player(id), ours.player(id), theirs.player(id)) else { continue };
+            if o.first_name() != y.first_name() {
+                continue;
+            }
+            let goals = |p: &Player| (0..SEASON_GOALS_LEN).map(|k| p.get::<u8>(SEASON_GOALS + k)).collect::<Vec<_>>();
+            if goals(x) == goals(y) { same += 1 } else { differ += 1 }
+        }
+        assert!(same > 16000 && differ <= 1, "{same} players' goals as the original's, {differ} not");
     }
 
     /// The season's end over the original's pair: archived by the replica,
