@@ -404,6 +404,85 @@ impl<'a> League<'a> {
 /// A league match: the home place, the away place, the goals if played.
 pub type Match = (usize, usize, Option<(u8, u8)>);
 
+/// The countries the game is played in: the main one, then the more ones
+/// in their order.
+pub(crate) fn played_nations(records: &Records) -> Vec<u16> {
+    let globals = &records.globals;
+    let more =
+        usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    std::iter::once(globals.main_country())
+        .chain(globals.more_countries()[..more].iter().copied())
+        .filter_map(|c| u16::try_from(c).ok().filter(|&c| c != 0))
+        .collect()
+}
+
+/// The leagues stand open again for the new season (`FUN_006da3a9`'s
+/// new-season block, measured on the original's pair of its season's last
+/// day and the new season's first): the matchdays played back to nought,
+/// every pairing's result bytes back to 0xff, and every matchday's total
+/// of spectators to nought. The fixture rows, the table's boxes and the
+/// places the season reached stay; only the teams in the slots change —
+/// with the promotions and relegations (`FUN_006af699`), which the
+/// replica has not built.
+pub fn open_leagues(records: &mut Records) {
+    for nation in played_nations(records) {
+        for level in 0..records.countries.leagues(usize::from(nation)).max(0) {
+            let Some(name) = League::block_name(records, nation, level as u8) else { continue };
+            let Some(block) = records.block_mut(&name) else { continue };
+            let (teams, rows, rounds) = {
+                let i16_at = |field: usize| -> i16 {
+                    let at = LEAGUE_FIELDS + field;
+                    block.get(at..at + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
+                };
+                (
+                    i16_at(0).clamp(0, 24) as usize,
+                    i16_at(2).clamp(0, 24) as usize,
+                    usize::from(i16_at(0x1a) > 0) + 1,
+                )
+            };
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x18) {
+                s.copy_from_slice(&0i16.to_le_bytes());
+            }
+            for home in 0..teams {
+                for away in 0..(teams * rounds).min(RESULT_ROW / 4) {
+                    let at = LEAGUE_FIELDS + RESULTS + home * RESULT_ROW + away * 4;
+                    if let Some(s) = block.get_mut(at..at + 4) {
+                        s.copy_from_slice(&[UNPLAYED; 4]);
+                    }
+                }
+            }
+            for row in 0..rows {
+                let at = LEAGUE_FIELDS + MATCHDAY_CROWDS + 4 * row;
+                if let Some(s) = block.get_mut(at..at + 4) {
+                    s.copy_from_slice(&0i32.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+/// The cup's rounds fall away with the season: every drawn pairing stands
+/// zeroed through the block and the last drawn round with it (measured on
+/// the pair, where the original has already drawn a fresh first round —
+/// its drawing the replica has not built, so its cup rounds stand empty
+/// until it does).
+pub fn open_cups(records: &mut Records) {
+    for nation in played_nations(records) {
+        let slot = records.countries.slot(usize::from(nation));
+        let name = format!("{CUPS_AT:#x}[{slot}]");
+        let Some(cup) = records.block_mut(&name) else { continue };
+        if let Some(b) = cup.get_mut(0x28 - 0x20) {
+            *b = 0;
+        }
+        for q in 0..=HIGHEST_PAIRING {
+            let at = PAIRINGS + q * PAIRING;
+            if let Some(s) = cup.get_mut(at..at + PAIRING) {
+                s.fill(0);
+            }
+        }
+    }
+}
+
 /// A club's stand in its league (`FUN_00692744`, `FUN_0072c2bb`): its
 /// place, points and games, and its last results, oldest first, a letter
 /// each — at home "s", "x" (0:0), "u", "n", away the same as capitals.
@@ -768,7 +847,7 @@ pub fn cup_pairings(mode: usize, round: usize) -> Option<(usize, usize)> {
 pub const CUPS_AT: u32 = 0x1ba5390;
 pub const PAIRINGS: usize = 0x2c - 0x20;
 pub const PAIRING: usize = 0xe;
-const HIGHEST_PAIRING: usize = 62;
+pub(crate) const HIGHEST_PAIRING: usize = 62;
 const PLAYED: u8 = 0x08;
 
 pub fn cup_stand(records: &Records, team: &Team) -> CupStand {

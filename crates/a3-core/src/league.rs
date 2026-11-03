@@ -29,7 +29,7 @@ const OWN_SIZE: u8 = 6;
 /// (`0xb5d1a8`; the Globals record starts at `0xb5cb88`): fifteen rows of
 /// 0x24, the country first. `FUN_00424050` reads it and answers 4 for the
 /// top three, 3 for the nine after, 2 for the rest.
-const RANK_AT: usize = 0xb5d1a8 - 0xb5cb88;
+const RANK_AT: usize = 0xb5d1a8;
 const RANK_ROWS: usize = 15;
 /// The team record: its league's level, its place, the class the table
 /// gives a place of none, and the season's own goal.

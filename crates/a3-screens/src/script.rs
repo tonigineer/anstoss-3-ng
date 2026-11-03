@@ -8857,6 +8857,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// OK past the statement opens the new season: the game walks on from
+    /// day 0 of the year that follows, the statement stands free to come
+    /// again at the next season's end, and the top league of the country
+    /// played stands with no matchday played. The statement itself the
+    /// test above shows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_statement_opens_the_new_season() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-open", |records| {
+            records.globals.set_day(320);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // As in the tax test up to the statement, then OK.
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1";
+        let Some(runner) = on_save(&game, "season-open", then) else { return };
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        assert_eq!(season.year, 2026, "{log}");
+        assert!(!season.statement, "the statement stands free again");
+        assert!(season.day < 7, "the game walks on from day {}", season.day);
+        assert_eq!((records.globals.start_year(), records.globals.day()), (2026, 0));
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let top = a3_core::opponent::League::of(records, nation, 0).unwrap();
+        assert_eq!(top.played(), 0, "the league opens with none played");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The merchandise calculation's "Details" opens the club's own range
     /// (56): one article bought at the order size, then every one at the
     /// next size with its rebate, each booked as merchandise bought at once;

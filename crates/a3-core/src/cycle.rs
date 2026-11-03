@@ -853,9 +853,12 @@ impl Cycle {
     /// for the dialog). It is due once the played country's top league has
     /// no matchday ahead of the game. Every club of the countries played
     /// settles its season before (`FUN_00621909`, [`crate::settlement`]),
-    /// so that the statement tells the tax booked; the promotions and the
-    /// rollover into the new season are not built here, and the statement
-    /// shows once in a loaded game (`season.statement`).
+    /// so that the statement tells the tax booked; behind the statements
+    /// the new season opens ([`crate::settlement::open_season`]) and the
+    /// game walks on from its day 0, the statement free to come again at
+    /// the next season's end. The promotions the original draws beside
+    /// the opening are not built here, and the statement shows once in a
+    /// loaded game (`season.statement`).
     fn statement(&mut self) -> Result<(), Gone> {
         let ready = {
             let state = self.state();
@@ -890,6 +893,24 @@ impl Cycle {
         for manager in humans {
             self.season(|s| s.current = manager);
             self.ask(Request::with(FINANCES, Args::Statement))?;
+        }
+        // The new season's first day follows the statements, where the
+        // original's season-end block hands the game to its new-season
+        // block (`FUN_006da3a9`): the counters roll, the July calendar
+        // stands, the leagues open and the clubs' bookings clear
+        // ([`crate::settlement::open_season`]) — the game walks on from
+        // the new season's day 0.
+        {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            if let (Some(season), Some(records)) =
+                (state.season.as_mut(), state.records.as_mut())
+            {
+                crate::settlement::open_season(records, &mut season.random);
+                season.year = i32::from(records.globals.start_year());
+                season.day = 0;
+                season.statement = false;
+            }
         }
         Ok(())
     }

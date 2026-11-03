@@ -29,10 +29,11 @@
 //! dividends paid into the managers' own shares (`FUN_00406fea`). The
 //! season's bookings stay until the new season clears them
 //! ([`clear_bookings`] — `FUN_0042b2fc` per club of the countries
-//! played, `FUN_00672839` in each), which the replica's new season will
-//! call once its first day stands; what the original sets back up beside the
-//! clearing — the ticket target (`FUN_0067324c`), the class template's
-//! rows and the sponsor, TV and national-team money — it has not built.
+//! played, `FUN_00672839` in each), which the replica's new season calls
+//! along with the counters and the leagues ([`open_season`]); what the
+//! original sets back up beside the clearing — the ticket target
+//! (`FUN_0067324c`), the class template's rows and the sponsor, TV and
+//! national-team money — it has not built.
 //!
 //! Checked against the original's last day before its season end and its
 //! first day after: 86 of the 212 clubs settle to the euro, 43 of them
@@ -40,9 +41,12 @@
 //! Europe differ — the season-end steps before the settlement, not built
 //! here, move their money first.
 
+use chrono::{Datelike, NaiveDate};
+
 use crate::finances::{CLUB_TO_TEAM, booked_result, result, transfer_net};
 use crate::league::{self, LeagueTables};
-use crate::records::{Manager, Records, SeasonBalance, SeasonHistory, Team};
+use crate::random::Random;
+use crate::records::{Globals, Manager, Records, SeasonBalance, SeasonHistory, Team};
 
 /// The tax rate in percent (`DAT_00b5dfa9`); the money events move it by
 /// two at a time, within eight of its base (`DAT_00b5dfaa`).
@@ -345,8 +349,8 @@ fn balance_row(team: &Team, main: i16, year: i16, win: i16) -> SeasonBalance {
 /// clearing — the ticket sales target (`FUN_0067324c`), the attendance
 /// plan it computes back for the human club (`FUN_00621143` inside
 /// `FUN_0042b589`), the class template's money — the replica has not
-/// built, so its clubs stand at nought there; nor does its cycle reach
-/// this yet, the new season's first day standing unwritten.
+/// built, so its clubs stand at nought there. The cycle reaches this
+/// from [`open_season`].
 pub fn clear_bookings(records: &mut Records) {
     for i in 0..records.teams.len() {
         let country = i16::from(records.teams[i].country());
@@ -375,6 +379,49 @@ fn clear_club(team: &mut Team) {
             put::<i16>(team, at + c * 2, row);
         }
     }
+}
+
+/// The new season's first day: the original's season-end block hands the
+/// game to its new-season block (`FUN_006da3a9`'s tail, then `FUN_0065e659`
+/// and `FUN_00675c1c` and `FUN_0042b2fc`). One season more and the start
+/// year one further; the day, the week's start and the half weeks stand at
+/// nought; the club's season in Europe opens again (measured on the pair:
+/// the stage at 0, the round at -1). The July calendar is set for the new
+/// year — the first day, the date, the day of the year and the year's
+/// length, 366 when the new year is a leap year (`FUN_00675e65`). A
+/// season after the first draws its lottery below 1000, the first keeps
+/// 1. Then the leagues of the countries played stand open again and the
+/// season's bookings clear. Beside it the original promotes and relegates
+/// into the league blocks' team slots (`FUN_006af699`), draws the cup's
+/// first round anew, ages the players (`FUN_0065eb48`) and refills the
+/// stars, the best players and much money — all unwritten here.
+pub fn open_season(records: &mut Records, random: &mut Random) {
+    roll_globals(&mut records.globals, random);
+    crate::opponent::open_leagues(records);
+    crate::opponent::open_cups(records);
+    clear_bookings(records);
+}
+
+/// The counters and the July calendar of the new season, as the original
+/// writes them (`FUN_0065e659` and `FUN_00675c1c`).
+fn roll_globals(globals: &mut Globals, random: &mut Random) {
+    globals.set_seasons(globals.seasons() + 1);
+    let (year, y) = (globals.start_year() + 1, i32::from(globals.start_year()) + 1);
+    globals.set_start_year(year);
+    globals.set_day(0);
+    globals.set_week_start(0);
+    globals.set_half_weeks(0);
+    globals.set_europe_stage(0);
+    globals.set_uefa_round(-1);
+    globals.set_lottery(if globals.seasons() == 1 { 1 } else { random.below(1000) as u16 });
+    let start = crate::calendar::season_start(y);
+    let july = NaiveDate::from_ymd_opt(y, 7, 1).expect("a day early in July");
+    let first_day = start.signed_duration_since(july).num_days() as i16;
+    globals.set_first_day(first_day);
+    globals.set_date([first_day as u16 + 1, 7, u16::try_from(y).unwrap_or(0)]);
+    globals.set_day_of_year(start.ordinal0() as u16);
+    let leap = y % 4 == 0 && (y % 400 == 0 || y % 100 != 0);
+    globals.set_year_days(if leap { 366 } else { 365 });
 }
 
 /// Settles a club's season (`FUN_006219d2`), of the country `country`,
@@ -818,6 +865,103 @@ mod tests {
                         closed.teams[i].country()
                     );
                 }
+            }
+        }
+    }
+
+    /// The counters and the calendar of the new season: one season more,
+    /// the start year on, the day's fields at nought, the leagues' pair
+    /// of Europe as the league init leaves it, and the new season's own
+    /// first day of July, day of the year and length — the leap year
+    /// counted on the start year itself (`FUN_0065e659`, `FUN_00675c1c`,
+    /// `FUN_00675e65`); the lottery stands at 1 for the very first
+    /// season and is drawn below 1000 for every one after.
+    #[test]
+    fn the_new_season_rolls_the_counters_and_the_calendar() {
+        let mut g = Globals::new(&vec![0; Globals::SIZE]).unwrap();
+        g.set_seasons(0);
+        g.set_start_year(1997);
+        roll_globals(&mut g, &mut Random::new(7));
+        assert_eq!((g.seasons(), g.lottery()), (1, 1), "the first season keeps its 1");
+        for (seasons, start, first_day, date, day_of_year, year_days) in [
+            (1u16, 2025u16, 5i16, [6u16, 7, 2026], 186u16, 365u16),
+            (2, 2027, 1, [2, 7, 2028], 183, 366),
+        ] {
+            g.set_seasons(seasons);
+            g.set_start_year(start);
+            g.set_day(364);
+            g.set_week_start(3);
+            g.set_half_weeks(2);
+            g.set_europe_stage(4);
+            g.set_uefa_round(7);
+            roll_globals(&mut g, &mut Random::new(7));
+            assert_eq!((g.seasons(), g.start_year()), (seasons + 1, start + 1));
+            assert_eq!((g.day(), g.week_start(), g.half_weeks()), (0, 0, 0));
+            assert_eq!(
+                (g.first_day(), g.date(), g.day_of_year(), g.year_days()),
+                (first_day, date, day_of_year, year_days),
+                "the season of {}",
+                start + 1
+            );
+            assert_eq!((g.europe_stage(), g.uefa_round()), (0, -1));
+            assert!(g.lottery() < 1000, "a lottery drawn for the season after");
+        }
+    }
+
+    /// The new season opens the saved one — measured on the original's
+    /// pair, its last day before the season end (SeasonEnd364) against
+    /// its first day after (NewSeason000). The counters and the calendar
+    /// roll as above, every league of the four countries played stands
+    /// with no matchday played, no result written and no crowd kept, and
+    /// the cups' rounds stand empty. What the original fills beside the
+    /// opening the replica has not built: the fresh cup round it draws
+    /// (the pair's first pairings already name new clubs), the clubs it
+    /// moves between the leagues' places, and its own lottery figure
+    /// (995) in place of the replica's drawn one.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_opens_the_saved_season() {
+        use crate::opponent::{self, HIGHEST_PAIRING, League, PAIRING, PAIRINGS};
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut closed, opened) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        open_season(&mut closed, &mut Random::new(7));
+        let (a, b) = (&closed.globals, &opened.globals);
+        assert_eq!((a.seasons(), a.start_year()), (b.seasons(), b.start_year()));
+        assert_eq!((a.day(), a.week_start(), a.half_weeks()), (0, 0, 0));
+        assert_eq!(
+            (a.first_day(), a.date(), a.day_of_year(), a.year_days()),
+            (b.first_day(), b.date(), b.day_of_year(), b.year_days())
+        );
+        assert_eq!((a.europe_stage(), a.uefa_round()), (b.europe_stage(), b.uefa_round()));
+        assert_eq!(b.lottery(), 995, "the original's drawn lottery");
+        assert!(a.lottery() < 1000, "the replica draws one of its own");
+        for nation in opponent::played_nations(&closed) {
+            for level in 0..closed.countries.leagues(usize::from(nation)).max(0) {
+                let (x, y) = (
+                    League::of(&closed, nation, level as u8).unwrap(),
+                    League::of(&opened, nation, level as u8).unwrap(),
+                );
+                assert_eq!((x.played(), y.played()), (0, 0), "{nation} league {level} played");
+                for day in 0..x.matchdays() {
+                    assert!(x.games(day).iter().all(|g| g.2.is_none()), "{nation} {level} +{day}");
+                    assert!(y.games(day).iter().all(|g| g.2.is_none()), "{nation} {level} kept");
+                }
+                assert!(x.matchday_crowds().iter().all(|c| *c == 0), "{nation} {level} crowds");
+                assert!(y.matchday_crowds().iter().all(|c| *c == 0), "{nation} {level} kept");
+            }
+            let slot = closed.countries.slot(usize::from(nation));
+            let Some(cup) = closed.block(&format!("{:#x}[{slot}]", opponent::CUPS_AT)) else {
+                continue;
+            };
+            assert_eq!(cup[0x28 - 0x20], 0, "country {nation}'s last drawn round");
+            for q in 0..=HIGHEST_PAIRING {
+                let at = PAIRINGS + q * PAIRING;
+                assert!(cup[at..at + PAIRING].iter().all(|&x| x == 0), "{nation} pairing {q}");
             }
         }
     }
