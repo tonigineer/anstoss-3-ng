@@ -422,7 +422,10 @@ fn clear_club(team: &mut Team) {
 /// year — the first day, the date, the day of the year and the year's
 /// length, 366 when the new year is a leap year (`FUN_00675e65`). A
 /// season after the first draws its lottery below 1000, the first keeps
-/// 1. Then the leagues of the countries played stand open again, every
+/// 1. The bank sets the year's rates and the funds' deposits settle at
+/// their closing worth, the funds back at 1000 ([`crate::finances::new_rates`],
+/// [`crate::finances::settle_funds`]). Then the leagues of the countries
+/// played stand open again, every
 /// player's season form starts from one week of 10, the kept countries'
 /// contracts run on and their players develop ([`crate::rollover`]), and
 /// the season's bookings clear. Beside it the original promotes and
@@ -435,6 +438,8 @@ fn clear_club(team: &mut Team) {
 /// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
     roll_globals(&mut records.globals, random);
+    crate::finances::new_rates(&mut records.globals, random);
+    crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);

@@ -140,6 +140,90 @@ fn at(c: usize) -> usize {
     c + CLUB_TO_TEAM
 }
 
+/// The price a fund stands at when the season opens, and every deposit
+/// is reckoned as bought at.
+pub const FUND_START: i32 = 1000;
+
+/// The funds' deposits settled at the new season (`FUN_00648c97` over
+/// the countries played, `FUN_00648d1a` per club, `FUN_00648d8f`): every
+/// deposit takes what it is worth at the closing prices as its amount
+/// (`FUN_00647d30`: the amount times the fund's price over the price it
+/// was bought at), counts as bought at 1000 with its +0x14 word at
+/// nought, and the funds' prices all start again from 1000.
+pub fn settle_funds(records: &mut Records) {
+    let prices = records.globals.fund_prices();
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let countries: Vec<i16> =
+        std::iter::once(globals.main_country()).chain(globals.more_countries()[..more].iter().copied()).collect();
+    for country in countries {
+        let Ok(country) = u16::try_from(country) else { continue };
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if let Some(team) = records.team_mut(country, number) {
+                settle_deposits(team, prices);
+            }
+        }
+    }
+    records.globals.set_fund_prices([FUND_START; 5]);
+}
+
+/// A club's deposits at their worth, bought at 1000 (`FUN_00648d8f`).
+fn settle_deposits(team: &mut Team, prices: [i32; 5]) {
+    for k in 0..DEPOSITS {
+        let deposit = 0x3d8 + ENTRY * k;
+        if team.get::<u8>(at(deposit + 0x13)) & 1 == 0 {
+            continue;
+        }
+        let fund = usize::from(team.get::<u8>(at(deposit + 0x12)));
+        let price = i64::from(prices.get(fund).copied().unwrap_or(0));
+        let bought = i64::from(team.get::<i16>(at(deposit + 0x10)));
+        if bought != 0 {
+            let worth = i64_(team, deposit + 8).wrapping_mul(price) / bought;
+            team.put::<i64>(at(deposit + 8), worth);
+        }
+        team.put::<i16>(at(deposit + 0x10), FUND_START as i16);
+        team.put::<i16>(at(deposit + 0x14), 0);
+    }
+}
+
+/// The bank's rates for the new season (`FUN_00648a99`), in 1/100 %:
+/// the loans' rate rides a wave of seven years from 1994 — 800 and 250
+/// for each year towards its crest, three years on — less fifty for each
+/// step of a draw below 7; in its band (below 9 %, below 13 %, above)
+/// the rest follow: the money in the account earns 0.5, 0.75 or 1 %, the
+/// overdraft costs 1.5, 2 or 2.5 % less than a loan, a year's credit
+/// a draw of fifties (below 2, 2, 4) less again, and call money pays
+/// what is left after a fixed cut and a draw — 3 % at least in the lowest
+/// band.
+pub fn new_rates(globals: &mut crate::records::Globals, random: &mut crate::random::Random) {
+    let mut wave = ((i32::from(globals.start_year()) - 1994) % 7) as i16;
+    if wave > 3 {
+        wave = 7 - wave;
+    }
+    let fifties = |random: &mut crate::random::Random, n: u32| random.below(n) as i16 * 50;
+    let loan = wave * 250 + 800 - fifties(random, 7);
+    let (balance, overdraft, credit, below, deposit) = if loan < 900 {
+        let overdraft = loan - 150;
+        let credit = overdraft - fifties(random, 2);
+        let below = credit - 100;
+        (50, overdraft, credit, below, if below < 450 { 300 } else { credit - 150 })
+    } else if loan < 1300 {
+        let overdraft = loan - 200;
+        let credit = overdraft - fifties(random, 2);
+        (75, overdraft, credit, credit - 150, credit - 400 - fifties(random, 2))
+    } else {
+        let overdraft = loan - 250;
+        let credit = overdraft - fifties(random, 4);
+        (100, overdraft, credit, credit - 200, credit - 450 - fifties(random, 4))
+    };
+    globals.set_loan_rate(loan);
+    globals.set_balance_rate(balance);
+    globals.set_overdraft_rate(overdraft);
+    globals.set_credit_rate(credit);
+    globals.set_rate_below_credit(below);
+    globals.set_deposit_rate(deposit);
+}
+
 /// The club's tax bill of the season (`FUN_006219d2`): the season end's
 /// settlement takes a share of the booked result and books it at the
 /// team's +0x310, where the year calendar's statement and the Sonstiges
@@ -1141,5 +1225,103 @@ mod step_tests {
         // Off the grid, rounded down.
         assert_eq!(step_of(steps(10_000_000), 7_834_898), 108);
         assert_eq!(amount_at(steps(10_000_000), 109), 7_900_000);
+    }
+}
+
+#[cfg(test)]
+mod season_tests {
+    use super::*;
+    use crate::random::Random;
+    use crate::records::Globals;
+
+    /// Whether a season's rates keep `FUN_00648a99`'s bands: the loans'
+    /// rate on the year's wave less fifties, the rest by its band.
+    fn rates_fit(g: &Globals) -> bool {
+        let mut wave = ((i32::from(g.start_year()) - 1994) % 7) as i16;
+        if wave > 3 {
+            wave = 7 - wave;
+        }
+        let (loan, credit) = (g.loan_rate(), g.credit_rate());
+        let steps = wave * 250 + 800 - loan;
+        let fifties = |v: i16, most: i16| v >= 0 && v % 50 == 0 && v / 50 < most;
+        let band = if loan < 900 {
+            let below = credit - 100;
+            g.balance_rate() == 50
+                && g.overdraft_rate() == loan - 150
+                && fifties(g.overdraft_rate() - credit, 2)
+                && g.deposit_rate() == if below < 450 { 300 } else { credit - 150 }
+                && g.rate_below_credit() == below
+        } else if loan < 1300 {
+            g.balance_rate() == 75
+                && g.overdraft_rate() == loan - 200
+                && fifties(g.overdraft_rate() - credit, 2)
+                && g.rate_below_credit() == credit - 150
+                && fifties(credit - 400 - g.deposit_rate(), 2)
+        } else {
+            g.balance_rate() == 100
+                && g.overdraft_rate() == loan - 250
+                && fifties(g.overdraft_rate() - credit, 4)
+                && g.rate_below_credit() == credit - 200
+                && fifties(credit - 450 - g.deposit_rate(), 4)
+        };
+        fifties(steps, 7) && band
+    }
+
+    #[test]
+    fn the_new_rates_keep_their_bands() {
+        let mut g = Globals::new(&vec![0u8; Globals::SIZE]).unwrap();
+        let mut random = Random::new(11);
+        let mut bands = [false; 3];
+        for year in 2000..2040u16 {
+            for _ in 0..20 {
+                g.set_start_year(year);
+                new_rates(&mut g, &mut random);
+                assert!(rates_fit(&g), "{year}: {} {} {} {} {}", g.loan_rate(), g.balance_rate(),
+                    g.overdraft_rate(), g.credit_rate(), g.deposit_rate());
+                bands[(g.balance_rate() / 25 - 2) as usize] = true;
+            }
+        }
+        assert_eq!(bands, [true; 3], "every band met");
+    }
+
+    /// A deposit takes its worth at the closing price as its amount and
+    /// counts as bought at 1000 (`FUN_00648d8f`); the funds start again
+    /// from 1000.
+    #[test]
+    fn the_new_season_settles_the_deposits() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        let deposit = 0x3d8 + ENTRY;
+        team.put::<u8>(at(deposit + 0x13), 1);
+        team.put::<u8>(at(deposit + 0x12), 2);
+        team.put::<i64>(at(deposit + 8), 300_000);
+        team.put::<i16>(at(deposit + 0x10), 800);
+        team.put::<i16>(at(deposit + 0x14), 7);
+        let prices = [1000, 1000, 1180, 1000, 1000];
+        assert_eq!(deposits(&team, prices), 442_500);
+        settle_deposits(&mut team, prices);
+        assert_eq!(team.get::<i64>(at(deposit + 8)), 442_500);
+        assert_eq!((team.get::<i16>(at(deposit + 0x10)), team.get::<i16>(at(deposit + 0x14))), (1000, 0));
+        assert_eq!(deposits(&team, [FUND_START; 5]), 442_500, "worth the same at the new prices");
+    }
+
+    /// Over the original's pair (SeasonEnd364 → NewSeason000): its new
+    /// rates keep the bands and its funds stand at 1000, as the replica's
+    /// do after it settles them. (No club of the pair holds a deposit.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_sets_rates_and_funds_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        assert!(rates_fit(&theirs.globals), "the original's rates of {}", theirs.globals.start_year());
+        assert!(!rates_fit(&ours.globals), "the closed season's rates have moved off their bands");
+        crate::settlement::open_season(&mut ours, &mut Random::new(5));
+        assert!(rates_fit(&ours.globals));
+        assert_eq!(theirs.globals.fund_prices(), [FUND_START; 5]);
+        assert_eq!(ours.globals.fund_prices(), [FUND_START; 5]);
     }
 }

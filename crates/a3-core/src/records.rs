@@ -1437,7 +1437,13 @@ record! {
     0xb5cc8c => fund_prices, set_fund_prices: [i32; 5];
     /// The bank's rates for loans and for the overdraft, in 1/100 %.
     0xb5cc80 => loan_rate, set_loan_rate: i16;
+    /// What the money in the account earns, in 1/100 % (`DAT_00b5cc82`,
+    /// which `FUN_006482a6` books on it).
+    0xb5cc82 => balance_rate, set_balance_rate: i16;
     0xb5cc84 => overdraft_rate, set_overdraft_rate: i16;
+    /// The credit rate less a band's cut, which only the new season's
+    /// call-money rate weighs (`DAT_00b5cc88`, `FUN_00648a99`).
+    0xb5cc88 => rate_below_credit, set_rate_below_credit: i16;
     /// What a repayable loan for a year costs, in 1/100 % (`DAT_00b5cc86`).
     0xb5cc86 => credit_rate, set_credit_rate: i16;
     /// What call money pays, in 1/100 % (`DAT_00b5cc8a`).
