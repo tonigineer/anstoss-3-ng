@@ -790,6 +790,54 @@ impl Extra {
             .collect()
     }
 
+    /// Appends the season just settled to the past seasons' balances
+    /// (`FUN_00633539`): behind the count when there is room, and when the
+    /// twenty are full the nineteen newer rows slide a place down and the
+    /// new one takes the last. The row's last eight bytes the original
+    /// never writes, and so leaves standing.
+    pub fn add_balance(&mut self, row: SeasonBalance) {
+        let at = self.make_room(0x1e48, 0x1e4c, 0x18, 20);
+        self.put(at, row.year);
+        self.put(at + 2, row.league);
+        self.put(at + 3, row.place);
+        self.put(at + 4, row.points);
+        self.put(at + 5, row.goals);
+        self.put(at + 8, row.strength);
+        self.put(at + 0xc, row.result);
+    }
+
+    /// Appends the season just settled to the past transfer balances
+    /// (`FUN_006337b9`): the start year and the net, the same way as the
+    /// twenty balances fill up.
+    pub fn add_transfer(&mut self, year: i16, net: i32) {
+        let at = self.make_room(0x202c, 0x2030, 8, 20);
+        self.put(at, year);
+        self.put(at + 4, net);
+    }
+
+    /// Appends the season just settled to the past seasons' sponsor money
+    /// (`FUN_00633a30`); the list holds fifty, twice as many as the others.
+    pub fn add_sponsor(&mut self, year: i16, money: i32) {
+        let at = self.make_room(0x20d0, 0x20d4, 8, 50);
+        self.put(at, year);
+        self.put(at + 4, money);
+    }
+
+    /// Where a season's row goes: the count at `count` rises, and where the
+    /// `most` rows already stand the oldest makes room by the rest sliding
+    /// down onto its place — the original's `memmove` over all of them at
+    /// once.
+    fn make_room(&mut self, count: usize, rows: usize, width: usize, most: usize) -> usize {
+        let mut held = self.get::<i16>(count).clamp(0, most as i16) as usize;
+        if held == most {
+            let from = rows - Self::BASE + width;
+            self.0.copy_within(from..from + width * (most - 1), from - width);
+            held = most - 1;
+        }
+        self.put(count, (held + 1) as i16);
+        rows + held * width
+    }
+
     /// What the training sessions add to cohesion, before the game halves
     /// what is above 30.
     pub fn training(&self) -> i32 {
@@ -2062,6 +2110,39 @@ mod tests {
         note.set_text("Toni übt");
         assert_eq!(note.text(), "Toni übt");
         assert_eq!(note.bytes()[10..], vec![0; NOTE_LEN - 10]);
+    }
+
+    /// The season's end keeps twenty seasons' balances, twenty transfer
+    /// balances and fifty sponsor years: each new one stands behind the
+    /// rest, and where the list is full it takes the oldest's place.
+    #[test]
+    fn the_archive_shifts_its_oldest_away() {
+        let mut extra = Extra::new(&vec![0; Extra::SIZE]).unwrap();
+        for year in 2000..2021i16 {
+            let row = SeasonBalance {
+                year,
+                league: 1,
+                place: 4,
+                points: 30,
+                goals: [40, 30],
+                strength: 200,
+                result: 1234,
+            };
+            extra.add_balance(row);
+            extra.add_transfer(year, -1000);
+        }
+        for year in 2021..2072i16 {
+            extra.add_sponsor(year, 500);
+        }
+        assert_eq!((extra.balance_count(), extra.transfer_count()), (20, 20));
+        assert_eq!(extra.get::<i16>(0x20d0), 50);
+        let balances = extra.balances();
+        assert_eq!((balances.first().unwrap().year, balances.last().unwrap().year), (2001, 2020));
+        assert_eq!(balances[19].points, 30);
+        assert_eq!(extra.transfers().last().copied().unwrap(), (2020, -1000));
+        assert_eq!(extra.transfers().first().unwrap().0, 2001);
+        let sponsors = extra.sponsors();
+        assert_eq!((sponsors[0].0, sponsors.last().copied().unwrap()), (2022, (2071, 500)));
     }
 
     #[test]

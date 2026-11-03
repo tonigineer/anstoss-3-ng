@@ -14,11 +14,16 @@
 //! beside it (`FUN_006cdb29` into the manager object's +0xa0) the replica
 //! reads from the cup block instead.
 //!
+//! Each human club also keeps its season in the archive: the balance row,
+//! the transfer net and the sponsor's money of the season that just closed
+//! go into its manager's Extra block behind the past seasons
+//! ([`archive`] — `FUN_00633539`, `FUN_006337b9` and `FUN_00633a30`), where
+//! the Saisonbilanzen and the development pages read them out again.
+//!
 //! Left out here, all of it for the humans or outside the club's books: the
 //! fans' mood after a title (`FUN_007144e4`), what the
 //! sponsors weigh for a human club (`FUN_006d5a85`), the manager's score,
-//! the season's balance row and
-//! transfer balance in the archive (`FUN_00633539`, `FUN_006337b9`), and the
+//! and the
 //! dividends paid into the managers' own shares (`FUN_00406fea`). The
 //! season's bookings stay until the new season clears them
 //! (`FUN_00673131`), which the replica has not built yet.
@@ -29,9 +34,9 @@
 //! Europe differ — the season-end steps before the settlement, not built
 //! here, move their money first.
 
-use crate::finances::{CLUB_TO_TEAM, booked_result, result};
+use crate::finances::{CLUB_TO_TEAM, booked_result, result, transfer_net};
 use crate::league::{self, LeagueTables};
-use crate::records::{Manager, Records, Team};
+use crate::records::{Manager, Records, SeasonBalance, Team};
 
 /// The tax rate in percent (`DAT_00b5dfa9`); the money events move it by
 /// two at a time, within eight of its base (`DAT_00b5dfaa`).
@@ -59,6 +64,12 @@ const CASH: usize = 0x210;
 const PRIZE_MONEY: usize = 0x248;
 const BONUSES_PAID: usize = 0x288;
 const SPONSOR_MONEY: usize = 0x2f4;
+/// The sponsor's money stands in three fields: what it pays weekly, what
+/// the contracts' extras add, and what the season's events left; the
+/// archive's row of the season keeps all three summed
+/// ([`archive`], `FUN_00633a30`).
+const SPONSOR_EXTRA: usize = 0x2f8;
+const SPONSOR_EVENTS: usize = 0x2fc;
 const TAX: usize = 0x310;
 const DIVIDENDS: usize = 0x2d4;
 const SHARES_SOLD: usize = 0x2d0;
@@ -98,6 +109,11 @@ const PRIZE_STEP: u32 = 100_000;
 const PAST_RESULTS: [usize; 3] = [0x908, 0x910, 0x918];
 /// The most a dividend comes to.
 const MOST_DIVIDEND: i64 = 2_000_000_000;
+/// What the archive's row keeps the result within: the original writes the
+/// row's four bytes from what overflows 0x77359401 up to two thousand
+/// million and what lies below its negative back to minus two thousand
+/// million (`FUN_006219d2` before `FUN_00633539`).
+const MOST_RESULT: i64 = 2_000_000_000;
 
 fn club<T: crate::records::Field>(team: &Team, at: usize) -> T {
     team.get(at + CLUB_TO_TEAM)
@@ -144,6 +160,7 @@ pub fn settle_season(records: &mut Records, tables: &LeagueTables) {
         for i in first..first.saturating_add(count).min(records.teams.len()) {
             let manager = manager_of(records, i).map(|m| &mut records.managers[m]);
             settle(&mut records.teams[i], manager, country, rate);
+            archive(records, i);
         }
     }
 }
@@ -231,6 +248,56 @@ fn pay_premium(team: &mut Team, manager: Option<&mut Manager>) {
     let v = manager.title_premium();
     manager.set_cash(manager.cash().wrapping_add(v));
     add(team, BONUSES_PAID, v);
+}
+
+/// What the season's end keeps of a human club's season in its manager's
+/// archive: the season's balance row, the transfers' net and the sponsor's
+/// money of the season that just closed (`FUN_00633539`, `FUN_006337b9`
+/// and `FUN_00633a30`, the three at the tail of the club's settlement).
+/// The row's place keeps no star: the interim gap's bit, the club object's
+/// +0x100 bit 0x80, has no home in the save.
+fn archive(records: &mut Records, i: usize) {
+    let team = &records.teams[i];
+    if team.humans() == [0, 0] {
+        return;
+    }
+    let slot = usize::from(team.human());
+    if slot == 0 || slot > 4 {
+        return;
+    }
+    let (year, win) = (records.globals.start_year() as i16, records.win_points(team.country()));
+    let row = balance_row(team, i16::from(records.globals.main_country()), year, win);
+    let (net, sponsor) = (
+        transfer_net(team),
+        club::<i32>(team, SPONSOR_MONEY)
+            .wrapping_add(club::<i32>(team, SPONSOR_EXTRA))
+            .wrapping_add(club::<i32>(team, SPONSOR_EVENTS)),
+    );
+    let Some(extra) = records.extras.get_mut(slot - 1) else { return };
+    extra.add_balance(row);
+    extra.add_transfer(year, net);
+    extra.add_sponsor(year, sponsor);
+}
+
+/// The row the archive keeps of the season just settled (`FUN_00633539`):
+/// the year the season started, the league's class — the Saisonbilanzen
+/// page reads it out of the club's own class, and only the main country's
+/// leagues have classes (`FUN_006755b8`) —, the place in the table, the
+/// points the wins at the country's win points and the draws bring, the
+/// league's goals, the squad's strength as the save last stored it (club
+/// +0x9c) and the season's result, kept within what the row can hold.
+fn balance_row(team: &Team, main: i16, year: i16, win: i16) -> SeasonBalance {
+    let class = if i16::from(team.country()) == main { team.level().min(2) } else { 0 };
+    let [won, drawn, _] = team.record();
+    SeasonBalance {
+        year,
+        league: class,
+        place: team.table_place(),
+        points: (i32::from(won) * i32::from(win) + i32::from(drawn)) as u8,
+        goals: team.goals(),
+        strength: team.squad_strength(),
+        result: team.get::<i64>(PAST_RESULTS[0]).clamp(-MOST_RESULT, MOST_RESULT) as i32,
+    }
 }
 
 /// Settles a club's season (`FUN_006219d2`), of the country `country`,
@@ -514,5 +581,50 @@ mod tests {
         cup_round(&mut t, None, true);
         assert_eq!(club::<i32>(&t, BONUSES_PAID), 0);
         assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 95_000 + 560_000);
+    }
+
+    /// The row the archive keeps of a season, measured on the original:
+    /// 1.FC Union Berlin's 2025 season, its last day's save
+    /// (SeasonEnd364) against the row the first day after keeps
+    /// (NewSeason000) — third of the first class, 53 points of fifteen
+    /// wins and eight draws at three apiece, 41 to 33 goals, a squad of
+    /// 216 and a result of 443.568. What no four bytes hold the original
+    /// ends at two thousand million, both ways; a season never settled
+    /// stands at its sentinel.
+    #[test]
+    fn the_archive_keeps_the_season_measured() {
+        let mut t = team();
+        t.set_country(14);
+        t.set_table_place(3);
+        t.set_record([15, 8, 11]);
+        t.set_goals([41, 33]);
+        t.set_squad_strength(216);
+        t.put(PAST_RESULTS[0], 443_568i64);
+        assert_eq!(
+            balance_row(&t, 14, 2025, 3),
+            SeasonBalance {
+                year: 2025,
+                league: 0,
+                place: 3,
+                points: 53,
+                goals: [41, 33],
+                strength: 216,
+                result: 443_568,
+            }
+        );
+        t.put(PAST_RESULTS[0], 2_100_000_000i64);
+        assert_eq!(balance_row(&t, 14, 2025, 3).result, 2_000_000_000);
+        t.put(PAST_RESULTS[0], -2_100_000_000i64);
+        assert_eq!(balance_row(&t, 14, 2025, 3).result, -2_000_000_000);
+        t.put(PAST_RESULTS[0], -1i64);
+        assert_eq!(balance_row(&t, 14, 2025, 3).result, -1);
+        // The class the row keeps is the league's own, and only the main
+        // country's leagues have one.
+        t.set_level(2);
+        assert_eq!(balance_row(&t, 14, 2025, 3).league, 2);
+        t.set_level(4);
+        assert_eq!(balance_row(&t, 14, 2025, 3).league, 2);
+        t.set_country(21);
+        assert_eq!(balance_row(&t, 14, 2025, 3).league, 0);
     }
 }
