@@ -1594,6 +1594,54 @@ pub fn five_years(records: &Records) -> Vec<(u16, [f32; 7])> {
         .collect()
 }
 
+/// The ranking's row: the country, its total, seven seasons from +8.
+const RANKING_ROW: usize = 0x24;
+const RANKING_TOTAL: usize = 4;
+const RANKING_SEASONS: usize = 8;
+
+/// The season's end moves the European ranking on a season
+/// (`FUN_00423cad`): every country's seasons shift down by one, the oldest
+/// dropping out and the new one at naught, its total the last five summed
+/// anew (an empty row's at naught); then the rows by their totals, the
+/// highest first, by an exchange sort (`FUN_00423bd5`). (The human's notice,
+/// event 0xcf, is not built.)
+pub fn roll_ranking(records: &mut Records) {
+    let g = &mut records.globals;
+    let float = |g: &crate::records::Globals, at: usize| f32::from_bits(g.get::<u32>(at));
+    for k in 0..RANKING_COUNTRIES {
+        let at = RANKING_AT + k * RANKING_ROW;
+        if g.get::<i16>(at) == 0 {
+            g.put::<u32>(at + RANKING_TOTAL, 0);
+            continue;
+        }
+        for s in 0..6 {
+            let next = g.get::<u32>(at + RANKING_SEASONS + 4 * (s + 1));
+            g.put::<u32>(at + RANKING_SEASONS + 4 * s, next);
+        }
+        let total = (1..6).fold(0.0f32, |t, s| t + float(g, at + RANKING_SEASONS + 4 * s));
+        g.put::<u32>(at + RANKING_TOTAL, total.to_bits());
+        g.put::<u32>(at + RANKING_SEASONS + 4 * 6, 0);
+    }
+    let row = |g: &crate::records::Globals, k: usize| -> Vec<u8> {
+        (0..RANKING_ROW).map(|b| g.get::<u8>(RANKING_AT + k * RANKING_ROW + b)).collect()
+    };
+    let put_row = |g: &mut crate::records::Globals, k: usize, bytes: &[u8]| {
+        for (b, &v) in bytes.iter().enumerate() {
+            g.put::<u8>(RANKING_AT + k * RANKING_ROW + b, v);
+        }
+    };
+    for i in 0..RANKING_COUNTRIES {
+        for j in i + 1..RANKING_COUNTRIES {
+            let total = |g: &crate::records::Globals, k: usize| float(g, RANKING_AT + k * RANKING_ROW + RANKING_TOTAL);
+            if total(g, i) < total(g, j) {
+                let (a, b) = (row(g, i), row(g, j));
+                put_row(g, i, &b);
+                put_row(g, j, &a);
+            }
+        }
+    }
+}
+
 /// A transfer of the Supertransfers (`FUN_0046217a`: fifty of 0x1c bytes
 /// at `DAT_00b1b2e8` in the lists block, the dearest first, as
 /// `FUN_0070eccd` keeps them): the player's names, his fee in ten
@@ -4871,6 +4919,26 @@ mod tests {
             assert_eq!(x, y, "country {country}'s all-time tables");
         }
         assert!(moved > 0, "the season moved the tables");
+    }
+
+    /// The European ranking over the original's pair: SeasonEnd364's rolled
+    /// on by the replica stands byte for byte as NewSeason000 keeps it —
+    /// every row's seasons moved on, its total anew, the rows in order.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_rolls_the_european_ranking_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        roll_ranking(&mut ours);
+        let rows = |r: &Records| (0..RANKING_COUNTRIES * RANKING_ROW).map(|k| r.globals.get::<u8>(RANKING_AT + k)).collect::<Vec<_>>();
+        assert_eq!(rows(&ours), rows(&theirs));
+        assert_eq!(five_years(&ours)[0].0, 16);
+        assert_eq!(five_years(&ours)[1].0, 28, "Italy past Spain on the new totals");
     }
 
     /// The season's end over the original's pair: the played clubs'
