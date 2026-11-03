@@ -8875,17 +8875,75 @@ mod tests {
         let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
                     until dialog 417\nnow press 1";
-        let Some(runner) = on_save(&game, "season-open", then) else { return };
+        let Some(mut runner) = on_save(&game, "season-open", then) else { return };
+        // The cycle opens the new season behind the press: wait for its
+        // next screen before reading the state.
+        let _ = runner.settle();
         let log = runner.log.join("\n");
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
         assert_eq!(season.year, 2026, "{log}");
         assert!(!season.statement, "the statement stands free again");
         assert!(season.day < 7, "the game walks on from day {}", season.day);
-        assert_eq!((records.globals.start_year(), records.globals.day()), (2026, 0));
+        assert_eq!(records.globals.start_year(), 2026);
+        let day = usize::try_from(records.globals.day()).ok();
+        assert_eq!(day, Some(season.day), "the day counted from the new season's 0");
         let nation = u16::try_from(records.globals.main_country()).unwrap();
         let top = a3_core::opponent::League::of(records, nation, 0).unwrap();
         assert_eq!(top.played(), 0, "the league opens with none played");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The first player of the first club abroad the game keeps without
+    /// its league (a country of the second kind), by id.
+    fn kept_player(records: &a3_core::records::Records) -> Option<u16> {
+        let country = (1..0x75usize).find(|&c| records.countries.kind(c) == 2 && records.countries.team_count(c) > 0)?;
+        records.team(country as u16, 0)?.players().first().copied()
+    }
+
+    /// Past the season's statement a kept country's player has closed his
+    /// season and opened the next: his season's goals and cards at
+    /// nought, his form of the season one week of 10, his contract in its
+    /// last year run on by three or four, the count of his seasons up by
+    /// two (the close and the development) and his strength at most a
+    /// point from where it stood.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_rolls_the_kept_countries_players_over() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut before = None;
+        let root = patched(&dir, "A", "season-kept", |records| {
+            records.globals.set_day(320);
+            let id = kept_player(records).expect("a kept country's player");
+            let year = records.globals.start_year();
+            let p = records.player_mut(id).unwrap();
+            p.set_goals([5, 1, 2]);
+            p.set_league_cards([3, 1, 0]);
+            p.set_season_form(130);
+            p.set_season_form_weeks(12);
+            p.set_contract(year + 1);
+            p.put::<u8>(0x161, 2);
+            before = Some((id, p.strength(), year));
+        });
+        let (id, strength, year) = before.unwrap();
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1";
+        let Some(mut runner) = on_save(&game, "season-kept", then) else { return };
+        let _ = runner.settle();
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.globals.start_year(), year + 1, "{log}");
+        let p = records.player(id).unwrap();
+        assert_eq!((p.goals(), p.league_cards()), ([0; 3], [0; 3]), "player {id}");
+        assert_eq!((p.season_form(), p.season_form_weeks()), (10, 1));
+        let left = i32::from(p.contract() & 0xfff) - i32::from(year + 1);
+        assert!((3..=3 + i32::from(strength) / 3).contains(&left), "{left} years left");
+        assert_eq!(p.get::<u8>(0x161), 4);
+        assert!(p.strength().abs_diff(strength) <= 1, "{} from {strength}", p.strength());
         let _ = std::fs::remove_dir_all(&root);
     }
 

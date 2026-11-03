@@ -881,8 +881,16 @@ impl Cycle {
             return Ok(());
         }
         self.season(|s| s.statement = true);
-        if let Some(records) = self.state().records.as_mut() {
-            crate::settlement::settle_season(records, &self.data.rules.league);
+        {
+            // The kept countries' players close their season beside the
+            // settlement (`FUN_006b3ee0`, between the humans' pay and the
+            // clubs' books in the original's season-end block).
+            let mut guard = self.state();
+            let state = &mut *guard;
+            if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
+                crate::rollover::close_kept(records, &mut season.random);
+                crate::settlement::settle_season(records, &self.data.rules.league);
+            }
         }
         let humans = self.season(|s| {
             (0..s.managers.len())

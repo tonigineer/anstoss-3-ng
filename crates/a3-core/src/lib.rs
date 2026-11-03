@@ -41,6 +41,7 @@ pub mod playtime;
 pub mod random;
 pub mod records;
 pub mod refit;
+pub mod rollover;
 pub mod rooms;
 pub mod presale;
 pub mod season;

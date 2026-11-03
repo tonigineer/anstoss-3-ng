@@ -422,15 +422,23 @@ fn clear_club(team: &mut Team) {
 /// year — the first day, the date, the day of the year and the year's
 /// length, 366 when the new year is a leap year (`FUN_00675e65`). A
 /// season after the first draws its lottery below 1000, the first keeps
-/// 1. Then the leagues of the countries played stand open again and the
-/// season's bookings clear. Beside it the original promotes and relegates
-/// into the league blocks' team slots (`FUN_006af699`), draws the cup's
-/// first round anew, ages the players (`FUN_0065eb48`) and refills the
-/// stars, the best players and much money — all unwritten here.
+/// 1. Then the leagues of the countries played stand open again, every
+/// player's season form starts from one week of 10, the kept countries'
+/// contracts run on and their players develop ([`crate::rollover`]), and
+/// the season's bookings clear. Beside it the original promotes and
+/// relegates into the league blocks' team slots (`FUN_006b24f2` per
+/// country, `FUN_006ae26f` for Germany), draws the cup's first round
+/// anew, develops the played countries' players by other routines
+/// (`FUN_0077655c`) and refills the stars, the best players and much
+/// money — all unwritten here. (`FUN_0065eb48`, which walks every squad
+/// player of the countries played, calls an empty `FUN_0065ebe4`: no
+/// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
     roll_globals(&mut records.globals, random);
     crate::opponent::open_leagues(records);
     crate::opponent::open_cups(records);
+    crate::rollover::restart_form(records);
+    crate::rollover::open_kept(records, random);
     clear_bookings(records);
 }
 
