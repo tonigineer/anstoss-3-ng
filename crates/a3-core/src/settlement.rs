@@ -92,6 +92,15 @@ const BOOKED_BLOCKS: [usize; 2] = [0x120, 0x228];
 const BOOKED_LEN: usize = 0xf0;
 const CLEARED_DWORDS: usize = 0x470;
 const PLAN_ROWS: [usize; 4] = [0x49c, 0x4a6, 0x4b0, 0x4ba];
+/// The attendance plan the new season stands up again: the season's home
+/// games, kept at the team record's +0x92e for `FUN_0069e34e` to read
+/// back as the divisor of the expected crowd (`FUN_00621143`); the
+/// money trouble's cap — its byte of thousands at +0x851, its flag bit
+/// at +0x379 — and the plan itself at the club's +0x120 (`FUN_0042b589`).
+const DIVISOR_AT: usize = 0x92e;
+const CAP_AT: usize = 0x851;
+const CAP_FLAG: usize = 0x379;
+const CAPPED: u8 = 4;
 /// The main sponsor: whether there is one, the percent its money shrinks
 /// by on relegation, its extras for a title or a promotion and for a
 /// European place.
@@ -346,11 +355,9 @@ fn balance_row(team: &Team, main: i16, year: i16, win: i16) -> SeasonBalance {
 /// keeps what the season made (`FUN_0042b2fc` walks the countries'
 /// clubs, `FUN_0042b424` reaches `FUN_0042b589`, and there
 /// `FUN_00672839` clears). What the original sets back up beside the
-/// clearing — the ticket sales target (`FUN_0067324c`), the attendance
-/// plan it computes back for the human club (`FUN_00621143` inside
-/// `FUN_0042b589`), the class template's money — the replica has not
-/// built, so its clubs stand at nought there. The cycle reaches this
-/// from [`open_season`].
+/// clearing — the ticket sales target (`FUN_0067324c`) and the class
+/// template's money — the replica has not built, so its clubs stand at
+/// nought there. The cycle reaches this from [`open_season`].
 pub fn clear_bookings(records: &mut Records) {
     for i in 0..records.teams.len() {
         let country = i16::from(records.teams[i].country());
@@ -363,7 +370,17 @@ pub fn clear_bookings(records: &mut Records) {
 
 /// The clearing of one club (`FUN_00672839`, reached through
 /// `FUN_0042b589`): the season fields to nought, the sales plan's rows
-/// all its first.
+/// all its first. Beside it `FUN_0042b589` stands the attendance plan
+/// back up: the season's home games at the record's +0x92e for
+/// `FUN_0069e34e` to divide the expected crowd by, and for a human club
+/// the plan itself — the gates of its home games over their count,
+/// rounded down to whole thousands (`FUN_00621143` over `FUN_0069e34e`,
+/// `FUN_0067575a`), or the money trouble's cap byte of thousands when
+/// its flag stands. The board's clubs stand at nought there: the
+/// original's club object carries no gates for them at that moment, so
+/// its round lands on nought as well. Measured on the pair: Union's
+/// 374 204 gates in 17 home games give 22 012, and 22 000 stand in the
+/// new season, the divisor with them at 17.
 fn clear_club(team: &mut Team) {
     for block in BOOKED_BLOCKS {
         for k in 0..BOOKED_LEN / 4 {
@@ -379,6 +396,21 @@ fn clear_club(team: &mut Team) {
             put::<i16>(team, at + c * 2, row);
         }
     }
+    let home = usize::from(team.home_games()).min(team.gates().len());
+    if home == 0 {
+        return;
+    }
+    team.put::<u16>(DIVISOR_AT, home as u16);
+    if team.humans() == [0, 0] {
+        return;
+    }
+    let avg = team.gates()[..home].iter().sum::<i32>() / home as i32;
+    let plan = if team.get::<u8>(CAP_FLAG) & CAPPED != 0 {
+        i32::from(team.get::<u8>(CAP_AT)) * 1000
+    } else {
+        avg / 1000 * 1000
+    };
+    put::<i32>(team, 0x120, plan);
 }
 
 /// The new season's first day: the original's season-end block hands the
@@ -789,15 +821,15 @@ mod tests {
     /// The new season clears the bookings of the countries played —
     /// measured on the original: its last day before the season end
     /// (SeasonEnd364) against its first day after (NewSeason000). Of
-    /// the main country and the more ones stand the attendance plan,
-    /// the prize money and the team bonuses at nought for every club
-    /// of every league, the human club among them; the dwords behind
-    /// the blocks and the sales plan's rows agree as well, while the
-    /// clubs of all other countries keep their season's fields; only
-    /// the human club's attendance plan the original computes back for
-    /// the new season (22 000 at Union), and what else it fills beside
-    /// the clearing (the ticket target, the class template's money) the
-    /// replica leaves at nought.
+    /// the main country and the more ones stand the prize money and the
+    /// team bonuses at nought for every club of every league, the human
+    /// club among them; the dwords behind the blocks and the sales
+    /// plan's rows agree as well, while the clubs of all other countries
+    /// keep their season's fields. The attendance plan agrees too: the
+    /// home games of the season at +0x92e for every club, and the human
+    /// club's plan computed back (22 000 at Union, 17 home games of
+    /// 374 204 gates); the ticket target and the class template's money
+    /// the replica leaves at nought.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_clears_the_bookings_of_the_countries_played() {
@@ -830,10 +862,22 @@ mod tests {
                     "team {i} +{at:#x} stands cleared"
                 );
             }
-            assert_eq!(club::<i32>(a, 0x120), 0, "team {i} +0x120 cleared");
             if a.humans() == [0, 0] {
-                assert_eq!(club::<i32>(b, 0x120), 0, "team {i} +0x120 stands cleared");
+                assert_eq!(
+                    (club::<i32>(a, 0x120), club::<i32>(b, 0x120)),
+                    (0, 0),
+                    "team {i} +0x120 stands cleared"
+                );
+            } else {
+                // The human club's plan the original computes back for
+                // the new season (22 000 at Union): the replica's agrees.
+                assert_eq!(club::<i32>(a, 0x120), club::<i32>(b, 0x120), "team {i} +0x120");
             }
+            assert_eq!(
+                a.get::<u16>(DIVISOR_AT),
+                b.get::<u16>(DIVISOR_AT),
+                "team {i} +0x92e the home games"
+            );
             for k in 0..8 {
                 let at = CLEARED_DWORDS + k * 4;
                 assert_eq!(club::<u32>(a, at), club::<u32>(b, at), "team {i} +{at:#x}");
