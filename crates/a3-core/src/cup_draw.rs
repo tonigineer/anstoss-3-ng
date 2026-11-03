@@ -82,7 +82,7 @@ fn setup(case: u8, main: bool) -> (u16, u16, u16) {
 
 /// Picks `k` distinct numbers below `n` in the order drawn
 /// (`FUN_00675698`).
-fn choose(k: usize, n: usize, random: &mut Random) -> Vec<usize> {
+pub(crate) fn choose(k: usize, n: usize, random: &mut Random) -> Vec<usize> {
     let n = if n < k || k > 200 { k.min(200) } else { n };
     let mut taken = vec![false; n];
     (0..k.min(n))

@@ -438,9 +438,9 @@ fn clear_club(team: &mut Team) {
 /// ([`crate::promotion::place`]), the played countries' players open their
 /// season ([`crate::rollover::open_played`]) and the national cups draw
 /// their first rounds ([`crate::cup_draw`]). Beside it the original
-/// develops the played countries' computer clubs (the rest of
-/// `FUN_0077655c`) and refills the stars, the best players and much money
-/// — unwritten here. (`FUN_0065eb48`, which walks every squad
+/// fills the played countries' computer squads with youth and sets their
+/// line-ups (the rest of `FUN_0077655c`) and refills the stars, the best
+/// players and much money — unwritten here. (`FUN_0065eb48`, which walks every squad
 /// player of the countries played, calls an empty `FUN_0065ebe4`: no
 /// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
@@ -451,7 +451,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
-    crate::rollover::open_played(records);
+    crate::rollover::open_played(records, random);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
     crate::cup_draw::draw(records, random);

@@ -283,14 +283,16 @@ pub fn open_player(player: &mut Player, year: i32) {
 }
 
 /// The new season's first day for the played countries' players
-/// (`FUN_0077655c`'s last loop per club): each opened, his last form and
-/// his form of the season — one week of it — his form today. (The
-/// computer clubs' fresh youth, the strength they give their weak and the
-/// rest of `FUN_0077655c` are not built.)
-pub fn open_played(records: &mut Records) {
+/// (`FUN_0077655c` per club): a weak computer squad lifted
+/// ([`crate::development::lift_weak`]), then each player opened, his last
+/// form and his form of the season — one week of it — his form today.
+/// (The computer clubs' fresh youth, their line-ups and the rest of
+/// `FUN_0077655c` are not built.)
+pub fn open_played(records: &mut Records, random: &mut Random) {
     let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            crate::development::lift_weak(records, country, number, random);
             for id in squad(records, country, number) {
                 let Some(player) = records.player_mut(id) else { continue };
                 open_player(player, year);

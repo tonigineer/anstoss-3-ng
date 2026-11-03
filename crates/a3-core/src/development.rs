@@ -405,6 +405,58 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
     (drawn, young_riser)
 }
 
+/// The new season lifts a weak computer squad (`FUN_0077655c`, from the
+/// second season on): when its strength averages below a mark by its
+/// league — 10, 9 or 8 in the first by its place in the list (the first
+/// six, the next six, the rest), 7 or 6 in the second (the first nine),
+/// 5 below —, of its players under 30 below the mark whose talent reaches
+/// above it up to five (more for the first league's best placed: ten less
+/// half its place) gain a point, drawn when there are more.
+pub(crate) fn lift_weak(records: &mut Records, country: u16, number: u16, random: &mut Random) {
+    let Some(team) = records.team(country, number) else { return };
+    if team.humans() != [0, 0] || records.globals.seasons() <= 1 {
+        return;
+    }
+    let place = i32::from(team.league_place());
+    let (mut lifts, threshold, mark) = match team.level() {
+        0 => (
+            10 - (place >> 1),
+            if place < 6 { 100 } else if place < 12 { 90 } else { 80 },
+            if place < 6 { 10 } else if place < 12 { 9 } else { 8 },
+        ),
+        1 => (5, if place < 10 { 70 } else { 60 }, if place < 10 { 7 } else { 6 }),
+        _ => (5, 50, 5),
+    };
+    let squad = team.players();
+    let today = today(records);
+    let sum: i32 = squad.iter().filter_map(|&id| records.player(id)).map(|p| i32::from(p.strength())).sum();
+    if sum * 10 >= threshold * squad.len() as i32 {
+        return;
+    }
+    lifts = lifts.max(5);
+    let candidates: Vec<u16> = squad
+        .iter()
+        .copied()
+        .filter(|&id| {
+            records.player(id).is_some_and(|p| {
+                i32::from(p.strength()) < mark
+                    && i32::from(crate::rollover::top_strength(p.talent())) > mark
+                    && today.is_some_and(|d| crate::statistics::age_on(p, d) < 30)
+            })
+        })
+        .collect();
+    let lifted: Vec<u16> = if (lifts as usize) < candidates.len() {
+        crate::cup_draw::choose(lifts as usize, candidates.len(), random).into_iter().map(|k| candidates[k]).collect()
+    } else {
+        candidates
+    };
+    for id in lifted {
+        if let Some(p) = records.player_mut(id) {
+            p.set_strength(p.strength() + 1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +577,79 @@ mod tests {
         assert!(compared > 4000, "{compared} players compared");
         assert!(their_ups / 2 < ups && ups < their_ups, "{ups} rises, the original {their_ups}");
         assert!((downs - their_downs).abs() * 4 < their_downs, "{downs} falls, the original {their_downs}");
+    }
+
+    /// The season's turn over the original's pair as the cycle runs it
+    /// (the season end's steps, the settlement, the new season's opening):
+    /// at the clubs of no league in the old season nor either new one (the
+    /// more countries' risers are drawn) — whose players only the lift
+    /// moves — the
+    /// players lifted by a point come within a tenth of the original's, none
+    /// by more, every one of them under 30, below 5 and of a talent reaching
+    /// above; and over all the clubs of the countries played the rises and
+    /// falls by a point come within a fifth of the original's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_lifts_weak_squads_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = crate::league::LeagueTables::load(&exe).unwrap();
+        let mut random = Random::new(3);
+        let drawn = crate::promotion::draw(&mut ours, &mut random);
+        crate::promotion::count(&mut ours);
+        develop_played(&mut ours, false, &mut random);
+        crate::rollover::retire_announced(&mut ours, &mut random);
+        crate::statistics::archive_leagues(&mut ours);
+        crate::statistics::fold_eternal(&mut ours);
+        crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
+        crate::rollover::count_first_seasons(&mut ours);
+        let agents = crate::free_agents::release(&mut ours, &mut random);
+        crate::deals::execute(&mut ours, &mut random);
+        crate::rollover::close_played(&mut ours, &mut random);
+        crate::rollover::close_kept(&mut ours, &mut random);
+        crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
+        crate::settlement::settle_season(&mut ours, &tables);
+        crate::promotion::take(&mut ours, &drawn);
+        crate::settlement::open_season(&mut ours, &mut random);
+        let today = today(&before).unwrap();
+        let (mut lifted, mut their_lifted) = (0, 0);
+        let (mut moves, mut their_moves) = ([0; 2], [0; 2]);
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)).max(0) as u16 {
+                let level = |r: &Records| r.team(country, number).unwrap().level();
+                let none = [&before, &ours, &theirs].into_iter().all(|r| level(r) >= 10);
+                for id in before.team(country, number).unwrap().players() {
+                    let (o, x, y) = (before.player(id).unwrap(), ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    if o.first_name() != y.first_name() || o.club() != y.club() || x.club() != o.club() {
+                        continue;
+                    }
+                    let (mine, their) = (i16::from(x.strength()) - i16::from(o.strength()), i16::from(y.strength()) - i16::from(o.strength()));
+                    for (k, by) in [1, -1].into_iter().enumerate() {
+                        moves[k] += i32::from(mine == by);
+                        their_moves[k] += i32::from(their == by);
+                    }
+                    if !none {
+                        continue;
+                    }
+                    assert!((0..=1).contains(&mine), "player {id} of no league by {mine}");
+                    if mine == 1 {
+                        lifted += 1;
+                        assert!(o.strength() < 5 && crate::rollover::top_strength(o.talent()) > 5, "player {id}");
+                        assert!(crate::statistics::age_on(o, today) < 30, "player {id}'s age");
+                    }
+                    their_lifted += i32::from(their == 1);
+                }
+            }
+        }
+        assert!((lifted - their_lifted).abs() * 10 < their_lifted, "{lifted} lifted, the original {their_lifted}");
+        for k in 0..2 {
+            assert!((moves[k] - their_moves[k]).abs() * 5 < their_moves[k], "{:?} against the original's {:?}", moves, their_moves);
+        }
     }
 }
