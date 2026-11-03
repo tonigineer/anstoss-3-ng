@@ -411,7 +411,8 @@ mod tests {
     /// them; the free agents placed stand in a squad of at most 30 on
     /// terms of two to five years, and where his strength did not move
     /// between the two saves (the original develops the played countries'
-    /// players before, `FUN_0040f99c`, not built) a placed man's salary is
+    /// players before, [`crate::development`], left out here) a placed
+    /// man's salary is
     /// the original's, his bonuses too at the same club, and so is the
     /// league of a weak talent of the main country.
     #[test]

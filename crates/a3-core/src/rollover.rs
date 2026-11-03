@@ -753,7 +753,7 @@ pub fn develop(player: &mut Player, today: NaiveDate, random: &mut Random) {
 /// A full history moves on by a byte first — and the original then writes
 /// the nibble one byte behind it, into the first byte of the form's ring,
 /// which the replica does as well.
-fn note_strength(player: &mut Player, strength: u8) {
+pub(crate) fn note_strength(player: &mut Player, strength: u8) {
     let byte = |player: &Player, k: usize| player.get::<u8>(HISTORY + k);
     let mut k = 0;
     while k < HISTORY_LEN && byte(player, k) & 0xf != 0 && byte(player, k) & 0xf0 != 0 {
