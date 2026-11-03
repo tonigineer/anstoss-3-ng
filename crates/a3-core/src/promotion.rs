@@ -27,14 +27,17 @@
 //! clubs. At the new season's first init each club then stands at its
 //! league's level and its place in the list; a club in no league at 10.
 //!
+//! The promoted and relegated clubs' squads count it, every player one
+//! promotion or relegation more, the main country's players offered to
+//! the record lists of the most of them (`FUN_007104dc`).
+//!
 //! Left out: the other countries' own rules (`FUN_006af8fd`,
 //! `FUN_006b07f0`, `FUN_006b1c01`, `FUN_006b0d18`, `FUN_006b1920`,
 //! `FUN_006b122e`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
 //! booked moves set off besides — the managers' and the record lists'
 //! promotions (`FUN_00634d9c`, `FUN_00726382`, `FUN_007264bf`), the news
-//! (`FUN_006143d2`) and the players' promotion counters
-//! (`FUN_007104dc`); the European places' flags. The clubs from outside
+//! (`FUN_006143d2`); the European places' flags. The clubs from outside
 //! are drawn with the replica's own generator.
 
 use crate::opponent::{LEAGUE_FIELDS, League};
@@ -580,6 +583,106 @@ pub fn draw_with(records: &mut Records, order_of: &mut Orders) -> Drawn {
     drawn
 }
 
+/// A player's counts of promotions and relegations (R+0x350, +0x351).
+const PROMOTIONS: usize = 0x350;
+const RELEGATIONS: usize = 0x351;
+/// The record lists of the players promoted and relegated most often with
+/// the main country's clubs: twenty entries of 0xc bytes.
+const MOST_PROMOTED: &str = "0xb06bb4";
+const MOST_RELEGATED: &str = "0xb06a90";
+const MOST: usize = 20;
+const MOST_ENTRY: usize = 0xc;
+/// Bit 31 of R+0x1b4: he is known by his nickname.
+const BY_NICKNAME: u32 = 0x8000_0000;
+
+/// An entry of a record list (`FUN_00723eaa`, `FUN_00723fdc`): his id,
+/// his names — none and the nickname when he goes by it —, his club, the
+/// count.
+fn entry(player: &crate::records::Player, count: u8) -> [u8; MOST_ENTRY] {
+    let (first, last) = if player.shown() & BY_NICKNAME != 0 {
+        (0, player.nickname())
+    } else {
+        (player.first_name(), player.last_name())
+    };
+    let club = player.club();
+    let mut e = [0u8; MOST_ENTRY];
+    e[0..2].copy_from_slice(&player.id().to_le_bytes());
+    e[2..4].copy_from_slice(&first.to_le_bytes());
+    e[4..6].copy_from_slice(&last.to_le_bytes());
+    e[6] = club[0];
+    e[8..10].copy_from_slice(&u16::from(club[1]).to_le_bytes());
+    e[10..12].copy_from_slice(&i16::from(count).to_le_bytes());
+    e
+}
+
+/// Offers an entry to a record list (`CNormaleListe::FUN_006c58fe`, by
+/// the count descending, `0x723f8f`): only one that beats the last; it
+/// goes before the first it beats, over his own entry if he has one.
+fn offer(list: &mut [u8], new: [u8; MOST_ENTRY]) {
+    let count = |e: &[u8]| i16::from_le_bytes([e[10], e[11]]);
+    let id = |e: &[u8]| u16::from_le_bytes([e[0], e[1]]);
+    let at = |k: usize| k * MOST_ENTRY..(k + 1) * MOST_ENTRY;
+    if list.len() < MOST * MOST_ENTRY || count(&new) <= count(&list[at(MOST - 1)]) {
+        return;
+    }
+    let beats = (0..MOST).find(|&k| count(&new) > count(&list[at(k)])).unwrap_or(MOST);
+    match (0..MOST).find(|&k| id(&list[at(k)]) == id(&new)) {
+        None => {
+            list.copy_within(beats * MOST_ENTRY..(MOST - 1) * MOST_ENTRY, (beats + 1) * MOST_ENTRY);
+            list[at(beats)].copy_from_slice(&new);
+        }
+        Some(own) => {
+            list[at(own)].copy_from_slice(&new);
+            if beats < own {
+                list.copy_within(beats * MOST_ENTRY..own * MOST_ENTRY, (beats + 1) * MOST_ENTRY);
+                list[at(beats)].copy_from_slice(&new);
+            }
+        }
+    }
+}
+
+/// The squads of the season's promoted and relegated clubs count it
+/// (`FUN_007104dc`, `FUN_00710373` per played country: `FUN_0071021f`,
+/// `FUN_00710309`): every player one promotion or relegation more, and
+/// with a club of the main country each offered to the record lists of
+/// the most promotions and relegations. (The trainers' careers the
+/// promotion counts as well, `FUN_006b53ad`, are not built.)
+pub fn count(records: &mut Records) {
+    let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+    for country in crate::opponent::played_nations(records) {
+        let books = moves(records, country);
+        for level in 0..books.up.len() {
+            for (clubs, counter, list) in
+                [(&books.up[level], PROMOTIONS, MOST_PROMOTED), (&books.down[level], RELEGATIONS, MOST_RELEGATED)]
+            {
+                for &club in clubs {
+                    let Ok(number) = u16::try_from(club) else { continue };
+                    let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
+                    for &id in &squad {
+                        if let Some(p) = records.player_mut(id) {
+                            p.put::<u8>(counter, p.get::<u8>(counter).wrapping_add(1));
+                        }
+                    }
+                    if country != main {
+                        continue;
+                    }
+                    for &id in &squad {
+                        let Some(p) = records.player(id) else { continue };
+                        let n = p.get::<u8>(counter);
+                        if n == 0 {
+                            continue;
+                        }
+                        let new = entry(p, n);
+                        if let Some(block) = records.block_mut(list) {
+                            offer(block, new);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The country's books, as its block keeps them.
 pub fn moves(records: &Records, country: u16) -> Moves {
     let slot = records.countries.slot(usize::from(country));
@@ -760,8 +863,9 @@ mod tests {
     /// The season's end over the original's pair (SeasonEnd364 →
     /// NewSeason000), the draws fed the original's own picks — the clubs
     /// its books and its new lists name as come from outside: every
-    /// played league's next clubs, every country's books and every club's
-    /// season flags stand as the original's (the more countries' first
+    /// played league's next clubs, every country's books, every player's
+    /// counts of promotions and relegations, the record lists of them and
+    /// every club's season flags stand as the original's (the more countries' first
     /// leagues the main country's routine switched early reckoning their
     /// champion and runner-up through their new clubs, as there), and
     /// after the new season's placing every club's level and place in its
@@ -821,6 +925,27 @@ mod tests {
                 assert_eq!(next, list(&theirs, country, level), "{country} league {level}'s next clubs");
             }
             assert_eq!(moves(&ours, country), moves(&theirs, country), "{country}'s books");
+        }
+        count(&mut ours);
+        for country in crate::opponent::played_nations(&before) {
+            for n in 0..ours.countries.team_count(usize::from(country)) as u16 {
+                for id in before.team(country, n).unwrap().players() {
+                    let (x, y) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    let counts = |p: &crate::records::Player| (p.get::<u8>(PROMOTIONS), p.get::<u8>(RELEGATIONS));
+                    if before.player(id).unwrap().birthday() == y.birthday() {
+                        assert_eq!(counts(x), counts(y), "player {id}'s promotions and relegations");
+                    }
+                }
+            }
+        }
+        for list in [MOST_PROMOTED, MOST_RELEGATED] {
+            let (x, y) = (ours.block(list).unwrap(), theirs.block(list).unwrap());
+            for k in 0..MOST * MOST_ENTRY {
+                if k % MOST_ENTRY != 7 {
+                    assert_eq!(x[k], y[k], "{list} entry {} byte {}", k / MOST_ENTRY, k % MOST_ENTRY);
+                }
+            }
+            assert_ne!(&x[..2], &[0, 0], "{list} filled");
         }
         let data = crate::data::Data::load(&dir).unwrap();
         flag(&mut ours, &data.rules.forecast.tickets);
