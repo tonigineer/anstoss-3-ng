@@ -97,7 +97,7 @@ pub(crate) fn choose(k: usize, n: usize, random: &mut Random) -> Vec<usize> {
 }
 
 /// A random order of `n` (`FUN_00675630`).
-fn order(n: usize, random: &mut Random) -> Vec<usize> {
+pub(crate) fn order(n: usize, random: &mut Random) -> Vec<usize> {
     let mut slots: Vec<Option<usize>> = vec![None; n];
     for k in 0..n {
         loop {

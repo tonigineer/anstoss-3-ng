@@ -558,6 +558,130 @@ fn books(records: &mut Records) {
     }
 }
 
+/// The Champions League's object (`0x8e91e0`, from +0x20): its pairings
+/// and groups cleared in five stretches, its round's fields and its
+/// rounds' first pairings, the main country's first league's points for a
+/// win at home and away and the word behind them.
+const CHAMPIONS: &str = "0x8e91e0";
+const CHAMPIONS_CLEARED: [(usize, usize); 5] = [(0, 0x922), (0x922, 0x180), (0xaa2, 0xc0), (0xb62, 0x280), (0xde2, 0x140)];
+const CHAMPIONS_FIELDS: [(usize, u32); 8] =
+    [(0xf28, 0x10), (0xf2c, 0x70), (0xf30, 0xa0), (0xf34, 0xa4), (0xf38, 0xa6), (0xf24, 1), (0xf3c, 4), (0xf40, 4)];
+const CHAMPIONS_POINTS: usize = 0xf44;
+const CHAMPIONS_QUALIFIER_TIES: usize = 16;
+const PAIRING: usize = 0xe;
+/// The UEFA cup's object (`0x8e8940`): its rounds' first pairings.
+const UEFA_CUP: &str = "0x8e8940";
+const UEFA_STARTS: [u32; 8] = [0, 50, 98, 122, 138, 146, 150, 152];
+/// Each country's count of clubs in the two cups (`DAT_00b5cca6`).
+const COUNTRY_ENTRIES: usize = 0xb5cca6;
+/// The Intertoto's first list paired in twelve ties (the entrants' +0x4ea).
+const INTERTOTO_TIES: usize = 0x4ca;
+/// The season flags the cups give a club (team +0x110): in Europe, and
+/// the Champions League's seed, the UEFA cup, the Intertoto.
+const IN_EUROPE: u16 = 0x4000;
+const SEEDED: u16 = 0x40;
+const IN_UEFA: u16 = 0x10;
+const IN_INTERTOTO: u16 = 0x20;
+
+/// The new season's European cups (`FUN_0041bb6c`): the Champions League
+/// cleared and set for its qualifiers (`FUN_0041bd39`), the UEFA cup's
+/// rounds (`FUN_0041f9b1`), every entrant's club flagged and its country
+/// counted (`FUN_0041a3ef`), from the second season the Intertoto's first
+/// list drawn into twelve ties, and the Champions League's qualifiers
+/// paired: each of the first sixteen away to one of the other sixteen in
+/// a drawn order (`FUN_0041bef4`). (The favourites' lists, `FUN_0077f5d9`
+/// at 0x1c67758, live outside the save and are not built.)
+pub fn open_season(records: &mut Records, random: &mut Random) {
+    let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+    let rules: Option<[u8; 8]> = crate::opponent::League::block_name(records, main, 0)
+        .and_then(|n| records.block(&n))
+        .and_then(|b| b.get(crate::opponent::LEAGUE_FIELDS + 8..crate::opponent::LEAGUE_FIELDS + 0x10))
+        .map(|w| w.try_into().unwrap());
+    if let Some(b) = records.block_mut(CHAMPIONS) {
+        for (at, len) in CHAMPIONS_CLEARED {
+            if let Some(r) = b.get_mut(at..at + len) {
+                r.fill(0);
+            }
+        }
+        for (at, v) in CHAMPIONS_FIELDS {
+            if let Some(r) = b.get_mut(at..at + 4) {
+                r.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        if let (Some(r), Some(rules)) = (b.get_mut(CHAMPIONS_POINTS..CHAMPIONS_POINTS + 8), rules) {
+            r.copy_from_slice(&rules);
+        }
+    }
+    if let Some(b) = records.block_mut(UEFA_CUP) {
+        for (k, v) in UEFA_STARTS.iter().enumerate() {
+            if let Some(r) = b.get_mut(4 * k..4 * k + 4) {
+                r.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    for k in 0..PLACE_COUNTRIES {
+        records.globals.put::<u8>(COUNTRY_ENTRIES + k, 0);
+    }
+    let Some(entrants) = records.block(ENTRANTS).map(<[u8]>::to_vec) else { return };
+    let entries = |list: List| -> Vec<(u8, i16)> {
+        (0..word(&entrants, list.count).max(0) as usize)
+            .map(|k| (entrants[list.at + 4 * k], word(&entrants, list.at + 4 * k + 2)))
+            .collect()
+    };
+    for (list, flags, counted) in [
+        (SEEDS, IN_EUROPE | SEEDED, true),
+        (QUALIFIERS, IN_EUROPE, true),
+        (UEFA, IN_EUROPE | IN_UEFA, true),
+        (UEFA_QUALIFIERS, IN_EUROPE | IN_UEFA, true),
+        (INTERTOTO_A, IN_EUROPE | IN_INTERTOTO, false),
+        (INTERTOTO_B, IN_EUROPE | IN_INTERTOTO, false),
+    ] {
+        for (country, team) in entries(list) {
+            flag_club(records, country, team, flags);
+            if counted {
+                let at = COUNTRY_ENTRIES + usize::from(country);
+                records.globals.put::<u8>(at, records.globals.get::<u8>(at).wrapping_add(1));
+            }
+        }
+    }
+    let mut entrants = entrants;
+    if records.globals.seasons() > 1 {
+        let order = crate::cup_draw::order(INTERTOTO_A_FILLED as usize, random);
+        for k in (0..order.len()).step_by(2) {
+            let at = INTERTOTO_TIES + (k / 2) * PAIRING;
+            let (a, b) = (INTERTOTO_A.at + 4 * order[k], INTERTOTO_A.at + 4 * order[k + 1]);
+            let (first, second) = (entrants[a..a + 4].to_vec(), entrants[b..b + 4].to_vec());
+            entrants[at..at + 4].copy_from_slice(&first);
+            entrants[at + 4..at + 8].copy_from_slice(&second);
+        }
+        if let Some(b) = records.block_mut(ENTRANTS) {
+            b.copy_from_slice(&entrants);
+        }
+    }
+    let order = crate::cup_draw::order(CHAMPIONS_QUALIFIER_TIES, random);
+    if let Some(b) = records.block_mut(CHAMPIONS) {
+        for (k, &o) in order.iter().enumerate() {
+            let at = k * PAIRING;
+            let home = QUALIFIERS.at + 4 * (CHAMPIONS_QUALIFIER_TIES + o);
+            let away = QUALIFIERS.at + 4 * k;
+            b[at..at + 4].copy_from_slice(&entrants[home..home + 4]);
+            b[at + 4..at + 8].copy_from_slice(&entrants[away..away + 4]);
+        }
+    }
+    records.globals.set_europe_stage(0);
+}
+
+/// A played country's club takes a cup's flags (`FUN_0063e0d1`).
+fn flag_club(records: &mut Records, country: u8, team: i16, flags: u16) {
+    if team == 200 || records.countries.kind(usize::from(country)) != 1 {
+        return;
+    }
+    let Ok(number) = u16::try_from(team) else { return };
+    if let Some(t) = records.team_mut(u16::from(country), number) {
+        t.put::<u16>(0x110, t.get::<u16>(0x110) | flags);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +759,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The new season's cups over the original's pair, opened by the
+    /// replica from the original's lists: every played club's European
+    /// flags, every country's count of entrants, the UEFA cup's rounds and
+    /// the Champions League's object as NewSeason000 keeps them — its
+    /// qualifiers' ties with the first sixteen away, their opponents the
+    /// other sixteen in a drawn order.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_opens_the_european_cups_as_the_original() {
+        let (mut ours, theirs, _) = pair();
+        let lists = theirs.block(ENTRANTS).unwrap().to_vec();
+        ours.block_mut(ENTRANTS).unwrap().copy_from_slice(&lists);
+        let played = crate::opponent::played_nations(&ours);
+        for &c in &played {
+            for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
+                let team = ours.team_mut(c, t).unwrap();
+                team.put::<u16>(0x110, team.get::<u16>(0x110) & !(IN_EUROPE | SEEDED | IN_UEFA | IN_INTERTOTO));
+            }
+        }
+        ours.globals.set_seasons(2);
+        open_season(&mut ours, &mut Random::new(3));
+        let europe = IN_EUROPE | SEEDED | IN_UEFA | IN_INTERTOTO;
+        for &c in &played {
+            for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
+                let flags = |r: &Records| r.team(c, t).unwrap().get::<u16>(0x110) & europe;
+                assert_eq!(flags(&ours), flags(&theirs), "club {c}/{t}");
+            }
+        }
+        for k in 0..PLACE_COUNTRIES {
+            assert_eq!(ours.globals.get::<u8>(COUNTRY_ENTRIES + k), theirs.globals.get::<u8>(COUNTRY_ENTRIES + k), "country {k}");
+        }
+        assert_eq!(ours.block(UEFA_CUP).unwrap()[..32], theirs.block(UEFA_CUP).unwrap()[..32]);
+        let (x, y) = (ours.block(CHAMPIONS).unwrap(), theirs.block(CHAMPIONS).unwrap());
+        let home = |k: usize| k < CHAMPIONS_QUALIFIER_TIES * PAIRING && k % PAIRING < 4;
+        assert!((0..x.len()).filter(|&k| !home(k)).all(|k| x[k] == y[k]), "the Champions League's object");
+        let homes = |b: &[u8]| {
+            let mut h: Vec<Vec<u8>> = (0..CHAMPIONS_QUALIFIER_TIES).map(|k| b[k * PAIRING..k * PAIRING + 4].to_vec()).collect();
+            h.sort();
+            h
+        };
+        assert_eq!(homes(x), homes(y), "the qualifiers' hosts");
     }
 }

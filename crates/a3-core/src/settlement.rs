@@ -439,7 +439,8 @@ fn clear_club(team: &mut Team) {
 /// and the season's bookings clear. Every club stands at its new league
 /// ([`crate::promotion::place`]), the played countries' players open their
 /// season ([`crate::rollover::open_played`]) and the national cups draw
-/// their first rounds ([`crate::cup_draw`]). Beside it the original
+/// their first rounds ([`crate::cup_draw`]) after the European cups open
+/// ([`crate::europe_entry::open_season`]). Beside it the original
 /// fills the played countries' computer squads with youth and sets their
 /// line-ups (the rest of `FUN_0077655c`) and refills the stars, the best
 /// players and much money — unwritten here. (`FUN_0065eb48`, which walks every squad
@@ -456,6 +457,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::rollover::open_played(records, random);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
+    crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
     clear_bookings(records);
 }
