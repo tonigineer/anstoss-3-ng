@@ -705,9 +705,9 @@ pub struct SeasonBalance {
 }
 
 /// One past season as the development pages draw it: the sum of the home
-/// gates, what attendance and season tickets were planned, how many were
-/// sold, and the league's level (`FUN_0063410d` appends one at the
-/// season's end).
+/// gates, what the club planned its spectators at and the season tickets'
+/// target — the club object's +0x120 and +0x124 — and the league's level
+/// (`FUN_0063410d` appends one at the season's end).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SeasonHistory {
     pub gates: i32,
@@ -821,6 +821,20 @@ impl Extra {
         let at = self.make_room(0x20d0, 0x20d4, 8, 50);
         self.put(at, year);
         self.put(at + 4, money);
+    }
+
+    /// Appends the season just closed to the past seasons the development
+    /// pages draw (`FUN_0063410d`), the row its caller hands in: the gates,
+    /// the planned attendance, the season tickets' target, and the league's level
+    /// from no class above the second. The caller also puts a one at the
+    /// row's +0xc, which no page reads.
+    pub fn add_history(&mut self, row: SeasonHistory) {
+        let at = self.make_room(0x23fc, 0x2400, 0x10, 20);
+        self.put(at, row.gates);
+        self.put(at + 4, row.planned);
+        self.put(at + 8, row.tickets);
+        self.put(at + 0xc, 1u8);
+        self.put(at + 0xd, row.level);
     }
 
     /// Where a season's row goes: the count at `count` rises, and where the
@@ -2134,8 +2148,20 @@ mod tests {
         for year in 2021..2072i16 {
             extra.add_sponsor(year, 500);
         }
+        for year in 2000..2021i16 {
+            extra.add_history(SeasonHistory {
+                gates: i32::from(year),
+                planned: 20_000,
+                tickets: 9_000,
+                level: 2,
+            });
+        }
         assert_eq!((extra.balance_count(), extra.transfer_count()), (20, 20));
         assert_eq!(extra.get::<i16>(0x20d0), 50);
+        assert_eq!(extra.get::<i16>(0x23fc), 20);
+        let history = extra.history();
+        assert_eq!((history[0].gates, history[19].gates), (2001, 2020));
+        assert_eq!(extra.get::<u8>(0x240c + 19 * 0x10), 1);
         let balances = extra.balances();
         assert_eq!((balances.first().unwrap().year, balances.last().unwrap().year), (2001, 2020));
         assert_eq!(balances[19].points, 30);

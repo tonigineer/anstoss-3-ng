@@ -17,8 +17,10 @@
 //! Each human club also keeps its season in the archive: the balance row,
 //! the transfer net and the sponsor's money of the season that just closed
 //! go into its manager's Extra block behind the past seasons
-//! ([`archive`] — `FUN_00633539`, `FUN_006337b9` and `FUN_00633a30`), where
-//! the Saisonbilanzen and the development pages read them out again.
+//! ([`archive`] — `FUN_00633539`, `FUN_006337b9` and `FUN_00633a30`), as
+//! does the past season of gates and sales the development pages draw
+//! behind their curves (`FUN_0063410d`), where the Saisonbilanzen and the
+//! stadium pages read them out again.
 //!
 //! Left out here, all of it for the humans or outside the club's books: the
 //! fans' mood after a title (`FUN_007144e4`), what the
@@ -36,7 +38,7 @@
 
 use crate::finances::{CLUB_TO_TEAM, booked_result, result, transfer_net};
 use crate::league::{self, LeagueTables};
-use crate::records::{Manager, Records, SeasonBalance, Team};
+use crate::records::{Manager, Records, SeasonBalance, SeasonHistory, Team};
 
 /// The tax rate in percent (`DAT_00b5dfa9`); the money events move it by
 /// two at a time, within eight of its base (`DAT_00b5dfaa`).
@@ -253,9 +255,12 @@ fn pay_premium(team: &mut Team, manager: Option<&mut Manager>) {
 /// What the season's end keeps of a human club's season in its manager's
 /// archive: the season's balance row, the transfers' net and the sponsor's
 /// money of the season that just closed (`FUN_00633539`, `FUN_006337b9`
-/// and `FUN_00633a30`, the three at the tail of the club's settlement).
-/// The row's place keeps no star: the interim gap's bit, the club object's
-/// +0x100 bit 0x80, has no home in the save.
+/// and `FUN_00633a30`, the three at the tail of the club's settlement),
+/// and the past season the development pages draw, which the original
+/// appends in the same breath as it clears the club's gates and sales
+/// (`FUN_0063410d` in `FUN_0071d0a4`). The row's place keeps no star: the
+/// interim gap's bit, the club object's +0x100 bit 0x80, has no home in
+/// the save.
 fn archive(records: &mut Records, i: usize) {
     let team = &records.teams[i];
     if team.humans() == [0, 0] {
@@ -277,6 +282,22 @@ fn archive(records: &mut Records, i: usize) {
     extra.add_balance(row);
     extra.add_transfer(year, net);
     extra.add_sponsor(year, sponsor);
+    extra.add_history(history_row(team));
+}
+
+/// The row the season's end hands the development pages to keep
+/// (`FUN_0063410d` called from `FUN_0071d0a4`): the gates of the home
+/// games played, the pair the club carries at +0x120 and +0x124 — what it
+/// plans its spectators at and the season tickets' target — and the
+/// league's level, no class above the second.
+fn history_row(team: &Team) -> SeasonHistory {
+    let played = usize::from(team.home_games()).min(team.gates().len());
+    SeasonHistory {
+        gates: team.gates()[..played].iter().sum(),
+        planned: team.planned(),
+        tickets: team.ticket_target(),
+        level: team.level().min(2),
+    }
 }
 
 /// The row the archive keeps of the season just settled (`FUN_00633539`):
