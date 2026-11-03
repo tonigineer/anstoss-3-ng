@@ -2611,6 +2611,77 @@ const TOR_LEAGUE: usize = 0x640;
 const SCORER_LIST: usize = 0x468e;
 const SCORER_LEAGUE: usize = 0xf0;
 
+/// The lists the new season's first init clears (`FUN_0065e659`), by
+/// address and length: the top scorers and the other player lists, the
+/// scorers' points, the fair-play tables, the Elf des Tages and the
+/// referees' favourites — every table of the block from `DAT_00b0b6f4` up
+/// to the all-time tables at `DAT_00b131c4`, and the referees' at
+/// `DAT_00b1e290`.
+const SEASON_CLEARS: [(usize, usize); 11] = [
+    (0xb0b6f4, 16000),
+    (0xb0f574, 2000),
+    (0xb106a4, 0x640),
+    (0xb10ce4, 2000),
+    (0xb114b4, 2000),
+    (0xb11c84, 2000),
+    (0xb0fd44, 0x960),
+    (0xb12454, 1000),
+    (0xb1283c, 2000),
+    (0xb1300c, 0x1b8),
+    (0xb1e290, 0x3c0),
+];
+const LISTS_AT: usize = 0xb0b6b8;
+
+/// The new season's lists (`FUN_0065e659`): every table of the season
+/// cleared, then the fair-play and the referees' tables seeded with each
+/// league's clubs in table order (`FUN_0065ebe9`) — the main country's
+/// leagues by level, a more country's first league behind them — a club
+/// by the low byte of its number, its counts at nought. Beside it the
+/// thirty numbers of the season's luck are drawn anew, each below 30.
+pub fn open_lists(records: &mut Records, random: &mut Random) {
+    let globals = &records.globals;
+    let main = globals.main_country();
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let mut seeds: Vec<(usize, Vec<i16>)> = Vec::new();
+    if let Ok(country) = u16::try_from(main) {
+        for level in 0..records.countries.leagues(usize::from(country)).max(0) {
+            let Some(league) = League::of(records, country, level as u8) else { continue };
+            seeds.push((level as usize, (0..league.teams()).map(|i| league.team(i)).collect()));
+        }
+    }
+    for &country in &globals.more_countries()[..more] {
+        let Ok(country) = u16::try_from(country) else { continue };
+        let (Some(slot), Some(league)) = (league_of(records, country, 0), League::of(records, country, 0)) else {
+            continue;
+        };
+        seeds.push((slot, (0..league.teams()).map(|i| league.team(i)).collect()));
+    }
+    if let Some(block) = records.block_mut(LISTS) {
+        for (at, len) in SEASON_CLEARS {
+            if let Some(s) = block.get_mut(at - LISTS_AT..at - LISTS_AT + len) {
+                s.fill(0);
+            }
+        }
+        for (slot, teams) in seeds {
+            for (k, team) in teams.into_iter().enumerate() {
+                let fair = FAIR_LIST + slot * FAIR_LEAGUE + 4 * k;
+                let referee = REFEREE_LIST + slot * REFEREE_LEAGUE + 4 * k;
+                if let Some(b) = block.get_mut(fair) {
+                    *b = team as u8;
+                }
+                if let Some(s) = block.get_mut(referee..referee + 2) {
+                    s.copy_from_slice(&u16::from(team as u8).to_le_bytes());
+                }
+            }
+        }
+    }
+    let values = std::array::from_fn(|_| random.below(LUCK_BELOW) as i16);
+    records.luck.set_values(values);
+}
+
+/// The season's luck draws below this.
+const LUCK_BELOW: u32 = 30;
+
 /// Which league's list a page reads (`FUN_00677b07`): the main country's
 /// by its level, and the more countries' first leagues, behind the main
 /// country's six.
@@ -3306,13 +3377,14 @@ pub fn player_substitutions(
 /// count, seeded at the season's start in table order; `FUN_007466b2`
 /// adds to a club's count after each match, and it can fall below 0.
 const REFEREE_LIST: usize = 0x12bd8;
+const REFEREE_LEAGUE: usize = 0x60;
 
 /// The Schirilieblinge (`FUN_0044c57e`): as many of the pairs as the
 /// league has clubs, by the page's exchange sort — the most favoured
 /// first, every place swapping with the first of the rest that beats it.
 pub fn referees_favourites(records: &Records, country: u16, level: u8) -> Vec<ClubCount> {
     let teams = League::of(records, country, level).map_or(0, |l| l.teams()).min(24);
-    let Some(b) = list_bytes(records, country, level, REFEREE_LIST, 0x60, 4, 24) else {
+    let Some(b) = list_bytes(records, country, level, REFEREE_LIST, REFEREE_LEAGUE, 4, 24) else {
         return Vec::new();
     };
     let word = |at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
@@ -4457,5 +4529,56 @@ mod tests {
             row(0x03),
             Opponent { team: 0x03, games: 3, points: 1, given: 7, goals: 2, against: 6, diff: -4 }
         );
+    }
+
+    /// The new season's lists over the original's pair (SeasonEnd364 →
+    /// NewSeason000): every table the init clears stands at nought as the
+    /// original's, but for the clubs seeded into the fair-play and the
+    /// referees' tables — the original's are its new leagues' clubs in
+    /// table order, the replica's its own leagues', which keep last
+    /// season's clubs until promotions are built. The luck is drawn anew,
+    /// each number below 30, in both.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_clears_its_lists_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let luck = ours.luck.values();
+        open_lists(&mut ours, &mut Random::new(9));
+        assert_ne!(ours.luck.values(), luck);
+        assert_ne!(theirs.luck.values(), luck);
+        assert!(ours.luck.values().iter().chain(&theirs.luck.values()).all(|&v| (0..30).contains(&v)));
+        // Where each table seeds its clubs, by the records' own leagues.
+        let seeded = |records: &Records| {
+            let mut at = std::collections::BTreeMap::new();
+            let main = u16::try_from(records.globals.main_country()).unwrap();
+            let mut leagues: Vec<(u16, u8)> =
+                (0..records.countries.leagues(usize::from(main))).map(|l| (main, l as u8)).collect();
+            let more = usize::try_from(records.globals.more_count()).unwrap();
+            leagues.extend(records.globals.more_countries()[..more].iter().map(|&c| (c as u16, 0)));
+            for (country, level) in leagues {
+                let (slot, league) =
+                    (league_of(records, country, level).unwrap(), League::of(records, country, level).unwrap());
+                for k in 0..league.teams() {
+                    let team = league.team(k) as u8;
+                    at.insert(FAIR_LIST + slot * FAIR_LEAGUE + 4 * k, team);
+                    at.insert(REFEREE_LIST + slot * REFEREE_LEAGUE + 4 * k, team);
+                }
+            }
+            at
+        };
+        let (ours_at, theirs_at) = (seeded(&ours), seeded(&theirs));
+        let (x, y) = (ours.block(LISTS).unwrap(), theirs.block(LISTS).unwrap());
+        for (at, len) in SEASON_CLEARS {
+            for i in at - LISTS_AT..at - LISTS_AT + len {
+                assert_eq!(x[i], ours_at.get(&i).copied().unwrap_or(0), "the replica's byte {:#x}", LISTS_AT + i);
+                assert_eq!(y[i], theirs_at.get(&i).copied().unwrap_or(0), "the original's byte {:#x}", LISTS_AT + i);
+            }
+        }
     }
 }

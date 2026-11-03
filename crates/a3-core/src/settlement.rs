@@ -427,8 +427,10 @@ fn clear_club(team: &mut Team) {
 /// [`crate::finances::settle_funds`]). Then the leagues of the countries
 /// played stand open again, every
 /// player's season form starts from one week of 10, the kept countries'
-/// contracts run on and their players develop ([`crate::rollover`]), and
-/// the season's bookings clear. Beside it the original promotes and
+/// contracts run on and their players develop ([`crate::rollover`]), the
+/// season's lists clear with the fair-play and referees' tables seeded
+/// afresh and the luck drawn anew ([`crate::statistics::open_lists`]),
+/// and the season's bookings clear. Beside it the original promotes and
 /// relegates into the league blocks' team slots (`FUN_006b24f2` per
 /// country, `FUN_006ae26f` for Germany), draws the cup's first round
 /// anew, develops the played countries' players by other routines
@@ -444,6 +446,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::rollover::open_kept(records, random);
+    crate::statistics::open_lists(records, random);
     clear_bookings(records);
 }
 
