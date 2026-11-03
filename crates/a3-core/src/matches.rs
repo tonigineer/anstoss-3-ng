@@ -10,6 +10,7 @@ use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS, cup_pairings};
 use crate::random::Random;
 use crate::records::{PLANNER_DAYS, PLANNER_ENTRY, Records, Team};
 use crate::season::Season;
+use crate::settlement;
 use crate::statistics::{self, ALL};
 use crate::tickets;
 use crate::world::{self, World};
@@ -79,6 +80,10 @@ const CUP_PLAYED: u8 = 0x08;
 const CUP_RESULT: u8 = 0x20;
 const CUP_EXTRA: u8 = 0x80;
 const CUP_SHOOT: u8 = 0x40;
+/// The cup's last round, its final: the sixth, whatever the mode, one
+/// pairing behind the mode's last row. The original tests the same with
+/// `FUN_006d12a8`, which asks the round against the rounds table's sixth.
+const FINAL_ROUND: usize = 6;
 
 /// The year calendar's entry of a fixture: kind 6, its code at +4, the
 /// clubs at +8 and +0xc, the score at +0x10, the flags at +0x14 — 0x20
@@ -130,6 +135,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
     let mut marks: Vec<(u8, u16, u8, u16, u8, u8)> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
+    let mut through: Vec<(u8, u16)> = Vec::new();
     for q in start..start + count {
         let Some(p) = records
             .block(&name)
@@ -173,6 +179,8 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         let winner = u8::from(won == std::cmp::Ordering::Less);
         scored.push((q, [hg, ag, flags, winner]));
         marks.push((p[0], u16_at(p, 2), p[4], u16_at(p, 6), hg, ag));
+        let at = usize::from(winner != 0);
+        through.push((p[at * 4], u16_at(p, at * 4 + 2)));
         // The home club's gate: a crowd as in the league, and the money it
         // brings — the played match's reckoning (FUN_0078b26c) at a mark
         // no cup round holds, which leaves it as it is.
@@ -230,6 +238,15 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // What the ties leave on the men who played them.
     for &(hc, hn, ac, an, hg, ag) in &marks {
         mark_cup(records, hc, hn, ac, an, hg, ag, random);
+    }
+    // Every club that came through its tie gets what the round pays: the
+    // trainer's premium for reaching the round and the main sponsor's cup
+    // extra (`FUN_006cebcd`; its counter of cup rounds `FUN_006cdb29` the
+    // replica reads off the block instead). The final won adds the
+    // manager's premium for a title and the sponsor's second extra
+    // (`FUN_006cec7f`, the round `FUN_006d12a8` names the cup's last).
+    for (country, number) in through {
+        settlement::cup_premium(records, u16::from(country), number, round >= FINAL_ROUND);
     }
     // On the human's year calendar the round's day fills its score, the
     // flags saying the result stands (0x20) and the tie a cup one (0x08);

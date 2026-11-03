@@ -736,7 +736,7 @@ pub enum CupStand {
 
 /// The cups' rounds by mode (the table at 0x8a5e10): where each round's
 /// pairings start, and how many.
-const ROUNDS: [[(usize, usize); 6]; 6] = [
+pub const ROUNDS: [[(usize, usize); 6]; 6] = [
     [(0, 0), (0, 32), (32, 16), (48, 8), (56, 4), (60, 2)],
     [(0, 0), (0, 0), (32, 16), (48, 8), (56, 4), (60, 2)],
     [(0, 20), (20, 32), (52, 16), (68, 8), (76, 4), (80, 2)],

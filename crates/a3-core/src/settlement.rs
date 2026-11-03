@@ -8,10 +8,14 @@
 //! club gone public, a fifth of what is left goes out as dividends; the
 //! result joins the last seasons' and the cash.
 //!
+//! The cup's rounds pay from here too: every tie's winner gets
+//! [`cup_premium`] where the round is played (`FUN_006cebcd`, and for the
+//! final `FUN_006cec7f`); the counter of cup rounds the original raises
+//! beside it (`FUN_006cdb29` into the manager object's +0xa0) the replica
+//! reads from the cup block instead.
+//!
 //! Left out here, all of it for the humans or outside the club's books: the
-//! trainer's premium for the cup rounds he reaches (`FUN_006cebcd`), the
-//! manager's premium for a cup final won (`FUN_0042190a`, `FUN_00421bfa`,
-//! `FUN_006cec7f`), the fans' mood after a title (`FUN_007144e4`), what the
+//! fans' mood after a title (`FUN_007144e4`), what the
 //! sponsors weigh for a human club (`FUN_006d5a85`), the manager's score,
 //! the season's balance row and
 //! transfer balance in the archive (`FUN_00633539`, `FUN_006337b9`), and the
@@ -20,7 +24,7 @@
 //! (`FUN_00673131`), which the replica has not built yet.
 //!
 //! Checked against the original's last day before its season end and its
-//! first day after: 85 of the 212 clubs settle to the euro, 43 of them
+//! first day after: 86 of the 212 clubs settle to the euro, 43 of them
 //! taxed. Nearly all clubs that won a title, went up or down or reached
 //! Europe differ — the season-end steps before the settlement, not built
 //! here, move their money first.
@@ -70,6 +74,10 @@ const EUROPE_EXTRA: usize = 0x518;
 /// club's own gates do (`FUN_0062292a`, dialog 246).
 const ATTENDANCE: usize = 0x52c;
 const ATTENDANCE_BONUS: usize = 0x528;
+/// The main sponsor's cup extras, both into its money: for every round the
+/// club reaches, and for the final won (`FUN_006cebcd`, `FUN_006cec7f`).
+const CUP_ROUND_EXTRA: usize = 0x520;
+const CUP_FINAL_EXTRA: usize = 0x51c;
 /// The team bonuses' mode (0 paid, 1 halved, others none; `FUN_0062266a`)
 /// and the bonuses each player gets for the title, a European place, the
 /// promotion and the last one, paid unless the club goes down.
@@ -173,6 +181,45 @@ fn attendance_bonus(team: &mut Team, gates: i32, size: i32) {
     if extras && club::<i32>(team, ATTENDANCE) <= limit {
         add(team, SPONSOR_MONEY, club::<i32>(team, ATTENDANCE_BONUS));
     }
+}
+
+/// What one cup round leaves with the club that came through it
+/// (`FUN_006cebcd`, which the winner of every tie gets): the contract's
+/// premium for the trainer's cup rounds joins the manager's own money and
+/// the bonuses the club has paid, guarded by the club's first human byte,
+/// its trainer — the original hands it to that man, and where a human runs
+/// the club he is the club's manager anyway. The main sponsor pays its
+/// extra for a round reached into its money. The final won brings the
+/// sponsor's second extra and the premium for a title (`FUN_006cec7f`
+/// with `FUN_006228c0`, the same pay a league title brings).
+fn cup_round(team: &mut Team, mut manager: Option<&mut Manager>, won_the_final: bool) {
+    if team.humans()[0] != 0
+        && let Some(manager) = manager.as_deref_mut()
+    {
+        let v = manager.cup_premium();
+        manager.set_cash(manager.cash().wrapping_add(v));
+        add(team, BONUSES_PAID, v);
+    }
+    let extras = club::<u8>(team, SPONSOR) != 0 && team.get::<u8>(SPONSOR_FLAGS) & NO_EXTRAS == 0;
+    if extras {
+        add(team, SPONSOR_MONEY, club::<i32>(team, CUP_ROUND_EXTRA));
+        if won_the_final {
+            add(team, SPONSOR_MONEY, club::<i32>(team, CUP_FINAL_EXTRA));
+        }
+    }
+    if won_the_final {
+        pay_premium(team, manager.as_deref_mut());
+    }
+}
+
+/// The same, looked up by club: nothing for a club the game runs and no
+/// cup of its own.
+pub fn cup_premium(records: &mut Records, country: u16, number: u16, won_the_final: bool) {
+    let Some(i) = records.team_index(country, number) else {
+        return;
+    };
+    let manager = manager_of(records, i).map(|m| &mut records.managers[m]);
+    cup_round(&mut records.teams[i], manager, won_the_final);
 }
 
 /// What a title or a promotion pays the human running the club, on top of
@@ -415,5 +462,57 @@ mod tests {
         put::<i32>(&mut t, ATTENDANCE_BONUS, 1_150_000);
         attendance_bonus(&mut t, 50_000, 11);
         assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 0);
+    }
+
+    /// A cup round pays the contract's cup premium into the manager's own
+    /// money and the club's bonuses, and the main sponsor its extra for a
+    /// round reached (`FUN_006cebcd`); the final won adds the premium for a
+    /// title and the sponsor's second extra (`FUN_006cec7f`). The club's
+    /// trainer byte guards the premium, the sponsor's flag the extras, and
+    /// a club the game runs gets neither.
+    #[test]
+    fn a_cup_round_pays_its_premium_and_the_sponsor_extra() {
+        let mut t = team();
+        t.set_humans([3, 3]);
+        put::<u8>(&mut t, SPONSOR, 1);
+        put::<i32>(&mut t, CUP_ROUND_EXTRA, 95_000);
+        put::<i32>(&mut t, CUP_FINAL_EXTRA, 560_000);
+        let mut m = Manager::new(&vec![0; Manager::SIZE]).unwrap();
+        m.set_cup_premium(6_000);
+        m.set_title_premium(45_000);
+        m.set_cash(100);
+        cup_round(&mut t, Some(&mut m), false);
+        assert_eq!(club::<i32>(&t, BONUSES_PAID), 6_000);
+        assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 95_000);
+        assert_eq!(m.cash(), 6_100);
+        // The final won pays both on top: the premium for a title and the
+        // second extra, the round's own share a second time as well.
+        cup_round(&mut t, Some(&mut m), true);
+        assert_eq!(club::<i32>(&t, BONUSES_PAID), 2 * 6_000 + 45_000);
+        assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 2 * 95_000 + 560_000);
+        assert_eq!(m.cash(), 100 + 2 * 6_000 + 45_000);
+        // A club with a manager and no trainer keeps the premium back but
+        // still gets the title's premium; the sponsor's flag stops extras.
+        let mut t = team();
+        t.set_humans([0, 3]);
+        put::<u8>(&mut t, SPONSOR, 1);
+        t.put::<u8>(SPONSOR_FLAGS, NO_EXTRAS);
+        put::<i32>(&mut t, CUP_ROUND_EXTRA, 95_000);
+        let mut m = Manager::new(&vec![0; Manager::SIZE]).unwrap();
+        m.set_cup_premium(6_000);
+        m.set_title_premium(45_000);
+        cup_round(&mut t, Some(&mut m), true);
+        assert_eq!(club::<i32>(&t, BONUSES_PAID), 45_000);
+        assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 0);
+        assert_eq!(m.cash(), 45_000);
+        // A club the game runs has no human to premium, but its sponsor's
+        // extras still go.
+        let mut t = team();
+        put::<u8>(&mut t, SPONSOR, 1);
+        put::<i32>(&mut t, CUP_ROUND_EXTRA, 95_000);
+        put::<i32>(&mut t, CUP_FINAL_EXTRA, 560_000);
+        cup_round(&mut t, None, true);
+        assert_eq!(club::<i32>(&t, BONUSES_PAID), 0);
+        assert_eq!(club::<i32>(&t, SPONSOR_MONEY), 95_000 + 560_000);
     }
 }
