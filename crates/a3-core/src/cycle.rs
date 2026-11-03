@@ -879,7 +879,7 @@ impl Cycle {
         }
         self.season(|s| s.statement = true);
         if let Some(records) = self.state().records.as_mut() {
-            crate::settlement::settle_season(records);
+            crate::settlement::settle_season(records, &self.data.rules.league);
         }
         let humans = self.season(|s| {
             (0..s.managers.len())
