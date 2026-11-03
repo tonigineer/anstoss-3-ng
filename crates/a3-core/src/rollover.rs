@@ -173,7 +173,8 @@ pub fn close_player(player: &mut Player, year: i32, random: &mut Random) {
 
 /// Before the season's deals every club of the countries played counts
 /// a first season for its players who have none (`FUN_006b4459` per club,
-/// `FUN_006b3f92`; the contracts that run out there are not built).
+/// `FUN_006b3f92`; the contracts that run out there are
+/// [`crate::free_agents::release`]).
 pub fn count_first_seasons(records: &mut Records) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
@@ -363,6 +364,51 @@ fn delist(records: &mut Records, id: u16) {
         if let Some(list) = records.block_mut(&format!("0xa4d0f8[{slot}]")).filter(|b| b.len() >= WATCHED_FIRST + 50 * WATCHED) {
             unlist(list, WATCHED_FIRST, WATCHED, 50);
         }
+    }
+}
+
+/// A player off the transfer list only (`FUN_0075a636` → `FUN_00758f42`).
+pub(crate) fn delist_transfer(records: &mut Records, id: u16) {
+    if let Some(list) = records.block_mut(TRANSFER_LIST).filter(|b| b.len() >= LISTED_FIRST + LISTED_MOST * LISTED) {
+        let count = usize::try_from(i16::from_le_bytes([list[0], list[1]])).unwrap_or(0).min(LISTED_MOST);
+        let id_at = |list: &[u8], k: usize| u16::from_le_bytes([list[LISTED_FIRST + k * LISTED], list[LISTED_FIRST + k * LISTED + 1]]);
+        if let Some(k) = (0..count).find(|&k| id_at(list, k) == id) {
+            list.copy_within(LISTED_FIRST + (k + 1) * LISTED..LISTED_FIRST + count * LISTED, LISTED_FIRST + k * LISTED);
+            list[0..2].copy_from_slice(&((count - 1) as i16).to_le_bytes());
+        }
+    }
+}
+
+/// A player of no club ends his career (`FUN_0066d93b` → `FUN_0066d975`):
+/// off the lists, his retiring bits gone, into the pool.
+pub(crate) fn end_career(records: &mut Records, id: u16, random: &mut Random) {
+    delist(records, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_retiring(0);
+    }
+    if id < POOLED_BELOW {
+        pool(records, id, random);
+    }
+}
+
+/// A move into a human club's history (`FUN_0070e8c4` of kind 1 came or
+/// 2 left): the year and week, his names, the other club, his strength
+/// and position, no fee.
+pub(crate) fn note_move(records: &mut Records, club: (u8, i16), id: u16, kind: u8, other: (u8, i16)) {
+    let Some(slot) = u16::try_from(club.1)
+        .ok()
+        .and_then(|n| records.team(u16::from(club.0), n))
+        .and_then(|t| usize::from(t.human()).checked_sub(1))
+    else {
+        return;
+    };
+    let Some(p) = records.player(id) else { return };
+    let mut entry = career_end_entry(p, records.globals.start_year(), (records.globals.day() / 7) as u8);
+    entry[3] = kind;
+    entry[8] = other.0;
+    entry[0xa..0xc].copy_from_slice(&other.1.to_le_bytes());
+    if let Some(extra) = records.extras.get_mut(slot) {
+        push_history(extra, entry);
     }
 }
 
@@ -888,7 +934,7 @@ mod tests {
     /// and last form, his condition and freshness, his reasons, the
     /// retiring bit and the fines as the original's; his count of seasons
     /// too, but for the few whose contract the original renewed
-    /// (`FUN_006b3f92`, not built).
+    /// (`FUN_006b3f92`, [`crate::free_agents`], not run here).
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_played_countries_players_roll_over_as_the_original() {

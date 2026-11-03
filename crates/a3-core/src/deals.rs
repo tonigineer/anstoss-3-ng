@@ -161,7 +161,7 @@ fn will_at_coming(team: &mut Team, p: &Player, age: i32) {
 
 /// The level a club plays next season (`FUN_00692bf9` over the drawn
 /// lists), as a class of the leagues (`FUN_006755b8`); 10 none.
-fn next_class(records: &Records, country: u8, team: i16) -> i16 {
+pub(crate) fn next_class(records: &Records, country: u8, team: i16) -> i16 {
     let main = records.globals.main_country();
     let next = crate::promotion::next_level(records, u16::from(country), team);
     if next >= 10 {
@@ -316,7 +316,7 @@ fn step_strength(p: &mut Player, random: &mut Random) {
 /// visits, the ban's weeks, R+0x27a; his contentment with the trainer, the
 /// team and the club at 100; the problems and several bits of R+0x1b4,
 /// R+0x27f, R+0x280 and R+0x297 cleared.
-fn new_ties(p: &mut Player, absent: bool) {
+pub(crate) fn new_ties(p: &mut Player, absent: bool) {
     p.set_retiring(p.retiring() & 0x3a);
     if !absent {
         p.set_away_kind(0);
@@ -342,6 +342,64 @@ fn new_ties(p: &mut Player, absent: bool) {
     p.set_morale(crate::mood::morale(p));
 }
 
+/// A club lets a player go (`FUN_0070e3f5`): its will to win moved by
+/// him, his station closed and his season left behind, the fee into its
+/// sales and its net, out of its squad, line-up and bench; to a club of
+/// another country no more home-grown.
+pub(crate) fn let_go(records: &mut Records, club: (u8, i16), id: u16, fee: u32, buyer: Option<u8>) {
+    let Ok(number) = u16::try_from(club.1) else { return };
+    let age = today(records).and_then(|d| records.player(id).map(|p| crate::statistics::age_on(p, d))).unwrap_or(0);
+    let p = records.player(id).cloned();
+    if let (Some(team), Some(p)) = (records.team_mut(u16::from(club.0), number), p.as_ref()) {
+        will_at_leaving(team, p, age);
+    }
+    leave_season(records, id);
+    if let Some(team) = records.team_mut(u16::from(club.0), number) {
+        add_money(team, SALES, i64::from(fee));
+        add_net(team, fee as i32);
+        let squad: Vec<u16> = team.players().into_iter().filter(|&p| p != id).collect();
+        team.set_players(&squad);
+        let mut lineup = team.lineup();
+        lineup.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_lineup(lineup);
+        let mut bench = team.bench();
+        bench.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_bench(bench);
+    }
+    if let Some(country) = buyer.filter(|&c| c != 0 && c != club.0) {
+        let _ = country;
+        if let Some(p) = records.player_mut(id) {
+            p.set_manner(p.manner() & !HOME_GROWN);
+        }
+    }
+}
+
+/// A club takes a player in (`FUN_0070e4c1`): its will to win moved by
+/// him, off its watch list, the fee out of its net into its purchases,
+/// into its squad by his position with its bytes, a new station.
+pub(crate) fn bring_in(records: &mut Records, club: (u8, i16), id: u16, fee: u32) {
+    let Ok(number) = u16::try_from(club.1) else { return };
+    let age = today(records).and_then(|d| records.player(id).map(|p| crate::statistics::age_on(p, d))).unwrap_or(0);
+    let Some(p) = records.player(id).cloned() else { return };
+    let position = p.positions()[0];
+    let positions: Vec<(u16, u8)> = records
+        .team(u16::from(club.0), number)
+        .map(|t| t.players().into_iter().map(|q| (q, records.player(q).map_or(0, |r| r.positions()[0]))).collect())
+        .unwrap_or_default();
+    let position_of = |q: u16| positions.iter().find(|e| e.0 == q).map_or(0, |e| e.1);
+    if let Some(team) = records.team_mut(u16::from(club.0), number) {
+        will_at_coming(team, &p, age);
+        add_net(team, -(fee as i32));
+        add_money(team, PURCHASES, i64::from(fee));
+        join_squad(team, &position_of, id, position);
+    }
+    crate::transfers::unwatch_at_club(records, club, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_club([club.0, club.1 as u8]);
+    }
+    open_station(records, id, club, fee);
+}
+
 /// Carries out the season's agreed transfers (`FUN_0070f7cf`).
 pub fn execute(records: &mut Records, random: &mut Random) {
     let mut deals = read(records);
@@ -363,29 +421,7 @@ pub fn execute(records: &mut Records, random: &mut Random) {
             continue;
         }
         let fee = deal.fee();
-        let age = age_of(records, id);
-        let p = records.player(id).cloned();
-        if let (Some(team), Some(p)) = (records.team_mut(u16::from(seller.0), number), p.as_ref()) {
-            will_at_leaving(team, p, age);
-        }
-        leave_season(records, id);
-        if let Some(team) = records.team_mut(u16::from(seller.0), number) {
-            add_money(team, SALES, i64::from(fee));
-            add_net(team, fee as i32);
-            let squad: Vec<u16> = team.players().into_iter().filter(|&p| p != id).collect();
-            team.set_players(&squad);
-            let mut lineup = team.lineup();
-            lineup.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
-            team.set_lineup(lineup);
-            let mut bench = team.bench();
-            bench.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
-            team.set_bench(bench);
-        }
-        if buyer.0 != 0 && buyer.0 != seller.0 {
-            if let Some(p) = records.player_mut(id) {
-                p.set_manner(p.manner() & !HOME_GROWN);
-            }
-        }
+        let_go(records, seller, id, fee, Some(buyer.0));
         note(records, seller, id, SOLD, deal.bytes[BUYER..BUYER + 4].try_into().unwrap(), fee);
     }
     // The buyers take them.
@@ -408,17 +444,8 @@ pub fn execute(records: &mut Records, random: &mut Random) {
             .map(|t| t.players().into_iter().map(|q| (q, records.player(q).map_or(0, |r| r.positions()[0]))).collect())
             .unwrap_or_default();
         let position_of = |q: u16| positions.iter().find(|e| e.0 == q).map_or(0, |e| e.1);
-        if let Some(team) = records.team_mut(u16::from(buyer.0), number) {
-            will_at_coming(team, &p, age);
-            add_net(team, -(fee as i32));
-            add_money(team, PURCHASES, i64::from(fee));
-            join_squad(team, &position_of, id, position);
-        }
-        crate::transfers::unwatch_at_club(records, buyer, id);
-        if let Some(p) = records.player_mut(id) {
-            p.set_club([buyer.0, buyer.1 as u8]);
-        }
-        open_station(records, id, buyer, fee);
+        let _ = (&p, position, &position_of);
+        bring_in(records, buyer, id, fee);
         let absent = records.player(id).is_some_and(|p| {
             let [y, d] = p.away_to();
             let (now, day) = (records.globals.date()[2], records.globals.day_of_year());
@@ -479,8 +506,8 @@ mod tests {
     /// player in the buyer's squad, with the buyer's bytes, the deal's
     /// contract and years, the next club cleared, a new station at the
     /// buyer and his season's matchdays gone, as NewSeason000 keeps him;
-    /// the one sale both call off and the original's free agents then
-    /// place elsewhere (not built) aside.
+    /// the one sale both call off and the original's free agents, placed
+    /// behind it ([`crate::free_agents`]), aside.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_season_end_carries_out_its_deals_as_the_original() {

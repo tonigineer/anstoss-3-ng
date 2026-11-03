@@ -709,6 +709,25 @@ pub fn next_level(records: &Records, country: u16, team: i16) -> i16 {
     i16::from(OUTSIDE)
 }
 
+/// Next season's clubs of a league: its drawn list, or its list as it
+/// stands when none is drawn.
+pub fn next_list(records: &Records, country: u16, level: u8) -> Vec<i16> {
+    let Some(block) = League::block_name(records, country, level).and_then(|name| records.block(&name)) else {
+        return Vec::new();
+    };
+    let teams = usize::try_from(league_word(records, country, level, TEAMS)).unwrap_or(0).min(LIST);
+    let read = |from: usize| -> Vec<i16> {
+        (0..teams)
+            .map(|k| {
+                let at = LEAGUE_FIELDS + from + 2 * k;
+                block.get(at..at + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]))
+            })
+            .collect()
+    };
+    let next = read(NEXT);
+    if next.iter().all(|&t| t == 0) { read(CURRENT) } else { next }
+}
+
 /// The country's books, as its block keeps them.
 pub fn moves(records: &Records, country: u16) -> Moves {
     let slot = records.countries.slot(usize::from(country));

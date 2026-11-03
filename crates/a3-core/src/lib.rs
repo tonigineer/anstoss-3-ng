@@ -18,6 +18,7 @@ pub mod discipline;
 pub mod duties;
 pub mod evaluation;
 pub mod finances;
+pub mod free_agents;
 pub mod forecast;
 pub mod grounds;
 pub mod highscore;

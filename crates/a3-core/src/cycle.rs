@@ -900,9 +900,12 @@ impl Cycle {
                 crate::statistics::fold_eternal(records);
                 crate::promotion::flag(records, &self.data.rules.forecast.tickets);
                 crate::rollover::count_first_seasons(records);
+                let agents = crate::free_agents::release(records, &mut season.random);
                 crate::deals::execute(records, &mut season.random);
                 crate::rollover::close_played(records, &mut season.random);
                 crate::rollover::close_kept(records, &mut season.random);
+                let rules = &self.data.rules;
+                crate::free_agents::place(records, &agents, (&rules.contract, &rules.value), &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);
                 // The original's leagues take their new clubs before its
                 // settlement, which reads the places the archive kept;
