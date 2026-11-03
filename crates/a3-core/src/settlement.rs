@@ -431,12 +431,13 @@ fn clear_club(team: &mut Team) {
 /// contracts run on and their players develop ([`crate::rollover`]), the
 /// season's lists clear with the fair-play and referees' tables seeded
 /// afresh and the luck drawn anew ([`crate::statistics::open_lists`]),
-/// and the season's bookings clear. Beside it the original promotes and
-/// relegates into the league blocks' team slots (`FUN_006b24f2` per
-/// country, `FUN_006ae26f` for Germany), draws the cup's first round
-/// anew, develops the played countries' players by other routines
-/// (`FUN_0077655c`) and refills the stars, the best players and much
-/// money — all unwritten here. (`FUN_0065eb48`, which walks every squad
+/// and the season's bookings clear. Every club stands at its new league
+/// ([`crate::promotion::place`]), the played countries' players open their
+/// season ([`crate::rollover::open_played`]) and the national cups draw
+/// their first rounds ([`crate::cup_draw`]). Beside it the original
+/// develops the played countries' computer clubs (the rest of
+/// `FUN_0077655c`) and refills the stars, the best players and much money
+/// — unwritten here. (`FUN_0065eb48`, which walks every squad
 /// player of the countries played, calls an empty `FUN_0065ebe4`: no
 /// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
@@ -450,6 +451,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::rollover::open_played(records);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
+    crate::cup_draw::draw(records, random);
     clear_bookings(records);
 }
 
@@ -976,11 +978,9 @@ mod tests {
     /// its first day after (NewSeason000). The counters and the calendar
     /// roll as above, every league of the four countries played stands
     /// with no matchday played, no result written and no crowd kept, and
-    /// the cups' rounds stand empty. What the original fills beside the
-    /// opening the replica has not built: the fresh cup round it draws
-    /// (the pair's first pairings already name new clubs), the clubs it
-    /// moves between the leagues' places, and its own lottery figure
-    /// (995) in place of the replica's drawn one.
+    /// the cups stand set up as the original's with their first round
+    /// drawn and nothing played ([`crate::cup_draw`]). The original's own
+    /// lottery figure (995) stands in place of the replica's drawn one.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_opens_the_saved_season() {
@@ -1018,13 +1018,16 @@ mod tests {
                 assert!(y.matchday_crowds().iter().all(|c| *c == 0), "{nation} {level} kept");
             }
             let slot = closed.countries.slot(usize::from(nation));
-            let Some(cup) = closed.block(&format!("{:#x}[{slot}]", opponent::CUPS_AT)) else {
+            let name = format!("{:#x}[{slot}]", opponent::CUPS_AT);
+            let (Some(cup), Some(kept)) = (closed.block(&name), opened.block(&name)) else {
                 continue;
             };
-            assert_eq!(cup[0x28 - 0x20], 0, "country {nation}'s last drawn round");
+            assert_eq!(cup[..0xc], kept[..0xc], "country {nation}'s cup setup");
             for q in 0..=HIGHEST_PAIRING {
                 let at = PAIRINGS + q * PAIRING;
-                assert!(cup[at..at + PAIRING].iter().all(|&x| x == 0), "{nation} pairing {q}");
+                let drawn = |c: &[u8]| c[at] != 0;
+                assert_eq!(drawn(cup), drawn(kept), "{nation} pairing {q} drawn");
+                assert!(cup[at + 8..at + PAIRING].iter().all(|&x| x == 0), "{nation} pairing {q} unplayed");
             }
         }
     }

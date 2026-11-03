@@ -8907,7 +8907,9 @@ mod tests {
     /// last year run on by three or four, the count of his seasons up by
     /// two (the close and the development) and his strength at most a
     /// point from where it stood. The closed season stays in the
-    /// all-time table of the first league and is the archive's newest.
+    /// all-time table of the first league and is the archive's newest; the
+    /// leagues have taken their promoted and relegated clubs, and the cup
+    /// its first round.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_rolls_the_kept_countries_players_over() {
@@ -8988,6 +8990,16 @@ mod tests {
                 assert_eq!((team.level(), usize::from(team.league_place())), (l, place));
             }
         }
+        // The cup's first round stands drawn: 32 ties of the 64 entrants.
+        let slot = records.countries.slot(usize::from(nation));
+        let cup = records.block(&format!("{:#x}[{slot}]", a3_core::opponent::CUPS_AT)).unwrap();
+        let ties = (0..32)
+            .filter(|q| {
+                let at = a3_core::opponent::PAIRINGS + q * a3_core::opponent::PAIRING;
+                cup[at] != 0 && cup[at + 4] != 0
+            })
+            .count();
+        assert_eq!(ties, 32, "the cup's first round drawn");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -462,10 +462,8 @@ pub fn open_leagues(records: &mut Records) {
 }
 
 /// The cup's rounds fall away with the season: every drawn pairing stands
-/// zeroed through the block and the last drawn round with it (measured on
-/// the pair, where the original has already drawn a fresh first round —
-/// its drawing the replica has not built, so its cup rounds stand empty
-/// until it does).
+/// zeroed through the block and the last drawn round with it, for the new
+/// season's first round to be drawn into ([`crate::cup_draw`]).
 pub fn open_cups(records: &mut Records) {
     for nation in played_nations(records) {
         let slot = records.countries.slot(usize::from(nation));
