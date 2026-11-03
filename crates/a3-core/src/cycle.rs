@@ -895,6 +895,7 @@ impl Cycle {
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
                 let drawn = crate::promotion::draw(records, &mut season.random);
                 crate::promotion::count(records);
+                crate::rollover::retire_announced(records, &mut season.random);
                 crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);
                 crate::promotion::flag(records, &self.data.rules.forecast.tickets);
