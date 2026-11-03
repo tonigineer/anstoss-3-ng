@@ -151,18 +151,18 @@ pub struct League<'a> {
 
 const LEAGUE_AT: u32 = 0x1a09d48;
 /// The league's fields start this far into the saved block.
-const LEAGUE_FIELDS: usize = 0x50 - 0x20;
+pub(crate) const LEAGUE_FIELDS: usize = 0x50 - 0x20;
 const SCHEDULE: usize = 0x50a;
 const MATCHDAY_PAIRS: usize = 0x18;
 /// The results, [home][away] 4 bytes each: 8 bytes before the notes'
 /// G+0xe22 — checked on a save, where every played result lies at 0xe1a by
 /// its matchday's pairs.
-const RESULTS: usize = 0xe1a;
+pub(crate) const RESULTS: usize = 0xe1a;
 const RESULT_ROW: usize = 0x60;
 /// A result not played yet.
 const UNPLAYED: u8 = 0xff;
 /// The table's boxes by place (G+0x1a08).
-const MARKS: usize = 0x1a08;
+pub(crate) const MARKS: usize = 0x1a08;
 /// The league's total attendance per matchday, 24 i32 (L+0x194c).
 const MATCHDAY_CROWDS: usize = 0x191c;
 /// The places held, matchday by matchday (L+0x82): a row of 0x2e bytes

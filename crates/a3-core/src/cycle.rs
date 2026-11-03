@@ -882,14 +882,16 @@ impl Cycle {
         }
         self.season(|s| s.statement = true);
         {
-            // The first leagues' seasons go into the all-time tables
-            // (`FUN_006b2e88`), the kept countries' players close their
+            // The leagues' seasons go into their archive and the first
+            // leagues' into the all-time tables (`FUN_006b2e88`,
+            // `FUN_006b3111`), the kept countries' players close their
             // season beside the settlement (`FUN_006b3ee0`, between the
             // humans' pay and the clubs' books in the original's
             // season-end block).
             let mut guard = self.state();
             let state = &mut *guard;
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
+                crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);
                 crate::rollover::close_kept(records, &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);

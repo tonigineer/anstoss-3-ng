@@ -2751,6 +2751,88 @@ const ARCHIVE_LEAGUE: usize = 0x5e74;
 const ARCHIVE_SEASON: usize = 0x972;
 pub const ARCHIVE_SEASONS: usize = 10;
 const ARCHIVE_ROW: usize = 0x60;
+/// The final places of a country's leagues in its country block
+/// (`0x19f7fd0[slot]`, the object's +0x46 — the block holds it from its
+/// +0x20 —, a row of 0x18 a level): the clubs' numbers by place.
+const PLACES_AT: usize = 0x46 - 0x20;
+const PLACES_ROW: usize = 0x18;
+
+/// The season's end archives the played leagues' seasons (`FUN_006b3111`
+/// from `FUN_006b2eed`: the main country's every league, a more
+/// country's first): a league's ten kept seasons move on by one, the
+/// oldest falling away, and the newest slot takes the closed season — its
+/// country, its fields (how many clubs, whether they met four times, the
+/// sort rule and the others the block keeps at +2, +8, +0xa, +0x14,
+/// +0x1e and +0x20), each club's number and penalty byte, the marks of
+/// its places and every result. The club bytes past the league's count
+/// stay as the slot held them, as in the original. Beside it the
+/// country's block keeps the season's final places, a club's number per
+/// place (`FUN_007293ea`).
+pub fn archive_leagues(records: &mut Records) {
+    use crate::opponent::{LEAGUE_FIELDS, MARKS, RESULTS};
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let mut leagues: Vec<(u16, u8)> = Vec::new();
+    if let Ok(main) = u16::try_from(globals.main_country()) {
+        leagues.extend((0..records.countries.leagues(usize::from(main)).max(0)).map(|l| (main, l as u8)));
+    }
+    leagues.extend(globals.more_countries()[..more].iter().filter_map(|&c| u16::try_from(c).ok()).map(|c| (c, 0)));
+    for (country, level) in leagues {
+        let (Some(index), Some(league)) = (league_of(records, country, level), League::of(records, country, level))
+        else {
+            continue;
+        };
+        let Some(source) = League::block_name(records, country, level)
+            .and_then(|name| records.block(&name))
+            .and_then(|b| b.get(LEAGUE_FIELDS..))
+            .map(<[u8]>::to_vec)
+        else {
+            continue;
+        };
+        let word = |at: usize| source.get(at..at + 2).map_or([0; 2], |w| [w[0], w[1]]);
+        let teams = usize::try_from(i16::from_le_bytes(word(0))).unwrap_or(0).min(24);
+        let numbers: Vec<i16> = (0..teams).map(|k| i16::from_le_bytes(word(0x22 + 2 * k))).collect();
+        // Each club's penalty byte (`FUN_0063e470`, team +0x12a).
+        let penalties: Vec<u8> = numbers
+            .iter()
+            .map(|&n| {
+                u16::try_from(n).ok().and_then(|n| records.team(country, n)).map_or(0, |t| t.get::<u8>(TEAM_FLAGS))
+            })
+            .collect();
+        let places: Vec<u8> = table(records, &league, ALL).iter().map(|row| row.team as u8).collect();
+        let slot = records.countries.slot(country.into());
+        if let Some(block) = records.block_mut(&format!("0x19f7fd0[{slot}]")) {
+            for (place, &team) in places.iter().enumerate() {
+                if let Some(b) = block.get_mut(PLACES_AT + usize::from(level) * PLACES_ROW + place) {
+                    *b = team;
+                }
+            }
+        }
+        let Some(archive) = records.block_mut(ARCHIVE_BLOCK) else { continue };
+        let at = ARCHIVE_AT + index * ARCHIVE_LEAGUE;
+        let newest = at + (ARCHIVE_SEASONS - 1) * ARCHIVE_SEASON;
+        if archive.len() < newest + ARCHIVE_SEASON {
+            continue;
+        }
+        archive.copy_within(at + ARCHIVE_SEASON..newest + ARCHIVE_SEASON, at);
+        let s = &mut archive[newest..newest + ARCHIVE_SEASON];
+        s[0..2].copy_from_slice(&(country as i16).to_le_bytes());
+        for (to, from) in [(2, 0), (4, 0x1a), (6, 8), (8, 0xa), (0xa, 0x1e), (0xc, 0x20), (0xe, 2), (0x10, 0x14)] {
+            s[to..to + 2].copy_from_slice(&word(from));
+        }
+        for k in 0..teams {
+            s[0x12 + k] = numbers[k] as u8;
+            s[0x2a + k] = penalties[k];
+        }
+        if let Some(marks) = source.get(MARKS..MARKS + 0x30) {
+            s[0x42..0x72].copy_from_slice(marks);
+        }
+        if let Some(results) = source.get(RESULTS..RESULTS + 24 * ARCHIVE_ROW) {
+            s[0x72..0x72 + 24 * ARCHIVE_ROW].copy_from_slice(results);
+        }
+    }
+}
+
 /// A game never played keeps its home goals at 0xff.
 const UNPLAYED: u8 = 0xff;
 /// A penalty byte's points docked, three each, and its bit for the
@@ -4652,5 +4734,54 @@ mod tests {
             assert_eq!(x, y, "country {country}'s all-time tables");
         }
         assert!(moved > 0, "the season moved the tables");
+    }
+
+    /// The season's end over the original's pair: archived by the replica,
+    /// every played league's ten seasons in SeasonEnd364 stand byte for
+    /// byte as NewSeason000 keeps them — the oldest gone, the closed season
+    /// the newest — and so do the countries' final places.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_archives_its_leagues_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        archive_leagues(&mut ours);
+        let mut leagues = 0;
+        for country in crate::opponent::played_nations(&before) {
+            let levels = if i16::try_from(country).ok() == Some(before.globals.main_country()) {
+                before.countries.leagues(usize::from(country)) as u8
+            } else {
+                1
+            };
+            for level in 0..levels {
+                let index = league_of(&before, country, level).unwrap();
+                let at = ARCHIVE_AT + index * ARCHIVE_LEAGUE;
+                let range = at..at + ARCHIVE_SEASONS * ARCHIVE_SEASON;
+                let (o, x, y) = (
+                    &before.block(ARCHIVE_BLOCK).unwrap()[range.clone()],
+                    &ours.block(ARCHIVE_BLOCK).unwrap()[range.clone()],
+                    &theirs.block(ARCHIVE_BLOCK).unwrap()[range],
+                );
+                assert_ne!(o, y, "country {country} league {level} moved on");
+                for season in 0..ARCHIVE_SEASONS {
+                    let r = season * ARCHIVE_SEASON..(season + 1) * ARCHIVE_SEASON;
+                    if let Some(i) = (r.start..r.end).find(|&i| x[i] != y[i]) {
+                        panic!("country {country} league {level} season {season} +{:#x}: {:#x} for {:#x}", i - r.start, x[i], y[i]);
+                    }
+                }
+                leagues += 1;
+            }
+            let slot = before.countries.slot(country.into());
+            let name = format!("0x19f7fd0[{slot}]");
+            let rows = PLACES_AT..PLACES_AT + usize::from(levels) * PLACES_ROW;
+            assert_eq!(ours.block(&name).unwrap()[rows.clone()], theirs.block(&name).unwrap()[rows], "{country}'s places");
+        }
+        assert!(leagues > 5, "{leagues} leagues archived");
     }
 }

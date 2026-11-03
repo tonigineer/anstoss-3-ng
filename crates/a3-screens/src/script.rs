@@ -8907,22 +8907,25 @@ mod tests {
     /// last year run on by three or four, the count of his seasons up by
     /// two (the close and the development) and his strength at most a
     /// point from where it stood. The closed season stays in the
-    /// all-time table of the first league.
+    /// all-time table of the first league and is the archive's newest.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_rolls_the_kept_countries_players_over() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let mut before = None;
-        let (mut eternal, mut running) = (Vec::new(), 0);
+        let (mut eternal, mut running, mut closed) = (Vec::new(), 0, Vec::new());
         let root = patched(&dir, "A", "season-kept", |records| {
             records.globals.set_day(320);
             let nation = u16::try_from(records.globals.main_country()).unwrap();
             eternal = a3_core::statistics::eternal(records, nation);
             let league = a3_core::opponent::League::of(records, nation, 0).unwrap();
-            running = a3_core::statistics::table(records, &league, a3_core::statistics::ALL)
+            let table = a3_core::statistics::table(records, &league, a3_core::statistics::ALL);
+            running = table.iter().map(|row| row.games).sum::<i32>();
+            closed = table
                 .iter()
-                .map(|row| row.games)
-                .sum::<i32>();
+                .map(|r| (r.team as u8, r.games as i16, r.points as i16, r.goals_for as i16, r.goals_against as i16))
+                .collect();
+            closed.sort();
             let id = kept_player(records).expect("a kept country's player");
             let year = records.globals.start_year();
             let p = records.player_mut(id).unwrap();
@@ -8959,6 +8962,12 @@ mod tests {
         let nation = u16::try_from(records.globals.main_country()).unwrap();
         assert_eq!(a3_core::statistics::eternal(records, nation), eternal);
         assert!(running > 0, "the closed season had games to keep");
+        // The Historisches' newest season is the one just closed.
+        let archived = a3_core::statistics::final_table(records, nation, 0, 9).unwrap();
+        let mut rows: Vec<_> =
+            archived.rows.iter().map(|r| (r.team, r.games, r.points, r.goals_for, r.goals_against)).collect();
+        rows.sort();
+        assert_eq!(rows, closed, "the closed season archived");
         let _ = std::fs::remove_dir_all(&root);
     }
 
