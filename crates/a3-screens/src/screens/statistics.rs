@@ -4198,11 +4198,12 @@ impl Statistics {
             .map(|(_, e)| e);
         let target = team.ticket_target();
         let mut seasons = extra.map_or_else(Vec::new, |e| e.history());
-        // The past seasons' rows keep the club's +0x124, which is the
-        // season tickets' target and not its sales: the running season
-        // stands there at the same figure (`FUN_0071d0a4`).
+        // The past seasons' rows keep the club's +0x124 at their +8, the
+        // season tickets' target and not what was sold (`FUN_0071d0a4`
+        // reading it into the row); the season running stands there at
+        // the holders themselves, the club's +0x498 (`FUN_004766b1`).
         seasons.push(SeasonHistory {
-            tickets: target,
+            tickets: team.tickets(),
             level: team.level().min(2),
             ..SeasonHistory::default()
         });
