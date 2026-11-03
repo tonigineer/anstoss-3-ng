@@ -905,6 +905,7 @@ impl Cycle {
                 crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);
                 crate::promotion::flag(records, &self.data.rules.forecast.tickets);
+                crate::europe_entry::qualify(records, &mut season.random);
                 crate::rollover::count_first_seasons(records);
                 let agents = crate::free_agents::release(records, &mut season.random);
                 crate::deals::execute(records, &mut season.random);

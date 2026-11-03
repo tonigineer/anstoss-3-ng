@@ -15,6 +15,7 @@ pub mod doping;
 pub mod data;
 pub mod deals;
 pub mod development;
+pub mod europe_entry;
 pub mod discipline;
 pub mod duties;
 pub mod evaluation;
