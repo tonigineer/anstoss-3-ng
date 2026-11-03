@@ -1,6 +1,7 @@
 //! The played countries' players develop (`FUN_0040f99c`, per club
 //! `FUN_0040fa91`): at the season's end before its retirements, and at
-//! the winter break (the 56th half week) without the season's matches.
+//! the winter break (the 56th half week, [`half_week`]) without the
+//! season's matches.
 //!
 //! Every club in a league notes each player's strength into his history
 //! (`FUN_00705001`) and draws his change, one point up or down at a time:
@@ -405,6 +406,26 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
     (drawn, young_riser)
 }
 
+/// The half week the winter break falls in (`DAT_00b5cbd2 == 0x38`).
+pub const WINTER_BREAK: u16 = 56;
+
+/// The half weeks since the season's start (`0xb5cbd2`), as the original
+/// counts them: one on every day from the first the week turns half (day
+/// % 7 = 4) or whole (0) — 18 on day 63, 60 on day 210, as its saves keep
+/// them. On the 56th (day 196) the players develop for the winter break,
+/// without the season's matches (`FUN_0040f99c(1)`).
+pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
+    if today < 1 || !matches!(today % 7, 0 | 4) {
+        return;
+    }
+    let count = today / 7 * 2 + i32::from(today % 7 >= 4);
+    let Ok(count) = u16::try_from(count) else { return };
+    records.globals.set_half_weeks(count);
+    if count == WINTER_BREAK {
+        develop_played(records, true, random);
+    }
+}
+
 /// The new season lifts a weak computer squad (`FUN_0077655c`, from the
 /// second season on): when its strength averages below a mark by its
 /// league — 10, 9 or 8 in the first by its place in the list (the first
@@ -651,5 +672,45 @@ mod tests {
         for k in 0..2 {
             assert!((moves[k] - their_moves[k]).abs() * 5 < their_moves[k], "{:?} against the original's {:?}", moves, their_moves);
         }
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_half_weeks_count_as_the_originals_saves_and_the_winter_break_develops() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let mut random = Random::new(3);
+        for (name, day) in [("Probe1.an3", 35), ("A.an3", 63), ("S2.an3", 210), ("S2late.an3", 298)] {
+            let mut records = load(name);
+            let kept = records.globals.half_weeks();
+            records.globals.set_half_weeks(0);
+            half_week(&mut records, day, &mut random);
+            assert_eq!(records.globals.half_weeks(), kept, "{name} on day {day}");
+        }
+        let mut records = load("A.an3");
+        let before = load("A.an3");
+        half_week(&mut records, 195, &mut random);
+        assert_eq!(records.globals.half_weeks(), before.globals.half_weeks(), "no tick on day 195");
+        half_week(&mut records, 196, &mut random);
+        assert_eq!(records.globals.half_weeks(), WINTER_BREAK);
+        let (mut noted, mut moved) = (0, 0);
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)).max(0) as u16 {
+                let team = before.team(country, number).unwrap();
+                if team.level() >= 10 {
+                    continue;
+                }
+                for id in team.players() {
+                    let (o, x) = (before.player(id).unwrap(), records.player(id).unwrap());
+                    noted += i32::from((0..HISTORY_LEN).any(|k| o.get::<u8>(HISTORY + k) != x.get::<u8>(HISTORY + k)));
+                    moved += i32::from(o.strength() != x.strength());
+                }
+            }
+        }
+        assert!(noted > 3000 && moved > 300, "{noted} noted, {moved} moved");
     }
 }

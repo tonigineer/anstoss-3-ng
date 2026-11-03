@@ -790,6 +790,10 @@ impl Cycle {
                         let slots =
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         if let Some(records) = state.records.as_mut() {
+                            // The half week ticks first, the winter break
+                            // developing the players at its 56th
+                            // (`FUN_006da3a9`'s state 4).
+                            crate::development::half_week(records, today, &mut season.random);
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
                             // The day's training at the human clubs
                             // follows the sales (`FUN_00749508`), and the
