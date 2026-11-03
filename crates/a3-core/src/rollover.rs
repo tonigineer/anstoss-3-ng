@@ -171,18 +171,10 @@ pub fn close_player(player: &mut Player, year: i32, random: &mut Random) {
     set_years_left(player, year, left);
 }
 
-/// The played countries' clubs close their players' season at the
-/// season's end (`FUN_006b44cb` per club, `FUN_006b4727`): a club that is
-/// no reserve team clears its two season words and closes every player's
-/// season (`FUN_0070665a`), and its reserve team, if it has one
-/// (team +0x873), does the same. (The retirements from a club's
-/// amateurs, `FUN_00407ecd`, and its staff's contracts, `FUN_006b4d51`,
-/// are not built.)
-pub fn close_played(records: &mut Records, random: &mut Random) {
-    let year = i32::from(records.globals.start_year());
-    // Before it every club's players count a first season once they have
-    // none (`FUN_006b4459` per club, `FUN_006b3f92`; the contracts that
-    // run out there are not built).
+/// Before the season's deals every club of the countries played counts
+/// a first season for its players who have none (`FUN_006b4459` per club,
+/// `FUN_006b3f92`; the contracts that run out there are not built).
+pub fn count_first_seasons(records: &mut Records) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             for id in squad(records, country, number) {
@@ -192,6 +184,17 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
             }
         }
     }
+}
+
+/// The played countries' clubs close their players' season at the
+/// season's end (`FUN_006b44cb` per club, `FUN_006b4727`): a club that is
+/// no reserve team clears its two season words and closes every player's
+/// season (`FUN_0070665a`), and its reserve team, if it has one
+/// (team +0x873), does the same. (The retirements from a club's
+/// amateurs, `FUN_00407ecd`, and its staff's contracts, `FUN_006b4d51`,
+/// are not built.)
+pub fn close_played(records: &mut Records, random: &mut Random) {
+    let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team(country, number) else { continue };
@@ -516,7 +519,7 @@ fn career_end_entry(p: &Player, year: u16, week: u8) -> [u8; HISTORY_ENTRY] {
     e
 }
 
-fn push_history(extra: &mut crate::records::Extra, entry: [u8; HISTORY_ENTRY]) {
+pub(crate) fn push_history(extra: &mut crate::records::Extra, entry: [u8; HISTORY_ENTRY]) {
     let mut count = extra.get::<i16>(HISTORY_COUNT).clamp(0, HISTORY_MOST);
     if count == HISTORY_MOST {
         for k in 0..usize::from(HISTORY_MOST as u16) - 1 {
@@ -614,7 +617,7 @@ pub fn open_kept(records: &mut Records, random: &mut Random) {
 
 /// The strength a talent reaches at most (`FUN_006ff4c0`): 12 for the
 /// greatest, 11, 10, 9, 8 for none.
-fn top_strength(talent: i8) -> u8 {
+pub(crate) fn top_strength(talent: i8) -> u8 {
     match talent {
         0 => 12,
         1 => 11,
@@ -898,6 +901,7 @@ mod tests {
         let (mut ours, theirs, before) =
             (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
         let mut random = Random::new(7);
+        count_first_seasons(&mut ours);
         close_played(&mut ours, &mut random);
         crate::settlement::open_season(&mut ours, &mut random);
         let (mut compared, mut renewed) = (0, 0);

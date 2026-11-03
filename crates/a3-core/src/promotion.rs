@@ -683,6 +683,32 @@ pub fn count(records: &mut Records) {
     }
 }
 
+/// The level a club plays next season by the drawn lists (`FUN_00692bf9`:
+/// the league whose next list holds it — Germany from 2000 four at most —,
+/// 10 in none, 0 for a country not played).
+pub fn next_level(records: &Records, country: u16, team: i16) -> i16 {
+    if !records.globals.played(country as i16) {
+        return 0;
+    }
+    let mut leagues = records.countries.leagues(usize::from(country)).max(0);
+    if country == GERMANY && records.globals.start_year() >= 2000 {
+        leagues = leagues.min(4);
+    }
+    for level in 0..leagues as u8 {
+        let Some(name) = League::block_name(records, country, level) else { continue };
+        let Some(block) = records.block(&name) else { continue };
+        let teams = usize::try_from(league_word(records, country, level, TEAMS)).unwrap_or(0).min(LIST);
+        let found = (0..teams).any(|k| {
+            let at = LEAGUE_FIELDS + NEXT + 2 * k;
+            block.get(at..at + 2).is_some_and(|w| i16::from_le_bytes([w[0], w[1]]) == team)
+        });
+        if found {
+            return i16::from(level);
+        }
+    }
+    i16::from(OUTSIDE)
+}
+
 /// The country's books, as its block keeps them.
 pub fn moves(records: &Records, country: u16) -> Moves {
     let slot = records.countries.slot(usize::from(country));

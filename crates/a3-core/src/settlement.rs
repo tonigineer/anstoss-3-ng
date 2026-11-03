@@ -36,11 +36,13 @@
 //! national-team money — it has not built.
 //!
 //! Checked against the original's last day before its season end and its
-//! first day after: with the season's flags booked before it
-//! ([`crate::promotion::flag`]) 109 of the 212 clubs settle to the euro
-//! (86 without). Most of the others reached Europe or are moved by the
-//! season-end steps before the settlement that are not built here — the
-//! European places' flags (`FUN_0041a3ef`) among them.
+//! first day after: with the season's end before it as the cycle runs it —
+//! the flags ([`crate::promotion::flag`]), the retirements and the agreed
+//! transfers ([`crate::deals`]) — 165 of the 212 clubs settle to the euro
+//! (86 with none of them, 109 with the flags alone). Most of the others
+//! reached Europe or are moved by season-end steps not built here — the
+//! European places' flags (`FUN_0041a3ef`) and the free agents among
+//! them.
 
 use chrono::{Datelike, NaiveDate};
 

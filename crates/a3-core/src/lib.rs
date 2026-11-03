@@ -13,6 +13,7 @@ pub mod cup_draw;
 pub mod cycle;
 pub mod doping;
 pub mod data;
+pub mod deals;
 pub mod discipline;
 pub mod duties;
 pub mod evaluation;

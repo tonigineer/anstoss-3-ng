@@ -515,3 +515,15 @@ pub fn loan_listings(records: &Records, (country, number): Side) -> usize {
         .filter(|l| l.country == country && l.number as i16 == number)
         .count()
 }
+
+/// A player off a human club's watch list (`FUN_00418ca1`: the list of
+/// the club's human slot).
+pub fn unwatch_at_club(records: &mut Records, club: (u8, i16), id: u16) {
+    let slot = u16::try_from(club.1)
+        .ok()
+        .and_then(|n| records.team(u16::from(club.0), n))
+        .and_then(|t| usize::from(t.human()).checked_sub(1));
+    if let Some(slot) = slot {
+        unwatch(records, slot, id);
+    }
+}
