@@ -1680,6 +1680,48 @@ pub struct Eternal {
 
 const ETERNAL: (usize, usize) = (0x7b0c, 0xa20);
 
+/// Up to which season the all-time tables hold their seasons
+/// (`DAT_00b5df80`): the season's end sets it one past the closing season.
+const ETERNAL_SEASON: usize = 0xb5df80;
+
+/// The season's end folds each played country's first-league season into
+/// its all-time tables (`FUN_006b3111` for the first league, from
+/// `FUN_006b2e88` per country played): every club's games, points and
+/// goals for and against of all its matches, of its home and of its away
+/// matches (`FUN_007293ea` in its three modes) join its twelve words, and
+/// the tables count the season as held.
+pub fn fold_eternal(records: &mut Records) {
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let countries: Vec<i16> =
+        std::iter::once(globals.main_country()).chain(globals.more_countries()[..more].iter().copied()).collect();
+    let mut adds: Vec<(usize, u8, Vec<Row>)> = Vec::new();
+    for country in countries {
+        let Ok(country) = u16::try_from(country) else { continue };
+        let Some(league) = League::of(records, country, 0) else { continue };
+        let slot = usize::from(records.countries.slot(country.into()));
+        for kind in [ALL, HOME, AWAY] {
+            adds.push((slot, kind, table(records, &league, kind)));
+        }
+    }
+    let seasons = records.globals.seasons();
+    let Some(block) = records.block_mut(LISTS) else { return };
+    let (at, per_slot) = ETERNAL;
+    for (slot, kind, rows) in adds {
+        for row in rows {
+            let Ok(team) = usize::try_from(row.team) else { continue };
+            let from = at + slot * per_slot + 24 * team + 8 * usize::from(kind);
+            for (k, add) in [row.games, row.points, row.goals_for, row.goals_against].into_iter().enumerate() {
+                if let Some(w) = block.get_mut(from + 2 * k..from + 2 * k + 2) {
+                    let old = i16::from_le_bytes([w[0], w[1]]);
+                    w.copy_from_slice(&old.wrapping_add(add as i16).to_le_bytes());
+                }
+            }
+        }
+    }
+    records.globals.put::<u16>(ETERNAL_SEASON, seasons.wrapping_add(1));
+}
+
 pub fn eternal(records: &Records, country: u16) -> Vec<Eternal> {
     eternal_of(records, country, ALL)
 }
@@ -4580,5 +4622,35 @@ mod tests {
                 assert_eq!(y[i], theirs_at.get(&i).copied().unwrap_or(0), "the original's byte {:#x}", LISTS_AT + i);
             }
         }
+    }
+
+    /// The season's end over the original's pair: the replica folds
+    /// SeasonEnd364's first-league seasons into the all-time tables and
+    /// every played country's twelve words a club stand as NewSeason000
+    /// keeps them, the season counted as held.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_folds_the_all_time_tables_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        fold_eternal(&mut ours);
+        assert_eq!(ours.globals.get::<u16>(ETERNAL_SEASON), theirs.globals.get::<u16>(ETERNAL_SEASON));
+        let (at, per_slot) = ETERNAL;
+        let mut moved = 0;
+        for country in crate::opponent::played_nations(&before) {
+            let slot = usize::from(before.countries.slot(country.into()));
+            let range = at + slot * per_slot..at + (slot + 1) * per_slot;
+            let (o, x, y) = (&before.block(LISTS).unwrap()[range.clone()], &ours.block(LISTS).unwrap()[range.clone()],
+                &theirs.block(LISTS).unwrap()[range]);
+            moved += o.iter().zip(y).filter(|(a, b)| a != b).count();
+            assert_eq!(x, y, "country {country}'s all-time tables");
+        }
+        assert!(moved > 0, "the season moved the tables");
     }
 }

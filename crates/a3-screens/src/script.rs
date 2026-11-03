@@ -8906,14 +8906,23 @@ mod tests {
     /// nought, his form of the season one week of 10, his contract in its
     /// last year run on by three or four, the count of his seasons up by
     /// two (the close and the development) and his strength at most a
-    /// point from where it stood.
+    /// point from where it stood. The closed season stays in the
+    /// all-time table of the first league.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_rolls_the_kept_countries_players_over() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let mut before = None;
+        let (mut eternal, mut running) = (Vec::new(), 0);
         let root = patched(&dir, "A", "season-kept", |records| {
             records.globals.set_day(320);
+            let nation = u16::try_from(records.globals.main_country()).unwrap();
+            eternal = a3_core::statistics::eternal(records, nation);
+            let league = a3_core::opponent::League::of(records, nation, 0).unwrap();
+            running = a3_core::statistics::table(records, &league, a3_core::statistics::ALL)
+                .iter()
+                .map(|row| row.games)
+                .sum::<i32>();
             let id = kept_player(records).expect("a kept country's player");
             let year = records.globals.start_year();
             let p = records.player_mut(id).unwrap();
@@ -8944,6 +8953,12 @@ mod tests {
         assert!((3..=3 + i32::from(strength) / 3).contains(&left), "{left} years left");
         assert_eq!(p.get::<u8>(0x161), 4);
         assert!(p.strength().abs_diff(strength) <= 1, "{} from {strength}", p.strength());
+        // The closed season stays in the all-time table, which stands as
+        // it stood before the turn (the patched day skips the matchdays
+        // between): its season's games now kept, none running.
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        assert_eq!(a3_core::statistics::eternal(records, nation), eternal);
+        assert!(running > 0, "the closed season had games to keep");
         let _ = std::fs::remove_dir_all(&root);
     }
 
