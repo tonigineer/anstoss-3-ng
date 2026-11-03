@@ -20,13 +20,23 @@
 //! Beside it every player's form of the season starts again from one
 //! week of 10 (`FUN_0068b753`).
 //!
+//! The countries played close their players' seasons the same way at the
+//! season's end, club by club with its reserve team (`FUN_006b4727`), and
+//! open them at the new season's first day by a pass of their own
+//! (`FUN_0077655c`, `FUN_007762cc`): the season's counters to nought
+//! again — the league matches, assists and kinds of goals among them —,
+//! a weak condition or freshness lifted, the loan's terms and some
+//! reasons ended, and the form of the season and the last form set to
+//! the form today.
+//!
 //! Left out: the old men retiring from the second season on (age above
 //! 33 plus a draw below 3, `FUN_0070de6c`), the young players the clubs
 //! draw to fill thin positions (`FUN_0066ca21`), the stadium byte the
-//! season's end clears (`FUN_00638335`'s object +0x68), and the clubs of
-//! the countries played, whose rollover runs other routines
-//! (`FUN_006b4727`, `FUN_0077655c`). The original draws with its own
-//! generator, so the men who grow are others than the original's.
+//! season's end clears (`FUN_00638335`'s object +0x68); for the countries
+//! played the contracts that run out (`FUN_006b3f92`), the amateurs'
+//! retirements, the staff's contracts and the computer clubs' new youth
+//! and strength. The original draws with its own generator, so the men
+//! who grow are others than the original's.
 
 use chrono::NaiveDate;
 
@@ -152,6 +162,134 @@ pub fn close_player(player: &mut Player, year: i32, random: &mut Random) {
     }
     player.set_partner(player.partner() & PARTNER_KEPT);
     set_years_left(player, year, left);
+}
+
+/// The played countries' clubs close their players' season at the
+/// season's end (`FUN_006b44cb` per club, `FUN_006b4727`): a club that is
+/// no reserve team clears its two season words and closes every player's
+/// season (`FUN_0070665a`), and its reserve team, if it has one
+/// (team +0x873), does the same. (The retirements from a club's
+/// amateurs, `FUN_00407ecd`, and its staff's contracts, `FUN_006b4d51`,
+/// are not built.)
+pub fn close_played(records: &mut Records, random: &mut Random) {
+    let year = i32::from(records.globals.start_year());
+    // Before it every club's players count a first season once they have
+    // none (`FUN_006b4459` per club, `FUN_006b3f92`; the contracts that
+    // run out there are not built).
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            for id in squad(records, country, number) {
+                if let Some(player) = records.player_mut(id).filter(|p| p.get::<u8>(SEASONS) == 0) {
+                    player.put::<u8>(SEASONS, 1);
+                }
+            }
+        }
+    }
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let [first, reserve] = team.linked();
+            if first >= 0 {
+                continue;
+            }
+            let clubs = std::iter::once(number).chain(u16::try_from(reserve).ok());
+            for club in clubs.collect::<Vec<_>>() {
+                if let Some(team) = records.team_mut(country, club) {
+                    for at in TEAM_SEASON_WORDS {
+                        team.put::<u16>(at, 0);
+                    }
+                }
+                for id in squad(records, country, club) {
+                    if let Some(player) = records.player_mut(id) {
+                        close_player(player, year, random);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the new season puts to nought of a played country's player
+/// (`FUN_007762cc`), byte by byte: R+0x274 to +0x279, the goals, the
+/// cards' first bytes, the goals' kinds, own goals, assists and joker
+/// goals, the last match's, penalties, free kicks and the keeper's pair,
+/// chances and home goals, the league matches and the two counts behind
+/// them, the bans served and the team of the day, R+0x25e.
+const OPENED_BYTES: [usize; 38] = [
+    0x274, 0x275, 0x23c, 0x23d, 0x23e, 0x277, 0x278, 0x279, 0x252, 0x22c, 0x22d, 0x22e, 0x231,
+    0x235, 0x241, 0x242, 0x243, 0x244, 0x246, 0x245, 0x247, 0x248, 0x267, 0x268, 0x24c, 0x24b,
+    0x24e, 0x24d, 0x250, 0x24f, 0x253, 0x254, 0x255, 0x25e, 0x276, 0x249, 0x24a, 0x251,
+];
+/// A condition (in hundredths) or freshness this low is lifted.
+const LOW: i32 = 30;
+const LOWISH: i32 = 50;
+const CONDITION_LIFT: [i16; 2] = [40, 20];
+const FRESHNESS_LIFT: [i16; 2] = [50, 30];
+/// Bit 11 of R+0x1b4: he smokes, his condition counts five less.
+const SMOKES: u32 = 0x800;
+/// The reasons the season takes from him (R+0x1b0's bits 0x40, 0x100
+/// and 0x800), the terms' bits it ends (the loan's 0x100, 0x200, 0x400),
+/// R+0x26f's bit 6.
+const REASONS_ENDED: u32 = 0x940;
+const TERMS_ENDED: u16 = 0x0700;
+const RETIRING_KEPT: u8 = 0xbf;
+/// R+0x23a, put to nought in every even year.
+const EVEN_YEAR_BYTE: usize = 0x23a;
+
+/// The new season opens a played country's player (`FUN_007762cc`).
+pub fn open_player(player: &mut Player, year: i32) {
+    for at in OPENED_BYTES {
+        player.put::<u8>(at, 0);
+    }
+    player.put::<u16>(0x1de, 0);
+    let condition = {
+        let c = i32::from(player.condition()) / 100;
+        if player.shown() & SMOKES == 0 { c } else if c < 5 { 0 } else { c - 5 }
+    };
+    let lift = if condition < LOW { Some(CONDITION_LIFT[0]) } else if condition < LOWISH { Some(CONDITION_LIFT[1]) } else { None };
+    if let Some(by) = lift {
+        player.set_condition((player.condition().saturating_add(by * 100)).clamp(0, 10000));
+    }
+    let freshness = {
+        let f = player.freshness();
+        let sum = f[0].wrapping_add(f[1]).wrapping_add(f[2]);
+        if sum < 0 { 0 } else if sum <= 10000 { i32::from(sum) / 100 } else { 100 }
+    };
+    let lift = if freshness < LOW { Some(FRESHNESS_LIFT[0]) } else if freshness < LOWISH { Some(FRESHNESS_LIFT[1]) } else { None };
+    if let Some(by) = lift {
+        let mut f = player.freshness();
+        f[0] = f[0].saturating_add(by * 100).clamp(0, 10000);
+        player.set_freshness(f);
+    }
+    player.set_terms(player.terms() & !TERMS_ENDED);
+    player.put::<u8>(SEASONS, player.get::<u8>(SEASONS).wrapping_add(1));
+    crate::mood::clear_reasons(player, REASONS_ENDED);
+    player.set_retiring(player.retiring() & RETIRING_KEPT);
+    player.set_fined(0);
+    if year % 2 == 0 {
+        player.put::<u8>(EVEN_YEAR_BYTE, 0);
+    }
+}
+
+/// The new season's first day for the played countries' players
+/// (`FUN_0077655c`'s last loop per club): each opened, his last form and
+/// his form of the season — one week of it — his form today. (The
+/// computer clubs' fresh youth, the strength they give their weak and the
+/// rest of `FUN_0077655c` are not built.)
+pub fn open_played(records: &mut Records) {
+    let year = i32::from(records.globals.start_year());
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            for id in squad(records, country, number) {
+                let Some(player) = records.player_mut(id) else { continue };
+                open_player(player, year);
+                let form = crate::statistics::form_today(player);
+                player.set_last_form(form as u8);
+                player.set_season_form(i16::from(form as u8));
+                player.set_season_form_weeks(1);
+            }
+        }
+    }
 }
 
 /// Every player's form of the season back at one week of 10
@@ -459,5 +597,56 @@ mod tests {
             }
         }
         assert!(compared > 5000, "{compared} players compared");
+    }
+
+    /// The played countries' players over the original's pair: closed at
+    /// the season's end and opened at the new season's start by the
+    /// replica, every player of SeasonEnd364 still at his club in
+    /// NewSeason000 stands with his season's counters, his season's form
+    /// and last form, his condition and freshness, his reasons, the
+    /// retiring bit and the fines as the original's; his count of seasons
+    /// too, but for the few whose contract the original renewed
+    /// (`FUN_006b3f92`, not built).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_played_countries_players_roll_over_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        let mut random = Random::new(7);
+        close_played(&mut ours, &mut random);
+        crate::settlement::open_season(&mut ours, &mut random);
+        let (mut compared, mut renewed) = (0, 0);
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)) as u16 {
+                let after = squad(&theirs, country, number);
+                for id in squad(&before, country, number).into_iter().filter(|id| after.contains(id)) {
+                    let (o, x, y) = (before.player(id).unwrap(), ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    if o.birthday() != y.birthday() {
+                        continue;
+                    }
+                    compared += 1;
+                    for at in OPENED_BYTES.into_iter().chain([0x27b, 0x34d, 0x34f]) {
+                        assert_eq!(x.get::<u8>(at), y.get::<u8>(at), "player {id} at {at:#x}");
+                    }
+                    for at in [0x1e0, 0x1ce, 0x1d0, 0x1d2, 0x1d4, 0x1de] {
+                        assert_eq!(x.get::<u16>(at), y.get::<u16>(at), "player {id} at {at:#x}");
+                    }
+                    assert_eq!(x.flags() & REASONS_ENDED, y.flags() & REASONS_ENDED, "player {id}'s reasons");
+                    assert_eq!(x.retiring() & !RETIRING_KEPT, y.retiring() & !RETIRING_KEPT, "player {id}");
+                    if x.get::<u8>(SEASONS) != y.get::<u8>(SEASONS) {
+                        assert!(y.get::<u8>(SEASONS) <= 2, "player {id}'s seasons");
+                        renewed += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 4000, "{compared} players compared");
+        assert!(renewed < 10, "{renewed} counts renewed");
     }
 }

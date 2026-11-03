@@ -897,6 +897,7 @@ impl Cycle {
                 crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);
                 crate::promotion::flag(records, &self.data.rules.forecast.tickets);
+                crate::rollover::close_played(records, &mut season.random);
                 crate::rollover::close_kept(records, &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);
                 // The original's leagues take their new clubs before its
