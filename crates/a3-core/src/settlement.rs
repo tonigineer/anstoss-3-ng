@@ -39,11 +39,13 @@
 //! first day after: with the season's end before it as the cycle runs it —
 //! the flags ([`crate::promotion::flag`]), the retirements, the agreed
 //! transfers ([`crate::deals`]) and the free agents
-//! ([`crate::free_agents`]) — 175 of the 212 clubs settle to the euro (86
-//! with none of them, 109 with the flags alone, 165 without the free
-//! agents). Most of the others reached Europe or are moved by season-end
-//! steps not built here — the European places' flags (`FUN_0041a3ef`)
-//! among them.
+//! ([`crate::free_agents`], the youths leaving the youth among them) — 183
+//! of the 212 clubs settle to the euro (86 with none of them, 109 with the
+//! flags alone, 165 without the free agents, 175 without the youths). The
+//! others pay their bonuses on a squad a man or two off the original's,
+//! or rose in a more country by the draw: both follow the random draws
+//! (the development, the free agents' leagues, the risers), which the
+//! replica makes with its own generator.
 
 use chrono::{Datelike, NaiveDate};
 

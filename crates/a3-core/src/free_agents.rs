@@ -25,8 +25,10 @@
 //! player's option at times; a full one sends him into the pool. The human
 //! clubs keep their losses and gains in their histories.
 //!
-//! Left out: the youth players too old for the youth (`FUN_006b4230`) and
-//! the lists and notes beside (`FUN_005dbeb7`, `FUN_005dbefc`,
+//! The club's youths too old for its youth next season join the list
+//! behind its players (`FUN_006b4230`).
+//!
+//! Left out: the lists and notes beside (`FUN_005dbeb7`, `FUN_005dbefc`,
 //! `FUN_00405bf3`).
 
 use chrono::NaiveDate;
@@ -45,6 +47,10 @@ pub struct FreeAgent {
 }
 
 const LIST_MOST: usize = 5000;
+/// A youth born eighteen years before the next season's first of July
+/// leaves the youth; R+0x26f's bits 2 and 3 go with him.
+const YOUTH_YEARS: i32 = 18;
+const YOUTH_BITS_KEPT: u8 = 0xf3;
 const RETIRES: u8 = 0x80;
 const LISTED: u8 = 1;
 /// A free agent this old ends his career.
@@ -138,9 +144,37 @@ pub fn release(records: &mut Records, random: &mut Random) -> Vec<FreeAgent> {
             for id in gone {
                 crate::rollover::retire(records, country, number, id, random);
             }
+            // The youths too old for the youth go too (`FUN_006b4230`):
+            // their station closed, onto the list, off the youth list and
+            // out of the club's youth.
+            for id in aged_out(records, country as u8, number) {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_retiring(p.retiring() & YOUTH_BITS_KEPT);
+                }
+                crate::deals::close_station(records, id);
+                if agents.len() < LIST_MOST {
+                    agents.push(FreeAgent { id, country: country as u8, team: number as i16 });
+                }
+                crate::youth::drop_prospect(records, id);
+                crate::youth::leave_youth(records, (country as u8, number), id);
+            }
         }
     }
     agents
+}
+
+/// A club's youths too old for its youth next season: born before the
+/// first of July eighteen years before the next season's year
+/// (`FUN_007068c9`, `FUN_004379d0`).
+fn aged_out(records: &Records, country: u8, number: u16) -> Vec<u16> {
+    let bar = (i32::from(records.globals.start_year()) + 1 - YOUTH_YEARS, 7u8, 1u8);
+    crate::youth::youths(records, country, number)
+        .0
+        .into_iter()
+        .filter(|&id| {
+            records.player(id).is_some_and(|p| (i32::from(p.birth_year()), p.birth_month(), p.birth_day()) < bar)
+        })
+        .collect()
 }
 
 /// His promise (`FUN_006ff516`): his strength and what his age and talent
@@ -408,7 +442,8 @@ mod tests {
     /// end's steps before it run by the replica: the players it lets go
     /// are those the original let go — gone from the club, on fresh terms
     /// or their careers ended —, every one whose contract ran out among
-    /// them; the free agents placed stand in a squad of at most 30 on
+    /// them, and the youths it sends out of the youth onto the list are the
+    /// original's; the free agents placed stand in a squad of at most 30 on
     /// terms of two to five years, and where his strength did not move
     /// between the two saves (the original develops the played countries'
     /// players before, [`crate::development`], left out here) a placed
@@ -458,6 +493,22 @@ mod tests {
             }
         }
         assert!(let_go > 200, "{let_go} let go as the original");
+        // The youths leaving the youth are the original's, now free agents.
+        let mut left = 0;
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (old, _) = crate::youth::youths(&before, country as u8, number);
+                let (theirs_now, _) = crate::youth::youths(&theirs, country as u8, number);
+                let (ours_now, _) = crate::youth::youths(&ours, country as u8, number);
+                for id in old {
+                    let gone = !theirs_now.contains(&id);
+                    assert_eq!(!ours_now.contains(&id), gone, "youth {id}");
+                    assert_eq!(released.contains(&id), gone, "youth {id} a free agent");
+                    left += i32::from(gone);
+                }
+            }
+        }
+        assert!(left > 50, "{left} youths left");
         crate::deals::execute(&mut ours, &mut random);
         crate::rollover::close_played(&mut ours, &mut random);
         crate::rollover::close_kept(&mut ours, &mut random);

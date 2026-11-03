@@ -192,9 +192,8 @@ fn date_bytes(records: &Records) -> [u8; 4] {
     [day as u8, month as u8, y[0], y[1]]
 }
 
-/// His season left behind at the club (`FUN_00707bbf`: the station's end
-/// date, `FUN_0070429c`; the counters and matchdays, `FUN_00706821`).
-fn leave_season(records: &mut Records, id: u16) {
+/// His last station ends today (`FUN_0070429c`).
+pub(crate) fn close_station(records: &mut Records, id: u16) {
     let date = date_bytes(records);
     let Some(p) = records.player_mut(id) else { return };
     let stations = p.career_count();
@@ -204,6 +203,13 @@ fn leave_season(records: &mut Records, id: u16) {
             p.put::<u8>(at + k, *b);
         }
     }
+}
+
+/// His season left behind at the club (`FUN_00707bbf`: the station's end
+/// date, `FUN_0070429c`; the counters and matchdays, `FUN_00706821`).
+fn leave_season(records: &mut Records, id: u16) {
+    close_station(records, id);
+    let Some(p) = records.player_mut(id) else { return };
     for at in [0x244, 0x243, 0x242, 0x241, 0x248, 0x247, 0x245, 0x255, 0x254, 0x253, 0x25e, 0x352] {
         p.put::<u8>(at, 0);
     }

@@ -222,7 +222,7 @@ pub fn sign(records: &mut Records, id: u16, (country, number): (u8, u16), salary
 }
 
 /// Out of a club's youth team, his youth goals gone (`FUN_0066aea3`).
-fn leave_youth(records: &mut Records, (country, number): (u8, u16), id: u16) {
+pub(crate) fn leave_youth(records: &mut Records, (country, number): (u8, u16), id: u16) {
     let (mut ids, _) = youths(records, country, number);
     ids.retain(|&y| y != id);
     store(records, country, number, &ids);
