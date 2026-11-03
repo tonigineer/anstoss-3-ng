@@ -584,8 +584,8 @@ const IN_UEFA: u16 = 0x10;
 const IN_INTERTOTO: u16 = 0x20;
 
 /// The new season's European cups (`FUN_0041bb6c`): the Champions League
-/// cleared and set for its qualifiers (`FUN_0041bd39`), the UEFA cup's
-/// rounds (`FUN_0041f9b1`), every entrant's club flagged and its country
+/// cleared and set for its qualifiers (`FUN_0041bd39`), the UEFA cup
+/// cleared with its rounds' starts (`FUN_0041f9b1`), every entrant's club flagged and its country
 /// counted (`FUN_0041a3ef`), from the second season the Intertoto's first
 /// list drawn into twelve ties, and the Champions League's qualifiers
 /// paired: each of the first sixteen away to one of the other sixteen in
@@ -598,6 +598,8 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
         .and_then(|b| b.get(crate::opponent::LEAGUE_FIELDS + 8..crate::opponent::LEAGUE_FIELDS + 0x10))
         .map(|w| w.try_into().unwrap());
     if let Some(b) = records.block_mut(CHAMPIONS) {
+        // The whole object first (`FUN_007cff4b`), then its stretches.
+        b.fill(0);
         for (at, len) in CHAMPIONS_CLEARED {
             if let Some(r) = b.get_mut(at..at + len) {
                 r.fill(0);
@@ -613,6 +615,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
         }
     }
     if let Some(b) = records.block_mut(UEFA_CUP) {
+        b.fill(0);
         for (k, v) in UEFA_STARTS.iter().enumerate() {
             if let Some(r) = b.get_mut(4 * k..4 * k + 4) {
                 r.copy_from_slice(&v.to_le_bytes());
@@ -763,8 +766,8 @@ mod tests {
 
     /// The new season's cups over the original's pair, opened by the
     /// replica from the original's lists: every played club's European
-    /// flags, every country's count of entrants, the UEFA cup's rounds and
-    /// the Champions League's object as NewSeason000 keeps them — its
+    /// flags, every country's count of entrants, the UEFA cup's object and
+    /// the Champions League's as NewSeason000 keeps them — its
     /// qualifiers' ties with the first sixteen away, their opponents the
     /// other sixteen in a drawn order.
     #[test]
@@ -792,7 +795,7 @@ mod tests {
         for k in 0..PLACE_COUNTRIES {
             assert_eq!(ours.globals.get::<u8>(COUNTRY_ENTRIES + k), theirs.globals.get::<u8>(COUNTRY_ENTRIES + k), "country {k}");
         }
-        assert_eq!(ours.block(UEFA_CUP).unwrap()[..32], theirs.block(UEFA_CUP).unwrap()[..32]);
+        assert_eq!(ours.block(UEFA_CUP), theirs.block(UEFA_CUP), "the UEFA cup's object");
         let (x, y) = (ours.block(CHAMPIONS).unwrap(), theirs.block(CHAMPIONS).unwrap());
         let home = |k: usize| k < CHAMPIONS_QUALIFIER_TIES * PAIRING && k % PAIRING < 4;
         assert!((0..x.len()).filter(|&k| !home(k)).all(|k| x[k] == y[k]), "the Champions League's object");
