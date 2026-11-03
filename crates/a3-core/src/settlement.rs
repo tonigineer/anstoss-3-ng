@@ -28,7 +28,11 @@
 //! and the
 //! dividends paid into the managers' own shares (`FUN_00406fea`). The
 //! season's bookings stay until the new season clears them
-//! (`FUN_00673131`), which the replica has not built yet.
+//! ([`clear_bookings`] — `FUN_0042b2fc` per club of the countries
+//! played, `FUN_00672839` in each), which the replica's new season will
+//! call once its first day stands; what the original sets back up beside the
+//! clearing — the ticket target (`FUN_0067324c`), the class template's
+//! rows and the sponsor, TV and national-team money — it has not built.
 //!
 //! Checked against the original's last day before its season end and its
 //! first day after: 86 of the 212 clubs settle to the euro, 43 of them
@@ -75,6 +79,15 @@ const SPONSOR_EVENTS: usize = 0x2fc;
 const TAX: usize = 0x310;
 const DIVIDENDS: usize = 0x2d4;
 const SHARES_SOLD: usize = 0x2d0;
+/// The season's bookings in the club's fields that the new season's
+/// start clears: the two blocks of season fields, the eight dwords
+/// behind them and the ticket sales plan — five rows of two bytes at
+/// each of four places (`FUN_00672839`); the cash at +0x210 between the
+/// blocks keeps what the season made.
+const BOOKED_BLOCKS: [usize; 2] = [0x120, 0x228];
+const BOOKED_LEN: usize = 0xf0;
+const CLEARED_DWORDS: usize = 0x470;
+const PLAN_ROWS: [usize; 4] = [0x49c, 0x4a6, 0x4b0, 0x4ba];
 /// The main sponsor: whether there is one, the percent its money shrinks
 /// by on relegation, its extras for a title or a promotion and for a
 /// European place.
@@ -318,6 +331,49 @@ fn balance_row(team: &Team, main: i16, year: i16, win: i16) -> SeasonBalance {
         goals: team.goals(),
         strength: team.squad_strength(),
         result: team.get::<i64>(PAST_RESULTS[0]).clamp(-MOST_RESULT, MOST_RESULT) as i32,
+    }
+}
+
+/// What the new season's first day clears of the season's bookings:
+/// every club of the countries played — the main one and the more ones,
+/// in every league and the human club alike — stands with its two
+/// blocks of season fields zeroed and with the first row of its ticket
+/// sales plan copied down over the rest; the cash between the blocks
+/// keeps what the season made (`FUN_0042b2fc` walks the countries'
+/// clubs, `FUN_0042b424` reaches `FUN_0042b589`, and there
+/// `FUN_00672839` clears). What the original sets back up beside the
+/// clearing — the ticket sales target (`FUN_0067324c`), the attendance
+/// plan it computes back for the human club (`FUN_00621143` inside
+/// `FUN_0042b589`), the class template's money — the replica has not
+/// built, so its clubs stand at nought there; nor does its cycle reach
+/// this yet, the new season's first day standing unwritten.
+pub fn clear_bookings(records: &mut Records) {
+    for i in 0..records.teams.len() {
+        let country = i16::from(records.teams[i].country());
+        if country == 0 || !records.globals.played(country) {
+            continue;
+        }
+        clear_club(&mut records.teams[i]);
+    }
+}
+
+/// The clearing of one club (`FUN_00672839`, reached through
+/// `FUN_0042b589`): the season fields to nought, the sales plan's rows
+/// all its first.
+fn clear_club(team: &mut Team) {
+    for block in BOOKED_BLOCKS {
+        for k in 0..BOOKED_LEN / 4 {
+            put::<u32>(team, block + k * 4, 0);
+        }
+    }
+    for k in 0..8 {
+        put::<u32>(team, CLEARED_DWORDS + k * 4, 0);
+    }
+    for &at in &PLAN_ROWS {
+        let row = club::<i16>(team, at);
+        for c in 1..5 {
+            put::<i16>(team, at + c * 2, row);
+        }
     }
 }
 
@@ -647,5 +703,122 @@ mod tests {
         assert_eq!(balance_row(&t, 14, 2025, 3).league, 2);
         t.set_country(21);
         assert_eq!(balance_row(&t, 14, 2025, 3).league, 0);
+    }
+
+    /// One club stands with both blocks of season fields at nought, the
+    /// eight dwords behind them gone and the sales plan's rows all its
+    /// first; the cash between the blocks and the fields at +0x490 keep
+    /// their season's values.
+    #[test]
+    fn a_cleared_club_keeps_its_cash_and_copies_its_first_plan_row() {
+        let mut t = team();
+        put::<i64>(&mut t, CASH, 4_430_000);
+        put::<i32>(&mut t, PRIZE_MONEY, 1_700_000);
+        put::<i32>(&mut t, BONUSES_PAID, 3_536_800);
+        put::<i32>(&mut t, 0x120, 12_000);
+        put::<i32>(&mut t, 0x124, 8_900);
+        put::<u32>(&mut t, CLEARED_DWORDS, 909);
+        put::<u32>(&mut t, 0x48c, 707);
+        t.put::<u8>(0x490 + CLUB_TO_TEAM, 20);
+        t.put::<u8>(0x494 + CLUB_TO_TEAM, 3);
+        for c in 0..5 {
+            put::<i16>(&mut t, PLAN_ROWS[0] + c * 2, 15 + c as i16);
+        }
+        clear_club(&mut t);
+        assert_eq!(club::<i64>(&t, CASH), 4_430_000);
+        assert_eq!(club::<i32>(&t, PRIZE_MONEY), 0);
+        assert_eq!(club::<i32>(&t, BONUSES_PAID), 0);
+        assert_eq!((club::<i32>(&t, 0x120), club::<i32>(&t, 0x124)), (0, 0));
+        assert_eq!((club::<u32>(&t, CLEARED_DWORDS), club::<u32>(&t, 0x48c)), (0, 0));
+        assert_eq!(
+            (t.get::<u8>(0x490 + CLUB_TO_TEAM), t.get::<u8>(0x494 + CLUB_TO_TEAM)),
+            (20, 3)
+        );
+        for c in 0..5 {
+            assert_eq!(club::<i16>(&t, PLAN_ROWS[0] + c * 2), 15, "row {c}");
+        }
+    }
+
+    /// The new season clears the bookings of the countries played —
+    /// measured on the original: its last day before the season end
+    /// (SeasonEnd364) against its first day after (NewSeason000). Of
+    /// the main country and the more ones stand the attendance plan,
+    /// the prize money and the team bonuses at nought for every club
+    /// of every league, the human club among them; the dwords behind
+    /// the blocks and the sales plan's rows agree as well, while the
+    /// clubs of all other countries keep their season's fields; only
+    /// the human club's attendance plan the original computes back for
+    /// the new season (22 000 at Union), and what else it fills beside
+    /// the clearing (the ticket target, the class template's money) the
+    /// replica leaves at nought.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_clears_the_bookings_of_the_countries_played() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut closed, opened) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let played: Vec<usize> = closed
+            .teams
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.country() != 0 && closed.globals.played(i16::from(t.country()))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(played.len(), 212, "the four countries' clubs");
+        let cash: Vec<i64> = played.iter().map(|&i| club::<i64>(&closed.teams[i], CASH)).collect();
+        clear_bookings(&mut closed);
+        for (k, &i) in played.iter().enumerate() {
+            let (a, b) = (&closed.teams[i], &opened.teams[i]);
+            assert_eq!(club::<i64>(a, CASH), cash[k], "team {i} keeps its cash");
+            for at in [0x248, 0x288] {
+                assert_eq!(
+                    (club::<i32>(a, at), club::<i32>(b, at)),
+                    (0, 0),
+                    "team {i} +{at:#x} stands cleared"
+                );
+            }
+            assert_eq!(club::<i32>(a, 0x120), 0, "team {i} +0x120 cleared");
+            if a.humans() == [0, 0] {
+                assert_eq!(club::<i32>(b, 0x120), 0, "team {i} +0x120 stands cleared");
+            }
+            for k in 0..8 {
+                let at = CLEARED_DWORDS + k * 4;
+                assert_eq!(club::<u32>(a, at), club::<u32>(b, at), "team {i} +{at:#x}");
+            }
+            for at in PLAN_ROWS {
+                for c in 0..5 {
+                    let at = at + c * 2;
+                    assert_eq!(club::<i16>(a, at), club::<i16>(b, at), "team {i} +{at:#x}");
+                }
+            }
+        }
+        for i in 0..closed.teams.len() {
+            if closed.teams[i].country() == 0 || played.contains(&i) {
+                continue;
+            }
+            for block in BOOKED_BLOCKS {
+                for k in 0..BOOKED_LEN / 4 {
+                    let at = block + k * 4;
+                    // One field the season-end chain writes for every
+                    // club, even those of the countries not played —
+                    // its money the replica has not built.
+                    if at == 0x258 {
+                        continue;
+                    }
+                    assert_eq!(
+                        club::<u32>(&closed.teams[i], at),
+                        club::<u32>(&opened.teams[i], at),
+                        "team {i} of country {} keeps +{at:#x}",
+                        closed.teams[i].country()
+                    );
+                }
+            }
+        }
     }
 }
