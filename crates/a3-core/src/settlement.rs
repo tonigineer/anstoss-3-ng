@@ -493,7 +493,8 @@ fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
 /// table (+0xa4, `FUN_00631a0e`) at +0x160 (`FUN_00620702`): the yearly
 /// salary (the person's +0x30, `FUN_006317c6`) in twelfths times the
 /// months left (`DAT_0089e220` by the month, `_DAT_00b5cbdc`), its rest
-/// beside from July on. A human club the walk passes by (its +0x8b
+/// beside from July on; and the grade's sum at +0x1ac by the grade the
+/// club held last season (`FUN_006231e0`). A human club the walk passes by (its +0x8b
 /// stands): the original keeps its sums from the season before, as the
 /// co-trainer's shows, so the replica leaves them.
 const MONTHS_LEFT: [i32; 13] = [0, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9, 8, 7];
@@ -541,7 +542,16 @@ fn plan_staff(records: &mut Records, team: usize) {
     for (at, salary) in [(0x158, trainers), (0x154, managers), (0x15c, co), (0x160, more)] {
         put::<i32>(t, at, if salary == 0 { 0 } else { rest(salary) });
     }
+    // The grade's sum (`FUN_006231e0(5, 1, grade)`): five of the first
+    // and one of the second figure of `DAT_0089e45c`'s pair for the
+    // grade the club still holds from last season, in thousands.
+    let grade = usize::from(club::<u8>(t, 0x5e0));
+    let (a, b) = GRADE_PAIRS.get(grade).copied().unwrap_or((0, 0));
+    put::<i32>(t, 0x1ac, (5 * a + b) * 1000);
 }
+
+/// The grades' pairs the clearing reckons +0x1ac from (`DAT_0089e45c`).
+const GRADE_PAIRS: [(i32, i32); 5] = [(10, 30), (15, 50), (20, 80), (30, 120), (50, 200)];
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
 fn planned(team: &Team) -> bool {
@@ -2504,7 +2514,8 @@ mod tests {
     /// The staff's salaries for the season come out as the original's on
     /// its first new-season day: every computer club's trainer at +0x158, its
     /// manager-trainer or manager at +0x154, its co-trainer at +0x15c and
-    /// its one more at +0x160 — the whole year's in July.
+    /// its one more at +0x160 — the whole year's in July —, and the grade's
+    /// sum at +0x1ac by the grade the season's end left.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_staffs_salaries_are_planned_as_the_original() {
@@ -2532,5 +2543,15 @@ mod tests {
             count += 1;
         }
         assert!(count > 200, "{count}");
+        // The grade's sum by the grade held at the season's end.
+        let mut old = read("SeasonEnd364.an3");
+        for i in 0..old.teams.len() {
+            let country = i16::from(old.teams[i].country());
+            if country == 0 || !old.globals.played(country) || old.teams[i].humans() != [0, 0] {
+                continue;
+            }
+            plan_staff(&mut old, i);
+            assert_eq!(club::<i32>(&old.teams[i], 0x1ac), club::<i32>(&theirs.teams[i], 0x1ac), "{i} +0x1ac");
+        }
     }
 }
