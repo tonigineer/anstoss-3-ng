@@ -392,6 +392,14 @@ const SUPERCUP_CODE: u32 = 0x3000_0000;
 const SUPERCUP_DECIDES: u32 = 0x0008_0000;
 const SUPERCUP_TURNED: u32 = 0x8000_0000;
 const SUPERCUP_FINAL: usize = 4;
+/// The countries' lists of finals (`DAT_00b19150` in the lists block, by
+/// slot): twenty entries of the year and the final tie; the day of the
+/// last one (`DAT_00b5df90`).
+const FINALS_BLOCK: &str = "0xb0b6b8";
+const FINALS_AT: usize = 0xb19150 - 0xb0b6b8;
+const FINALS_PER_SLOT: usize = 0x140;
+const FINAL_ENTRY: usize = 0x10;
+const LAST_FINAL_DAY: usize = 0xb5df90;
 
 /// Play the country's supercup round when the day is one (the round's
 /// game scored as a cup tie is, `FUN_006cd4cf`): its tie's result stored
@@ -401,9 +409,9 @@ const SUPERCUP_FINAL: usize = 4;
 /// the away goals —, and in a tournament the winner moved on: from the
 /// first two ties to the third and fourth against the first and second
 /// of the six, from those to the final's home and away side. The human's
-/// year calendar takes the score and his next tie. (The gates, the
-/// players' marks and the final's honours, `FUN_006ccc2a`, are not
-/// built.)
+/// year calendar takes the score and his next tie, and the final decided
+/// goes into the country's list of finals. (The gates and the players'
+/// marks are not built.)
 fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
     let Some(row) = calendar.row(nation, 0) else { return };
@@ -502,6 +510,23 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
                 _ => {}
             }
         }
+    }
+    // The final decided goes into the country's list of finals, the
+    // oldest of twenty dropped (`FUN_006ccc2a`, `FUN_006cd999`), and the
+    // day is noted.
+    if round == SUPERCUP_FINAL && winner.is_some() {
+        let final_tie = records.block(&name).and_then(|b| b.get(FINAL_TIE..FINAL_TIE + FINAL_ENTRY - 2)).map(<[u8]>::to_vec);
+        let year = records.globals.start_year();
+        if let (Some(t), Some(b)) = (final_tie, records.block_mut(FINALS_BLOCK)) {
+            let at = FINALS_AT + usize::from(slot) * FINALS_PER_SLOT;
+            if let Some(list) = b.get_mut(at..at + FINALS_PER_SLOT) {
+                list.copy_within(FINAL_ENTRY.., 0);
+                let last = FINALS_PER_SLOT - FINAL_ENTRY;
+                list[last..last + 2].copy_from_slice(&year.to_le_bytes());
+                list[last + 2..].copy_from_slice(&t);
+            }
+        }
+        records.globals.put::<u16>(LAST_FINAL_DAY, day as u16);
     }
     // The human's calendar: the day's score, and his supercup days anew.
     for (country, number) in [(tie[0], u16_at(&tie, 2)), (tie[4], u16_at(&tie, 6))] {
@@ -1248,6 +1273,13 @@ mod supercup_tests {
             assert_eq!(b[side..side + 4], b[tie + w..tie + w + 4], "tie {r}'s winner in the final");
         }
         assert_ne!(b[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "Germany's final decided");
+        // The final heads the list of finals, the year before it.
+        let finals = statistics::league_cup_finals(&records, 14);
+        assert_eq!(finals.first().map(|f| f.0), Some(records.globals.start_year() as i16));
+        let lists = records.block(FINALS_BLOCK).unwrap();
+        let slot = usize::from(records.countries.slot(14));
+        let last = FINALS_AT + slot * FINALS_PER_SLOT + FINALS_PER_SLOT - FINAL_ENTRY;
+        assert_eq!(lists[last + 2..last + FINAL_ENTRY], b[FINAL_TIE..FINAL_TIE + FINAL_ENTRY - 2]);
         let england = object(&records, 16);
         assert_ne!(england[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "England's final decided");
         let italy = object(&records, 28);
