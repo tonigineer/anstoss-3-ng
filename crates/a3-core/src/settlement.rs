@@ -359,6 +359,43 @@ fn balance_row(team: &Team, main: i16, year: i16, win: i16) -> SeasonBalance {
     }
 }
 
+/// The club's contracts that run by the season, each its years left in a
+/// byte (club offsets): the main sponsor (+0x509), the boards' package
+/// (+0x5a1), the fourteen boards one by one (+0x531, eight apart), the
+/// shirt's (+0x5a9) and the television's (+0x5b1).
+const CONTRACT_YEARS: [usize; 4] = [0x509, 0x5a1, 0x5a9, 0x5b1];
+const BOARD_YEARS: usize = 0x531;
+const BOARDS: usize = 14;
+const BOARD_STRIDE: usize = 8;
+
+/// The new season counts every club's contracts down a year, those of the
+/// countries played (`FUN_0042b2fc` per club, `FUN_00716522` in each): a
+/// contract with years left keeps one less, one with none stays at none. A
+/// club that moves league — promoted or relegated (`FUN_0069a1e1`,
+/// `FUN_0069a221`: the season flags 4 and 8) — loses them all. The walk
+/// comes before the human's closing season is kept as its last
+/// ([`crate::finances::keep_last_season`]), whose copy holds the years
+/// already counted down. The moved human's message (0x10c) and what the
+/// original does then with its own league's clubs (`FUN_0069d930`,
+/// `FUN_0069d9b5`) are not built; neither are the new contracts the
+/// computer clubs sign afterwards nor the fallback sponsor a club without
+/// one gets (`FUN_00673566`, `FUN_0071684e`).
+pub fn count_down_contracts(records: &mut Records) {
+    for i in 0..records.teams.len() {
+        let country = i16::from(records.teams[i].country());
+        if country == 0 || !records.globals.played(country) {
+            continue;
+        }
+        let team = &mut records.teams[i];
+        let moved = team.get::<u16>(SEASON_FLAGS) & MOVED != 0;
+        let fields = CONTRACT_YEARS.into_iter().chain((0..BOARDS).map(|k| BOARD_YEARS + k * BOARD_STRIDE));
+        for at in fields {
+            let years = club::<u8>(team, at);
+            put::<u8>(team, at, if moved { 0 } else { years.saturating_sub(1) });
+        }
+    }
+}
+
 /// What the new season's first day clears of the season's bookings:
 /// every club of the countries played — the main one and the more ones,
 /// in every league and the human club alike — stands with its two
@@ -554,6 +591,7 @@ pub fn open_season_with(
     open_managers(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
+    count_down_contracts(records);
     crate::finances::keep_last_season(records);
     clear_human_season(records);
     clear_bookings(records);
@@ -2075,6 +2113,62 @@ mod tests {
                 assert_eq!(drawn(cup), drawn(kept), "{nation} pairing {q} drawn");
                 assert!(cup[at + 8..at + PAIRING].iter().all(|&x| x == 0), "{nation} pairing {q} unplayed");
             }
+        }
+    }
+
+    /// The contracts count down a year at the new season and a moved club
+    /// loses them all, measured on the human club of the pair — its boards'
+    /// package and its television's run out from one year to none as the
+    /// original's do (the main sponsor the original then fills again with
+    /// its fallback contract, not built) — and on two clubs set up here.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_contracts_count_down_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        for i in 0..ours.teams.len() {
+            let flags = theirs.teams[i].get::<u16>(SEASON_FLAGS) & MOVED;
+            let team = &mut ours.teams[i];
+            team.put::<u16>(SEASON_FLAGS, team.get::<u16>(SEASON_FLAGS) & !MOVED | flags);
+        }
+        let slot = ours.human_slot(0).unwrap();
+        let (c, t) = (ours.managers[slot].country() as u16, ours.managers[slot].team() as u16);
+        let before = CONTRACT_YEARS.map(|at| club::<u8>(ours.team(c, t).unwrap(), at));
+        count_down_contracts(&mut ours);
+        let (x, y) = (ours.team(c, t).unwrap(), theirs.team(c, t).unwrap());
+        for (k, &at) in CONTRACT_YEARS.iter().enumerate().skip(1) {
+            assert_eq!(club::<u8>(x, at), club::<u8>(y, at), "{c}/{t} +{at:#x} was {}", before[k]);
+        }
+        assert_eq!(club::<u8>(x, CONTRACT_YEARS[0]), before[0].saturating_sub(1));
+        assert!(before[1..].iter().any(|&v| v > 0), "a contract to count down");
+        for i in 0..ours.teams.len() {
+            for k in 0..BOARDS {
+                let at = BOARD_YEARS + k * BOARD_STRIDE;
+                assert_eq!(club::<u8>(&ours.teams[i], at), club::<u8>(&theirs.teams[i], at), "{i} board {k}");
+            }
+        }
+        // A club staying counts down, one moved loses all.
+        let i = ours.team_index(c, t).unwrap();
+        for flag in [0u16, 4] {
+            let mut team = ours.teams[i].clone();
+            team.put::<u16>(SEASON_FLAGS, team.get::<u16>(SEASON_FLAGS) & !MOVED | flag);
+            put::<u8>(&mut team, 0x509, 3);
+            put::<u8>(&mut team, 0x5a1, 0);
+            put::<u8>(&mut team, BOARD_YEARS + 5 * BOARD_STRIDE, 2);
+            ours.teams[i] = team;
+            count_down_contracts(&mut ours);
+            let team = &ours.teams[i];
+            let years = if flag == 0 { [2, 0, 1] } else { [0, 0, 0] };
+            assert_eq!(
+                [club::<u8>(team, 0x509), club::<u8>(team, 0x5a1), club::<u8>(team, BOARD_YEARS + 5 * BOARD_STRIDE)],
+                years,
+                "flag {flag}"
+            );
         }
     }
 }
