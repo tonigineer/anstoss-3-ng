@@ -382,11 +382,12 @@ pub fn open_preseason(records: &mut Records, random: &mut Random) {
             let t = host(records, (main, number), day, TURNIER);
             upsert(&mut list, t);
         }
-        if day >= SECOND_FROM && SECOND[day as usize % 7] {
-            if let Some(number) = pick(records, main, 0, HOSTS_TURNIER, random) {
-                let t = host(records, (main, number), day, TURNIER);
-                upsert(&mut list, t);
-            }
+        if day >= SECOND_FROM
+            && SECOND[day as usize % 7]
+            && let Some(number) = pick(records, main, 0, HOSTS_TURNIER, random)
+        {
+            let t = host(records, (main, number), day, TURNIER);
+            upsert(&mut list, t);
         }
     }
     let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
@@ -434,6 +435,333 @@ pub fn open_winter(records: &mut Records, country: u8, half_weeks: u16, random: 
         }
     }
     store(records, &list);
+}
+
+/// A Turnier's four games (0xe bytes from +0x2c): the semifinals, the
+/// game for third place, the final. Each: the home club's slot, the away
+/// club's, the goals, the flags, the winning side (0 the home).
+const GAMES: usize = 0x2c;
+const GAME: usize = 0xe;
+pub const SEMI_ONE: usize = 0;
+pub const SEMI_TWO: usize = 1;
+pub const THIRD: usize = 2;
+pub const FINAL: usize = 3;
+const GAME_GOALS: usize = 8;
+const GAME_FLAGS: usize = 0xc;
+const GAME_WINNER: usize = 0xd;
+/// The crowds, the gate, the fees the host paid and its costs.
+const CROWDS: usize = 0x64;
+const GATES: usize = 0x68;
+const FEES: usize = 0x6c;
+const COSTS: usize = 0x70;
+/// What a Turnier costs its host, and the prize money of the first three
+/// (into the plan's premiums, club +0x148 — where the original books it).
+const HOST_COSTS: i32 = 70_000;
+const PRIZES: [i32; 3] = [40_000, 20_000, 10_000];
+/// The respect the winner gains, the third and the fourth lose (club
+/// +0x92, team +0xb6), within 0 and 200.
+const RESPECT_WINNER: i16 = 5;
+const RESPECT_THIRD: i16 = -3;
+const RESPECT_FOURTH: i16 = -8;
+const RESPECT_MOST: i16 = 200;
+/// The club's money the tournaments book (club offsets): the other
+/// costs and incomes, the gates of friendlies and tournaments, the plan's
+/// premiums.
+const OTHER_COSTS: usize = 0x2c0;
+const OTHER_INCOME: usize = 0x2c4;
+const GATE: usize = 0x23c;
+const PLAN_PREMIUMS: usize = 0x148;
+/// The fill: thirty tries at most (`FUN_006261b5`), a near club in five of
+/// ten, one of the first division in four, one abroad in one
+/// (`FUN_00771ed5`); the near ones looked at up to 108.
+const FILL_TRIES: usize = 30;
+const NEAR_MOST: usize = 108;
+/// The first pre-season's matches stand still while `DAT_00b5d19a` is set
+/// (`FUN_005ef59d`).
+const STILL: usize = 0xb5d19a;
+const STILL_UNTIL: i16 = 42;
+
+impl Tournament {
+    fn slot(&self, k: usize) -> [u8; 4] {
+        self.0[SLOTS + k * SLOT..SLOTS + (k + 1) * SLOT].try_into().unwrap_or_default()
+    }
+
+    fn game(&self, i: usize) -> &[u8] {
+        &self.0[GAMES + i * GAME..GAMES + (i + 1) * GAME]
+    }
+
+    fn game_mut(&mut self, i: usize) -> &mut [u8] {
+        &mut self.0[GAMES + i * GAME..GAMES + (i + 1) * GAME]
+    }
+
+    fn int(&self, at: usize) -> i32 {
+        i32::from_le_bytes(self.0[at..at + 4].try_into().unwrap_or_default())
+    }
+
+    fn set_int(&mut self, at: usize, value: i32) {
+        self.0[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// A game's two clubs, home first.
+    pub fn sides(&self, i: usize) -> [(u8, i16); 2] {
+        let g = self.game(i);
+        [(g[0], i16::from_le_bytes([g[2], g[3]])), (g[4], i16::from_le_bytes([g[6], g[7]]))]
+    }
+
+    /// A game's result once played: the goals, extra time, penalties, the
+    /// winning side (0 the home).
+    pub fn result(&self, i: usize) -> Option<((u8, u8), bool, bool, u8)> {
+        let g = self.game(i);
+        (g[GAME_FLAGS] & PLAYED != 0)
+            .then(|| ((g[GAME_GOALS], g[GAME_GOALS + 1]), g[GAME_FLAGS] & EXTRA != 0, g[GAME_FLAGS] & PENALTIES != 0, g[GAME_WINNER]))
+    }
+
+    /// A game's winner's and loser's slots (`FUN_00422a7c`, `FUN_00422ad8`).
+    fn winner_loser(&self, i: usize) -> ([u8; 4], [u8; 4]) {
+        let g = self.game(i);
+        let (home, away): ([u8; 4], [u8; 4]) = (g[0..4].try_into().unwrap_or_default(), g[4..8].try_into().unwrap_or_default());
+        if g[GAME_WINNER] == 0 { (home, away) } else { (away, home) }
+    }
+
+    fn set_sides(&mut self, i: usize, home: [u8; 4], away: [u8; 4]) {
+        let g = self.game_mut(i);
+        g[0..4].copy_from_slice(&home);
+        g[4..8].copy_from_slice(&away);
+    }
+
+    /// The crowds, the gate, the fees its host paid, its costs.
+    pub fn takings(&self) -> (i32, i32, i32, i32) {
+        (self.int(CROWDS), self.int(GATES), self.int(FEES), self.int(COSTS))
+    }
+}
+
+/// A game's flags: played, after extra time, on penalties.
+pub const PLAYED: u8 = 0x20;
+pub const EXTRA: u8 = 0x80;
+pub const PENALTIES: u8 = 0x40;
+
+/// A game of the day's list that a tournament plays (`FUN_00625974`): the
+/// tournament, which of its games, the sides, the ground (the host's).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Fixture {
+    pub id: u32,
+    pub game: usize,
+    pub home: (u8, i16),
+    pub away: (u8, i16),
+    pub ground: (u8, i16),
+}
+
+/// How a game of the day went: the goals, extra time, penalties, the
+/// winning side, the crowd and the gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Outcome {
+    pub goals: (u8, u8),
+    pub extra: bool,
+    pub penalties: bool,
+    pub winner: u8,
+    pub crowd: i32,
+    pub gate: i32,
+}
+
+/// Whether the first pre-season's matches stand still on a day
+/// (`FUN_005ef59d`).
+pub(crate) fn still(records: &Records, day: i16) -> bool {
+    day < STILL_UNTIL && records.globals.seasons() == 1 && records.globals.get::<u8>(STILL) != 0
+}
+
+/// Books money onto a club's record by its club-object offset.
+fn book(records: &mut Records, (country, number): (u8, i16), at: usize, amount: i32) {
+    if let Some(team) = u16::try_from(number).ok().and_then(|n| records.team_mut(country.into(), n)) {
+        let at = at + crate::finances::CLUB_TO_TEAM;
+        team.put::<i32>(at, team.get::<i32>(at).wrapping_add(amount));
+    }
+}
+
+/// Changes a club's respect within 0 and 200.
+fn respect(records: &mut Records, (country, number): (u8, i16), by: i16) {
+    if let Some(team) = u16::try_from(number).ok().and_then(|n| records.team_mut(country.into(), n)) {
+        team.set_respect((team.respect() + by).clamp(0, RESPECT_MOST));
+    }
+}
+
+fn club_of(slot: [u8; 4]) -> (u8, i16) {
+    (slot[0], i16::from_le_bytes([slot[2], slot[3]]))
+}
+
+/// One more club for a computer host's Turnier on its day (`FUN_00771ed5`):
+/// in five of ten a near club of the host's country free on both days, in
+/// four one of its first division, in one a club abroad.
+fn fill_one(records: &mut Records, calendar: &crate::calendar::Calendar, id: u32, random: &mut Random) {
+    let Some(t) = find(records, id) else { return };
+    let (country, number) = t.host();
+    let day = t.day();
+    let free = |records: &Records, club: (u8, i16)| {
+        !crate::statistics::is_human(records, club.0, club.1)
+            && !crate::friendly::busy(records, calendar, club, day)
+            && !crate::friendly::busy(records, calendar, club, day + 1)
+    };
+    let r = random.below(10);
+    let picked = if r < 5 {
+        let mut near = Vec::new();
+        for c in 0..records.countries.team_count(country.into()) {
+            if c == number || !crate::friendly::near(records, calendar, (country, number), (country, c)) {
+                continue;
+            }
+            if crate::statistics::is_human(records, country, c) {
+                continue;
+            }
+            if !free(records, (country, c)) || near.len() >= NEAR_MOST {
+                continue;
+            }
+            near.push(c);
+        }
+        (!near.is_empty()).then(|| (country, near[random.below(near.len() as u32) as usize]))
+    } else if r < 9 {
+        let first: Vec<i16> = crate::opponent::League::of(records, country.into(), 0)
+            .map(|league| (0..league.teams()).map(|place| league.team(place)).collect())
+            .unwrap_or_default();
+        (!first.is_empty())
+            .then(|| (country, first[random.below(first.len() as u32) as usize]))
+            .filter(|&club| free(records, club))
+    } else {
+        crate::friendly::club_abroad(records, calendar, country, random).filter(|&club| free(records, club))
+    };
+    if let Some(club) = picked {
+        let mut list = tournaments(records);
+        if let Some(t) = list.iter_mut().find(|t| t.id() == id) {
+            t.add(club);
+        }
+        store(records, &list);
+    }
+}
+
+/// The tournaments' games of the day (`FUN_006257cd`): a Turnier on its
+/// first day filled by its computer host (`FUN_006261b5`), its guests'
+/// fees booked and its semifinals set — the second slot against the third,
+/// the host against the fourth (`FUN_00625ac8` with 0); on its second day
+/// the game for third place and the final. A Turnier short of clubs plays
+/// nothing.
+pub fn day_games(records: &mut Records, calendar: &crate::calendar::Calendar, today: i16, random: &mut Random) -> Vec<Fixture> {
+    let mut games = Vec::new();
+    let ids: Vec<(u32, i16)> =
+        tournaments(records).iter().filter(|t| t.kind() == TURNIER).map(|t| (t.id(), t.day())).collect();
+    for (id, day) in ids {
+        if day == today {
+            let host = find(records, id).map(|t| t.host());
+            if host.is_some_and(|(c, n)| !crate::statistics::is_human(records, c, n)) {
+                for _ in 0..FILL_TRIES {
+                    if find(records, id).is_none_or(|t| t.count() >= NEEDED[0]) {
+                        break;
+                    }
+                    fill_one(records, calendar, id, random);
+                }
+            }
+            let Some(t) = find(records, id) else { continue };
+            if still(records, today) || !t.full() {
+                continue;
+            }
+            let host = t.host();
+            let guests = [club_of(t.slot(1)), club_of(t.slot(2)), club_of(t.slot(3))];
+            let mut total = 0;
+            for guest in guests {
+                let fee = fee(records, host, guest);
+                book(records, guest, OTHER_INCOME, fee);
+                total += fee;
+            }
+            book(records, host, OTHER_COSTS, total);
+            let mut list = tournaments(records);
+            if let Some(e) = list.iter_mut().find(|e| e.id() == id) {
+                e.set_int(FEES, total);
+                let (a, b, c, d) = (e.slot(0), e.slot(1), e.slot(2), e.slot(3));
+                e.set_sides(SEMI_ONE, b, c);
+                e.set_sides(SEMI_TWO, a, d);
+            }
+            store(records, &list);
+            for game in [SEMI_ONE, SEMI_TWO] {
+                let [home, away] = find(records, id).map(|t| t.sides(game)).unwrap_or_default();
+                games.push(Fixture { id, game, home, away, ground: host });
+            }
+        } else if day == today - 1 {
+            let Some(t) = find(records, id) else { continue };
+            if still(records, today - 1) || !t.full() {
+                continue;
+            }
+            for game in [THIRD, FINAL] {
+                let [home, away] = t.sides(game);
+                games.push(Fixture { id, game, home, away, ground: t.host() });
+            }
+        }
+    }
+    games
+}
+
+/// A tournament game played (`FUN_00625d73`): its result kept, the gate
+/// booked to the host and counted with the crowd.
+pub fn record(records: &mut Records, fixture: &Fixture, outcome: &Outcome) {
+    book(records, fixture.ground, GATE, outcome.gate);
+    let mut list = tournaments(records);
+    if let Some(e) = list.iter_mut().find(|e| e.id() == fixture.id) {
+        let g = e.game_mut(fixture.game);
+        g[GAME_GOALS] = outcome.goals.0;
+        g[GAME_GOALS + 1] = outcome.goals.1;
+        g[GAME_FLAGS] = PLAYED | if outcome.extra { EXTRA } else { 0 } | if outcome.penalties { PENALTIES } else { 0 };
+        g[GAME_WINNER] = outcome.winner;
+        e.set_int(GATES, e.int(GATES).wrapping_add(outcome.gate));
+        e.set_int(CROWDS, e.int(CROWDS).wrapping_add(outcome.crowd));
+    }
+    store(records, &list);
+}
+
+/// The tournaments' evening (`FUN_006258eb`'s `FUN_00625ed6`): after a
+/// Turnier's first day the semifinals' winners meet in the final and the
+/// losers for third place, the host at home where it plays; after its
+/// second its first three take their prize money and the winner respect,
+/// the third and the fourth lose some, the host pays its costs. The
+/// Turniere whose humans should see them, by id.
+pub fn evening(records: &mut Records, today: i16) -> Vec<u32> {
+    let mut shown = Vec::new();
+    let ids: Vec<(u32, i16)> = tournaments(records)
+        .iter()
+        .filter(|t| t.kind() == TURNIER && t.full() && (t.day() == today || t.day() == today - 1))
+        .map(|t| (t.id(), t.day()))
+        .collect();
+    for (id, day) in ids {
+        let mut list = tournaments(records);
+        let Some(e) = list.iter_mut().find(|e| e.id() == id) else { continue };
+        let host = e.slot(0);
+        if day == today {
+            let (w0, l0) = e.winner_loser(SEMI_ONE);
+            let (w1, l1) = e.winner_loser(SEMI_TWO);
+            e.set_sides(FINAL, w0, w1);
+            e.set_sides(THIRD, l0, l1);
+            let is_host = |s: [u8; 4]| club_of(s) == club_of(host);
+            if is_host(l1) {
+                e.set_sides(THIRD, l1, l0);
+            } else if is_host(w1) {
+                e.set_sides(FINAL, w1, w0);
+            }
+            store(records, &list);
+        } else {
+            e.set_int(COSTS, HOST_COSTS);
+            let (first, second) = e.winner_loser(FINAL);
+            let (third, fourth) = e.winner_loser(THIRD);
+            let played = e.result(FINAL).is_some();
+            store(records, &list);
+            if played {
+                book(records, club_of(first), PLAN_PREMIUMS, PRIZES[0]);
+                respect(records, club_of(first), RESPECT_WINNER);
+                book(records, club_of(second), PLAN_PREMIUMS, PRIZES[1]);
+                book(records, club_of(third), PLAN_PREMIUMS, PRIZES[2]);
+                respect(records, club_of(third), RESPECT_THIRD);
+                respect(records, club_of(fourth), RESPECT_FOURTH);
+            }
+            book(records, club_of(host), OTHER_COSTS, HOST_COSTS);
+        }
+        if find(records, id).is_some_and(|t| t.clubs().iter().take(4).any(|&(c, n)| crate::statistics::is_human(records, c, n))) {
+            shown.push(id);
+        }
+    }
+    shown
 }
 
 #[cfg(test)]
@@ -563,6 +891,74 @@ mod saves {
             assert!(ours.team(main.into(), t.host().1 as u16).unwrap().level() >= LOWER);
         }
         assert_eq!(tournaments(&ours).len(), tournaments(&theirs).len());
+    }
+
+    /// Probe1's Turniere of days 35 to 39 played through (days 35 to 40):
+    /// each filled to its four, its four games played, the final between
+    /// the semifinals' winners and the game for third between their losers;
+    /// every club's money and respect moved by what its Turniere owe it —
+    /// the fees, the host's costs and gates, the prize money, the respect.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_preseason_turniere_are_played_through() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let calendar = crate::data::Data::load(&dir).unwrap().calendar;
+        let mut records = read("Probe1.an3");
+        let money = |r: &Records, c: (u8, i16), at: usize| {
+            r.team(c.0.into(), c.1 as u16).map_or(0, |t| t.get::<i32>(at + crate::finances::CLUB_TO_TEAM))
+        };
+        let standing = |r: &Records, c: (u8, i16)| r.team(c.0.into(), c.1 as u16).map_or(0, |t| t.respect());
+        let clubs: Vec<(u8, i16)> = (0..records.countries.team_count(14)).map(|n| (14, n)).collect();
+        let before: Vec<_> = clubs
+            .iter()
+            .map(|&c| (money(&records, c, OTHER_COSTS), money(&records, c, OTHER_INCOME), money(&records, c, GATE), money(&records, c, PLAN_PREMIUMS), standing(&records, c)))
+            .collect();
+        let mut random = Random::new(5);
+        for day in 35..=40 {
+            crate::exhibition::play_day(&mut records, &calendar, day, &mut random);
+        }
+        let played: Vec<Tournament> =
+            tournaments(&records).into_iter().filter(|t| t.kind() == TURNIER && (35..=39).contains(&t.day())).collect();
+        assert_eq!(played.len(), 7);
+        // What each club is owed: costs, income, gates, premiums, respect.
+        type Owed = (i32, i32, i32, i32, i16);
+        let mut owed: std::collections::BTreeMap<(u8, i16), Owed> = Default::default();
+        for t in &played {
+            assert!(t.full(), "{:08x}", t.id());
+            assert!((0..4).all(|g| t.result(g).is_some()));
+            let (w0, l0) = t.winner_loser(SEMI_ONE);
+            let (w1, l1) = t.winner_loser(SEMI_TWO);
+            let set = |g: usize| { let mut s = t.sides(g); s.sort(); s };
+            let mut finalists = [club_of(w0), club_of(w1)];
+            finalists.sort();
+            let mut thirds = [club_of(l0), club_of(l1)];
+            thirds.sort();
+            assert_eq!((set(FINAL), set(THIRD)), (finalists, thirds));
+            let (crowds, gates, fees, costs) = t.takings();
+            assert!(crowds > 0 && costs == HOST_COSTS);
+            let host = t.host();
+            owed.entry(host).or_default().0 += fees + HOST_COSTS;
+            owed.entry(host).or_default().2 += gates;
+            for k in 1..4 {
+                owed.entry(club_of(t.slot(k))).or_default().1 += fee(&records, host, club_of(t.slot(k)));
+            }
+            let (first, second) = t.winner_loser(FINAL);
+            let (third, fourth) = t.winner_loser(THIRD);
+            for (club, prize, by) in [(first, 40_000, 5), (second, 20_000, 0), (third, 10_000, -3), (fourth, 0, -8)] {
+                let o = owed.entry(club_of(club)).or_default();
+                o.3 += prize;
+                o.4 += by;
+            }
+        }
+        for (k, &club) in clubs.iter().enumerate() {
+            let o = owed.get(&club).copied().unwrap_or_default();
+            let (costs, income, gate, premiums, held) = before[k];
+            assert_eq!(money(&records, club, OTHER_COSTS) - costs, o.0, "{club:?} costs");
+            assert_eq!(money(&records, club, OTHER_INCOME) - income, o.1, "{club:?} income");
+            assert_eq!(money(&records, club, GATE) - gate, o.2, "{club:?} gate");
+            assert_eq!(money(&records, club, PLAN_PREMIUMS) - premiums, o.3, "{club:?} premiums");
+            assert_eq!(standing(&records, club), (held + o.4).clamp(0, 200), "{club:?} respect");
+        }
     }
 
     /// The winter's halls, Germany's at half week 48 and France's at 52,

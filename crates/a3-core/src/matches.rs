@@ -30,9 +30,9 @@ const BOOKED_CUP: usize = 0x234;
 /// Strengths to reckon by when a team's record (G+0xb8) carries none: the
 /// goalkeeper, defenders, midfield and attack in tenths, attack and hold
 /// even so the luck alone makes the goals.
-const EVEN: [i16; 4] = [340; 4];
+pub(crate) const EVEN: [i16; 4] = [340; 4];
 /// The home side's edge, in the strengths' tenths.
-const HOME_EDGE: i32 = 50;
+pub(crate) const HOME_EDGE: i32 = 50;
 /// How much the difference of the strengths is worth a goal.
 const GOAL_UNITS: i32 = 200;
 
@@ -1350,7 +1350,7 @@ fn draw(weights: &[u32], random: &mut Random) -> Option<usize> {
 }
 
 /// How many the club's stadium holds (`0x1a48138[index]` +0x3c).
-fn capacity(records: &Records, nation: u16, team: u16) -> i32 {
+pub(crate) fn capacity(records: &Records, nation: u16, team: u16) -> i32 {
     records
         .team_index(nation, team)
         .and_then(|i| records.block(&format!("{STADIUM_AT:#x}[{i}]")))
@@ -1384,7 +1384,7 @@ fn attendance(team: &Team, capacity: i32, random: &mut Random) -> i32 {
 /// what it is beyond two, and sharing the goals over the halves by its
 /// remainder in threes. Calibrated
 /// on a save's played matchdays, which bring some two goals to a game.
-fn goals(att: [i16; 4], hold: [i16; 4], edge: i32, random: &mut Random) -> (u8, u8) {
+pub(crate) fn goals(att: [i16; 4], hold: [i16; 4], edge: i32, random: &mut Random) -> (u8, u8) {
     let attack = i32::from(att[2]) + i32::from(att[3]);
     let defence = i32::from(hold[0]) + i32::from(hold[1]);
     let luck = random.below(10);

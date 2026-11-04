@@ -841,10 +841,19 @@ impl Cycle {
                                 &slots,
                                 &mut season.random,
                             );
+                            // The day's friendlies and tournaments
+                            // (`FUN_007615bb`); the screens they show the
+                            // humans taking part are not built yet.
+                            let _shown = crate::exhibition::play_day(
+                                records,
+                                &self.data.calendar,
+                                today as i16,
+                                &mut season.random,
+                            );
                             // The day of the world closes it
                             // (`FUN_006504b6` with the weekday); the
-                            // original's day of matches and its job
-                            // steps stand between, unported.
+                            // original's job steps stand between,
+                            // unported.
                             crate::world_day::day(
                                 records,
                                 today.rem_euclid(7),

@@ -19,6 +19,7 @@ pub mod europe_entry;
 pub mod discipline;
 pub mod duties;
 pub mod evaluation;
+pub mod exhibition;
 pub mod finances;
 pub mod free_agents;
 pub mod friendly;
