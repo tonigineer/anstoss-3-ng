@@ -463,6 +463,7 @@ pub fn open_season_with(
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
+    clear_club_seasons(records);
     // Each played country's youth leagues start their season with the
     // senior ones (`FUN_00774088`'s last part).
     for country in crate::opponent::played_nations(records) {
@@ -624,11 +625,55 @@ pub fn open_managers(records: &mut Records, random: &mut Random) {
 
 /// What the new season puts to nought of a human club's extra data, as
 /// the original's first day after the turn stands: last week's and the
-/// season's training units, the away gates, the opposing fans' gates and
-/// the home incomes by game, and a byte per squad place at +0x919. (Its
-/// training plan stands at nought there too, filled again before it trains;
-/// the replica keeps the plan.)
-const HUMAN_SEASON_COUNTERS: [(usize, usize); 4] = [(0x315, 39), (0x33c, 78), (0x398, 3 * 23 * 4), (0x919, 0x52)];
+/// season's training units. (Its training plan stands at nought there
+/// too, filled again before it trains; the replica keeps the plan.)
+const HUMAN_SEASON_COUNTERS: [(usize, usize); 2] = [(0x315, 39), (0x33c, 78)];
+
+/// What every club's new season clears (`FUN_00772bee`'s `FUN_0063f5d3`,
+/// with `FUN_00775219`'s fitness count of a human club):
+/// team +0x312 to 0xff, the 0x18 bytes from +0x2ca; of a human club's
+/// extra data the away gates, the opposing fans' gates and the home
+/// incomes by game, the goals by the minute both ways (two hundred bytes
+/// each), and two tables of 0x2e. (Two more it clears at +0x8b8 and
+/// +0x8e6 the open club object holds as +0xd8e and +0xdbc, and writes back
+/// as they were when the club closes.)
+const CLUB_SEASON_MARK: usize = 0x312;
+const CLUB_SEASON_CLEARED: (usize, usize) = (0x2ca, 0x18);
+const HUMAN_SEASON_CLEARED: [(usize, usize); 7] = [
+    (0x398, 0x5c),
+    (0x3f4, 0x5c),
+    (0x450, 0x5c),
+    (0x914, 200),
+    (0x9dc, 200),
+    (0xaa4, 0x2e),
+    (0xad2, 0x2e),
+];
+
+fn clear_club_seasons(records: &mut Records) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.put::<u8>(CLUB_SEASON_MARK, 0xff);
+            let (at, len) = CLUB_SEASON_CLEARED;
+            for k in 0..len {
+                team.put::<u8>(at + k, 0);
+            }
+            let human = usize::from(team.human());
+            if !(1..=4).contains(&human) {
+                continue;
+            }
+            let Some(extra) = records.extras.get_mut(human - 1) else { continue };
+            for (at, len) in HUMAN_SEASON_CLEARED {
+                for k in 0..len {
+                    extra.put::<u8>(at + k, 0);
+                }
+            }
+            // The fitness trainer's count starts anew (`FUN_00775219`'s
+            // `FUN_00632ac1`).
+            extra.set_fitness_count(0);
+        }
+    }
+}
 
 fn clear_human_season(records: &mut Records) {
     for n in 0..usize::from(records.globals.humans()) {
@@ -741,6 +786,48 @@ pub fn settle(team: &mut Team, mut manager: Option<&mut Manager>, country: usize
         .wrapping_add(left)
         .wrapping_add(i64::from(club::<i32>(team, SHARES_SOLD)));
     put(team, CASH, cash);
+}
+
+#[cfg(test)]
+mod club_season_tests {
+    use super::*;
+
+    /// Over the original's turn (SeasonEnd364 → NewSeason000) the clears
+    /// of every played club's new season leave its team bytes +0x2ca to
+    /// +0x2e2 and +0x312 as the original's, and the human club's extra
+    /// data where they reach: the gates and incomes by game, the goals by
+    /// the minute, the two tables and the fitness count.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_clubs_clear_their_season_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        clear_club_seasons(&mut ours);
+        let mut clubs = 0;
+        for country in crate::opponent::played_nations(&theirs) {
+            for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (ours.team(country, number).unwrap(), theirs.team(country, number).unwrap());
+                assert_eq!(x.get::<u8>(CLUB_SEASON_MARK), y.get::<u8>(CLUB_SEASON_MARK), "{country}/{number}");
+                let (at, len) = CLUB_SEASON_CLEARED;
+                for k in at..at + len {
+                    assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "{country}/{number} +{k:#x}");
+                }
+                clubs += 1;
+            }
+        }
+        assert!(clubs > 200);
+        let (x, y) = (&ours.extras[0], &theirs.extras[0]);
+        for (at, len) in HUMAN_SEASON_CLEARED.into_iter().chain([(0xb90, 2)]) {
+            for k in at..at + len {
+                assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "extra +{k:#x}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
