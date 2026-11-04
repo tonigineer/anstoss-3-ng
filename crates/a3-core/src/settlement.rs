@@ -597,14 +597,52 @@ const MARKS_COUNT: usize = 0x122;
 const MODE_WITH_STANDING: i16 = 9;
 const STANDING_MOST: i16 = 70;
 
+/// The played clubs' staff at the season's end (`FUN_00624e4f`'s
+/// `FUN_006247a0`, `FUN_00624806` for each club): its manager-trainer,
+/// trainer and manager (team +0x9c, +0x9e, +0xa0), each with two
+/// contract years or more, a year less (the person's +0x2c), a season
+/// more at the club (+0x34) and his +0x36 halved — the new season then
+/// holds every person's +0x36 at nought, by a step not traced. (One with
+/// less: the original keeps him by chance — the new years it draws then
+/// go unsaved — or lets him go, the worse the club fell short of its
+/// goal, and the new season's staff market (`FUN_00409a3f`) fills the
+/// post; neither is built, he stays.)
+const STAFF_YEARS: usize = 0x2c;
+const STAFF_SEASONS: usize = 0x34;
+const STAFF_HALVED: usize = 0x36;
+const LAST_PERSON: u16 = 0x5db;
+
+fn close_staff(records: &mut Records) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            for id in team.staff() {
+                if id == 0 || id > LAST_PERSON {
+                    continue;
+                }
+                let Some(p) = records.persons.get_mut(usize::from(id)) else { continue };
+                let years = p.get::<u8>(STAFF_YEARS);
+                if years < 2 {
+                    continue;
+                }
+                p.put::<u8>(STAFF_YEARS, years - 1);
+                p.put::<u8>(STAFF_SEASONS, p.get::<u8>(STAFF_SEASONS).wrapping_add(1));
+                p.put::<i16>(STAFF_HALVED, p.get::<i16>(STAFF_HALVED) / 2);
+            }
+        }
+    }
+}
+
 /// The season's end for the human managers (`FUN_00624e4f`'s
 /// `FUN_006fd282` for each): a year more as a trainer; in the game's mode
 /// 9, his standing by his marks' average over the season — down three
 /// below 60, two below 70, one below 80, one even chance in two below 85,
-/// up one even chance in two from 98 while it stands below 70. (The rest
-/// of `FUN_00624e4f` — the contracts' years, the comparison's marks, the
-/// computer clubs' staff — is not built.)
+/// up one even chance in two from 98 while it stands below 70; the
+/// played clubs' staff first ([`close_staff`]). (The rest of
+/// `FUN_00624e4f` — the comparison's marks, the staff's endings — is not
+/// built.)
 pub fn close_managers(records: &mut Records, random: &mut Random) {
+    close_staff(records);
     for n in 0..usize::from(records.globals.humans()) {
         let Some(m) = records.managers.get_mut(n) else { continue };
         m.set_trainer_years(m.trainer_years().wrapping_add(1));
@@ -1831,6 +1869,32 @@ mod tests {
                 assert_eq!(situation(y, stadium), y.get::<u8>(SITUATION_AT), "{c}/{t}");
             }
         }
+    }
+
+    /// From SeasonEnd364 the staff's contracts of two years and more run a
+    /// year down as the original's NewSeason000 has them, their seasons at
+    /// the club one more, and no other person's years move.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_staffs_contracts_run_down_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        close_staff(&mut ours);
+        let mut moved = 0;
+        for id in 1..usize::from(LAST_PERSON) {
+            let (Some(x), Some(y), Some(z)) = (ours.persons.get(id), theirs.persons.get(id), before.persons.get(id)) else { continue };
+            if x.get::<u8>(STAFF_YEARS) != z.get::<u8>(STAFF_YEARS) {
+                moved += 1;
+                assert_eq!(x.get::<u8>(STAFF_YEARS), y.get::<u8>(STAFF_YEARS), "person {id}'s years");
+                assert_eq!(x.get::<u8>(STAFF_SEASONS), y.get::<u8>(STAFF_SEASONS), "person {id}'s seasons");
+            }
+        }
+        assert!(moved > 250, "{moved}");
     }
 
     /// The new season's managers' year leaves the humans' last-match
