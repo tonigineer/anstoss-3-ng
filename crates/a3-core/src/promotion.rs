@@ -35,10 +35,10 @@
 //! `FUN_006b07f0`, `FUN_006b1c01`, `FUN_006b0d18`, `FUN_006b1920`,
 //! `FUN_006b122e`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
-//! booked moves set off besides — the managers' promotions
-//! (`FUN_00634d9c`), the news (`FUN_006143d2`); the European places'
-//! flags. Each club's record of moves (`FUN_00726382`, `FUN_007264bf`)
-//! counts every booked move. The clubs from outside
+//! booked moves set off besides — the news (`FUN_006143d2`); the
+//! European places' flags. Each club's record of moves (`FUN_00726382`,
+//! `FUN_007264bf`, by slot `FUN_00634d9c`, `FUN_00634eff`, and its
+//! history, `FUN_00640b2d`, `FUN_00640b9f`) counts every booked move. The clubs from outside
 //! are drawn with the replica's own generator.
 
 use crate::opponent::{LEAGUE_FIELDS, League};
@@ -703,19 +703,49 @@ pub fn count(records: &mut Records) {
 
 /// The clubs' record of moves, a played country's club by its place among
 /// all teams (`FUN_00726382`: `0xb06cd8`, four i16 a club — its
-/// promotions, and those from the first, second and third league;
-/// `FUN_007264bf`: `0xb07558`, five — its relegations, and those from the
-/// first four), counted as the books take each move (`FUN_006b6a33`,
-/// `FUN_006b6b22`), beyond the four a level the books keep as well.
+/// promotions, and those into the first, second and third league;
+/// `FUN_007264bf`: `0xb07558`, five — its relegations, and those out of
+/// the first four), counted as the books take each move (`FUN_006b6a33`,
+/// `FUN_006b6b22`), beyond the four a level the books keep as well. The
+/// same moves count by country slot in the lists block (`FUN_00634d9c`:
+/// 0xb1c508, 0x288 a slot, three i16 a club; `FUN_00634eff`: 0xb1d1b0,
+/// 0x360 a slot, four), and a club up into the first or the second league
+/// counts it in its history (`FUN_00640b2d`, `FUN_00640b9f`: the object
+/// 0xa6d348, 0x80 a club, +0xc and +0xe).
 const PROMOTION_RECORD: (&str, usize, usize) = ("0xb06cd8", 4, 3);
 const RELEGATION_RECORD: (&str, usize, usize) = ("0xb07558", 5, 4);
+const LISTS: &str = "0xb0b6b8";
+const SLOT_PROMOTIONS: (usize, usize, usize, usize) = (0xb1c508 - 0xb0b6b8, 0x288, 6, 3);
+const SLOT_RELEGATIONS: (usize, usize, usize, usize) = (0xb1d1b0 - 0xb0b6b8, 0x360, 8, 4);
+const HISTORY: &str = "0xa6d348";
+const HISTORY_CLUB: usize = 0x80;
+const HISTORY_UP: [usize; 2] = [0xc, 0xe];
+
+fn bump_word(block: &mut [u8], at: usize) {
+    if let Some(w) = block.get_mut(at..at + 2) {
+        let v = i16::from_le_bytes([w[0], w[1]]).wrapping_add(1);
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+}
 
 fn record_moves(records: &mut Records, country: u16, log: &[(bool, usize, i16)]) {
     let first = usize::try_from(records.countries.first_team(usize::from(country))).unwrap_or(0);
     let teams = records.countries.team_count(usize::from(country)).max(0);
+    let slot = usize::from(records.countries.slot(usize::from(country)));
     for &(up, level, club) in log {
         if club < 0 || club >= teams {
             continue;
+        }
+        let (base, per_slot, per_club, kinds) = if up { SLOT_PROMOTIONS } else { SLOT_RELEGATIONS };
+        if level < kinds {
+            if let Some(block) = records.block_mut(LISTS) {
+                bump_word(block, base + slot * per_slot + club as usize * per_club + level * 2);
+            }
+        }
+        if let Some(&at) = HISTORY_UP.get(level).filter(|_| up) {
+            if let Some(block) = records.block_mut(HISTORY) {
+                bump_word(block, (first + club as usize) * HISTORY_CLUB + at);
+            }
         }
         let (name, width, kinds) = if up { PROMOTION_RECORD } else { RELEGATION_RECORD };
         let Some(block) = records.block_mut(name) else { continue };
@@ -1024,11 +1054,17 @@ mod tests {
             assert_eq!(moves(&ours, country), moves(&theirs, country), "{country}'s books");
         }
         // Every club's record of moves, the moves beyond the books' four
-        // a level counted too.
-        for name in [PROMOTION_RECORD.0, RELEGATION_RECORD.0] {
+        // a level counted too, by slot as well, and its history.
+        for name in [PROMOTION_RECORD.0, RELEGATION_RECORD.0, HISTORY] {
             let (x, y) = (ours.block(name).unwrap(), theirs.block(name).unwrap());
             assert!(x == y, "{name}: {} bytes differ", (0..x.len()).filter(|&k| x[k] != y[k]).count());
             assert_ne!(x, before.block(name).unwrap(), "{name} moved");
+        }
+        for (base, per_slot, _, _) in [SLOT_PROMOTIONS, SLOT_RELEGATIONS] {
+            let (x, y) = (ours.block(LISTS).unwrap(), theirs.block(LISTS).unwrap());
+            assert_eq!(x[base..base + 5 * per_slot], y[base..base + 5 * per_slot], "the lists block at {base:#x}");
+            let was = before.block(LISTS).unwrap();
+            assert_ne!(was[base..base + 5 * per_slot], y[base..base + 5 * per_slot], "{base:#x} moved");
         }
         count(&mut ours);
         for country in crate::opponent::played_nations(&before) {
