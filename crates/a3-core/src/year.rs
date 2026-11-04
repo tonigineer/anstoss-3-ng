@@ -256,6 +256,18 @@ pub fn book(calendar: &mut Planner, d: usize, kind: u8, value: i16) {
     calendar.set_entry(d, entry);
 }
 
+/// A friendly booked from a day (`FUN_0072ede4` with the drag's entry,
+/// `FUN_0075f2e2`): the opponent's country and number, what else the
+/// entry held cleared.
+pub fn book_friendly(calendar: &mut Planner, d: usize, (country, number): (u8, i16)) {
+    let mut entry = [0; PLANNER_ENTRY];
+    entry[0] = FRIENDLY;
+    entry[1] = 1;
+    entry[4] = country;
+    entry[6..8].copy_from_slice(&number.to_le_bytes());
+    calendar.set_entry(d, entry);
+}
+
 /// A camp booked from a day: its first day with the place, from 1, and
 /// the next as its last (`FUN_0072e973`, `FUN_0072f30d`); a click in the
 /// calendar's camp column moves the end.

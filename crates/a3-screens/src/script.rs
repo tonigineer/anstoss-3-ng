@@ -8149,6 +8149,46 @@ mod tests {
         assert_eq!(atlantis(&runner), (true, true));
     }
 
+    /// The friendly dragged onto the 17th of September offers, at random
+    /// numbers poked into the original before the drop, the ten clubs the
+    /// original offered (its trace drew the same thirty numbers): Sporting
+    /// abroad at Union's ground for 140.000 €, the near ones for the gate.
+    /// Sporting taken, the friendly list, the last friendlies and the day
+    /// hold what the original's memory and calendar held after the click.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_calendar_books_a_friendly_with_a_club_offered() {
+        let game = game();
+        let offer = "now click bar 6\nuntil dialog 348\nnow random 12345 67890\n\
+                     now drag at 540 403 to 180 260\nuntil dialog 72";
+        let Some(runner) = on_save(&game, "A", offer) else { return };
+        let list = control(&game.dialogs[&72], 1666).unwrap();
+        let rows = runner.host.view().list(list).unwrap().rows.clone();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[0], "SV Babelsberg 03\t3\tA\tEinnahmenteilung");
+        assert_eq!(rows[1], "Hertha BSC\t2\tA\tEinnahmenteilung");
+        assert_eq!(rows[3], "Sporting Lissabon\t1\tH\t140.000 €");
+        assert_eq!(rows[5], "SV Drochtersen\t3\tA\t50.000 €");
+        assert_eq!(rows[9], "DJK Vilzing\t3\tA\t40.000 €");
+
+        let runner = on_save(&game, "A", &format!("{offer}\nnow row 1666 3\nuntil dialog 348")).unwrap();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let booked = a3_core::friendly::friendlies(records);
+        assert_eq!(booked, [a3_core::friendly::Friendly {
+            id: 0x0e54_0048,
+            day: 72,
+            club: (14, 84),
+            opponent: (51, 0),
+            goals: (0, 0),
+            away: false,
+            fee: 140,
+        }]);
+        assert_eq!(a3_core::friendly::last_friendlies(records), [(72, (14, 84), (51, 0))]);
+        let day = a3_core::year::day(&records.calendars[0], 72);
+        assert_eq!((day.kind(), day.club()), (a3_core::year::FRIENDLY, (51, 0)));
+    }
+
     /// The Finanzen screen's donations offer what the bank holds up to
     /// 100.000, in hundreds on the slider's steps; on A only good causes,
     /// no other human. Given, the amount joins the club's costs, the
