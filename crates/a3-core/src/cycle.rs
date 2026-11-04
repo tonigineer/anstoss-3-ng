@@ -982,7 +982,7 @@ impl Cycle {
                 crate::autolineup::computer_lineups(records, &self.data);
                 // Every club keeps its squad's strength, and the first
                 // leagues take the odds of the championship (`FUN_0077655c`).
-                crate::season_odds::open_season(records, &self.data);
+                crate::season_odds::open_season(records, &self.data, &mut season.random);
                 // The humans' calendars start empty and take their clubs'
                 // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
                 crate::year::open_season(records, &self.data.calendar);

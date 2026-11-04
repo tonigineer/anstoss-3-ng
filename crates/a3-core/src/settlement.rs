@@ -556,12 +556,14 @@ pub fn open_season_with(
 }
 
 /// The objects the new season clears whole (`FUN_0065e659`'s
-/// `FUN_007cff4b` calls): three without a reader in the replica, the
-/// eleven of the year (`0xa2e0d8`), the extension talks
-/// (`0x1c53ee8`), the negotiation appointments (`0x1c54000`) and
-/// `0x8eabe8`. The tables of the countries kept in short start afresh,
-/// each its country's number only (`FUN_006815cf`).
-const CLEARED_OBJECTS: [&str; 7] = ["0x1c51940", "0x1c4be78", "0x1baa1e0", "0x8eabe8", "0xa2e0d8", "0x1c54000", "0x1c53ee8"];
+/// `FUN_007cff4b` calls): the betting office's season offer
+/// (`0x1c65e88`, filled again by [`crate::season_odds`]), three without a
+/// reader in the replica, the eleven of the year (`0xa2e0d8`), the
+/// extension talks (`0x1c53ee8`), the negotiation appointments
+/// (`0x1c54000`) and `0x8eabe8`. The tables of the countries kept in
+/// short start afresh, each its country's number only (`FUN_006815cf`).
+const CLEARED_OBJECTS: [&str; 8] =
+    ["0x1c65e88", "0x1c51940", "0x1c4be78", "0x1baa1e0", "0x8eabe8", "0xa2e0d8", "0x1c54000", "0x1c53ee8"];
 const KEPT_TABLES: &str = "0xb9f8f8";
 const KEPT_TABLE: usize = 0xc;
 const KEPT_COUNTRIES: usize = 0x75;
@@ -1616,7 +1618,7 @@ mod tests {
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
         clear_objects(&mut ours);
-        for name in CLEARED_OBJECTS.into_iter().filter(|&n| n != "0x1c4be78").chain([KEPT_TABLES]) {
+        for name in CLEARED_OBJECTS.into_iter().filter(|&n| n != "0x1c4be78" && n != "0x1c65e88").chain([KEPT_TABLES]) {
             assert_eq!(ours.block(name), theirs.block(name), "{name}");
         }
     }

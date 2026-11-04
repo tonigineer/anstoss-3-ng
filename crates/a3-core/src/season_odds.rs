@@ -12,10 +12,11 @@
 //! 50, else its place and a tenth of the favourite's odds over the cube of
 //! the share, 5.0 at most.
 //!
-//! The top scorers' odds (in the offer `0x1c65e88`, by slot) go to the
-//! first league's strikers by their strength, a scorer's trait and their
-//! abilities, the trainers' to the first league's trainers by their
-//! ability or standing, the board's confidence and its byte.
+//! The betting office's season offer (`0x1c65e88`, cleared as the season
+//! opens) takes each played country's top scorers and trainers as its
+//! players open the season, before the managers' year; then the
+//! tournaments' nations, the European cups' entrants and the cups' teams,
+//! each list ordered from the shortest odds.
 //!
 //! Left out: the squads' market value at club +0x4f0, which the club
 //! keeps for itself.
@@ -76,12 +77,13 @@ const TRAINER_ODDS_FLOOR: i16 = 10;
 /// The new season's odds of the championship, once the squads stand,
 /// then the European cups' (`FUN_0041bb6c`) and the cups' as they are
 /// drawn (`FUN_006cc3ff`).
-pub fn open_season(records: &mut Records, data: &Data) {
+pub fn open_season(records: &mut Records, data: &Data, random: &mut crate::random::Random) {
     let countries = crate::opponent::played_nations(records);
     for &country in &countries {
         keep_strengths(records, country, data);
         champion_odds(records, country);
     }
+    nation_odds(records, &data.rules.pitch.european, random);
     european_odds(records);
     for &country in &countries {
         cup_odds(records, country);
@@ -301,6 +303,72 @@ fn european_odds(records: &mut Records) {
             p[e] = country;
             p[e + 2..e + 4].copy_from_slice(&number.to_le_bytes());
             p[EUROPEAN_ODDS + 2 * k..EUROPEAN_ODDS + 2 * k + 2].copy_from_slice(&odds.to_le_bytes());
+        }
+    }
+}
+
+/// The tournaments' nations from +0x1a94 (the European championship) and
+/// +0x1c66 (the world cup): an i16 count, 115 nations and one past them,
+/// their odds from +0xea.
+const TOURNAMENTS: [usize; 2] = [0x1a94, 0x1c66];
+const NATION_ODDS: usize = 0xea;
+const NATIONS_MOST: usize = 115;
+const NATIONS: usize = 0x75;
+/// A nation's strength byte (`DAT_00ae6223`), and the national teams'
+/// records (`0xa9d660` + nation × 0x990, a team's layout).
+const NATION_STRENGTH: usize = 0xae6223;
+const NATIONAL_TEAMS: u32 = 0xa9d660;
+const NATIONAL_COUNT: usize = 0x112 - 0x20;
+const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
+
+/// The tournaments' odds (`FUN_0077713a`, `FUN_0077f776` for each): the
+/// European championship's nations, then every nation for the world cup.
+/// A played country's national team counts by its squad's strength, ten
+/// times its players' average, any other nation by its strength byte ten
+/// times and a draw below ten; below 120 the cube of its distance below
+/// 130 over a hundred and a draw below five, beyond 140 less it, under
+/// 1.1 a draw from 1.1 to 1.5.
+fn nation_odds(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
+    let played = crate::opponent::played_nations(records);
+    for (list_at, nations) in TOURNAMENTS.into_iter().zip([
+        (0..NATIONS).filter(|&n| european.get(n).copied().unwrap_or(false)).collect::<Vec<_>>(),
+        (1..NATIONS).collect(),
+    ]) {
+        let mut list: Vec<(i16, i16)> = Vec::new();
+        for nation in nations {
+            let squad = played.contains(&(nation as u16)).then(|| {
+                records.block(&format!("{NATIONAL_TEAMS:#x}[{nation}]")).map(|b| {
+                    let count = b.get(NATIONAL_COUNT..NATIONAL_COUNT + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]));
+                    let sum: i32 = (0..usize::try_from(count).unwrap_or(0))
+                        .filter_map(|k| b.get(NATIONAL_SQUAD + 2 * k..NATIONAL_SQUAD + 2 * k + 2))
+                        .filter_map(|w| records.player(u16::from_le_bytes([w[0], w[1]])))
+                        .map(|p| i32::from(p.strength()))
+                        .sum();
+                    (i32::from(count), sum)
+                })
+            });
+            let level = match squad.flatten() {
+                Some((count, sum)) if count >= 1 => sum * 10 / count,
+                _ => i32::from(records.countries.get::<u8>(NATION_STRENGTH + nation)) * 10 + random.below(10) as i32,
+            };
+            let mut odds = if level < 120 {
+                let draw = random.below(5) as i32;
+                ((130 - level).pow(3) / 100) as i16 as i32 + draw
+            } else {
+                140 - level
+            };
+            if odds < LEAST_ODDS {
+                odds = random.below(5) as i32 + LEAST_ODDS;
+            }
+            insert(&mut list, NATIONS_MOST, nation as i16, odds as i16);
+        }
+        let Some(b) = records.block_mut(OFFER) else { return };
+        let Some(p) = b.get_mut(list_at..list_at + NATION_ODDS + 2 * (NATIONS_MOST + 1)) else { return };
+        p.fill(0);
+        p[..2].copy_from_slice(&(list.len().min(NATIONS_MOST) as i16).to_le_bytes());
+        for (k, &(nation, odds)) in list.iter().enumerate() {
+            p[2 + 2 * k..4 + 2 * k].copy_from_slice(&nation.to_le_bytes());
+            p[NATION_ODDS + 2 * k..NATION_ODDS + 2 * k + 2].copy_from_slice(&odds.to_le_bytes());
         }
     }
 }
@@ -534,6 +602,43 @@ mod tests {
                 assert_eq!(x[at + from..at + from + width], y[at + from..at + from + width], "slot {slot} cup from {from:#x}");
             }
             assert_eq!(x[at..at + CUP_PAGE], y[at..at + CUP_PAGE], "slot {slot} cup page");
+        }
+    }
+
+    /// Over the same save the tournaments' lists hold the original's
+    /// nations, as many — a full list's last dropped by chance — and the
+    /// played countries' national teams within a draw of the original's
+    /// odds.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_tournaments_odds_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut b, n) = (load("NewSeason000.an3"), load("NewSeason000.an3"));
+        let data = Data::load(&dir).unwrap();
+        let mut random = crate::random::Random::new(6);
+        nation_odds(&mut b, &data.rules.pitch.european, &mut random);
+        let played = crate::opponent::played_nations(&n);
+        let list = |r: &Records, at: usize| -> Vec<(i16, i16)> {
+            let b = r.block(OFFER).unwrap();
+            let w = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+            (0..w(at) as usize).map(|k| (w(at + 2 + 2 * k), w(at + NATION_ODDS + 2 * k))).collect()
+        };
+        for at in TOURNAMENTS {
+            let (x, y) = (list(&b, at), list(&n, at));
+            assert_eq!(x.len(), y.len(), "{at:#x}");
+            // A full list drops its weakest by chance: one nation apart
+            // at most.
+            let apart = x.iter().filter(|e| !y.iter().any(|f| f.0 == e.0)).count();
+            assert!(apart <= 1, "{at:#x}: {apart} apart");
+            for &(nation, mine) in &x {
+                let Some(&(_, theirs)) = y.iter().find(|f| f.0 == nation) else { continue };
+                if played.contains(&(nation as u16)) {
+                    assert!((theirs - 4..=theirs + 4).contains(&mine), "{at:#x} nation {nation}: {mine} {theirs}");
+                }
+            }
         }
     }
 
