@@ -422,7 +422,8 @@ pub fn clear_bookings(records: &mut Records) {
         plan_club(&mut records.teams[i], system);
         let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
         let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
-        plan_season(&mut records.teams[i], second, held);
+        let cover = insurance(records, &records.teams[i]);
+        plan_season(&mut records.teams[i], second, held, cover);
     }
 }
 
@@ -479,7 +480,7 @@ fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
         .map_or(0, |k| k + 1)
 }
 
-fn plan_season(team: &mut Team, second: bool, held: u8) {
+fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
     let [manager, human] = team.humans();
     let level = team.level();
     if human != 0 || level >= 10 {
@@ -522,7 +523,28 @@ fn plan_season(team: &mut Team, second: bool, held: u8) {
         1 => put::<u8>(team, 0x1f8, 1),
         _ => {}
     }
-    plan_rest(team);
+    plan_rest(team, cover);
+}
+
+/// What the squad's insurance comes to: the players' own extra
+/// insurance in thousands (player +0x1f4, the object's +0xbc;
+/// `FUN_0061f9fc`) and the German clubs' compulsory one
+/// ([`crate::finances::compulsory_insurance`], `FUN_0061fa79`).
+#[derive(Clone, Copy)]
+struct Cover {
+    extra: i32,
+    compulsory: i32,
+}
+const EXTRA_INSURANCE: usize = 0x1f4;
+const INSURANCE_UNIT: i32 = 1000;
+
+fn insurance(records: &Records, team: &Team) -> Cover {
+    let extra = team
+        .players()
+        .iter()
+        .filter_map(|&id| records.player(id))
+        .fold(0i32, |s, p| s.wrapping_add(i32::from(p.get::<i16>(EXTRA_INSURANCE)) * INSURANCE_UNIT));
+    Cover { extra, compulsory: crate::finances::compulsory_insurance(records, team) }
 }
 
 /// The plan's rest copies into the season's block what stands planned
@@ -530,12 +552,19 @@ fn plan_season(team: &mut Team, second: bool, held: u8) {
 /// at +0x1b4 and +0x2bc — `DAT_0089e450`'s row of +0x5e1 in ten
 /// thousands and `DAT_0089e458`'s of +0x5e2 in hundred thousands —, the
 /// four sums +0x164 to +0x170 at +0x26c to +0x278 and the four bytes
-/// +0x1f8 to +0x1fb at +0x300 to +0x303. (Its sponsors' sums, the drawn
-/// parts and the human's own are not built.)
+/// +0x1f8 to +0x1fb at +0x300 to +0x303; the insurance at +0x194 — the
+/// players' own, or with +0x303 standing the sum at +0x5e4 (and that at
+/// +0x29c as well, else nought there), the compulsory one beside —; the
+/// running costs at +0x280: the four sums, 80 000 for each hand counted
+/// at +0x300 (`DAT_00a3b380`) and +0x27c. (Its sponsors' sums, the drawn parts,
+/// +0x27c's own figure (`FUN_00418ce7`) and the human's own are not
+/// built.)
 const GRADE_TENS: [i32; 4] = [0, 2, 20, 100];
 const GRADE_HUNDREDS: [i32; 4] = [0, 2, 10, 30];
 
-fn plan_rest(team: &mut Team) {
+const HAND_COST: i32 = 80_000;
+
+fn plan_rest(team: &mut Team, cover: Cover) {
     let row = |table: &[i32; 4], at: usize| table.get(usize::from(club::<u8>(team, at))).copied().unwrap_or(0);
     let grades = row(&GRADE_TENS, 0x5e1) * 10_000 + row(&GRADE_HUNDREDS, 0x5e2) * 100_000;
     put::<i32>(team, 0x1b4, grades);
@@ -546,6 +575,14 @@ fn plan_rest(team: &mut Team) {
         let b = club::<u8>(team, 0x1f8 + k);
         put::<u8>(team, 0x300 + k, b);
     }
+    let fixed = club::<i32>(team, 0x5e4);
+    let (own, kept) = if club::<u8>(team, 0x303) == 0 { (cover.extra, 0) } else { (fixed, fixed) };
+    put::<i32>(team, 0x194, own.wrapping_add(cover.compulsory));
+    put::<i32>(team, 0x29c, kept);
+    let running = (0..4).fold(0i32, |s, k| s.wrapping_add(club::<i32>(team, 0x164 + k * 4)));
+    let hands = HAND_COST * i32::from(club::<u8>(team, 0x300));
+    let v = running.wrapping_add(hands).wrapping_add(club::<i32>(team, 0x27c));
+    put::<i32>(team, 0x280, v);
 }
 
 /// The plan's sums a season after the first sets up beside the clearing
@@ -2316,7 +2353,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
-        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278];
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278, 0x194, 0x29c, 0x280];
         let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8, 0x300, 0x301, 0x302, 0x303];
         for team in ours.teams.iter_mut() {
             for at in words {
@@ -2336,7 +2373,8 @@ mod tests {
             let holders = theirs.block(HOLDERS).unwrap().to_vec();
             let first = theirs.countries.first_team(usize::from(ours.teams[i].country())) as usize;
             let held = holder(&holders, ours.teams[i].country(), i - first);
-            plan_season(&mut ours.teams[i], true, held);
+            let cover = insurance(&ours, &ours.teams[i]);
+            plan_season(&mut ours.teams[i], true, held, cover);
             let (x, y) = (&ours.teams[i], &theirs.teams[i]);
             if y.humans()[1] != 0 || y.level() >= 10 {
                 assert_eq!(club::<i32>(x, 0x19c), 0, "{i} not planned");
