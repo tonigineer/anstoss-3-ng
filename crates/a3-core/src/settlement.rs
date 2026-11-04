@@ -487,39 +487,59 @@ fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
 
 /// The staff's salaries for what is left of the season, which the
 /// clearing plans again (`FUN_00672839`): the trainer's (team +0x9e) at
-/// +0x158 (`FUN_00620453`) and the manager-trainer's (+0x9c), or with
-/// none the manager's (+0xa0), at +0x154 (`FUN_0062053b`) — the yearly
+/// +0x158 (`FUN_00620453`), the manager-trainer's (+0x9c) — with none the
+/// manager's (+0xa0) — at +0x154 (`FUN_0062053b`), the co-trainer's
+/// (+0xa2) at +0x15c (`FUN_0062068a`) and the one of the second persons'
+/// table (+0xa4, `FUN_00631a0e`) at +0x160 (`FUN_00620702`): the yearly
 /// salary (the person's +0x30, `FUN_006317c6`) in twelfths times the
 /// months left (`DAT_0089e220` by the month, `_DAT_00b5cbdc`), its rest
-/// beside from July on. A human club's, from its manager's own salary,
-/// is not built.
+/// beside from July on. A human club the walk passes by (its +0x8b
+/// stands): the original keeps its sums from the season before, as the
+/// co-trainer's shows, so the replica leaves them.
 const MONTHS_LEFT: [i32; 13] = [0, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9, 8, 7];
 const MONTH_AT: usize = 0xb5cbdc;
 const PERSON_SALARY: usize = 0x30;
 const FIRST_HALF: i16 = 6;
+const OTHER_PERSONS: &str = "0xbe17f8";
+const OTHER_PERSON_SALARY: usize = 0x10;
+const LAST_OTHER_PERSON: u16 = 100;
+const CO_TRAINER_AT: usize = 0xa2;
+const OTHER_STAFF_AT: usize = 0xa4;
 
 fn plan_staff(records: &mut Records, team: usize) {
     let month = records.globals.get::<i16>(MONTH_AT);
     let left = MONTHS_LEFT.get(usize::try_from(month).unwrap_or(0)).copied().unwrap_or(0);
-    let share = |id: u16| -> i32 {
+    let rest = |salary: i32| -> i32 {
+        let tail = if month > FIRST_HALF { salary % 12 } else { 0 };
+        (salary / 12).wrapping_mul(left).wrapping_add(tail)
+    };
+    let person = |id: u16| -> i32 {
         if id == 0 || id > LAST_PERSON {
             return 0;
         }
-        let salary = records.persons.get(usize::from(id)).map_or(0, |p| p.get::<i32>(PERSON_SALARY));
-        let rest = if month > FIRST_HALF { salary % 12 } else { 0 };
-        (salary / 12).wrapping_mul(left).wrapping_add(rest)
+        records.persons.get(usize::from(id)).map_or(0, |p| p.get::<i32>(PERSON_SALARY))
+    };
+    let other = |id: u16| -> i32 {
+        if id == 0 || id > LAST_OTHER_PERSON {
+            return 0;
+        }
+        records
+            .block(&format!("{OTHER_PERSONS}[{id}]"))
+            .and_then(|b| b.get(OTHER_PERSON_SALARY..OTHER_PERSON_SALARY + 4))
+            .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
     let t = &records.teams[team];
-    let [first, second] = t.humans();
-    let [manager_trainer, trainer, manager] = t.staff();
-    let trainers = (first == 0).then(|| share(trainer));
-    let managers = (second == 0).then(|| share(if manager_trainer == 0 { manager } else { manager_trainer }));
-    let t = &mut records.teams[team];
-    if let Some(v) = trainers {
-        put::<i32>(t, 0x158, v);
+    if t.humans() != [0, 0] {
+        return;
     }
-    if let Some(v) = managers {
-        put::<i32>(t, 0x154, v);
+    let [manager_trainer, trainer, manager] = t.staff();
+    let trainers = person(trainer);
+    let managers = person(if manager_trainer == 0 { manager } else { manager_trainer });
+    let co = person(t.get::<i16>(CO_TRAINER_AT).max(0) as u16);
+    let more = other(t.get::<i16>(OTHER_STAFF_AT).max(0) as u16);
+    let t = &mut records.teams[team];
+    for (at, salary) in [(0x158, trainers), (0x154, managers), (0x15c, co), (0x160, more)] {
+        put::<i32>(t, at, if salary == 0 { 0 } else { rest(salary) });
     }
 }
 
@@ -2482,8 +2502,9 @@ mod tests {
     }
 
     /// The staff's salaries for the season come out as the original's on
-    /// its first new-season day: every computer club's trainer at +0x158
-    /// and manager-trainer or manager at +0x154, the whole year's in July.
+    /// its first new-season day: every computer club's trainer at +0x158, its
+    /// manager-trainer or manager at +0x154, its co-trainer at +0x15c and
+    /// its one more at +0x160 — the whole year's in July.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_staffs_salaries_are_planned_as_the_original() {
@@ -2501,10 +2522,11 @@ mod tests {
             if country == 0 || !ours.globals.played(country) || ours.teams[i].humans() != [0, 0] {
                 continue;
             }
-            put::<i32>(&mut ours.teams[i], 0x154, -1);
-            put::<i32>(&mut ours.teams[i], 0x158, -1);
+            for at in [0x154, 0x158, 0x15c, 0x160] {
+                put::<i32>(&mut ours.teams[i], at, -1);
+            }
             plan_staff(&mut ours, i);
-            for at in [0x154, 0x158] {
+            for at in [0x154, 0x158, 0x15c, 0x160] {
                 assert_eq!(club::<i32>(&ours.teams[i], at), club::<i32>(&theirs.teams[i], at), "{i} +{at:#x}");
             }
             count += 1;
