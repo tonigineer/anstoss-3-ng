@@ -434,6 +434,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
             number_sponsor(&mut records.teams[i], system, random);
             plan_price(&mut records.teams[i], system, random);
             sign_boards(&mut records.teams[i], system, random);
+            sign_television(&mut records.teams[i], system, random);
         }
     }
 }
@@ -704,6 +705,66 @@ fn sign_boards(team: &mut Team, system: usize, random: &mut Random) {
     put::<i32>(team, 0x5a4, money);
     put::<i32>(team, 0x1f0, money);
     put::<i32>(team, 0x2f8, money);
+}
+
+/// The television contract the walk signs every planned club anew
+/// (`FUN_00717709` → `FUN_007174c2`): its number at +0x5b0 drawn from one
+/// to ten, one or two years drawn at +0x5b1, its money at +0x5b4. In the
+/// first league 32 less four for each step of club +0xec (team +0x11c)
+/// and a draw below seven less it, in 70 000s, with two millions for the
+/// champion (flag 1), else a million for flag 0x40, else 500 000 for
+/// flag 0x10, else 100 000 for a club in Europe (0x4000), 200 000 more
+/// when its home gates averaged above 30 000 (`FUN_00715b55`,
+/// `FUN_00621143`), in hundredths times the cup system's first figure of
+/// `DAT_008a7aa8`, down to ten thousands; in the second six and the draw
+/// in 20 000s, lower two and the draw in 12 000s; and a step of 100 000,
+/// 10 000 or 6 000 for each of +0xec below four. The plan's rest takes it
+/// as the television's sum at +0x1f4 and +0x2fc (`FUN_0061f572`).
+/// Measured on the original's first new-season day: all 147 planned
+/// clubs hold one of their draws.
+const TV_AVERAGE_HIGH: i32 = 30_000;
+
+fn home_average(team: &Team) -> i32 {
+    let home = i32::from(team.get::<u16>(DIVISOR_AT) as i16);
+    if home < 1 { NO_GATES_PLAN } else { team.get::<i32>(crate::statistics::GATES_SUM) / home }
+}
+
+fn sign_television(team: &mut Team, system: usize, random: &mut Random) {
+    put::<u8>(team, 0x5b0, random.below(10) as u8 + 1);
+    put::<u8>(team, 0x5b1, random.below(2) as u8 + 1);
+    let class = i32::from(team.get::<u8>(PRICE_CLASS_AT));
+    let span = 7 - class;
+    let draw = if span > 0 { random.below(span as u32) as i32 } else { 0 };
+    let flags = team.get::<u16>(FLAGS_AT);
+    let (mut money, step) = match team.level() {
+        0 => {
+            let mut m = (32 - 4 * class + draw) * 70_000;
+            m += if flags & CHAMPION_FLAG != 0 {
+                2_000_000
+            } else if flags & 0x40 != 0 {
+                1_000_000
+            } else if flags & 0x10 != 0 {
+                500_000
+            } else if flags & EUROPE_FLAG != 0 {
+                100_000
+            } else {
+                0
+            };
+            if home_average(team) > TV_AVERAGE_HIGH {
+                m += 200_000;
+            }
+            let row = BOARD_ROWS.get(system * 3).copied().unwrap_or(0);
+            (m / 100 * row / 10_000 * 10_000, 100_000)
+        }
+        1 => ((draw + 6) * 20_000, 10_000),
+        _ => ((draw + 2) * 12_000, 6_000),
+    };
+    if class < 4 {
+        money += (4 - class) * step;
+    }
+    put::<i32>(team, 0x5b4, money);
+    put::<i32>(team, 0x1f4, money);
+    put::<i32>(team, 0x2fc, money);
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2755,7 +2816,8 @@ mod tests {
     /// The main sponsor's number is one of the original's draws: on its
     /// first new-season day every planned club's +0x4ea is reproduced by a
     /// draw among its cup system's forty, its +0x4ec by a draw over the
-    /// plan's figure and its boards' package by a draw of its row.
+    /// plan's figure, its boards' package by a draw of its row and its
+    /// television contract by a draw of its league's.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_sponsors_number_is_one_of_the_originals_draws() {
@@ -2795,6 +2857,15 @@ mod tests {
                     && [0x5a0, 0x5a1].map(|at| club::<u8>(&team, at)) == bytes
             });
             assert!(found, "{i}: boards {boards:?} {bytes:?}");
+            let tv = [0x5b4, 0x1f4, 0x2fc].map(|at| club::<i32>(&theirs.teams[i], at));
+            let tv_bytes = [0x5b0, 0x5b1].map(|at| club::<u8>(&theirs.teams[i], at));
+            let found = (0..4000).any(|seed| {
+                let mut team = theirs.teams[i].clone();
+                sign_television(&mut team, system, &mut Random::new(seed));
+                [0x5b4, 0x1f4, 0x2fc].map(|at| club::<i32>(&team, at)) == tv
+                    && [0x5b0, 0x5b1].map(|at| club::<u8>(&team, at)) == tv_bytes
+            });
+            assert!(found, "{i}: television {tv:?} {tv_bytes:?}");
             count += 1;
         }
         assert!(count > 140, "{count}");
