@@ -898,6 +898,16 @@ const SEASON_START_WORTH: usize = 0x218;
 /// cup, the cup.
 const PAST_SEASONS: [usize; 2] = [0x11e, 0x11f];
 const HONOURS: u16 = 1 | 2 | 0x10 | 0x1000;
+/// The club's situation for the season (club +0xed, team +0x11d): 2 after
+/// three marks in the past seasons' byte, 3 after five seasons of
+/// honours, 6 or 7 when its last season fell more than three places short
+/// of its goal or went more than three past it (team +0x137), else 1
+/// where its stadium's byte +0x67 (its block's data) stands at nought,
+/// and 0.
+const SITUATION_AT: usize = 0x11d;
+const VERDICT_AT: usize = 0x137;
+const STADIUMS: &str = "0x1a48138";
+const STADIUM_OWN: usize = 0x67;
 
 /// The tactics every played club opens the season with, set before its
 /// class — a club gone down to no league still by the place it last held.
@@ -919,6 +929,25 @@ pub(crate) fn open_tactics(records: &mut Records, random: &mut Random) {
     }
 }
 
+/// The club's situation for the season (`FUN_0078f841`), its past
+/// seasons' bytes as they stand moved on.
+fn situation(team: &Team, stadium: Option<u8>) -> u8 {
+    let past = team.get::<u8>(PAST_SEASONS[0]);
+    let marks = (past & 3) + (past >> 2 & 3) + (past >> 4 & 3);
+    let verdict = team.get::<i8>(VERDICT_AT);
+    if marks >= 3 {
+        2
+    } else if team.get::<u8>(PAST_SEASONS[1]) & 0x1f == 0x1f {
+        3
+    } else if verdict < -3 {
+        6
+    } else if verdict > 3 {
+        7
+    } else {
+        u8::from(stadium == Some(0))
+    }
+}
+
 pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
@@ -930,6 +959,8 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
                 NO_LEAGUE_CLUBS
             };
             let prices = records.globals.fund_prices();
+            let index = usize::try_from(records.countries.first_team(usize::from(country))).unwrap_or(0) + usize::from(number);
+            let stadium = records.block(&format!("{STADIUMS}[{index}]")).and_then(|b| b.get(STADIUM_OWN).copied());
             let Some(team) = records.team_mut(country, number) else { continue };
             // What the club is worth as the season starts: its cash, less
             // its loans, with its deposits (`FUN_00621f0d`).
@@ -966,6 +997,7 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
             team.put::<u8>(PAST_SEASONS[0], team.get::<u8>(PAST_SEASONS[0]) << 2);
             let honours = u8::from(flags & HONOURS != 0);
             team.put::<u8>(PAST_SEASONS[1], team.get::<u8>(PAST_SEASONS[1]) << 1 | honours);
+            team.put::<u8>(SITUATION_AT, situation(team, stadium));
         }
     }
 }
@@ -1739,7 +1771,8 @@ mod tests {
     /// and places, the UEFA cup's mark (set after) taken off — the respect
     /// every played club opens the season at comes out as the original's,
     /// the mood and the tactics within their draws, its worth at the
-    /// season's start but at the four amateurs moved up.
+    /// season's start but at the four amateurs moved up, and its situation
+    /// at every club.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_open_the_season_with_the_originals_respect() {
@@ -1787,6 +1820,16 @@ mod tests {
         // The worth at the season's start too, but at the amateurs moved up
         // whose cash the original sets after it.
         assert!(worth + 4 >= all, "worth {worth} of {all}");
+        // The situation from the original's own bytes, as they stood when
+        // it was set, comes out as the original's at every club.
+        for &c in &played {
+            for t in 0..theirs.countries.team_count(usize::from(c)).max(0) as u16 {
+                let y = theirs.team(c, t).unwrap();
+                let index = usize::try_from(theirs.countries.first_team(usize::from(c))).unwrap_or(0) + usize::from(t);
+                let stadium = theirs.block(&format!("{STADIUMS}[{index}]")).and_then(|b| b.get(STADIUM_OWN).copied());
+                assert_eq!(situation(y, stadium), y.get::<u8>(SITUATION_AT), "{c}/{t}");
+            }
+        }
     }
 
     /// The new season's managers' year leaves the humans' last-match
