@@ -8914,8 +8914,9 @@ mod tests {
     /// to 320) the replica plays five more seasons to the end, each turn's
     /// steps on its own state, and stands in the sixth with its counters
     /// rolled — the year on, the half weeks counted, the league open, the
-    /// European cups entered, every played club's squad within its bounds
-    /// and the squads of both kinds of countries as full as they were.
+    /// European cups entered, every played club's squad within its bounds,
+    /// the squads of both kinds of countries as full as they were, and the
+    /// human club's squad in the season as in its records.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_game_plays_on_season_after_season() {
@@ -8970,6 +8971,15 @@ mod tests {
         }
         let average = |(n, sum): (usize, usize)| sum as f64 / n.max(1) as f64;
         assert!(average(sizes[1]) > 20.0 && average(sizes[2]) > 15.0, "squads of {sizes:?}");
+        // Each human club stands as its records have it after the turns.
+        for (&(slot, index), club) in &season.clubs {
+            let nation = game.data.world.country(slot).unwrap().nation;
+            let team = records.team(nation, index as u16).unwrap();
+            let names: Vec<String> =
+                team.players().iter().map(|&id| records.name(records.player(id).unwrap().last_name()).to_owned()).collect();
+            let state: Vec<String> = club.players.iter().map(|p| p.last_name.clone()).collect();
+            assert_eq!(state, names, "club {slot}/{index}'s squad");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

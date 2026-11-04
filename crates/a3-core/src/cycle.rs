@@ -954,6 +954,16 @@ impl Cycle {
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);
+                // The human clubs' squads changed with the turn — players
+                // gone, new ones come — so each club the season follows
+                // stands anew as its records now have it, as a load would
+                // set it up.
+                let keys: Vec<(usize, usize)> = season.clubs.keys().copied().collect();
+                for key in keys {
+                    if let Some(club) = crate::load::club(records, &self.data, key) {
+                        season.clubs.insert(key, club);
+                    }
+                }
                 season.year = i32::from(records.globals.start_year());
                 season.day = 0;
                 season.statement = false;
