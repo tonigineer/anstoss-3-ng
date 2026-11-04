@@ -14,6 +14,7 @@
 use crate::records::Records;
 
 const RANK_AT: usize = 0x130;
+const SCORE_AT: usize = 0x348;
 const ORDER_AT: usize = crate::opponent::LEAGUE_FIELDS + 0x4d2;
 /// The positions' groups and how many of each count.
 const GROUPS: [(u8, u8, usize); 4] = [(1, 1, 2), (2, 5, 6), (6, 9, 5), (10, 10, 3)];
@@ -38,6 +39,21 @@ pub fn squad_score(records: &Records, team: &crate::records::Team) -> i32 {
         }
     }
     if count < 1 { 1 } else { i32::from(sum) * 10 / count }
+}
+
+/// Every played club keeps its squad's score as its season opens
+/// (`FUN_00772bee`'s `FUN_0069d1a9`, team +0x348), from the squad the
+/// ranking saw.
+pub fn keep_scores(records: &mut Records) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let score = squad_score(records, team);
+            if let Some(team) = records.team_mut(country, number) {
+                team.put::<i16>(SCORE_AT, score as i16);
+            }
+        }
+    }
 }
 
 /// Every ranked league's clubs by their squads.
@@ -117,6 +133,25 @@ mod tests {
             .filter(|&t| b.team(16, t).unwrap().get::<u8>(RANK_AT) != n.team(16, t).unwrap().get::<u8>(RANK_AT))
             .count();
         assert!(apart <= 2, "{apart}");
+        // The original's own ranks follow its own stored scores, by the
+        // same exchange sort.
+        for country in crate::opponent::played_nations(&n) {
+            let Some(league) = crate::opponent::League::of(&n, country, 0) else { continue };
+            let mut scored: Vec<(u16, i16)> = (0..league.teams())
+                .map(|k| league.team(k) as u16)
+                .map(|t| (t, n.team(country, t).unwrap().get::<i16>(SCORE_AT)))
+                .collect();
+            for i in 0..scored.len() {
+                for j in i + 1..scored.len() {
+                    if scored[i].1 < scored[j].1 {
+                        scored.swap(i, j);
+                    }
+                }
+            }
+            for (k, &(t, _)) in scored.iter().enumerate() {
+                assert_eq!(usize::from(n.team(country, t).unwrap().get::<u8>(RANK_AT)), k, "{country}/{t}");
+            }
+        }
         let index = n.countries.first_league(16);
         let order = b.block(&format!("0x1a09d48[{index}]")).unwrap();
         for k in 0..england.teams() {
