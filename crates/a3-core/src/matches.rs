@@ -249,6 +249,11 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // (`FUN_006cec7f`, the round `FUN_006d12a8` names the cup's last).
     for (country, number) in through {
         settlement::cup_premium(records, u16::from(country), number, round >= FINAL_ROUND);
+        // The final's winner counts the cup in its trainer's career
+        // (`FUN_006b50a4` with kind 4).
+        if round >= FINAL_ROUND {
+            crate::honours::honour(records, u16::from(country), number, crate::honours::CUP);
+        }
     }
     // On the human's year calendar the round's day fills its score, the
     // flags saying the result stands (0x20) and the tie a cup one (0x08);

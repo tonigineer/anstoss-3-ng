@@ -424,6 +424,11 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
     if count == WINTER_BREAK {
         develop_played(records, true, random);
     }
+    // The champions' day honours every first league's leader
+    // ([`crate::honours::champions_day`]).
+    if count == crate::honours::CHAMPIONS_DAY {
+        crate::honours::champions_day(records);
+    }
 }
 
 /// The new season lifts a weak computer squad (`FUN_0077655c`, from the

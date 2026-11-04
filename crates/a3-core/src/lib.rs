@@ -24,6 +24,7 @@ pub mod free_agents;
 pub mod forecast;
 pub mod grounds;
 pub mod highscore;
+pub mod honours;
 pub mod human_day;
 pub mod illegal;
 pub mod individual;
