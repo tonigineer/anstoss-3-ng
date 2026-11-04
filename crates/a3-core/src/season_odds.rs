@@ -375,7 +375,7 @@ fn nation_odds(records: &mut Records, european: &[bool], random: &mut crate::ran
 
 /// A striker's score (`FUN_00777544`): his strength ten times, five more
 /// for a scorer's trait, one for each ability of the first eleven.
-fn score(player: &crate::records::Player) -> i32 {
+pub(crate) fn score(player: &crate::records::Player) -> i32 {
     let traits = player.traits();
     let mut score = i32::from(player.strength()) * 10;
     if traits[1] & SCORER_TRAIT[1] != 0 || traits[0] & SCORER_TRAIT[0] != 0 {

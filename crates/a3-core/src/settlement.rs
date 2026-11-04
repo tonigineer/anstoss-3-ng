@@ -526,6 +526,8 @@ pub fn open_season_with(
 ) {
     roll_globals(&mut records.globals, random);
     clear_objects(records);
+    // The ranked leagues' clubs by their squads (`FUN_00778394`).
+    crate::squad_rank::rank(records);
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
