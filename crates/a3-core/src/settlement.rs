@@ -510,6 +510,9 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
         plan_staff(records, i);
+        if records.teams[i].humans()[1] == 0 {
+            plan_bonuses(&mut records.teams[i], system);
+        }
         let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
         let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
         if planned(&records.teams[i]) {
@@ -879,6 +882,46 @@ fn offer(team: &Team, system: usize, random: &mut Random) -> (u8, i32) {
         money += (4 - class) * step;
     }
     (years, money)
+}
+
+/// The team bonuses the clearing plans for every club the walk passes
+/// (`FUN_00672611`): five rows at +0x5ba — `DAT_008a047c`'s figures
+/// (20, 15, 12, 10, 8) times ten (`DAT_00a3b420`) times the cup system's
+/// figure for the band (`DAT_008a0368`, six to a system), kept to a word
+/// and cut to hundreds —; from the first row the title's bonus at +0x5c8
+/// (a hundred times) and a European place's at +0x5cc (fifty times) in
+/// the first league, the promotion's at +0x5d0 (a hundred times) below
+/// it, and the last one at +0x5d4 for a club placed fifteenth or lower
+/// (75 times, at most 100 000); below the first league a club sharing
+/// its stadium (team +0x872 not below nought, `FUN_0063e793`) has the
+/// first three at nought. Measured on the original's first new-season
+/// day: all 211 computer clubs agree.
+const BONUS_FIGURES: [i32; 5] = [20, 15, 12, 10, 8];
+const BONUS_SYSTEMS: [[i32; 3]; 8] = [[8, 3, 1], [8, 3, 1], [8, 3, 1], [10, 3, 1], [10, 3, 1], [6, 0, 0], [7, 0, 0], [5, 0, 0]];
+const BONUS_ROWS_AT: usize = 0x5ba;
+const DROP_PLACE: u8 = 15;
+const DROP_MOST: i32 = 100_000;
+
+fn plan_bonuses(team: &mut Team, system: usize) {
+    let band = usize::from(team.level().min(2));
+    let figure = BONUS_SYSTEMS.get(system).map_or(0, |r| r[band]);
+    for (k, &f) in BONUS_FIGURES.iter().enumerate() {
+        let row = ((f * 10 * figure) & 0xffff) / 100 * 100;
+        put::<u16>(team, BONUS_ROWS_AT + 2 * k, row as u16);
+    }
+    let first = i32::from(club::<u16>(team, BONUS_ROWS_AT));
+    let drop = if team.league_place() < DROP_PLACE { 0 } else { (first * 75).min(DROP_MOST) };
+    let (title, europe, promotion) = if band == 0 {
+        (first * 100, first * 50, 0)
+    } else if team.get::<i8>(SHARED_AT) >= 0 {
+        (0, 0, 0)
+    } else {
+        (0, 0, first * 100)
+    };
+    put::<i32>(team, TITLE_BONUS, title);
+    put::<i32>(team, EUROPE_BONUS, europe);
+    put::<i32>(team, PROMOTED_BONUS, promotion);
+    put::<i32>(team, LAST_BONUS, drop);
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -3049,5 +3092,44 @@ mod tests {
             }
         }
         assert!(kept > 1000 && same * 100 >= kept * 95, "{same} of {kept} kept as the original");
+    }
+
+    /// The team bonuses come out as the original's: on its first
+    /// new-season day every computer club, the fields put to nought, is
+    /// planned back to its rows and bonuses.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_team_bonuses_are_planned_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || theirs.teams[i].humans()[1] != 0 {
+                continue;
+            }
+            let system = usize::from(theirs.countries.cup_system(usize::from(theirs.teams[i].country())));
+            let mut team = theirs.teams[i].clone();
+            for k in 0..5 {
+                put::<u16>(&mut team, BONUS_ROWS_AT + 2 * k, 0);
+            }
+            for at in [TITLE_BONUS, EUROPE_BONUS, PROMOTED_BONUS, LAST_BONUS] {
+                put::<i32>(&mut team, at, -1);
+            }
+            plan_bonuses(&mut team, system);
+            for k in 0..5 {
+                let at = BONUS_ROWS_AT + 2 * k;
+                assert_eq!(club::<u16>(&team, at), club::<u16>(&theirs.teams[i], at), "{i} +{at:#x}");
+            }
+            for at in [TITLE_BONUS, EUROPE_BONUS, PROMOTED_BONUS, LAST_BONUS] {
+                assert_eq!(club::<i32>(&team, at), club::<i32>(&theirs.teams[i], at), "{i} +{at:#x}");
+            }
+            count += 1;
+        }
+        assert!(count > 200, "{count}");
     }
 }
