@@ -490,6 +490,7 @@ pub fn open_season_with(
     crate::finances::keep_last_season(records);
     clear_human_season(records);
     clear_bookings(records);
+    keep_club_money(records);
 }
 
 /// The objects the new season clears whole (`FUN_0065e659`'s
@@ -627,6 +628,28 @@ pub fn open_managers(records: &mut Records, random: &mut Random) {
             if m.get::<i16>(at + 4) > 99 {
                 m.put::<i16>(at + 4, 0);
             }
+        }
+    }
+}
+
+/// The human manager's copy of his club's money as the new season opens
+/// it (`FUN_00775219`'s `FUN_0078605e`: the club object's thousand bytes
+/// from +0x210 into the manager's +0x1370, record +0x14c0).
+const MANAGER_MONEY: usize = 0x14c0;
+const MONEY_LEN: usize = 1000;
+
+fn keep_club_money(records: &mut Records) {
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get(n) else { continue };
+        let (country, number) = (m.country(), m.team());
+        if country == 0 {
+            continue;
+        }
+        let Some(team) = records.team(country, number) else { continue };
+        let money: Vec<u8> = (0..MONEY_LEN).map(|k| club::<u8>(team, CASH + k)).collect();
+        let Some(m) = records.managers.get_mut(n) else { continue };
+        for (k, b) in money.into_iter().enumerate() {
+            m.put::<u8>(MANAGER_MONEY + k, b);
         }
     }
 }
@@ -882,6 +905,31 @@ pub fn settle(team: &mut Team, mut manager: Option<&mut Manager>, country: usize
 #[cfg(test)]
 mod club_season_tests {
     use super::*;
+
+    /// The human manager's copy of his club's money: on the original's
+    /// first day of the new season (NewSeason000) it stands byte for byte
+    /// as the club's money block, and the replica's copy over the closed
+    /// season's save does the same.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_manager_keeps_his_clubs_money_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let same = |r: &Records| {
+            let m = &r.managers[0];
+            let team = r.team(m.country(), m.team()).unwrap();
+            (0..MONEY_LEN).all(|k| m.get::<u8>(MANAGER_MONEY + k) == club::<u8>(team, CASH + k))
+        };
+        assert!(same(&load("NewSeason000.an3")));
+        let mut ours = load("SeasonEnd364.an3");
+        assert!(!same(&ours));
+        keep_club_money(&mut ours);
+        assert!(same(&ours));
+    }
 
     /// Over the original's turn (SeasonEnd364 → NewSeason000) the clears
     /// of every played club's new season leave its team bytes as the
