@@ -515,4 +515,53 @@ mod tests {
             assert_eq!(day.persons[id].get::<i16>(0x3c), end.persons[id].get::<i16>(0x3c), "person {id}'s championships");
         }
     }
+
+    /// The half weeks name their champions as the replica's own season
+    /// stands: walking the kept day-63 save through the autumn every
+    /// country's Herbstmeister enters its list once, and walking the kept
+    /// late second season past the champions' day every country's champion
+    /// and top scorers enter theirs — the season's year and the table's
+    /// leader newest.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_half_weeks_name_their_champions() {
+        use a3_files::an3::Save;
+        use crate::random::Random;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let mut random = Random::new(4);
+        let mut autumn = read("A.an3");
+        let before: Vec<usize> = crate::opponent::played_nations(&autumn)
+            .iter()
+            .map(|&c| crate::statistics::autumn_champions(&autumn, c).0.len())
+            .collect();
+        for day in 64..230 {
+            crate::development::half_week(&mut autumn, day, &mut random);
+        }
+        for (k, country) in crate::opponent::played_nations(&autumn).into_iter().enumerate() {
+            let (list, _) = crate::statistics::autumn_champions(&autumn, country);
+            assert_eq!(list.len(), (before[k] + 1).min(20), "{country}'s Herbstmeister once");
+            let league = crate::opponent::League::of(&autumn, country, 0).unwrap();
+            let leader = crate::statistics::table(&autumn, &league, crate::statistics::ALL)[0].team;
+            assert_eq!((list[0].year, list[0].club.1), (autumn.globals.start_year() as i16, leader), "{country}");
+        }
+        let mut late = read("S2late.an3");
+        let kings: Vec<usize> =
+            crate::opponent::played_nations(&late).iter().map(|&c| crate::statistics::top_scorers(&late, c).len()).collect();
+        for day in 299..340 {
+            crate::development::half_week(&mut late, day, &mut random);
+        }
+        for (k, country) in crate::opponent::played_nations(&late).into_iter().enumerate() {
+            let champions = crate::statistics::champions(&late, country);
+            let league = crate::opponent::League::of(&late, country, 0).unwrap();
+            let leader = crate::statistics::table(&late, &league, crate::statistics::ALL)[0].team;
+            assert_eq!((champions[0].year, champions[0].club.1), (late.globals.start_year() as i16, leader), "{country}'s champion");
+            let crowned = crate::statistics::top_scorers(&late, country);
+            assert!(crowned.len() > kings[k] || crowned.len() >= 3 * 19, "{country}'s kings: {} after {}", crowned.len(), kings[k]);
+            assert_eq!(crowned[0].year, late.globals.start_year() as i16, "{country}'s newest kings");
+        }
+    }
 }
