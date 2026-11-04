@@ -725,6 +725,9 @@ impl Cycle {
                         // first (`FUN_0042958d`): last years weighed,
                         // retirements announced.
                         crate::transfer_week::week(records, &mut season.random);
+                        // The human clubs' trials go on a week, or end
+                        // (`FUN_0064e25b`).
+                        crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
                         crate::stock::roll_week(records, season.day as i32, &mut season.random);
                     }
                 }
@@ -915,6 +918,9 @@ impl Cycle {
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
                 let drawn = crate::promotion::draw(records, &mut season.random);
                 crate::promotion::count(records);
+                // Every trial at the human clubs ends with the season
+                // (`FUN_0074d52b`).
+                crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
                 crate::statistics::archive_strengths(records);
                 crate::development::develop_played(records, false, &mut season.random);
                 crate::rollover::retire_announced(records, &mut season.random);
