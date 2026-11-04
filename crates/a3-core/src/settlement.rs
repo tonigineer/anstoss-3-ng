@@ -433,6 +433,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
             plan_drawn(&mut records.teams[i], skill, random);
             number_sponsor(&mut records.teams[i], system, random);
             plan_price(&mut records.teams[i], system, random);
+            sign_boards(&mut records.teams[i], system, random);
         }
     }
 }
@@ -682,6 +683,27 @@ fn plan_price(team: &mut Team, system: usize, random: &mut Random) {
     let base = price_base(team, system);
     let drawn = base - 5 + random.below(11) as i32;
     put::<i32>(team, 0x4ec, drawn.max(base));
+}
+
+/// The boards' package the walk signs every planned club for a year
+/// (`FUN_007176cf` → `FUN_0071774b`): its number at +0x5a0 drawn from one
+/// to ten, its year at +0x5a1, its money at +0x5a4 — ten to thirteen
+/// drawn, times 800 (`DAT_00a3b3e8`), times the cup system's row of
+/// `DAT_008a7aa8` by the band —, which the plan's rest takes as the
+/// boards' sum at +0x1f0 and +0x2f8 (`FUN_0061f4e6`). Measured on the
+/// original's first new-season day: all 147 planned clubs hold a year's
+/// package of their row's four sums.
+const BOARD_ROWS: [i32; 24] = [140, 40, 25, 140, 40, 25, 120, 35, 15, 180, 50, 10, 160, 50, 10, 100, 35, 25, 100, 35, 25, 70, 35, 25];
+const BOARD_UNIT: i32 = 800;
+
+fn sign_boards(team: &mut Team, system: usize, random: &mut Random) {
+    put::<u8>(team, 0x5a0, random.below(10) as u8 + 1);
+    put::<u8>(team, 0x5a1, 1);
+    let row = BOARD_ROWS.get(system * 3 + usize::from(team.level().min(2))).copied().unwrap_or(0);
+    let money = (random.below(4) as i32 + 10) * BOARD_UNIT * row;
+    put::<i32>(team, 0x5a4, money);
+    put::<i32>(team, 0x1f0, money);
+    put::<i32>(team, 0x2f8, money);
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2732,8 +2754,8 @@ mod tests {
 
     /// The main sponsor's number is one of the original's draws: on its
     /// first new-season day every planned club's +0x4ea is reproduced by a
-    /// draw among its cup system's forty, and its +0x4ec by a draw over
-    /// the plan's figure.
+    /// draw among its cup system's forty, its +0x4ec by a draw over the
+    /// plan's figure and its boards' package by a draw of its row.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_sponsors_number_is_one_of_the_originals_draws() {
@@ -2764,6 +2786,15 @@ mod tests {
                 club::<i32>(&team, 0x4ec) == figure
             });
             assert!(found, "{i}: +0x4ec {figure}, base {}", price_base(&theirs.teams[i], system));
+            let boards = [0x5a4, 0x1f0, 0x2f8].map(|at| club::<i32>(&theirs.teams[i], at));
+            let bytes = [0x5a0, 0x5a1].map(|at| club::<u8>(&theirs.teams[i], at));
+            let found = (0..400).any(|seed| {
+                let mut team = theirs.teams[i].clone();
+                sign_boards(&mut team, system, &mut Random::new(seed));
+                [0x5a4, 0x1f0, 0x2f8].map(|at| club::<i32>(&team, at)) == boards
+                    && [0x5a0, 0x5a1].map(|at| club::<u8>(&team, at)) == bytes
+            });
+            assert!(found, "{i}: boards {boards:?} {bytes:?}");
             count += 1;
         }
         assert!(count > 140, "{count}");
