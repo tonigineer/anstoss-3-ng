@@ -109,6 +109,7 @@ const TEAM_9EC: usize = 0x374;
 /// money trouble's cap — its byte of thousands at +0x851, its flag bit
 /// at +0x379 — and the plan itself at the club's +0x120 (`FUN_0042b589`).
 const DIVISOR_AT: usize = 0x92e;
+const NO_GATES_PLAN: i32 = 5000;
 const CAP_AT: usize = 0x851;
 const CAP_FLAG: usize = 0x379;
 const CAPPED: u8 = 4;
@@ -382,12 +383,11 @@ pub fn clear_bookings(records: &mut Records) {
 /// The clearing of one club (`FUN_00672839`, reached through
 /// `FUN_0042b589`): the season fields to nought, the sales plan's rows
 /// all its first. Beside it `FUN_0042b589` stands the attendance plan
-/// back up: the season's home games at the record's +0x92e for
-/// `FUN_0069e34e` to divide the expected crowd by, and for a human club
-/// the plan itself — the gates of its home games over their count,
-/// rounded down to whole thousands (`FUN_00621143` over `FUN_0069e34e`,
-/// `FUN_0067575a`), or the money trouble's cap byte of thousands when
-/// its flag stands. The board's clubs stand at nought there: the
+/// back up for a human club: the gates of its home games over their
+/// count, which the season's end kept at the record's +0x340 and +0x92e
+/// (`FUN_006b2eed`), rounded down to whole thousands (`FUN_00621143` over
+/// `FUN_0069e34e`, `FUN_0067575a`; 5000 with no home game), or the money
+/// trouble's cap byte of thousands when its flag stands. The board's clubs stand at nought there: the
 /// original's club object carries no gates for them at that moment, so
 /// its round lands on nought as well. Measured on the pair: Union's
 /// 374 204 gates in 17 home games give 22 012, and 22 000 stand in the
@@ -410,15 +410,14 @@ fn clear_club(team: &mut Team) {
             put::<i16>(team, at + c * 2, row);
         }
     }
-    let home = usize::from(team.home_games()).min(team.gates().len());
-    if home == 0 {
-        return;
-    }
-    team.put::<u16>(DIVISOR_AT, home as u16);
     if team.humans() == [0, 0] {
         return;
     }
-    let avg = team.gates()[..home].iter().sum::<i32>() / home as i32;
+    // The closed season's gates over its home games, as its end kept them
+    // (`FUN_00621143`: club +0xd84 over `FUN_0069e34e`'s +0x92e; 5000 with
+    // no home game).
+    let home = i32::from(team.get::<u16>(DIVISOR_AT) as i16);
+    let avg = if home < 1 { NO_GATES_PLAN } else { team.get::<i32>(crate::statistics::GATES_SUM) / home };
     let plan = if team.get::<u8>(CAP_FLAG) & CAPPED != 0 {
         i32::from(team.get::<u8>(CAP_AT)) * 1000
     } else {
@@ -1346,6 +1345,11 @@ mod tests {
             .collect();
         assert_eq!(played.len(), 212, "the four countries' clubs");
         let cash: Vec<i64> = played.iter().map(|&i| club::<i64>(&closed.teams[i], CASH)).collect();
+        // The season's end keeps the gates and home games first; the new
+        // season clears the clubs' own fields — the gates among them —
+        // before the bookings, as the opening runs them.
+        crate::statistics::close_tables(&mut closed);
+        clear_club_seasons(&mut closed);
         clear_bookings(&mut closed);
         for (k, &i) in played.iter().enumerate() {
             let (a, b) = (&closed.teams[i], &opened.teams[i]);

@@ -2942,6 +2942,30 @@ fn note_strongest(records: &mut Records, season: i32, year: i16, club: (u8, u16)
     }
 }
 
+/// The first 268 teams the season's end walks (`FUN_006b2eed`).
+const CLOSED_TEAMS: usize = 0x10c;
+/// What it keeps of each: its table place as the last season's (+0x132
+/// into +0x134); for a club in a league the sum of its home gates (+0x340,
+/// the club object's +0xd84) and its count of home games (+0x260 into
+/// +0x92e) — the new season's attendance plan divides them —, for one in
+/// no league 500 and a hundred for each credit class below eight.
+const LAST_PLACE: usize = 0x134;
+pub(crate) const GATES_SUM: usize = 0x340;
+pub(crate) const HOME_GAMES_KEPT: usize = 0x92e;
+
+pub(crate) fn close_tables(records: &mut Records) {
+    for team in records.teams.iter_mut().take(CLOSED_TEAMS) {
+        team.put::<u8>(LAST_PLACE, team.table_place());
+        if team.level() < 10 {
+            let sum = team.gates().iter().fold(0i32, |s, &g| s.wrapping_add(g));
+            team.put::<i32>(GATES_SUM, sum);
+            team.put::<u16>(HOME_GAMES_KEPT, u16::from(team.home_games()));
+        } else {
+            team.put::<i32>(GATES_SUM, (8 - i32::from(team.credit_class())) * 100 + 500);
+        }
+    }
+}
+
 /// The season's end archives the played leagues' seasons (`FUN_006b3111`
 /// from `FUN_006b2eed`: the main country's every league, a more
 /// country's first): a league's ten kept seasons move on by one, the
@@ -2955,6 +2979,7 @@ fn note_strongest(records: &mut Records, season: i32, year: i16, club: (u8, u16)
 /// place (`FUN_007293ea`).
 pub fn archive_leagues(records: &mut Records) {
     use crate::opponent::{LEAGUE_FIELDS, MARKS, RESULTS};
+    close_tables(records);
     let globals = &records.globals;
     let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
     let mut leagues: Vec<(u16, u8)> = Vec::new();
