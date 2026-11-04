@@ -522,6 +522,30 @@ fn plan_season(team: &mut Team, second: bool, held: u8) {
         1 => put::<u8>(team, 0x1f8, 1),
         _ => {}
     }
+    plan_rest(team);
+}
+
+/// The plan's rest copies into the season's block what stands planned
+/// (`FUN_00673566`, which `FUN_0042b589` closes with): the grades' sum
+/// at +0x1b4 and +0x2bc — `DAT_0089e450`'s row of +0x5e1 in ten
+/// thousands and `DAT_0089e458`'s of +0x5e2 in hundred thousands —, the
+/// four sums +0x164 to +0x170 at +0x26c to +0x278 and the four bytes
+/// +0x1f8 to +0x1fb at +0x300 to +0x303. (Its sponsors' sums, the drawn
+/// parts and the human's own are not built.)
+const GRADE_TENS: [i32; 4] = [0, 2, 20, 100];
+const GRADE_HUNDREDS: [i32; 4] = [0, 2, 10, 30];
+
+fn plan_rest(team: &mut Team) {
+    let row = |table: &[i32; 4], at: usize| table.get(usize::from(club::<u8>(team, at))).copied().unwrap_or(0);
+    let grades = row(&GRADE_TENS, 0x5e1) * 10_000 + row(&GRADE_HUNDREDS, 0x5e2) * 100_000;
+    put::<i32>(team, 0x1b4, grades);
+    put::<i32>(team, 0x2bc, grades);
+    for k in 0..4 {
+        let v = club::<i32>(team, 0x164 + k * 4);
+        put::<i32>(team, 0x26c + k * 4, v);
+        let b = club::<u8>(team, 0x1f8 + k);
+        put::<u8>(team, 0x300 + k, b);
+    }
 }
 
 /// The plan's sums a season after the first sets up beside the clearing
@@ -2292,8 +2316,8 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
-        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130];
-        let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8];
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278];
+        let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8, 0x300, 0x301, 0x302, 0x303];
         for team in ours.teams.iter_mut() {
             for at in words {
                 put::<i32>(team, at, 0);
