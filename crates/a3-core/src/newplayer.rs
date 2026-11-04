@@ -625,7 +625,7 @@ mod tests {
     /// new players are made as NewSeason000's are — keepers of strength 1
     /// where two were missing, aged 19 to 22, of the club's nation, on three
     /// or four years, the retiring byte at 8 — and about as many as the
-    /// original's recycled players at those clubs.
+    /// original's recycled players at those clubs, over four turns.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_kept_clubs_take_new_players_as_the_original() {
@@ -633,57 +633,65 @@ mod tests {
         let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let keeps = dir.parent().unwrap().join("saves-kept");
         let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
-        let (mut ours, theirs, before) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let (theirs, before) = (load("NewSeason000.an3"), load("SeasonEnd364.an3"));
         let data = crate::data::Data::load(&dir).unwrap();
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let tables = crate::league::LeagueTables::load(&exe).unwrap();
-        let mut random = Random::new(3);
-        let drawn = crate::promotion::draw(&mut ours, &mut random);
-        crate::promotion::count(&mut ours);
-        crate::development::develop_played(&mut ours, false, &mut random);
-        crate::rollover::retire_announced(&mut ours, &mut random);
-        crate::statistics::archive_leagues(&mut ours);
-        crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
-        crate::rollover::count_first_seasons(&mut ours);
-        let agents = crate::free_agents::release(&mut ours, &mut random);
-        crate::deals::execute(&mut ours, &mut random);
-        crate::rollover::close_played(&mut ours, &mut random);
-        crate::rollover::close_kept(&mut ours, &mut random);
-        crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
-        crate::settlement::settle_season(&mut ours, &tables);
-        crate::promotion::take(&mut ours, &drawn);
-        crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
-        let year = ours.globals.start_year();
-        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
-        let renewed = |r: &Records| -> Vec<(u16, u16)> {
-            let mut v = Vec::new();
-            for c in 1..0x75usize {
-                if before.countries.kind(c) != 2 {
-                    continue;
-                }
-                for t in 0..before.countries.team_count(c).max(0) as u16 {
-                    let old = before.team(c as u16, t).unwrap().players();
-                    for id in r.team(c as u16, t).unwrap().players() {
-                        let same = before.player(id).zip(r.player(id)).is_some_and(|(o, x)| o.first_name() == x.first_name() && o.birthday() == x.birthday());
-                        if !old.contains(&id) && !same {
-                            v.push((c as u16, id));
+        // Four turns of the season, the count of new players summed: a
+        // single draw's count swings with every other draw of the turn.
+        let (mut made, mut theirs_made) = (0, 0);
+        for seed in [3, 4, 5, 6] {
+            let mut ours = load("SeasonEnd364.an3");
+            let mut random = Random::new(seed);
+            let drawn = crate::promotion::draw(&mut ours, &mut random);
+            crate::promotion::count(&mut ours);
+            crate::development::develop_played(&mut ours, false, &mut random);
+            crate::rollover::retire_announced(&mut ours, &mut random);
+            crate::statistics::archive_leagues(&mut ours);
+            crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
+            crate::rollover::count_first_seasons(&mut ours);
+            let agents = crate::free_agents::release(&mut ours, &mut random);
+            crate::deals::execute(&mut ours, &mut random);
+            crate::rollover::close_played(&mut ours, &mut random);
+            crate::rollover::close_kept(&mut ours, &mut random);
+            crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
+            crate::settlement::settle_season(&mut ours, &tables);
+            crate::promotion::take(&mut ours, &drawn);
+            crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
+            let year = ours.globals.start_year();
+            let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+            let renewed = |r: &Records| -> Vec<(u16, u16)> {
+                let mut v = Vec::new();
+                for c in 1..0x75usize {
+                    if before.countries.kind(c) != 2 {
+                        continue;
+                    }
+                    for t in 0..before.countries.team_count(c).max(0) as u16 {
+                        let old = before.team(c as u16, t).unwrap().players();
+                        for id in r.team(c as u16, t).unwrap().players() {
+                            let same = before.player(id).zip(r.player(id)).is_some_and(|(o, x)| o.first_name() == x.first_name() && o.birthday() == x.birthday());
+                            if !old.contains(&id) && !same {
+                                v.push((c as u16, id));
+                            }
                         }
                     }
                 }
+                v
+            };
+            let (mine, their) = (renewed(&ours), renewed(&theirs));
+            made += mine.len();
+            theirs_made += their.len();
+            for &(country, id) in &mine {
+                let p = ours.player(id).unwrap();
+                assert_eq!(p.strength(), 1, "player {id}");
+                assert!((19..=22).contains(&crate::statistics::age_on(p, today)), "player {id}'s age");
+                assert_eq!(u16::from(p.nation()), country, "player {id}'s nation");
+                assert!((3..=4).contains(&(i32::from(p.contract() & 0xfff) - i32::from(year))), "player {id}'s years");
+                assert_eq!(p.retiring(), 8);
+                assert_eq!(p.club()[0], country as u8);
             }
-            v
-        };
-        let (mine, their) = (renewed(&ours), renewed(&theirs));
-        assert!(mine.len() * 10 >= their.len() * 8 && mine.len() * 10 <= their.len() * 12, "{} new against {}", mine.len(), their.len());
-        for &(country, id) in &mine {
-            let p = ours.player(id).unwrap();
-            assert_eq!(p.strength(), 1, "player {id}");
-            assert!((19..=22).contains(&crate::statistics::age_on(p, today)), "player {id}'s age");
-            assert_eq!(u16::from(p.nation()), country, "player {id}'s nation");
-            assert!((3..=4).contains(&(i32::from(p.contract() & 0xfff) - i32::from(year))), "player {id}'s years");
-            assert_eq!(p.retiring(), 8);
-            assert_eq!(p.club()[0], country as u8);
         }
+        assert!(made * 10 >= theirs_made * 8 && made * 10 <= theirs_made * 12, "{made} new against {theirs_made}");
     }
 
     /// Over the original's turn the played countries' computer clubs fill
