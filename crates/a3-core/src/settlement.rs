@@ -448,6 +448,7 @@ pub fn clear_bookings(records: &mut Records) {
 /// (flag 1) or the Champions League's holder, else two millions for a
 /// club in Europe (flag 0x4000), 1 200 000 more for the holder of the
 /// first or second European cup (`FUN_0042419d` over `DAT_00ae6dd4`).
+/// The squad's salaries stand at +0x17c (`FUN_0062023c`).
 /// Measured on the pair: every one of the 147 clubs planned agrees. The
 /// walk's drawn parts (the TV's and the boards' money, +0x18c, +0x1a8,
 /// +0x1a4), the sponsors it signs (`FUN_00716a87`) and the first
@@ -551,6 +552,7 @@ fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
         put::<i32>(team, 0x1b0, PLAN_1B0[usize::from(band)]);
     }
     put::<i32>(team, 0x1b8, PLAN_1B8);
+    put::<i32>(team, 0x17c, cover.wages);
     match level {
         0 => put::<u8>(team, 0x1f8, if team.get::<u8>(CLUB_CLASS) < HIGH_CLASS { 1 } else { 2 }),
         1 => put::<u8>(team, 0x1f8, 1),
@@ -562,22 +564,23 @@ fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
 /// What the squad's insurance comes to: the players' own extra
 /// insurance in thousands (player +0x1f4, the object's +0xbc;
 /// `FUN_0061f9fc`) and the German clubs' compulsory one
-/// ([`crate::finances::compulsory_insurance`], `FUN_0061fa79`).
+/// ([`crate::finances::compulsory_insurance`], `FUN_0061fa79`); beside it
+/// the squad's salaries in thousands (`FUN_0062023c`), which the walk
+/// plans at +0x17c.
 #[derive(Clone, Copy)]
 struct Cover {
     extra: i32,
     compulsory: i32,
+    wages: i32,
 }
 const EXTRA_INSURANCE: usize = 0x1f4;
 const INSURANCE_UNIT: i32 = 1000;
 
 fn insurance(records: &Records, team: &Team) -> Cover {
-    let extra = team
-        .players()
-        .iter()
-        .filter_map(|&id| records.player(id))
-        .fold(0i32, |s, p| s.wrapping_add(i32::from(p.get::<i16>(EXTRA_INSURANCE)) * INSURANCE_UNIT));
-    Cover { extra, compulsory: crate::finances::compulsory_insurance(records, team) }
+    let squad = || team.players().into_iter().filter_map(|id| records.player(id));
+    let extra = squad().fold(0i32, |s, p| s.wrapping_add(i32::from(p.get::<i16>(EXTRA_INSURANCE)) * INSURANCE_UNIT));
+    let wages = squad().fold(0i32, |s, p| s.wrapping_add(i32::from(p.salary()) * INSURANCE_UNIT));
+    Cover { extra, compulsory: crate::finances::compulsory_insurance(records, team), wages }
 }
 
 /// The plan's rest copies into the season's block what stands planned
@@ -2386,7 +2389,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
-        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278, 0x194, 0x29c, 0x280];
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278, 0x194, 0x29c, 0x280, 0x17c];
         let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8, 0x300, 0x301, 0x302, 0x303];
         for team in ours.teams.iter_mut() {
             for at in words {
