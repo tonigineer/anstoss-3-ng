@@ -98,6 +98,11 @@ const BOOKED_BLOCKS: [usize; 2] = [0x120, 0x228];
 const BOOKED_LEN: usize = 0xf0;
 const CLEARED_DWORDS: usize = 0x470;
 const PLAN_ROWS: [usize; 4] = [0x49c, 0x4a6, 0x4b0, 0x4ba];
+/// Beside them it puts +0x498 to nought, +0x492 to fifty, and +0x9ec —
+/// which the team record holds at +0x374 — to nought.
+const CLEARED_498: usize = 0x498;
+const FIFTY_AT: usize = 0x492;
+const TEAM_9EC: usize = 0x374;
 /// The attendance plan the new season stands up again: the season's home
 /// games, kept at the team record's +0x92e for `FUN_0069e34e` to read
 /// back as the divisor of the expected crowd (`FUN_00621143`); the
@@ -396,6 +401,9 @@ fn clear_club(team: &mut Team) {
     for k in 0..8 {
         put::<u32>(team, CLEARED_DWORDS + k * 4, 0);
     }
+    put::<u32>(team, CLEARED_498, 0);
+    put::<u16>(team, FIFTY_AT, 50);
+    team.put::<u32>(TEAM_9EC, 0);
     for &at in &PLAN_ROWS {
         let row = club::<i16>(team, at);
         for c in 1..5 {
@@ -1214,8 +1222,8 @@ mod tests {
     /// (SeasonEnd364) against its first day after (NewSeason000). Of
     /// the main country and the more ones stand the prize money and the
     /// team bonuses at nought for every club of every league, the human
-    /// club among them; the dwords behind the blocks and the sales
-    /// plan's rows agree as well, while the clubs of all other countries
+    /// club among them; the dwords behind the blocks, +0x498, +0x492 at
+    /// fifty, +0x9ec and the sales plan's rows agree as well, while the clubs of all other countries
     /// keep their season's fields. The attendance plan agrees too: the
     /// home games of the season at +0x92e for every club, and the human
     /// club's plan computed back (22 000 at Union, 17 home games of
@@ -1273,6 +1281,9 @@ mod tests {
                 let at = CLEARED_DWORDS + k * 4;
                 assert_eq!(club::<u32>(a, at), club::<u32>(b, at), "team {i} +{at:#x}");
             }
+            assert_eq!(club::<u32>(a, CLEARED_498), club::<u32>(b, CLEARED_498), "team {i} +0x498");
+            assert_eq!(club::<u16>(a, FIFTY_AT), club::<u16>(b, FIFTY_AT), "team {i} +0x492");
+            assert_eq!(a.get::<u32>(TEAM_9EC), b.get::<u32>(TEAM_9EC), "team {i} +0x9ec");
             for at in PLAN_ROWS {
                 for c in 0..5 {
                     let at = at + c * 2;
