@@ -511,6 +511,8 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         plan_club(&mut records.teams[i], system);
         plan_staff(records, i);
         if records.teams[i].humans()[1] == 0 {
+            let carried = players_carried_on(records, &records.teams[i]);
+            put::<i32>(&mut records.teams[i], 0x17c, carried);
             plan_bonuses(&mut records.teams[i], system);
             let bonuses = expected_bonuses(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], EXPECTED_BONUSES, bonuses);
@@ -926,6 +928,33 @@ fn plan_bonuses(team: &mut Team, system: usize) {
     put::<i32>(team, LAST_BONUS, drop);
 }
 
+/// The players' pay the clearing carries into the plan at +0x17c
+/// (`FUN_006202c1`, as [`crate::forecast`] reckons it): the pay booked —
+/// nought, the bookings just cleared — and the squad's wage bill
+/// ([`crate::finances::wage_bill`], `FUN_0062029e`, over a league of its
+/// size) for the months left, at least the plan's players' sum, which
+/// stands at nought then. A planned club has it overwritten by its
+/// salaries; the amateurs keep it. Measured on the original's first
+/// new-season day: all 64 amateur clubs agree.
+fn players_carried_on(records: &Records, team: &Team) -> i32 {
+    let month = records.globals.get::<i16>(MONTH_AT);
+    let left = MONTHS_LEFT.get(usize::try_from(month).unwrap_or(0)).copied().unwrap_or(0);
+    let bill = crate::finances::wage_bill(records, team, league_teams(records, team));
+    let tail = if month > FIRST_HALF { bill % 12 } else { 0 };
+    (bill / 12).wrapping_mul(left).wrapping_add(tail).max(0)
+}
+
+/// A club's league size as the original reads it (`FUN_00635a35`): its
+/// league's clubs, eighteen from the sixth level on.
+fn league_teams(records: &Records, team: &Team) -> i32 {
+    let level = team.level();
+    if level < 6 {
+        crate::opponent::League::of(records, u16::from(team.country()), level).map_or(NO_LEAGUE_TEAMS, |l| l.teams() as i32)
+    } else {
+        NO_LEAGUE_TEAMS
+    }
+}
+
 /// The team bonuses the season is expected to cost, which the clearing
 /// plans at +0x180 (`FUN_0061f64f(club, 0)`): the matches the board's
 /// goal (team +0x135, the object's +0x10c) expects won —
@@ -948,11 +977,7 @@ const NO_LEAGUE_TEAMS: i32 = 18;
 
 fn expected_bonuses(records: &Records, team: &Team) -> i32 {
     let level = team.level();
-    let teams = if level < 6 {
-        crate::opponent::League::of(records, u16::from(team.country()), level).map_or(NO_LEAGUE_TEAMS, |l| l.teams() as i32)
-    } else {
-        NO_LEAGUE_TEAMS
-    };
+    let teams = league_teams(records, team);
     let goal = usize::try_from(team.get::<i8>(BOARD_GOAL_AT)).unwrap_or(0).min(GOAL_ROWS.len() - 1);
     let rows: [i32; 5] = std::array::from_fn(|k| i32::from(club::<u16>(team, BONUS_ROWS_AT + 2 * k)));
     let row = match GOAL_ROWS[goal] {
@@ -3159,7 +3184,7 @@ mod tests {
     /// The team bonuses come out as the original's: on its first
     /// new-season day every computer club, the fields put to nought, is
     /// planned back to its rows and bonuses, and its season's expected
-    /// bonuses with them.
+    /// bonuses with them; an amateur club its players' pay carried on.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_team_bonuses_are_planned_as_the_original() {
@@ -3183,6 +3208,9 @@ mod tests {
             }
             for at in [TITLE_BONUS, EUROPE_BONUS, PROMOTED_BONUS, LAST_BONUS] {
                 put::<i32>(&mut team, at, -1);
+            }
+            if team.level() >= 10 {
+                assert_eq!(players_carried_on(&theirs, &team), club::<i32>(&theirs.teams[i], 0x17c), "{i} players carried on");
             }
             plan_bonuses(&mut team, system);
             // The expected bonuses by the +0x5c4 the season's end left.
