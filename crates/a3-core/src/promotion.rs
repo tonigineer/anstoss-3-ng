@@ -751,15 +751,15 @@ fn record_moves(records: &mut Records, country: u16, log: &[(bool, usize, i16)])
             continue;
         }
         let (base, per_slot, per_club, kinds) = if up { SLOT_PROMOTIONS } else { SLOT_RELEGATIONS };
-        if level < kinds {
-            if let Some(block) = records.block_mut(LISTS) {
-                bump_word(block, base + slot * per_slot + club as usize * per_club + level * 2);
-            }
+        if level < kinds
+            && let Some(block) = records.block_mut(LISTS)
+        {
+            bump_word(block, base + slot * per_slot + club as usize * per_club + level * 2);
         }
-        if let Some(&at) = HISTORY_UP.get(level).filter(|_| up) {
-            if let Some(block) = records.block_mut(HISTORY) {
-                bump_word(block, (first + club as usize) * HISTORY_CLUB + at);
-            }
+        if let Some(&at) = HISTORY_UP.get(level).filter(|_| up)
+            && let Some(block) = records.block_mut(HISTORY)
+        {
+            bump_word(block, (first + club as usize) * HISTORY_CLUB + at);
         }
         let (name, width, kinds) = if up { PROMOTION_RECORD } else { RELEGATION_RECORD };
         let Some(block) = records.block_mut(name) else { continue };

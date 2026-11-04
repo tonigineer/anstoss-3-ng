@@ -60,12 +60,12 @@ const SEASON_TITLES: usize = 0x11e;
 /// built.)
 pub fn title(records: &mut Records, country: u16, number: u16, kind: u8) {
     honour(records, country, number, kind);
-    if MARKED.get(usize::from(kind)).copied().unwrap_or(false) {
-        if let Some(t) = records.team_mut(country, number) {
-            let v = t.get::<u8>(SEASON_TITLES);
-            let titles = ((v & 3) + 1).min(3);
-            t.put::<u8>(SEASON_TITLES, v & !3 | titles);
-        }
+    if MARKED.get(usize::from(kind)).copied().unwrap_or(false)
+        && let Some(t) = records.team_mut(country, number)
+    {
+        let v = t.get::<u8>(SEASON_TITLES);
+        let titles = ((v & 3) + 1).min(3);
+        t.put::<u8>(SEASON_TITLES, v & !3 | titles);
     }
     if kind == CUP {
         let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
@@ -140,10 +140,11 @@ pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
 /// - it marks the title in its honours byte (team +0x8ea, 0x80;
 ///   `FUN_00699fe1`) and every man of its squad counts it in his own
 ///   first honour (player +0x299, `FUN_007045c9` in `FUN_0071d2d0`);
-/// - and it takes the title ([`title`]).
 /// - its history (the object `0xa6d348`, 0x80 a club) counts one title
 ///   more at +0 and keeps the calendar year among the last five after it
 ///   (`FUN_0064089e`, `FUN_00640d8b`);
+/// - and it takes the title ([`title`]).
+///
 /// (The human's event 0x6a and country 0x3b's play-off, `FUN_006d8bb0`,
 /// are not built.)
 const CHAMPION_MARK: u8 = 0x80;
@@ -306,18 +307,18 @@ pub fn champions_day(records: &mut Records) {
         // The club's history: one title more and its year among the last
         // five (`FUN_0064089e`, `FUN_00640d8b`).
         let year = records.globals.date()[2] as i16;
-        if let (Some(index), Some(b)) = (records.team_index(country, number), records.block_mut(HISTORY)) {
-            if let Some(h) = b.get_mut(index * HISTORY_CLUB..index * HISTORY_CLUB + HISTORY_YEARS_END) {
-                let count = i16::from_le_bytes([h[0], h[1]]);
-                if count < 5 {
-                    let at = 2 + 2 * usize::try_from(count).unwrap_or(0);
-                    h[at..at + 2].copy_from_slice(&year.to_le_bytes());
-                } else {
-                    h.copy_within(4..12, 2);
-                    h[10..12].copy_from_slice(&year.to_le_bytes());
-                }
-                h[0..2].copy_from_slice(&count.wrapping_add(1).to_le_bytes());
+        if let (Some(index), Some(b)) = (records.team_index(country, number), records.block_mut(HISTORY))
+            && let Some(h) = b.get_mut(index * HISTORY_CLUB..index * HISTORY_CLUB + HISTORY_YEARS_END)
+        {
+            let count = i16::from_le_bytes([h[0], h[1]]);
+            if count < 5 {
+                let at = 2 + 2 * usize::try_from(count).unwrap_or(0);
+                h[at..at + 2].copy_from_slice(&year.to_le_bytes());
+            } else {
+                h.copy_within(4..12, 2);
+                h[10..12].copy_from_slice(&year.to_le_bytes());
             }
+            h[0..2].copy_from_slice(&count.wrapping_add(1).to_le_bytes());
         }
         let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
         if let Some(t) = records.team_mut(country, number) {

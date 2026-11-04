@@ -764,6 +764,7 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
 ///   +0x52c, within nine tenths of the stadium (+0x3c of its record; 500
 ///   with none), and its bonus at +0x528, the money's thousandths times
 ///   275, 300 or 325 drawn — both nought when no gate is asked;
+///
 /// then the seven sums in hundredths times the club's +0x10f (team
 /// +0x138) twice over fifty and ninety, by the system's row of
 /// `DAT_008a7aa8`; a drawn style takes three or six tenths of some of
@@ -1432,8 +1433,8 @@ fn clear_club(team: &mut Team) {
 /// the stage at 0, the round at -1). The July calendar is set for the new
 /// year — the first day, the date, the day of the year and the year's
 /// length, 366 when the new year is a leap year (`FUN_00675e65`). A
-/// season after the first draws its lottery below 1000, the first keeps
-/// 1. The bank sets the year's rates and the funds' deposits settle at
+/// season after the first draws its lottery below 1000, the first
+/// keeps 1. The bank sets the year's rates and the funds' deposits settle at
 /// their closing worth, the funds back at 1000 ([`crate::finances::new_rates`],
 /// [`crate::finances::settle_funds`]). Then the leagues of the countries
 /// played stand open again, every
