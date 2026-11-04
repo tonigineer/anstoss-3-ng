@@ -463,6 +463,11 @@ pub fn open_season_with(
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
+    // Each played country's youth leagues start their season with the
+    // senior ones (`FUN_00774088`'s last part).
+    for country in crate::opponent::played_nations(records) {
+        crate::youth_league::open_season(records, country);
+    }
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::promotion::place(records);

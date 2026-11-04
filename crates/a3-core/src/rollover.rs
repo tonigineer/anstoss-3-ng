@@ -217,6 +217,9 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
                 }
             }
         }
+        // The country's youth leagues move their teams up and down
+        // after its clubs (`FUN_006b44cb`'s `FUN_00670ac5`).
+        crate::youth_league::close_season(records, country);
     }
 }
 
