@@ -205,6 +205,92 @@ fn enter_leader(records: &mut Records, country: u16, (at, per): (usize, usize), 
     Some(number)
 }
 
+/// The season's top scorers the same half week (`FUN_0071cd1f` →
+/// `FUN_0071cd6f` per played country, its first league's list of
+/// scorers — the main country's first, a more country's by its place
+/// after six, `FUN_00677b07`): the country's Torschützenkönige move on a
+/// season, the oldest dropped, and the new one holds the first three of
+/// those tied with the leader — each ten bytes: his names, his club's
+/// number, his goals and the start year; every one so tied counts it in
+/// his honours (player +0x29f, `FUN_007047a3`); and every scorer of the
+/// list with goals at least the tenth best tally's goes into the ten best
+/// tallies, above those he equals. (The runtime note of the country's top
+/// scorer, `DAT_01c6857e`, is not kept.)
+const SCORER_ENTRY: usize = 0x10;
+const SCORERS: usize = 100;
+const TIED: usize = 10;
+const KING_SEASON: usize = 0x1e;
+const TALLY: usize = 10;
+
+pub fn top_scorers_day(records: &mut Records) {
+    use crate::statistics::{KINGS, LISTS, TALLIES, TOR_LEAGUE, TOR_LIST};
+    let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+    let mut countries = vec![(main, 0usize)];
+    for k in 0..usize::try_from(records.globals.get::<i16>(MORE_COUNT)).unwrap_or(0).min(4) {
+        let country = records.globals.get::<i16>(MORE_COUNTRIES + 2 * k);
+        countries.push((u16::try_from(country).unwrap_or(0), k + 6));
+    }
+    let year = records.globals.start_year();
+    for (country, index) in countries {
+        let slot = usize::from(records.countries.slot(usize::from(country)));
+        let Some(b) = records.block_mut(LISTS) else { return };
+        let from = TOR_LIST + index * TOR_LEAGUE;
+        let Some(list) = b.get(from..from + TOR_LEAGUE).map(<[u8]>::to_vec) else { continue };
+        let entry = |k: usize| &list[k * SCORER_ENTRY..(k + 1) * SCORER_ENTRY];
+        let tally = |e: &[u8]| -> [u8; TALLY] {
+            let mut t = [0u8; TALLY];
+            t[0..4].copy_from_slice(&e[2..6]);
+            t[4..6].copy_from_slice(&u16::from(e[7]).to_le_bytes());
+            t[6..8].copy_from_slice(&u16::from(e[8]).to_le_bytes());
+            t[8..10].copy_from_slice(&year.to_le_bytes());
+            t
+        };
+        let (at, per) = KINGS;
+        let kings = at + slot * per;
+        let Some(k) = b.get_mut(kings..kings + per) else { continue };
+        k.copy_within(KING_SEASON.., 0);
+        k[per - KING_SEASON..].fill(0);
+        let lead = entry(0)[8];
+        let mut tied = Vec::new();
+        for i in (0..TIED).take_while(|&i| entry(i)[8] == lead) {
+            if i < 3 {
+                let at = per - KING_SEASON + i * TALLY;
+                k[at..at + TALLY].copy_from_slice(&tally(entry(i)));
+            }
+            let id = u16::from_le_bytes([entry(i)[0], entry(i)[1]]);
+            if id != 0 {
+                tied.push(id);
+            }
+        }
+        let (at, per) = TALLIES;
+        let best = at + slot * per;
+        if let Some(t) = b.get_mut(best..best + per) {
+            let goals = |t: &[u8], k: usize| i16::from_le_bytes([t[k * TALLY + 6], t[k * TALLY + 7]]);
+            for i in (0..SCORERS).take_while(|&i| entry(i)[8] != 0) {
+                let g = i16::from(entry(i)[8]);
+                if goals(t, 9) > g {
+                    continue;
+                }
+                let mut e = 8i32;
+                while e >= 0 && goals(t, e as usize) <= g {
+                    let k = e as usize;
+                    t.copy_within(k * TALLY..(k + 1) * TALLY, (k + 1) * TALLY);
+                    e -= 1;
+                }
+                let k = (e + 1) as usize;
+                t[k * TALLY..(k + 1) * TALLY].copy_from_slice(&tally(entry(i)));
+            }
+        }
+        for id in tied {
+            if let Some(p) = records.player_mut(id) {
+                let mut h = p.honours();
+                h[6] = h[6].wrapping_add(1);
+                p.set_honours(h);
+            }
+        }
+    }
+}
+
 pub fn champions_day(records: &mut Records) {
     use crate::statistics::{CHAMPIONS, LISTS, TITLES, TITLES_SLOT};
     for country in crate::opponent::played_nations(records) {
@@ -371,10 +457,37 @@ mod tests {
         for country in crate::opponent::played_nations(&new) {
             enter_leader(&mut day, country, crate::statistics::AUTUMN, crate::statistics::FIRST_ROUND);
         }
+        // The top scorers of the season the same day.
+        {
+            let b = day.block_mut(LISTS).unwrap();
+            for country in crate::opponent::played_nations(&new) {
+                let slot = usize::from(a.countries.slot(usize::from(country)));
+                for (at, per) in [crate::statistics::KINGS, crate::statistics::TALLIES] {
+                    let r = at + slot * per..at + (slot + 1) * per;
+                    b[r.clone()].copy_from_slice(&lists[r]);
+                }
+            }
+        }
+        let kings_before: Vec<u8> = day.players.iter().map(|p| p.honours()[6]).collect();
+        for id in 1..day.players.len().min(a.players.len()) {
+            let mut h = day.players[id].honours();
+            h[6] = a.players[id].honours()[6];
+            day.players[id].set_honours(h);
+        }
+        top_scorers_day(&mut day);
+        let mut kings = 0;
+        for id in 1..day.players.len().min(a.players.len()) {
+            if a.players[id].birthday() != end.players[id].birthday() {
+                continue;
+            }
+            assert_eq!(day.players[id].honours()[6], end.players[id].honours()[6], "player {id}'s scorers' crowns");
+            kings += i32::from(end.players[id].honours()[6] != a.players[id].honours()[6]);
+        }
+        assert!(kings >= 5 && kings_before.len() > 0, "{kings} top scorers");
         let (x, y) = (day.block(LISTS).unwrap(), end.block(LISTS).unwrap());
         for country in crate::opponent::played_nations(&new) {
             let slot = usize::from(a.countries.slot(usize::from(country)));
-            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT), crate::statistics::CUP_WINNERS, (TITLES[1], TITLES_SLOT), crate::statistics::AUTUMN] {
+            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT), crate::statistics::CUP_WINNERS, (TITLES[1], TITLES_SLOT), crate::statistics::AUTUMN, crate::statistics::KINGS, crate::statistics::TALLIES] {
                 let r = at + slot * per..at + (slot + 1) * per;
                 assert_eq!(x[r.clone()], y[r], "{country}'s list at {at:#x}");
             }

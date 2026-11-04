@@ -2041,8 +2041,8 @@ pub struct Tally {
 /// bytes a country by its slot: twenty seasons of up to three top scorers,
 /// written at the season's end by `FUN_0071cd6f`; `DAT_00b1797c`, 100
 /// bytes a slot: the ten best tallies of a season).
-const KINGS: (usize, usize) = (0xe0d8, 600);
-const TALLIES: (usize, usize) = (0xc2c4, 100);
+pub(crate) const KINGS: (usize, usize) = (0xe0d8, 600);
+pub(crate) const TALLIES: (usize, usize) = (0xc2c4, 100);
 const KING_SEASON: usize = 0x1e;
 const KINGS_PER_SEASON: usize = 3;
 
@@ -2704,8 +2704,8 @@ pub struct LigaRow {
 /// assisted on and his assists. A row is drawn once its first column
 /// stands above 0.
 pub(crate) const LISTS: &str = "0xb0b6b8";
-const TOR_LIST: usize = 0x3c;
-const TOR_LEAGUE: usize = 0x640;
+pub(crate) const TOR_LIST: usize = 0x3c;
+pub(crate) const TOR_LEAGUE: usize = 0x640;
 const SCORER_LIST: usize = 0x468e;
 const SCORER_LEAGUE: usize = 0xf0;
 

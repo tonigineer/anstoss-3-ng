@@ -428,6 +428,7 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
     // ([`crate::honours::champions_day`]).
     if count == crate::honours::CHAMPIONS_DAY {
         crate::honours::champions_day(records);
+        crate::honours::top_scorers_day(records);
     }
     // And the autumn's half weeks their Herbstmeister.
     if (crate::honours::AUTUMN_FIRST..=crate::honours::AUTUMN_LAST).contains(&count) {
