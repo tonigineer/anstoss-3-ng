@@ -290,14 +290,18 @@ pub fn open_player(player: &mut Player, year: i32) {
 /// when the tables are at hand ([`crate::newplayer::fill_played_club`]), a
 /// weak one lifted ([`crate::development::lift_weak`]), then each player
 /// opened, his last form and his form of the season — one week of it —
-/// his form today. (The computer clubs' line-ups and the rest of
-/// `FUN_0077655c` are not built.)
+/// his form today; and with the tables at hand the overdraft the bank
+/// allows by the squad's worth (club +0x4f0, `FUN_00622e08`). (The
+/// computer clubs' line-ups and the rest of `FUN_0077655c` are not
+/// built.)
 pub fn open_played(
     records: &mut Records,
     tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
     random: &mut Random,
 ) {
     let year = i32::from(records.globals.start_year());
+    let [day, month, y] = records.globals.date();
+    let today = NaiveDate::from_ymd_opt(i32::from(y), u32::from(month), u32::from(day));
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             if let Some(tables) = tables {
@@ -312,9 +316,23 @@ pub fn open_played(
                 player.set_season_form(i16::from(form as u8));
                 player.set_season_form_weeks(1);
             }
+            // The overdraft the bank allows by the squad's worth, a tenth
+            // of it in 100.000s — the stars of last season gone by then
+            // (`FUN_0065e659` clears them first; their new ones are not
+            // drawn here).
+            if let (Some((_, values)), Some(today)) = (tables, today) {
+                let Some(team) = records.team(country, number) else { continue };
+                let worth = crate::value::squad_worth(records, team, values, today, [0; 11]);
+                if let Some(team) = records.team_mut(country, number) {
+                    team.set_overdraft((worth / 10 / OVERDRAFT_UNIT) as i16);
+                }
+            }
         }
     }
 }
+
+/// The overdraft's unit (`DAT_00a3b37c`).
+const OVERDRAFT_UNIT: i64 = 100_000;
 
 /// The transfer list (its block from the object's +0x20): an i16 count,
 /// 400 entries of 0x1c bytes from +8, the player's id first.
@@ -823,6 +841,31 @@ pub(crate) fn note_strength(player: &mut Player, strength: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On the original's NewSeason000 every played club's overdraft is a
+    /// tenth of its squad's worth in 100.000s, reckoned on the season's
+    /// first day without the stars, which the new season has cleared.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_overdraft_is_the_squads_worth_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let n = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let [day, month, year] = n.globals.date();
+        let today = NaiveDate::from_ymd_opt(i32::from(year), u32::from(month), u32::from(day)).unwrap();
+        let mut clubs = 0;
+        for country in crate::opponent::played_nations(&n) {
+            for number in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let team = n.team(country, number).unwrap();
+                let worth = crate::value::squad_worth(&n, team, &data.rules.value, today, [0; 11]);
+                assert_eq!((worth / 10 / OVERDRAFT_UNIT) as i16, team.overdraft(), "{country}/{number}");
+                clubs += 1;
+            }
+        }
+        assert!(clubs > 200);
+    }
 
     fn player() -> Player {
         Player::new(&vec![0u8; Player::SIZE]).unwrap()

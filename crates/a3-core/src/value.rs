@@ -205,6 +205,45 @@ impl ValueTables {
     }
 }
 
+/// Ids from here on are the managers playing, no players of a squad's
+/// worth (`FUN_00622e08`'s 0x4269).
+const FIRST_MANAGER_ID: u16 = 0x4269;
+/// What a squad's worth stops at (`DAT_00a3b29c` twice: 250 Mio).
+const SQUAD_MOST: i64 = 500_000_000;
+
+/// A squad's worth (`FUN_00622e08`): its players' market values on the
+/// day, their contracts' years left from the season's start year, the
+/// stars of each position (`DAT_00b5dfd0`) a fifth more; once past 500
+/// Mio it stands there.
+pub fn squad_worth(records: &crate::records::Records, team: &crate::records::Team, tables: &ValueTables, today: chrono::NaiveDate, stars: [u16; 11]) -> i64 {
+    use chrono::Datelike;
+    let mut sum: i64 = 0;
+    for id in team.players() {
+        if id >= FIRST_MANAGER_ID {
+            continue;
+        }
+        let Some(p) = records.player(id) else { continue };
+        let position = p.positions()[0];
+        let worth = Worth {
+            strength: p.strength(),
+            position,
+            talent: p.talent(),
+            age: crate::statistics::age_on(p, today),
+            good: p.good(),
+            character: p.traits(),
+            qualities: p.qualities(),
+            star: stars.get(usize::from(position)).is_some_and(|&s| s == id),
+            kind_12_matches: p.kind_12_matches(),
+        };
+        let years = i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year());
+        sum += tables.market_value(&worth, years, today.month());
+        if sum > SQUAD_MOST {
+            return SQUAD_MOST;
+        }
+    }
+    sum
+}
+
 #[cfg(test)]
 mod loan_tests {
     use super::*;

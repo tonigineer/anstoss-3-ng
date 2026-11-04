@@ -18,8 +18,8 @@
 //! tournaments' nations, the European cups' entrants and the cups' teams,
 //! each list ordered from the shortest odds.
 //!
-//! Left out: the squads' market value at club +0x4f0, which the club
-//! keeps for itself.
+//! (The squad's worth at club +0x4f0, the bank's overdraft, the players'
+//! opening sets, [`crate::rollover::open_played`].)
 
 use crate::data::Data;
 use crate::records::Records;
