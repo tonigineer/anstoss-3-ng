@@ -58,6 +58,7 @@ pub mod squadlist;
 pub mod stadium;
 pub mod statistics;
 pub mod state;
+pub mod supercup;
 pub mod stock;
 pub mod tactics;
 pub mod talk;

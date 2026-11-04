@@ -164,6 +164,8 @@ pub fn draw(records: &mut Records, random: &mut Random) {
     let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
     for country in crate::opponent::played_nations(records) {
         draw_cup(records, country, main, random);
+        // Its supercup beside (`FUN_006ccc80`).
+        crate::supercup::set_up(records, country, random);
     }
 }
 
