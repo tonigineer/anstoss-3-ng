@@ -889,6 +889,8 @@ const CUP_WON: u16 = 0x1000;
 const WILL_SHIFT: usize = 0x95a;
 const WILL_MOST: i16 = 200;
 const SEASON_DRAW: usize = 0x302;
+/// The club's worth as the season starts (club +0x218).
+const SEASON_START_WORTH: usize = 0x218;
 /// Two bytes of past seasons (club +0xee, +0xef), and the season's
 /// honours the second takes a bit for: the title, second place, the UEFA
 /// cup, the cup.
@@ -925,7 +927,14 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
             } else {
                 NO_LEAGUE_CLUBS
             };
+            let prices = records.globals.fund_prices();
             let Some(team) = records.team_mut(country, number) else { continue };
+            // What the club is worth as the season starts: its cash, less
+            // its loans, with its deposits (`FUN_00621f0d`).
+            let worth = club::<i64>(team, CASH)
+                .wrapping_sub(crate::finances::loans(team))
+                .wrapping_add(crate::finances::deposits(team, prices));
+            put::<i64>(team, SEASON_START_WORTH, worth);
             let mut respect = (clubs - i32::from(team.league_place())) * RESPECT_STEP + RESPECT_FLOOR;
             let forecast = team.get::<u8>(NO_LEAGUE_FORECAST);
             if forecast >= 16 {
@@ -1727,7 +1736,8 @@ mod tests {
     /// From the original's NewSeason000 — its clubs in their new leagues
     /// and places, the UEFA cup's mark (set after) taken off — the respect
     /// every played club opens the season at comes out as the original's,
-    /// the mood and the tactics within their draws.
+    /// the mood and the tactics within their draws, its worth at the
+    /// season's start but at the four amateurs moved up.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_open_the_season_with_the_originals_respect() {
@@ -1748,12 +1758,13 @@ mod tests {
         }
         open_tactics(&mut ours, &mut Random::new(2));
         open_standings(&mut ours, &mut Random::new(2));
-        let (mut same, mut all) = (0, 0);
+        let (mut same, mut all, mut worth) = (0, 0, 0);
         for &c in &played {
             for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
                 let (x, y) = (ours.team(c, t).unwrap(), theirs.team(c, t).unwrap());
                 all += 1;
                 same += i32::from(x.respect() == y.respect());
+                worth += i32::from(club::<i64>(x, SEASON_START_WORTH) == club::<i64>(y, SEASON_START_WORTH));
                 // The tactics: one setting throughout, as the original's or
                 // one off by the draw.
                 let (mine, theirs) = (x.get::<u8>(TACTIC_BYTES[0]), y.get::<u8>(TACTIC_BYTES[0]));
@@ -1771,6 +1782,9 @@ mod tests {
             }
         }
         assert!(all > 200 && same == all, "{same} of {all}");
+        // The worth at the season's start too, but at the amateurs moved up
+        // whose cash the original sets after it.
+        assert!(worth + 4 >= all, "worth {worth} of {all}");
     }
 
     /// The new season's managers' year leaves the humans' last-match
