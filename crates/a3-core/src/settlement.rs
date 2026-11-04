@@ -409,7 +409,7 @@ pub fn count_down_contracts(records: &mut Records) {
 /// sums and the class template's money — the replica has not built, so
 /// its clubs stand at nought there. The cycle reaches this from
 /// [`open_season`].
-pub fn clear_bookings(records: &mut Records) {
+pub fn clear_bookings(records: &mut Records, random: &mut Random) {
     let second = records.globals.seasons() > 1;
     let holders = records.block(HOLDERS).map(<[u8]>::to_vec).unwrap_or_default();
     for i in 0..records.teams.len() {
@@ -427,7 +427,11 @@ pub fn clear_bookings(records: &mut Records) {
             insure_squad(records, i);
         }
         let cover = insurance(records, &records.teams[i]);
+        let skill = manager_skill(records, &records.teams[i]);
         plan_season(&mut records.teams[i], second, held, cover);
+        if planned(&records.teams[i]) {
+            plan_drawn(&mut records.teams[i], skill, random);
+        }
     }
 }
 
@@ -554,6 +558,68 @@ fn plan_staff(records: &mut Records, team: usize) {
 
 /// The grades' pairs the clearing reckons +0x1ac from (`DAT_0089e45c`).
 const GRADE_PAIRS: [(i32, i32); 5] = [(10, 30), (15, 50), (20, 80), (30, 120), (50, 200)];
+
+/// The walk's drawn sums (`FUN_0042b589`): a figure from the band's row
+/// of `DAT_008774b0` — its first, the manager's skill (the person's
+/// +0x25 of the manager-trainer or the manager, `FUN_0040a0c5`) times
+/// its second, the cash in millions times its third, in thousands
+/// (`FUN_0042b489`) —, kept within 50 000 and five millions; a club with
+/// a stadium of its own (team +0x872 below nought, `FUN_0063e793`) puts
+/// seven or eight tenths of it drawn at +0x18c and the rest at +0x1a8,
+/// each down to fifty thousands and at least 50 000, the first league's
+/// +0x1a8 at least 750 000; a sharing club nought at both. +0x1a4 is the
+/// figure down to fifty thousands and drawn 50 000 more, at least 50 000.
+/// The plan's rest copies them to +0x294, +0x2b0 and +0x2ac. (The
+/// landlord's share of a sharing club's and `FUN_006dd937` are not
+/// built.) Measured on the original's first new-season day: all 144
+/// clubs with their own stadium hold one of the two draws, the three
+/// sharing ones nought.
+const DRAWN_ROWS: [(i64, i64, i64); 3] = [(400, 50, 50), (250, 25, 25), (100, 15, 15)];
+const DRAWN_LEAST: i32 = 50_000;
+const DRAWN_MOST: i32 = 5_000_000;
+const DRAWN_TOP_LEAST: i32 = 750_000;
+const SKILL_AT: usize = 0x25;
+const SHARED_AT: usize = 0x872;
+const CASH_AT: usize = 0x210;
+
+fn manager_skill(records: &Records, team: &Team) -> i64 {
+    let [manager_trainer, _, manager] = team.staff();
+    let id = if manager_trainer != 0 { manager_trainer } else { manager };
+    if id == 0 || id > LAST_PERSON {
+        return 0;
+    }
+    records.persons.get(usize::from(id)).map_or(0, |p| i64::from(p.get::<i8>(SKILL_AT)))
+}
+
+fn drawn_figure(team: &Team, skill: i64) -> i32 {
+    let (first, per_skill, per_million) = DRAWN_ROWS[usize::from(team.level().min(2))];
+    let millions = club::<i64>(team, CASH_AT) / 1_000_000;
+    let v = (millions.wrapping_mul(per_million) + first + skill * per_skill).wrapping_mul(1000) as i32;
+    v.clamp(DRAWN_LEAST, DRAWN_MOST)
+}
+
+fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
+    let figure = drawn_figure(team, skill);
+    let tenths = random.below(2) as i32 + 7;
+    let down = |v: i32| v / DRAWN_LEAST * DRAWN_LEAST;
+    let (own, other) = if team.get::<i8>(SHARED_AT) < 0 {
+        let own = down(figure * tenths / 10).max(DRAWN_LEAST);
+        let mut other = down(figure * (10 - tenths) / 10).max(DRAWN_LEAST);
+        if team.level() == 0 {
+            other = other.max(DRAWN_TOP_LEAST);
+        }
+        (own, other)
+    } else {
+        (0, 0)
+    };
+    put::<i32>(team, 0x18c, own);
+    put::<i32>(team, 0x1a8, other);
+    let more = (down(figure) + random.below(2) as i32 * DRAWN_LEAST).max(DRAWN_LEAST);
+    put::<i32>(team, 0x1a4, more);
+    put::<i32>(team, 0x294, own);
+    put::<i32>(team, 0x2b0, other);
+    put::<i32>(team, 0x2ac, more);
+}
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
 fn planned(team: &Team) -> bool {
@@ -872,7 +938,7 @@ pub fn open_season_with(
     count_down_contracts(records);
     crate::finances::keep_last_season(records);
     clear_human_season(records);
-    clear_bookings(records);
+    clear_bookings(records, random);
     keep_club_money(records);
 }
 
@@ -2019,7 +2085,7 @@ mod tests {
             closed.teams[i].set_level(level);
             closed.teams[i].put::<u16>(FLAGS_AT, flags);
         }
-        clear_bookings(&mut closed);
+        clear_bookings(&mut closed, &mut Random::new(1));
         for (k, &i) in played.iter().enumerate() {
             let (a, b) = (&closed.teams[i], &opened.teams[i]);
             assert_eq!(club::<i64>(a, CASH), cash[k], "team {i} keeps its cash");
@@ -2561,5 +2627,38 @@ mod tests {
             plan_staff(&mut old, i);
             assert_eq!(club::<i32>(&old.teams[i], 0x1ac), club::<i32>(&theirs.teams[i], 0x1ac), "{i} +0x1ac");
         }
+    }
+
+    /// The walk's drawn sums come out as one of the original's draws: on
+    /// its first new-season day every planned club's +0x18c, +0x1a8,
+    /// +0x1a4 and their copies are reproduced by some draw of the two.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_drawn_sums_are_one_of_the_originals_draws() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let fields = [0x18c, 0x1a8, 0x1a4, 0x294, 0x2b0, 0x2ac];
+        let (mut count, mut shared) = (0, 0);
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
+                continue;
+            }
+            let skill = manager_skill(&theirs, &theirs.teams[i]);
+            let want = fields.map(|at| club::<i32>(&theirs.teams[i], at));
+            let found = (0..32).any(|seed| {
+                let mut team = theirs.teams[i].clone();
+                plan_drawn(&mut team, skill, &mut Random::new(seed));
+                fields.map(|at| club::<i32>(&team, at)) == want
+            });
+            assert!(found, "{i}: {want:?}");
+            count += 1;
+            shared += i32::from(want[0] == 0);
+        }
+        assert!(count > 140 && shared > 0, "{count} planned, {shared} sharing");
     }
 }
