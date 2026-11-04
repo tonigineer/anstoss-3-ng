@@ -20,16 +20,18 @@
 use crate::random::Random;
 use crate::records::Records;
 
-const OBJECT: u32 = 0x1ba5148;
+pub(crate) const OBJECT: u32 = 0x1ba5148;
 /// The cup systems that play a tournament (`DAT_008a6110`).
 const TOURNAMENT_SYSTEMS: [u8; 1] = [0];
 /// The object's fields from its data: the country, the six of a
 /// tournament, its ties of 0xe bytes, a single tie's sides.
 const COUNTRY: usize = 0;
-const SIX: usize = 2;
-const TIES: usize = 0xe;
-const TIE: usize = 0xe;
-const SINGLE_HOME: usize = 0x46;
+pub(crate) const SIX: usize = 2;
+pub(crate) const TIES: usize = 0xe;
+pub(crate) const TIE: usize = 0xe;
+/// The tournament's final, or the one tie of any other country.
+pub(crate) const FINAL_TIE: usize = 0x46;
+const SINGLE_HOME: usize = FINAL_TIE;
 const SINGLE_AWAY: usize = 0x4a;
 /// The country block's final places of its first league, and the
 /// European table's champion, cup winner and runner-up by country.
@@ -41,6 +43,12 @@ const EUROPE_ROW: usize = 12;
 const CHAMPION: usize = 0;
 const CUP_WINNER: usize = 8;
 const CUP_RUNNER_UP: usize = 9;
+
+/// Whether a country's supercup is a tournament (its cup system's mark
+/// in `DAT_008a6110`).
+pub(crate) fn is_tournament(records: &Records, country: u16) -> bool {
+    TOURNAMENT_SYSTEMS.contains(&records.countries.cup_system(usize::from(country)))
+}
 
 fn put16(b: &mut [u8], at: usize, v: i16) {
     if let Some(w) = b.get_mut(at..at + 2) {

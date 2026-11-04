@@ -342,6 +342,7 @@ const COMPETITION: u32 = 0x7f00_0000;
 const LEAGUE_CODES: u32 = 0x3f;
 const CUP: u32 = 0x4000_0000;
 const RELEGATION: u32 = 0x1000_0000;
+const SUPERCUP: u32 = 0x3000_0000;
 /// The code's matchday or round, and the final's mark of a neutral ground.
 const MATCHDAY: u32 = 0x3f;
 const FINAL: usize = 6;
@@ -366,9 +367,9 @@ const FINAL_GROUNDS: usize = 0xb21aa6 - 0xb1f860;
 /// year calendar emptied, and the year calendar given his club's fixtures
 /// of the season (`FUN_0072e5d0`) — the league's matchdays, home and away,
 /// and the cup's rounds as long as the club is in it, the drawn tie named.
-/// (The league cup's, the supercup's, the European cups', the world cup's
-/// and the relegation's days, and a national coach's matches, are not
-/// built.)
+/// The supercup's days follow its object ([`book_supercup`]). (The league
+/// cup's, the European cups', the world cup's and the relegation's days,
+/// and a national coach's matches, are not built.)
 pub fn open_season(records: &mut Records, calendar: &crate::calendar::Calendar) {
     for planner in records.planners.iter_mut().chain(records.calendars.iter_mut()) {
         for d in 0..PLANNER_DAYS {
@@ -400,6 +401,7 @@ fn book_fixtures(records: &Records, calendar: &crate::calendar::Calendar, (count
         match code & COMPETITION {
             c if c < LEAGUE_CODES => book_league(records, team, d, code, planner),
             CUP => book_cup(records, team, d, code, planner),
+            SUPERCUP => book_supercup(records, team, d, code, planner),
             _ => {}
         }
     }
@@ -519,6 +521,81 @@ fn book_cup(records: &Records, team: &crate::records::Team, d: usize, code: u32,
     planner.set_entry(d, e);
 }
 
+/// A supercup's day (`FUN_0072e066`): the club in the supercup's round
+/// ([`in_supercup`]), its tie named when the club stands in it — a
+/// tournament's tie of the round, else the one tie, the other way round
+/// when the code says so (`FUN_006cda6f`, `FUN_0041a943`) — the host as
+/// its ground.
+fn book_supercup(records: &Records, team: &crate::records::Team, d: usize, code: u32, planner: &mut Planner) {
+    let slot = records.countries.slot(usize::from(team.country()));
+    let Some(object) = records.block(&format!("{:#x}[{slot}]", crate::supercup::OBJECT)) else { return };
+    let tournament = crate::supercup::is_tournament(records, u16::from(team.country()));
+    let mut e = planner.entry(d);
+    if !in_supercup(object, team, code, tournament) {
+        if e[0] == MATCH {
+            e[0] = 0;
+            planner.set_entry(d, e);
+        }
+        return;
+    }
+    e[0] = MATCH;
+    e[1] = 1;
+    e[MATCH_CODE..MATCH_CODE + 4].copy_from_slice(&code.to_le_bytes());
+    let (tie, turned) = if tournament {
+        (crate::supercup::TIES + (code & MATCHDAY) as usize * crate::supercup::TIE, false)
+    } else {
+        (crate::supercup::FINAL_TIE, code & TURNED != 0)
+    };
+    if let Some(p) = object.get(tie..tie + crate::supercup::TIE) {
+        if supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team) {
+            let (first, second, goals) = if turned { (4, 0, [p[0xb], p[0xa]]) } else { (0, 4, [p[8], p[9]]) };
+            e[MATCH_HOME..MATCH_HOME + 4].copy_from_slice(&p[first..first + 4]);
+            e[MATCH_AWAY..MATCH_AWAY + 4].copy_from_slice(&p[second..second + 4]);
+            e[MATCH_GOALS..MATCH_GOALS + 2].copy_from_slice(&goals);
+            e[MATCH_FLAGS] = p[PAIRING_FLAGS];
+            if turned && e[MATCH_FLAGS] & KEPT_TURNED == 0 {
+                e[MATCH_FLAGS] = 0;
+            }
+            let ground: [u8; 4] = e[MATCH_HOME..MATCH_HOME + 4].try_into().unwrap_or_default();
+            e[MATCH_VENUE..MATCH_VENUE + 4].copy_from_slice(&ground);
+        }
+    }
+    planner.set_entry(d, e);
+}
+
+/// A side of a supercup tie is the club's (`FUN_006782aa`).
+fn supercup_side(side: &[u8], team: &crate::records::Team) -> bool {
+    side[0] == team.country() && u16::from_le_bytes([side[2], side[3]]) == u16::from(team.number())
+}
+
+/// Whether a club plays a supercup round (`FUN_006ccf10`): in the one
+/// tie; in a tournament the round's tie, or — for the third and fourth
+/// round — the first or second of the six waiting there, or a tie of an
+/// earlier round not played yet that holds it, the final any tie not
+/// played that might still send it there.
+fn in_supercup(object: &[u8], team: &crate::records::Team, code: u32, tournament: bool) -> bool {
+    use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
+    let in_tie = |at: usize| object.get(at..at + 8).is_some_and(|p| supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team));
+    let open = |k: usize| object.get(TIES + k * TIE + PAIRING_FLAGS).copied().unwrap_or(0) == 0;
+    let seed = |k: usize| object.get(SIX + 2 * k..SIX + 2 * k + 2).is_some_and(|w| u16::from_le_bytes([w[0], w[1]]) == u16::from(team.number()));
+    if !tournament {
+        return in_tie(FINAL_TIE);
+    }
+    match code & MATCHDAY {
+        0 => in_tie(TIES),
+        1 => in_tie(TIES + TIE),
+        2 => in_tie(TIES + 2 * TIE) || seed(0) || open(0) && in_tie(TIES),
+        3 => in_tie(TIES + 3 * TIE) || seed(1) || open(1) && in_tie(TIES + TIE),
+        4 => {
+            in_tie(FINAL_TIE)
+                || open(2) && seed(0)
+                || open(3) && seed(1)
+                || (0..4).any(|k| open(k) && in_tie(TIES + k * TIE))
+        }
+        _ => false,
+    }
+}
+
 /// Whether a club takes part in a cup round (`FUN_006d1bb5`): with no tie
 /// from the drawn round on, when it has entered; with one, unless the
 /// round lies before the drawn one, or it fell out where a later tie
@@ -568,10 +645,10 @@ mod tests {
 
     /// On every kept save of the original — mid-season, the new season's
     /// first day, the second season after a cup exit — the calendar the
-    /// replica builds from the save's fixtures holds the league's and the
-    /// cup's days byte for byte as the original's calendar there; the
-    /// other competitions' days (supercup, European cups, a national
-    /// coach's) stay empty, the planner too.
+    /// replica builds from the save's fixtures holds the league's, the
+    /// cup's and the supercup's days byte for byte as the original's
+    /// calendar there; the other competitions' days (European cups, a
+    /// national coach's) stay empty, the planner too.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_season_books_its_fixtures_as_the_original() {
@@ -579,7 +656,7 @@ mod tests {
         let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let keeps = dir.parent().unwrap().join("saves-kept");
         let data = crate::data::Data::load(&dir).unwrap();
-        let (mut days, mut saves) = (0, 0);
+        let (mut days, mut saves, mut supercup) = (0, 0, 0);
         for name in ["A.an3", "Ap.an3", "Toni.an3", "SeasonEnd364.an3", "NewSeason000.an3", "S2c.an3", "S2late.an3"] {
             let load = || Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
             let (mut ours, theirs) = (load(), load());
@@ -589,7 +666,8 @@ mod tests {
             for d in 0..PLANNER_DAYS {
                 let (x, y) = (ours.calendars[0].entry(d), theirs.calendars[0].entry(d));
                 let code = u32::from_le_bytes([y[4], y[5], y[6], y[7]]) & COMPETITION;
-                if y[0] == MATCH && (code < LEAGUE_CODES || code == CUP) {
+                if y[0] == MATCH && (code < LEAGUE_CODES || code == CUP || code == SUPERCUP) {
+                    supercup += i32::from(code == SUPERCUP);
                     assert_eq!(x, y, "{name} day {d}");
                     days += 1;
                 } else {
@@ -597,7 +675,7 @@ mod tests {
                 }
             }
         }
-        assert!(days > 36 * saves, "{days}");
+        assert!(days > 36 * saves && supercup > 0, "{days} {supercup}");
     }
 
     fn calendar() -> Planner {
