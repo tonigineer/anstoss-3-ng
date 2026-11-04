@@ -434,6 +434,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
             number_sponsor(&mut records.teams[i], system, random);
             plan_price(&mut records.teams[i], system, random);
             sign_boards(&mut records.teams[i], system, random);
+            sign_shirt(&mut records.teams[i], system, random);
             sign_television(&mut records.teams[i], system, random);
         }
     }
@@ -731,7 +732,33 @@ fn home_average(team: &Team) -> i32 {
 
 fn sign_television(team: &mut Team, system: usize, random: &mut Random) {
     put::<u8>(team, 0x5b0, random.below(10) as u8 + 1);
-    put::<u8>(team, 0x5b1, random.below(2) as u8 + 1);
+    let (years, money) = offer(team, system, random);
+    put::<u8>(team, 0x5b1, years);
+    put::<i32>(team, 0x5b4, money);
+    put::<i32>(team, 0x1f4, money);
+    put::<i32>(team, 0x2fc, money);
+}
+
+/// The shirt's contract, signed the same way when the club has none left
+/// (`FUN_00717462`: the offer first, then its number at +0x5a8 drawn from
+/// one to ten, the money at +0x5a9/+0x5ac); the plan's rest takes a
+/// running contract's money as the shirt's sum at +0x204 and +0x30c
+/// (`FUN_0061f593`).
+fn sign_shirt(team: &mut Team, system: usize, random: &mut Random) {
+    if club::<u8>(team, 0x5a9) == 0 {
+        let (years, money) = offer(team, system, random);
+        put::<u8>(team, 0x5a9, years);
+        put::<i32>(team, 0x5ac, money);
+        put::<u8>(team, 0x5a8, random.below(10) as u8 + 1);
+    }
+    let money = club::<i32>(team, 0x5ac);
+    put::<i32>(team, 0x204, money);
+    put::<i32>(team, 0x30c, money);
+}
+
+/// A contract's offer (`FUN_007174c2`): its years and its money.
+fn offer(team: &Team, system: usize, random: &mut Random) -> (u8, i32) {
+    let years = random.below(2) as u8 + 1;
     let class = i32::from(team.get::<u8>(PRICE_CLASS_AT));
     let span = 7 - class;
     let draw = if span > 0 { random.below(span as u32) as i32 } else { 0 };
@@ -762,9 +789,7 @@ fn sign_television(team: &mut Team, system: usize, random: &mut Random) {
     if class < 4 {
         money += (4 - class) * step;
     }
-    put::<i32>(team, 0x5b4, money);
-    put::<i32>(team, 0x1f4, money);
-    put::<i32>(team, 0x2fc, money);
+    (years, money)
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2816,8 +2841,9 @@ mod tests {
     /// The main sponsor's number is one of the original's draws: on its
     /// first new-season day every planned club's +0x4ea is reproduced by a
     /// draw among its cup system's forty, its +0x4ec by a draw over the
-    /// plan's figure, its boards' package by a draw of its row and its
-    /// television contract by a draw of its league's.
+    /// plan's figure, its boards' package by a draw of its row, its
+    /// television contract by a draw of its league's and its shirt's —
+    /// signed anew where the countdown left none, else kept a year shorter.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_sponsors_number_is_one_of_the_originals_draws() {
@@ -2827,7 +2853,8 @@ mod tests {
             .unwrap()
             .join("saves-kept");
         let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
-        let mut count = 0;
+        let old = Records::from_save(Save::read(&keeps.join("SeasonEnd364.an3")).unwrap()).unwrap();
+        let (mut count, mut signed, mut kept) = (0, 0, 0);
         for i in 0..theirs.teams.len() {
             let country = i16::from(theirs.teams[i].country());
             if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
@@ -2866,8 +2893,29 @@ mod tests {
                     && [0x5b0, 0x5b1].map(|at| club::<u8>(&team, at)) == tv_bytes
             });
             assert!(found, "{i}: television {tv:?} {tv_bytes:?}");
+            // The shirt: a club the countdown left none signs anew, one
+            // with years left keeps its contract a year shorter.
+            let was = |at: usize| club::<u8>(&old.teams[i], at);
+            let moved = theirs.teams[i].get::<u16>(SEASON_FLAGS) & MOVED != 0;
+            let shirt = [0x5ac, 0x204, 0x30c].map(|at| club::<i32>(&theirs.teams[i], at));
+            let shirt_bytes = [0x5a8, 0x5a9].map(|at| club::<u8>(&theirs.teams[i], at));
+            if moved || was(0x5a9) <= 1 {
+                let found = (0..4000).any(|seed| {
+                    let mut team = theirs.teams[i].clone();
+                    put::<u8>(&mut team, 0x5a9, 0);
+                    sign_shirt(&mut team, system, &mut Random::new(seed));
+                    [0x5ac, 0x204, 0x30c].map(|at| club::<i32>(&team, at)) == shirt
+                        && [0x5a8, 0x5a9].map(|at| club::<u8>(&team, at)) == shirt_bytes
+                });
+                assert!(found, "{i}: shirt {shirt:?} {shirt_bytes:?}");
+                signed += 1;
+            } else {
+                assert_eq!(shirt_bytes[1], was(0x5a9) - 1, "{i} shirt's years");
+                assert_eq!(shirt, [club::<i32>(&old.teams[i], 0x5ac); 3], "{i} shirt kept");
+                kept += 1;
+            }
             count += 1;
         }
-        assert!(count > 140, "{count}");
+        assert!(count > 140 && signed > 0 && kept > 0, "{count}: {signed} shirts signed, {kept} kept");
     }
 }
