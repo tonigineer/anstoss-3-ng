@@ -539,6 +539,7 @@ pub fn open_season_with(
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
     set_classes(records);
+    open_standings(records, random);
     crate::statistics::open_fielded(records);
     crate::rollover::open_played(records, tables, random);
     // The played countries' top scorers and trainers take their odds
@@ -845,6 +846,74 @@ pub(crate) fn set_classes(records: &mut Records) {
                 team.set_league_place(0);
                 team.put::<u8>(CLASS_AT, 0);
             }
+        }
+    }
+}
+
+/// What each played club's standing opens the new season at, beside its
+/// class (`FUN_00772bee`): the respect it is held in (club +0x92, team
+/// +0xb6) five for each club below it in its league and thirty — a club in
+/// no league counted as of 24 —, ten more by a byte at +0x134 of 16 and
+/// up, ten less below 5; the mood (club +0x9e, team +0xc4) 80 and a draw
+/// below 41; then by the season just played: the champion 30 more of both,
+/// the runner-up 20, a UEFA cup entrant 10, the promoted 20 more mood but
+/// 30 less respect and their will ten up (team +0x95a, within ±200), the
+/// relegated 30 less mood, 10 more respect, the will ten down — the first
+/// of these that holds —, and the cup winner 20 more mood and 10 more
+/// respect besides. Last a draw below 100 at club +0xdf0 (team +0x302).
+const RESPECT_FLOOR: i32 = 30;
+/// The respect stays within nought and 200, as every change of it keeps
+/// it (`FUN_00714849`).
+const RESPECT_MOST: i32 = 200;
+const RESPECT_STEP: i32 = 5;
+const NO_LEAGUE_CLUBS: i32 = 24;
+const MOOD_BASE: u8 = 80;
+const MOOD_DRAW: u32 = 41;
+const SEASON_FLAGS: usize = 0x110;
+/// The season's marks in turn: the flag, the mood's and the respect's
+/// change, the will's.
+const SEASON_STANDINGS: [(u16, i8, i16, i16); 5] =
+    [(1, 30, 30, 0), (2, 20, 20, 0), (0x10, 10, 10, 0), (4, 20, -30, 10), (8, -30, 10, -10)];
+const CUP_WON: u16 = 0x1000;
+const WILL_SHIFT: usize = 0x95a;
+const WILL_MOST: i16 = 200;
+const SEASON_DRAW: usize = 0x302;
+
+pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let level = team.level();
+            let clubs = if level < 10 {
+                crate::opponent::League::of(records, country, level).map_or(NO_LEAGUE_CLUBS, |l| l.teams() as i32)
+            } else {
+                NO_LEAGUE_CLUBS
+            };
+            let Some(team) = records.team_mut(country, number) else { continue };
+            let mut respect = (clubs - i32::from(team.league_place())) * RESPECT_STEP + RESPECT_FLOOR;
+            let forecast = team.get::<u8>(NO_LEAGUE_FORECAST);
+            if forecast >= 16 {
+                respect += 10;
+            } else if forecast < 5 {
+                respect -= 10;
+            }
+            let mut mood = (random.below(MOOD_DRAW) as u8).wrapping_add(MOOD_BASE);
+            let flags = team.get::<u16>(SEASON_FLAGS);
+            if let Some(&(_, m, r, will)) = SEASON_STANDINGS.iter().find(|s| flags & s.0 != 0) {
+                mood = mood.wrapping_add(m as u8);
+                respect += i32::from(r);
+                if will != 0 {
+                    let w = team.get::<i16>(WILL_SHIFT).saturating_add(will).clamp(-WILL_MOST, WILL_MOST);
+                    team.put::<i16>(WILL_SHIFT, w);
+                }
+            }
+            if flags & CUP_WON != 0 {
+                mood = mood.wrapping_add(20);
+                respect += 10;
+            }
+            team.set_respect(respect.clamp(0, RESPECT_MOST) as i16);
+            team.set_mood(mood);
+            team.put::<u8>(SEASON_DRAW, random.below(100) as u8);
         }
     }
 }
@@ -1612,6 +1681,42 @@ mod tests {
             let at = ENTRIES_AT + k * ENTRY;
             assert_eq!((x.get::<u8>(at), x.get::<u16>(at + 6)), (y.get::<u8>(at), y.get::<u16>(at + 6)), "entry {k}");
         }
+    }
+
+    /// From the original's NewSeason000 — its clubs in their new leagues
+    /// and places, the UEFA cup's mark (set after) taken off — the respect
+    /// every played club opens the season at comes out as the original's,
+    /// the mood within its draw.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_clubs_open_the_season_with_the_originals_respect() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
+        let played = crate::opponent::played_nations(&theirs);
+        for &c in &played {
+            for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
+                let team = ours.team_mut(c, t).unwrap();
+                team.put::<u16>(SEASON_FLAGS, team.get::<u16>(SEASON_FLAGS) & !0x10);
+                team.set_respect(-1);
+            }
+        }
+        open_standings(&mut ours, &mut Random::new(2));
+        let (mut same, mut all) = (0, 0);
+        for &c in &played {
+            for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
+                let (x, y) = (ours.team(c, t).unwrap(), theirs.team(c, t).unwrap());
+                all += 1;
+                same += i32::from(x.respect() == y.respect());
+                let mood = i32::from(x.mood());
+                assert!((MOOD_BASE as i32 - 30..=MOOD_BASE as i32 + 40 + 50).contains(&mood), "{c}/{t}: mood {mood}");
+            }
+        }
+        assert!(all > 200 && same == all, "{same} of {all}");
     }
 
     /// The new season's managers' year leaves the humans' last-match
