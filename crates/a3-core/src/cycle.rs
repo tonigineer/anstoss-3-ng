@@ -721,6 +721,10 @@ impl Cycle {
                     (state.season.as_mut(), state.records.as_mut())
                 {
                     if !season.week_hold {
+                        // The clubs' week on the transfer market comes
+                        // first (`FUN_0042958d`): last years weighed,
+                        // retirements announced.
+                        crate::transfer_week::week(records, &mut season.random);
                         crate::stock::roll_week(records, season.day as i32, &mut season.random);
                     }
                 }

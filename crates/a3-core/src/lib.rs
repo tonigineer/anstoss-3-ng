@@ -65,6 +65,7 @@ pub mod tickets;
 pub mod trainers;
 pub mod training;
 pub mod training_day;
+pub mod transfer_week;
 pub mod transfers;
 pub mod value;
 pub mod words;

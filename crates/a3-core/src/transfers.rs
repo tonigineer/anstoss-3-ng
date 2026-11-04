@@ -451,6 +451,15 @@ pub fn listed_terms(records: &Records, id: u16) -> Option<u8> {
 /// `FUN_006ff516`) and +0xe (a value factor, `FUN_00708b80`), which the
 /// list's screen does not show, stay 0.
 pub fn list_for_sale(records: &mut Records, id: u16, free: bool) -> bool {
+    list_for_terms(records, id, if free { FREE_TRANSFER } else { FOR_A_FEE })
+}
+
+/// Him onto the transfer list for sale on `terms` (`FUN_00758b34` with
+/// kind 1): as `list_for_sale`; a manager who plays is never listed.
+pub(crate) fn list_for_terms(records: &mut Records, id: u16, terms: u8) -> bool {
+    if id > crate::mood::LAST_REAL_ID {
+        return false;
+    }
     let Some(r) = records.player(id) else { return false };
     let [country, number] = r.club();
     let (position, strength) = (r.positions()[0], r.strength());
@@ -473,12 +482,30 @@ pub fn list_for_sale(records: &mut Records, id: u16, free: bool) -> bool {
     b[e + 7] = strength;
     put16(b, e + 0xa, day);
     b[e + 0xc] = SALE;
-    b[e + 0xd] = if free { FREE_TRANSFER } else { FOR_A_FEE };
+    b[e + 0xd] = terms;
     put16(b, 0, count as i16 + 1);
     if let Some(r) = records.players.get_mut(usize::from(id)) {
         r.set_retiring(r.retiring() | LISTED);
     }
     true
+}
+
+/// Late in the season (`FUN_0075926f`, at each week's market after day
+/// 216): a listing whose player has under two years left loses its terms,
+/// so his club cannot take him off any more.
+pub(crate) fn fix_late_terms(records: &mut Records) {
+    let start = i32::from(records.globals.start_year());
+    let short: Vec<bool> = listings(records)
+        .iter()
+        .map(|l| records.player(l.id).is_some_and(|p| i32::from(p.contract() & 0xfff) - start < 2))
+        .collect();
+    let Some(b) = records.block_mut(&list_name()) else { return };
+    for (k, short) in short.into_iter().enumerate() {
+        let at = LIST_FIRST + k * LIST_ENTRY + 0xd;
+        if short && b.get(at).is_some_and(|&t| t != 0) {
+            b[at] = 0;
+        }
+    }
 }
 
 /// Him onto the transfer list for a loan (`FUN_0075b0da` →
