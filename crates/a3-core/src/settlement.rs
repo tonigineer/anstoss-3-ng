@@ -569,7 +569,9 @@ const GRADE_PAIRS: [(i32, i32); 5] = [(10, 30), (15, 50), (20, 80), (30, 120), (
 /// each down to fifty thousands and at least 50 000, the first league's
 /// +0x1a8 at least 750 000; a sharing club nought at both. +0x1a4 is the
 /// figure down to fifty thousands and drawn 50 000 more, at least 50 000.
-/// The plan's rest copies them to +0x294, +0x2b0 and +0x2ac. (The
+/// The plan's rest copies them to +0x294, +0x2b0 and +0x2ac, and draws
+/// +0x4fc, five times below six, beside the class's (team +0x875) four
+/// millions and four more at +0x500. (The
 /// landlord's share of a sharing club's and `FUN_006dd937` are not
 /// built.) Measured on the original's first new-season day: all 144
 /// clubs with their own stadium hold one of the two draws, the three
@@ -619,6 +621,11 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
     put::<i32>(team, 0x294, own);
     put::<i32>(team, 0x2b0, other);
     put::<i32>(team, 0x2ac, more);
+    // The plan's rest: five times a draw below six at +0x4fc, and the
+    // class's millions at +0x500 (`FUN_00673566`).
+    put::<u16>(team, 0x4fc, random.below(6) as u16 * 5);
+    let class = i32::from(team.get::<u8>(CLUB_CLASS));
+    put::<i32>(team, 0x500, (class * 4 + 4) * 1_000_000);
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2631,7 +2638,7 @@ mod tests {
 
     /// The walk's drawn sums come out as one of the original's draws: on
     /// its first new-season day every planned club's +0x18c, +0x1a8,
-    /// +0x1a4 and their copies are reproduced by some draw of the two.
+    /// +0x1a4, their copies, +0x4fc and +0x500 are reproduced by some draw.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_drawn_sums_are_one_of_the_originals_draws() {
@@ -2641,7 +2648,7 @@ mod tests {
             .unwrap()
             .join("saves-kept");
         let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
-        let fields = [0x18c, 0x1a8, 0x1a4, 0x294, 0x2b0, 0x2ac];
+        let fields = [0x18c, 0x1a8, 0x1a4, 0x294, 0x2b0, 0x2ac, 0x500];
         let (mut count, mut shared) = (0, 0);
         for i in 0..theirs.teams.len() {
             let country = i16::from(theirs.teams[i].country());
@@ -2650,10 +2657,11 @@ mod tests {
             }
             let skill = manager_skill(&theirs, &theirs.teams[i]);
             let want = fields.map(|at| club::<i32>(&theirs.teams[i], at));
-            let found = (0..32).any(|seed| {
+            let fifths = club::<u16>(&theirs.teams[i], 0x4fc);
+            let found = (0..200).any(|seed| {
                 let mut team = theirs.teams[i].clone();
                 plan_drawn(&mut team, skill, &mut Random::new(seed));
-                fields.map(|at| club::<i32>(&team, at)) == want
+                fields.map(|at| club::<i32>(&team, at)) == want && club::<u16>(&team, 0x4fc) == fifths
             });
             assert!(found, "{i}: {want:?}");
             count += 1;
