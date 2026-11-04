@@ -513,6 +513,10 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         if records.teams[i].humans()[1] == 0 {
             let carried = players_carried_on(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], 0x17c, carried);
+            if records.teams[i].level() >= 10 {
+                let skill = manager_skill(records, &records.teams[i]);
+                plan_amateur_stadium(&mut records.teams[i], skill, random);
+            }
             plan_bonuses(&mut records.teams[i], system);
             let bonuses = expected_bonuses(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], EXPECTED_BONUSES, bonuses);
@@ -953,6 +957,28 @@ fn league_teams(records: &Records, team: &Team) -> i32 {
     } else {
         NO_LEAGUE_TEAMS
     }
+}
+
+/// An amateur club's stadium sum at +0x1b0, which the clearing alone
+/// sets (`FUN_00672839` a season after the first; a planned club has it
+/// overwritten by its league's): 50 000 (`DAT_00a3b38c`) — its home gates'
+/// share beside, nought for a club with no league games —, 5 000 less
+/// (`DAT_00a3b3cc`) for each of the manager's skill (`FUN_0040a0c5`) a
+/// draw of two lands, at least 25 000 (`DAT_00a3b3a4`). Measured on the
+/// original's first new-season day: all 64 amateur clubs hold one of
+/// their draws.
+const AMATEUR_STADIUM: i32 = 50_000;
+const AMATEUR_STADIUM_STEP: i32 = 5_000;
+const AMATEUR_STADIUM_LEAST: i32 = 25_000;
+
+fn plan_amateur_stadium(team: &mut Team, skill: i64, random: &mut Random) {
+    let mut v = AMATEUR_STADIUM;
+    for _ in 0..skill.max(0) {
+        if random.below(2) != 0 {
+            v -= AMATEUR_STADIUM_STEP;
+        }
+    }
+    put::<i32>(team, 0x1b0, v.max(AMATEUR_STADIUM_LEAST));
 }
 
 /// The team bonuses the season is expected to cost, which the clearing
@@ -3184,7 +3210,8 @@ mod tests {
     /// The team bonuses come out as the original's: on its first
     /// new-season day every computer club, the fields put to nought, is
     /// planned back to its rows and bonuses, and its season's expected
-    /// bonuses with them; an amateur club its players' pay carried on.
+    /// bonuses with them; an amateur club its players' pay carried on and
+    /// its stadium sum by one of its draws.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_team_bonuses_are_planned_as_the_original() {
@@ -3211,6 +3238,14 @@ mod tests {
             }
             if team.level() >= 10 {
                 assert_eq!(players_carried_on(&theirs, &team), club::<i32>(&theirs.teams[i], 0x17c), "{i} players carried on");
+                let skill = manager_skill(&theirs, &team);
+                let want = club::<i32>(&theirs.teams[i], 0x1b0);
+                let found = (0..400).any(|seed| {
+                    let mut t = team.clone();
+                    plan_amateur_stadium(&mut t, skill, &mut Random::new(seed));
+                    club::<i32>(&t, 0x1b0) == want
+                });
+                assert!(found, "{i}: amateur stadium {want}, skill {skill}");
             }
             plan_bonuses(&mut team, system);
             // The expected bonuses by the +0x5c4 the season's end left.
