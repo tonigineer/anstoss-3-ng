@@ -2109,7 +2109,7 @@ pub const SUCCESSFUL_TRAINERS_PAGE: i16 = 0x32;
 /// A country's champions (`DAT_00b181b0`, 0xf0 bytes a slot; written by
 /// `FUN_0071d54b`): twenty entries of 0xc bytes — the year, the club's
 /// country and number, its points and goals —, the newest last.
-const CHAMPIONS: (usize, usize) = (0xcaf8, 0xf0);
+pub(crate) const CHAMPIONS: (usize, usize) = (0xcaf8, 0xf0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Champion {
@@ -2359,8 +2359,8 @@ pub fn autumn_champions(records: &Records, country: u16) -> (Vec<Champion>, Opti
 /// sort leaves them — more titles, then cups, then European cups first,
 /// full ties never swapped, the loop not stable —, those with a title,
 /// a hundred at most.
-const TITLES: [usize; 3] = [0x101a8, 0x105e0, 0x10a18];
-const TITLES_SLOT: usize = 0xd8;
+pub(crate) const TITLES: [usize; 3] = [0x101a8, 0x105e0, 0x10a18];
+pub(crate) const TITLES_SLOT: usize = 0xd8;
 
 pub fn record_champions(records: &Records, country: u16) -> Vec<(i16, [i16; 3])> {
     let n = usize::try_from(records.countries.team_count(country.into())).unwrap_or(0).min(TITLES_SLOT / 2);
@@ -2703,7 +2703,7 @@ pub struct LigaRow {
 /// club's number and the columns' point, goals, matchdays he scored and
 /// assisted on and his assists. A row is drawn once its first column
 /// stands above 0.
-const LISTS: &str = "0xb0b6b8";
+pub(crate) const LISTS: &str = "0xb0b6b8";
 const TOR_LIST: usize = 0x3c;
 const TOR_LEAGUE: usize = 0x640;
 const SCORER_LIST: usize = 0x468e;
