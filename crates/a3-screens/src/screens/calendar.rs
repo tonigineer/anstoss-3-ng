@@ -104,6 +104,7 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
                 c
             }));
         }
+        screen.controls.insert(0, super::caption(screen.frame, WEEK_CAPTION, String::new()));
         let (w, h) = (DAY_TILE_SIZE.0 as f32, DAY_TILE_SIZE.1 as f32);
         screen.controls.extend(DAY_TILE_TOPS.iter().enumerate().map(|(day, &top)| Control {
             rect: Rect::new(0.0, top, w, top + h),
@@ -175,6 +176,10 @@ impl Screen for Week {
         self.timer = 0.0;
         let Some(season) = &cx.state.season else { return };
         self.start = season.day;
+        if let Some(records) = cx.state.records.as_ref() {
+            let title = week_title(cx.game, records, season.day);
+            set(view, cx.dialog, WEEK_CAPTION, title);
+        }
         show_week(view, cx.dialog, cx.game, season, cx.state.records.as_ref());
         // The week runs by itself; none of its buttons does anything yet.
         super::mark_inert(view, cx.dialog, |_| false);
@@ -221,6 +226,29 @@ impl Screen for Week {
         }
         Outcome::Close(Reply::Ok)
     }
+}
+
+/// The week's caption (`CAblaufWoche`'s init): text 1626 "ANSTOSS 3 -
+/// Woche von %s bis %s" with its first and its last day, each its weekday
+/// and date (`FUN_00676008`: text 1776 "%1, %2.%3.%4", the weekdays from
+/// text 1779 by the day modulo seven).
+const WEEK_CAPTION: u16 = 9931;
+const WEEK_TITLE: u16 = 1626;
+const DATE_TEXT: u16 = 1776;
+const WEEKDAY_TEXTS: u16 = 1779;
+
+fn week_title(game: &Game, records: &Records, start: usize) -> String {
+    let date = |day: usize| {
+        records.globals.date_of(day as i16).map_or_else(String::new, |d| {
+            use chrono::Datelike;
+            game.text(DATE_TEXT)
+                .replace("%1", game.text(WEEKDAY_TEXTS + (day % 7) as u16))
+                .replace("%2", &d.day().to_string())
+                .replace("%3", &d.month().to_string())
+                .replace("%4", &d.year().to_string())
+        })
+    };
+    game.text(WEEK_TITLE).replacen("%s", &date(start), 1).replacen("%s", &date(start + WEEK_DAYS - 1), 1)
 }
 
 impl Week {
