@@ -15,6 +15,8 @@ use crate::records::Records;
 
 const RANK_AT: usize = 0x130;
 const SCORE_AT: usize = 0x348;
+const BEST_AT: usize = 0x322;
+const BEST_POSITIONS: usize = 16;
 const ORDER_AT: usize = crate::opponent::LEAGUE_FIELDS + 0x4d2;
 /// The positions' groups and how many of each count.
 const GROUPS: [(u8, u8, usize); 4] = [(1, 1, 2), (2, 5, 6), (6, 9, 5), (10, 10, 3)];
@@ -42,18 +44,43 @@ pub fn squad_score(records: &Records, team: &crate::records::Team) -> i32 {
 }
 
 /// Every played club keeps its squad's score as its season opens
-/// (`FUN_00772bee`'s `FUN_0069d1a9`, team +0x348), from the squad the
-/// ranking saw.
+/// (`FUN_00772bee`'s `FUN_0069d1a9`, team +0x348), and its best of each
+/// position ([`best_by_position`]), from the squad the ranking saw.
 pub fn keep_scores(records: &mut Records) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team(country, number) else { continue };
             let score = squad_score(records, team);
+            let best = best_by_position(records, team);
             if let Some(team) = records.team_mut(country, number) {
                 team.put::<i16>(SCORE_AT, score as i16);
+                for (k, &v) in best.iter().enumerate() {
+                    team.put::<u8>(BEST_AT + k, v);
+                }
             }
         }
     }
+}
+
+/// The best player's worth of each main position in a squad
+/// (`FUN_0070eea9` into team +0x322, sixteen bytes): a player's strength
+/// ten times less ten, his form today and two for each ability he is good
+/// at (`FUN_00708b02`), nought at least.
+fn best_by_position(records: &Records, team: &crate::records::Team) -> [u8; BEST_POSITIONS] {
+    let mut best = [0u8; BEST_POSITIONS];
+    for id in team.players() {
+        let Some(p) = records.player(id) else { continue };
+        let value = (i32::from(p.strength()) * 10 - 10
+            + crate::statistics::form_today(p)
+            + 2 * p.good().count_ones() as i32)
+            .max(0);
+        if let Some(b) = best.get_mut(usize::from(p.positions()[0])) {
+            if i32::from(*b) < value {
+                *b = value as u8;
+            }
+        }
+    }
+    best
 }
 
 /// Every ranked league's clubs by their squads.
@@ -158,5 +185,39 @@ mod tests {
             let t = u16::from(order[ORDER_AT + k]);
             assert_eq!(usize::from(b.team(16, t).unwrap().get::<u8>(RANK_AT)), k);
         }
+    }
+
+    /// The best of each position over the original's turn (SeasonEnd364
+    /// opened by the replica against NewSeason000): three bytes in five
+    /// come out as the original's and nearly all within a strength point
+    /// — the replica's turn developing its players by its own draws —,
+    /// far more than stood so before the season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_best_of_each_position_comes_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut b, n, o) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        let mut random = crate::random::Random::new(5);
+        let drawn = crate::promotion::draw(&mut b, &mut random);
+        crate::statistics::archive_leagues(&mut b);
+        crate::promotion::take(&mut b, &drawn);
+        crate::settlement::open_season(&mut b, &mut random);
+        let (mut same, mut near, mut before, mut all) = (0, 0, 0, 0);
+        for country in crate::opponent::played_nations(&n) {
+            for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y, z) = (b.team(country, t).unwrap(), n.team(country, t).unwrap(), o.team(country, t).unwrap());
+                for k in 1..11 {
+                    let (mine, theirs) = (x.get::<u8>(BEST_AT + k), y.get::<u8>(BEST_AT + k));
+                    all += 1;
+                    same += i32::from(mine == theirs);
+                    near += i32::from(mine.abs_diff(theirs) <= 10);
+                    before += i32::from(z.get::<u8>(BEST_AT + k) == theirs);
+                }
+            }
+        }
+        assert!(same * 5 >= all * 3 && near * 10 >= all * 9 && same > 2 * before, "{same} {near} {before} of {all}");
     }
 }
