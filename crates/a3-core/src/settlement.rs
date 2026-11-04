@@ -649,10 +649,53 @@ const HUMAN_SEASON_CLEARED: [(usize, usize); 7] = [
     (0xad2, 0x2e),
 ];
 
+/// The club's own season fields `FUN_00772bee` puts to nought, as the
+/// team record holds them (club object ← record): +0xd24/+0xd25 (+0x260,
+/// +0x261), the 0x5c bytes of +0xd28 (+0x264), +0xd8c (+0x2c8), +0x112
+/// (+0x13b), +0xb4 to +0xb6 (+0xd4), +0xca/+0xcb (+0xea), +0xd8 (+0xfc,
+/// a word), +0xda to +0xdd (+0xf8), +0xde (+0x10c), +0xf7 (+0x125), +0x8c
+/// and +0x8e (+0xae, +0xb0, words), +0xdf1 (+0x303), +0xdea/+0xdeb
+/// (+0x332) and the words +0xdec/+0xdee (+0x334, +0x336).
+const CLUB_SEASON_ZEROS: [(usize, usize); 15] = [
+    (0x260, 2),
+    (0x264, 0x5c),
+    (0x2c8, 2),
+    (0x13b, 1),
+    (0xd4, 3),
+    (0xea, 2),
+    (0xfc, 2),
+    (0xf8, 4),
+    (0x10c, 1),
+    (0x125, 1),
+    (0xae, 2),
+    (0xb0, 2),
+    (0x303, 1),
+    (0x332, 2),
+    (0x334, 4),
+];
+/// Its flag word +0xdf8 (+0x308) keeps only these bits, its +0x100
+/// (+0x12a) the two above its lowest, its +0x102 (+0x12c) its half's
+/// 0xaf.
+const CLUB_SEASON_FLAGS: (usize, u32) = (0x308, 0xffffdfeb & 0xfffff4ff & 0xffffbf1f & 0xfffc7fff);
+const CLUB_SEASON_SHIFTS: [(usize, u8, u8); 2] = [(0x12a, 2, 3), (0x12c, 1, 0xaf)];
+/// A human club's +0xb0 and +0xff live in its extra data (+0x394, the
+/// special bonus, and +0x8a4).
+const HUMAN_CLUB_ZEROS: [(usize, usize); 2] = [(0x394, 4), (0x8a4, 1)];
+
 fn clear_club_seasons(records: &mut Records) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team_mut(country, number) else { continue };
+            for (at, len) in CLUB_SEASON_ZEROS {
+                for k in 0..len {
+                    team.put::<u8>(at + k, 0);
+                }
+            }
+            let (at, keep) = CLUB_SEASON_FLAGS;
+            team.put::<u32>(at, team.get::<u32>(at) & keep);
+            for (at, shift, mask) in CLUB_SEASON_SHIFTS {
+                team.put::<u8>(at, (team.get::<u8>(at) >> shift) & mask);
+            }
             team.put::<u8>(CLUB_SEASON_MARK, 0xff);
             let (at, len) = CLUB_SEASON_CLEARED;
             for k in 0..len {
@@ -664,6 +707,11 @@ fn clear_club_seasons(records: &mut Records) {
             }
             let Some(extra) = records.extras.get_mut(human - 1) else { continue };
             for (at, len) in HUMAN_SEASON_CLEARED {
+                for k in 0..len {
+                    extra.put::<u8>(at + k, 0);
+                }
+            }
+            for (at, len) in HUMAN_CLUB_ZEROS {
                 for k in 0..len {
                     extra.put::<u8>(at + k, 0);
                 }
@@ -793,10 +841,11 @@ mod club_season_tests {
     use super::*;
 
     /// Over the original's turn (SeasonEnd364 → NewSeason000) the clears
-    /// of every played club's new season leave its team bytes +0x2ca to
-    /// +0x2e2 and +0x312 as the original's, and the human club's extra
-    /// data where they reach: the gates and incomes by game, the goals by
-    /// the minute, the two tables and the fitness count.
+    /// of every played club's new season leave its team bytes as the
+    /// original's — the season's fields put to nought, the flags kept, the
+    /// shifted bytes, +0x2ca to +0x2e2 and +0x312 —, and the human club's
+    /// extra data where they reach: the gates and incomes by game, the
+    /// goals by the minute, the two tables and the fitness count.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_clear_their_season_as_the_original() {
@@ -813,9 +862,18 @@ mod club_season_tests {
             for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
                 let (x, y) = (ours.team(country, number).unwrap(), theirs.team(country, number).unwrap());
                 assert_eq!(x.get::<u8>(CLUB_SEASON_MARK), y.get::<u8>(CLUB_SEASON_MARK), "{country}/{number}");
+                // +0x125 takes the pre-season tournaments' marks after
+                // (`FUN_007719a6`), and a human club's flags a bit of its
+                // own: neither built.
                 let (at, len) = CLUB_SEASON_CLEARED;
-                for k in at..at + len {
-                    assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "{country}/{number} +{k:#x}");
+                let flags = if y.human() == 0 { 4 } else { 0 };
+                let ranges = CLUB_SEASON_ZEROS.into_iter().filter(|&(at, _)| at != 0x125);
+                let ranges = ranges.chain([(at, len), (CLUB_SEASON_FLAGS.0, flags)]);
+                let ranges = ranges.chain(CLUB_SEASON_SHIFTS.map(|(at, _, _)| (at, 1)));
+                for (at, len) in ranges {
+                    for k in at..at + len {
+                        assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "{country}/{number} +{k:#x}");
+                    }
                 }
                 clubs += 1;
             }
