@@ -878,6 +878,11 @@ const CUP_WON: u16 = 0x1000;
 const WILL_SHIFT: usize = 0x95a;
 const WILL_MOST: i16 = 200;
 const SEASON_DRAW: usize = 0x302;
+/// Two bytes of past seasons (club +0xee, +0xef), and the season's
+/// honours the second takes a bit for: the title, second place, the UEFA
+/// cup, the cup.
+const PAST_SEASONS: [usize; 2] = [0x11e, 0x11f];
+const HONOURS: u16 = 1 | 2 | 0x10 | 0x1000;
 
 pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
     for country in crate::opponent::played_nations(records) {
@@ -914,6 +919,11 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
             team.set_respect(respect.clamp(0, RESPECT_MOST) as i16);
             team.set_mood(mood);
             team.put::<u8>(SEASON_DRAW, random.below(100) as u8);
+            // The seasons' marks move on: one byte two places, the other
+            // one, taking a bit for a season of honours.
+            team.put::<u8>(PAST_SEASONS[0], team.get::<u8>(PAST_SEASONS[0]) << 2);
+            let honours = u8::from(flags & HONOURS != 0);
+            team.put::<u8>(PAST_SEASONS[1], team.get::<u8>(PAST_SEASONS[1]) << 1 | honours);
         }
     }
 }
@@ -1712,6 +1722,11 @@ mod tests {
                 let (x, y) = (ours.team(c, t).unwrap(), theirs.team(c, t).unwrap());
                 all += 1;
                 same += i32::from(x.respect() == y.respect());
+                // The past seasons' bytes move on from where the original's
+                // stand, the second taking the season's honours.
+                let honours = u8::from(x.get::<u16>(SEASON_FLAGS) & HONOURS != 0);
+                assert_eq!(x.get::<u8>(PAST_SEASONS[0]), y.get::<u8>(PAST_SEASONS[0]) << 2, "{c}/{t}");
+                assert_eq!(x.get::<u8>(PAST_SEASONS[1]), y.get::<u8>(PAST_SEASONS[1]) << 1 | honours, "{c}/{t}");
                 let mood = i32::from(x.mood());
                 assert!((MOOD_BASE as i32 - 30..=MOOD_BASE as i32 + 40 + 50).contains(&mood), "{c}/{t}: mood {mood}");
             }
