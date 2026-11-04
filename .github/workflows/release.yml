@@ -1,10 +1,15 @@
 name: Release
 
 # Builds Anstoss 3.1 for Windows and Linux. For a pushed version tag (v0.1.0,
-# …) it publishes both archives as a GitHub release; started by hand, it only
-# builds them and keeps them as the run's artifacts.
+# …) it publishes both archives as a GitHub release; on a push to main or
+# started by hand, it only builds them and keeps them as the run's artifacts.
+# The build on main saves the release build's dependencies, which a tag's run
+# may restore (caches saved under a tag serve no other run), so a release
+# compiles only the workspace. CI has tested the commit on main before it is
+# tagged.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -34,6 +39,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Bevy's system libraries
         if: runner.os == 'Linux'
@@ -41,12 +48,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev
-
-      # The tests that need the game are ignored by default; the helpers of
-      # those tests use Unix symlinks, so they run on Linux only.
-      - name: Test
-        if: runner.os == 'Linux'
-        run: cargo test --workspace --locked
 
       - name: Build
         run: cargo build --release --locked -p a3-app
