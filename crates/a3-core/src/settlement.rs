@@ -467,7 +467,7 @@ pub fn open_season_with(
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
     crate::statistics::open_fielded(records);
-    crate::rollover::open_played(records, random);
+    crate::rollover::open_played(records, tables, random);
     crate::rollover::open_kept(records, tables, random);
     crate::statistics::open_lists(records, random);
     open_managers(records, random);

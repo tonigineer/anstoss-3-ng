@@ -219,7 +219,7 @@ fn leave_season(records: &mut Records, id: u16) {
 
 /// A new station at the club (`FUN_00704109`): today, no end, the fee in
 /// thousands, the club, his strength; fifteen kept, the oldest gone.
-fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee: u32) {
+pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee: u32) {
     let date = date_bytes(records);
     let Some(p) = records.player_mut(id) else { return };
     let mut count = p.career_count().clamp(0, STATIONS_MOST);

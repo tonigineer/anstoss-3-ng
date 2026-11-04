@@ -8914,7 +8914,8 @@ mod tests {
     /// to 320) the replica plays five more seasons to the end, each turn's
     /// steps on its own state, and stands in the sixth with its counters
     /// rolled — the year on, the half weeks counted, the league open, the
-    /// European cups entered, every played club's squad within its bounds.
+    /// European cups entered, every played club's squad within its bounds
+    /// and the squads of both kinds of countries as full as they were.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_game_plays_on_season_after_season() {
@@ -8956,6 +8957,19 @@ mod tests {
                 assert!(n <= 40, "club {c}/{t} with {n} players");
             }
         }
+        // The squads hold their size: the thin ones take new players.
+        let mut sizes = [(0usize, 0usize); 3];
+        for c in 1..0x75u16 {
+            let kind = usize::from(records.countries.kind(usize::from(c)) as u8).min(2);
+            for t in 0..records.countries.team_count(usize::from(c)).max(0) as u16 {
+                if let Some(team) = records.team(c, t) {
+                    sizes[kind].0 += 1;
+                    sizes[kind].1 += team.players().len();
+                }
+            }
+        }
+        let average = |(n, sum): (usize, usize)| sum as f64 / n.max(1) as f64;
+        assert!(average(sizes[1]) > 20.0 && average(sizes[2]) > 15.0, "squads of {sizes:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

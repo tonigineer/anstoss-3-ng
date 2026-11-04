@@ -236,6 +236,15 @@ pub fn goals(r: &Player) -> u8 {
     r.get(YOUTH_GOALS)
 }
 
+/// Out of a club's amateur pool, both its lists (`FUN_0070e31e`).
+pub(crate) fn leave_pool(records: &mut Records, (country, number): (u8, u16), id: u16) {
+    let mut lists = pool(records, country, number);
+    for list in &mut lists {
+        list.retain(|&q| q != id);
+    }
+    store_pool(records, country, number, &lists);
+}
+
 /// "Förd." for a youth: off if he has it, else his age group's moves to
 /// him (`OnUserC000_004d905b`).
 pub fn support(records: &mut Records, club: (u8, u16), id: u16, group: usize) {

@@ -36,9 +36,9 @@
 //! lists, their records into the pool new players are made from
 //! (`FUN_0070de6c`, `FUN_0066d975`).
 //!
-//! Left out: the young players the clubs draw to fill thin positions and
-//! the new players made from the pool (`FUN_0066ca21`, `FUN_0066b6c6`),
-//! the national legends (`FUN_0066df9e`), the stadium byte the season's
+//! The thin clubs' new players come from [`crate::newplayer`].
+//!
+//! Left out: the national legends (`FUN_0066df9e`), the stadium byte the season's
 //! end clears (`FUN_00638335`'s object +0x68); for the countries
 //! played the contracts that run out (`FUN_006b3f92`), the amateurs'
 //! retirements, the staff's contracts and the computer clubs' new youth
@@ -283,15 +283,23 @@ pub fn open_player(player: &mut Player, year: i32) {
 }
 
 /// The new season's first day for the played countries' players
-/// (`FUN_0077655c` per club): a weak computer squad lifted
-/// ([`crate::development::lift_weak`]), then each player opened, his last
-/// form and his form of the season — one week of it — his form today.
-/// (The computer clubs' fresh youth, their line-ups and the rest of
+/// (`FUN_0077655c` per club): a thin computer squad filled with youngsters
+/// when the tables are at hand ([`crate::newplayer::fill_played_club`]), a
+/// weak one lifted ([`crate::development::lift_weak`]), then each player
+/// opened, his last form and his form of the season — one week of it —
+/// his form today. (The computer clubs' line-ups and the rest of
 /// `FUN_0077655c` are not built.)
-pub fn open_played(records: &mut Records, random: &mut Random) {
+pub fn open_played(
+    records: &mut Records,
+    tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
+    random: &mut Random,
+) {
     let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if let Some(tables) = tables {
+                crate::newplayer::fill_played_club(records, (country, number), tables, random);
+            }
             crate::development::lift_weak(records, country, number, random);
             for id in squad(records, country, number) {
                 let Some(player) = records.player_mut(id) else { continue };

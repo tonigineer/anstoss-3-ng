@@ -15,7 +15,9 @@
 //! overweight one in twelve.
 //!
 //! A club of a country kept in short takes him at 19 to 22 on fresh terms
-//! of three or four years (`FUN_0066ca21`, `FUN_00709e88`).
+//! of three or four years (`FUN_0066ca21`, `FUN_00709e88`); a computer club
+//! of the countries played fills its thin positions with its youngest
+//! amateurs or with new youngsters of 18 or 19 (`FUN_0077655c`).
 
 use chrono::NaiveDate;
 
@@ -441,7 +443,7 @@ pub fn for_kept_club(
     let position = position.unwrap_or_else(|| DRAWN_POSITIONS[random.below(12) as usize]);
     let team = records.team(country, number)?;
     let (worth, level) = (i32::from(team.get::<u8>(CLUB_CLASS)) * WORTH_PER_CLASS, team.level());
-    let id = make(records, (country as u8, number as i16), position, worth, false, random)?;
+    let id = make(records, (country as u8, number as i16), position, worth, true, random)?;
     {
         let p = records.player_mut(id)?;
         freshen(p, random);
@@ -460,6 +462,124 @@ pub fn for_kept_club(
     p.set_picks(0);
     join(records, (country, number), id);
     Some(id)
+}
+
+/// The least a computer club of the countries played keeps at each
+/// position (`DAT_008acba0`), the strength its new youngsters come at by
+/// its league's class and how many it has there (`DAT_008acb90`), the worth
+/// they are drawn by (`DAT_00a3b348`).
+const LEAST: [i16; 11] = [0, 2, 0, 3, 1, 1, 1, 1, 2, 2, 3];
+const YOUTH_STRENGTH: [u8; 16] = [8, 3, 2, 1, 6, 2, 1, 1, 3, 1, 1, 1, 1, 1, 1, 1];
+const FULL_SQUAD: usize = 31;
+const FIELD_FULL: usize = 23;
+const TRIES: usize = 5;
+
+/// A league's class for its youngsters (`FUN_006755b8`): the main
+/// country's up to 2 (England's 3), the others' 0; 3 out of the leagues.
+fn youth_class(records: &Records, country: u16, level: u8) -> usize {
+    if level >= 10 {
+        return 3;
+    }
+    if i16::try_from(country).ok() == Some(records.globals.main_country()) {
+        usize::from(if country == u16::from(ENGLAND) { level.min(3) } else { level.min(2) })
+    } else {
+        0
+    }
+}
+
+/// The youngest amateur of a position at a club that is no reserve team
+/// and has none (`FUN_00407774`).
+fn youngest_amateur(records: &Records, (country, number): (u16, u16), position: u8) -> Option<u16> {
+    let team = records.team(country, number)?;
+    if team.linked() != [-1, -1] {
+        return None;
+    }
+    let today = {
+        let [d, m, y] = records.globals.date();
+        NaiveDate::from_ymd_opt(i32::from(y), u32::from(m), u32::from(d))?
+    };
+    let [_, amateurs] = crate::youth::pool(records, country as u8, number);
+    let mut best: Option<(i32, u16)> = None;
+    for id in amateurs {
+        let Some(p) = records.player(id) else { continue };
+        if p.positions()[0] != position {
+            continue;
+        }
+        let age = crate::statistics::age_on(p, today);
+        if best.is_none_or(|(a, _)| age < a) {
+            best = Some((age, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// The new season fills a computer club of the countries played where it
+/// is thin (`FUN_0077655c`'s first loop, from the second season on): for
+/// each position below its least, up to five tries, the youngest amateur
+/// of it moves up (`FUN_0040770f`) or else a new youngster comes
+/// (`FUN_0066b6c6`) — 18 or 19, his strength by the league's class and the
+/// club's count at the position (1 out of the leagues), his talent 1 or
+/// 2, a station and two years' terms; a squad of 31, or of 23 past the
+/// keepers, takes no more.
+pub fn fill_played_club(
+    records: &mut Records,
+    (country, number): (u16, u16),
+    tables: (&ContractTables, &ValueTables),
+    random: &mut Random,
+) {
+    let Some(team) = records.team(country, number) else { return };
+    if team.humans() != [0, 0] || records.globals.seasons() <= 1 {
+        return;
+    }
+    let level = team.level();
+    let class = youth_class(records, country, level);
+    let squad = team.players();
+    let mut counts = [0i16; 11];
+    for &id in &squad {
+        if let Some(p) = records.player(id) {
+            counts[usize::from(p.positions()[0]).min(10)] += 1;
+        }
+    }
+    let mut size = squad.len();
+    for position in 1..11u8 {
+        if size >= FULL_SQUAD || (position >= 2 && size >= FIELD_FULL) {
+            break;
+        }
+        let k = usize::from(position);
+        let mut tries = 0;
+        while counts[k] < LEAST[k] && tries < TRIES {
+            tries += 1;
+            if let Some(id) = youngest_amateur(records, (country, number), position) {
+                terms(records, id, level, tables);
+                crate::youth::leave_pool(records, (country as u8, number), id);
+                join(records, (country, number), id);
+                if let Some(p) = records.player_mut(id) {
+                    p.put::<u8>(SEASONS, 0);
+                    p.set_picks(0);
+                }
+            } else {
+                let Some(id) = make(records, (country as u8, number as i16), position, WORTH_PER_CLASS, true, random) else {
+                    continue;
+                };
+                let age = random.below(2) as i32 + 18;
+                let mut p = match records.player(id) {
+                    Some(p) => p.clone(),
+                    None => continue,
+                };
+                born(records, &mut p, age, random);
+                p.set_strength(if level == 10 { 1 } else { YOUTH_STRENGTH[class * 4 + (counts[k] as usize).min(3)] });
+                p.set_talent(2 - random.below(2) as i8);
+                if let Some(slot) = records.player_mut(id) {
+                    *slot = p;
+                }
+                crate::deals::open_station(records, id, (country as u8, number as i16), 0);
+                terms(records, id, level, tables);
+                join(records, (country, number), id);
+            }
+            counts[k] += 1;
+            size += 1;
+        }
+    }
 }
 
 /// Into a club's squad by his main position, his club its (`FUN_0070df0b`).
@@ -563,6 +683,72 @@ mod tests {
             assert!((3..=4).contains(&(i32::from(p.contract() & 0xfff) - i32::from(year))), "player {id}'s years");
             assert_eq!(p.retiring(), 8);
             assert_eq!(p.club()[0], country as u8);
+        }
+    }
+
+    /// Over the original's turn the played countries' computer clubs fill
+    /// their thin positions about as the original's do: as many new
+    /// youngsters within a tenth (95 against 91 on the pair), as many of
+    /// their own amateurs moved up within a fifth, every youngster 18 or 19
+    /// on two years' terms with the club's nation.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_played_clubs_fill_their_squads_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = crate::league::LeagueTables::load(&exe).unwrap();
+        let mut random = Random::new(3);
+        let drawn = crate::promotion::draw(&mut ours, &mut random);
+        crate::promotion::count(&mut ours);
+        crate::development::develop_played(&mut ours, false, &mut random);
+        crate::rollover::retire_announced(&mut ours, &mut random);
+        crate::statistics::archive_leagues(&mut ours);
+        crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
+        crate::rollover::count_first_seasons(&mut ours);
+        let agents = crate::free_agents::release(&mut ours, &mut random);
+        crate::deals::execute(&mut ours, &mut random);
+        crate::rollover::close_played(&mut ours, &mut random);
+        crate::rollover::close_kept(&mut ours, &mut random);
+        crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
+        crate::settlement::settle_season(&mut ours, &tables);
+        crate::promotion::take(&mut ours, &drawn);
+        crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
+        let year = i32::from(ours.globals.start_year());
+        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        let count = |r: &Records| {
+            let (mut fresh, mut promoted, mut ids) = (0, 0, Vec::new());
+            for c in crate::opponent::played_nations(&before) {
+                for t in 0..before.countries.team_count(usize::from(c)).max(0) as u16 {
+                    let old = before.team(c, t).unwrap().players();
+                    for id in r.team(c, t).unwrap().players() {
+                        if old.contains(&id) {
+                            continue;
+                        }
+                        let (o, p) = (before.player(id).unwrap(), r.player(id).unwrap());
+                        if o.first_name() != p.first_name() || o.birthday() != p.birthday() {
+                            fresh += 1;
+                            ids.push((c, id));
+                        } else if o.club() == p.club() {
+                            promoted += 1;
+                        }
+                    }
+                }
+            }
+            (fresh, promoted, ids)
+        };
+        let ((fresh, promoted, ids), (their_fresh, their_promoted, _)) = (count(&ours), count(&theirs));
+        assert!((fresh - their_fresh as i32).abs() * 10 <= their_fresh as i32, "{fresh} new against {their_fresh}");
+        assert!((promoted - their_promoted as i32).abs() * 5 <= their_promoted as i32 + 2, "{promoted} up against {their_promoted}");
+        for (country, id) in ids {
+            let p = ours.player(id).unwrap();
+            assert!((18..=19).contains(&crate::statistics::age_on(p, today)), "player {id}'s age");
+            assert_eq!(i32::from(p.contract() & 0xfff) - year, 2, "player {id}'s years");
+            assert_eq!(u16::from(p.nation()), country);
         }
     }
 }
