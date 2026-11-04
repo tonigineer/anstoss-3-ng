@@ -396,6 +396,95 @@ pub fn count_down_contracts(records: &mut Records) {
     }
 }
 
+/// The new season's shirt numbers, for every club of the countries
+/// played (`FUN_0042b424`'s `FUN_006d924a(club, 0, 0)`): of two players
+/// sharing a number one loses it — the original's code takes it from the
+/// stronger —; then (`FUN_006d947c`) the squad is ordered by position,
+/// one to ten, and within one by strength, and each player without a
+/// number takes the first free of his position's three
+/// (`DAT_008a66ac`), the numbers others hold marked as the order reaches
+/// them; whoever is left draws one to forty and takes the next free from
+/// there. (Player +0x223, the object's +0x26; his position +0x21d.)
+const SHIRT_CHOICES: [u8; 30] = [1, 21, 30, 5, 22, 23, 4, 6, 14, 2, 13, 15, 3, 12, 16, 8, 18, 25, 7, 17, 24, 19, 28, 27, 10, 26, 20, 9, 11, 29];
+const SHIRT_DRAWN: u32 = 40;
+
+pub fn number_shirts(records: &mut Records, random: &mut Random) {
+    for i in 0..records.teams.len() {
+        let country = i16::from(records.teams[i].country());
+        if country == 0 || !records.globals.played(country) {
+            continue;
+        }
+        let squad: Vec<usize> = records.teams[i]
+            .players()
+            .into_iter()
+            .filter(|&id| id != 0 && usize::from(id) < records.players.len())
+            .map(usize::from)
+            .collect();
+        number_squad(records, &squad, random);
+    }
+}
+
+fn number_squad(records: &mut Records, squad: &[usize], random: &mut Random) {
+    let shirt = |r: &Records, id: usize| r.players[id].get::<u8>(0x223);
+    let strength = |r: &Records, id: usize| r.players[id].strength();
+    let position = |r: &Records, id: usize| r.players[id].positions()[0];
+    for &a in squad {
+        for &b in squad {
+            if a != b && shirt(records, a) == shirt(records, b) {
+                let loser = if strength(records, b) < strength(records, a) { a } else { b };
+                records.players[loser].put::<u8>(0x223, 0);
+            }
+        }
+    }
+    let mut order: Vec<usize> = Vec::new();
+    for pos in 1..=10u8 {
+        let start = order.len();
+        order.extend(squad.iter().copied().filter(|&id| position(records, id) == pos));
+        for a in start..order.len() {
+            for b in a + 1..order.len() {
+                if strength(records, order[a]) < strength(records, order[b]) {
+                    order.swap(a, b);
+                }
+            }
+        }
+    }
+    let mut used = [false; 256];
+    let (mut current, mut next) = (0u8, 0usize);
+    for &id in &order {
+        let pos = position(records, id);
+        if pos != current {
+            current = pos;
+            next = 0;
+        }
+        let own = shirt(records, id);
+        if own != 0 {
+            used[usize::from(own)] = true;
+            continue;
+        }
+        let choice = |k: usize| SHIRT_CHOICES[(usize::from(pos) - 1) * 3 + k];
+        while next < 3 && used[usize::from(choice(next))] {
+            next += 1;
+        }
+        if next < 3 {
+            let n = choice(next);
+            records.players[id].put::<u8>(0x223, n);
+            used[usize::from(n)] = true;
+            next += 1;
+        }
+    }
+    for &id in squad {
+        if shirt(records, id) != 0 {
+            continue;
+        }
+        let mut n = random.below(SHIRT_DRAWN) as usize + 1;
+        while n < used.len() - 1 && used[n] {
+            n += 1;
+        }
+        records.players[id].put::<u8>(0x223, n as u8);
+        used[n] = true;
+    }
+}
+
 /// What the new season's first day clears of the season's bookings:
 /// every club of the countries played — the main one and the more ones,
 /// in every league and the human club alike — stands with its two
@@ -1111,6 +1200,7 @@ pub fn open_season_with(
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
     count_down_contracts(records);
+    number_shirts(records, random);
     crate::finances::keep_last_season(records);
     clear_human_season(records);
     clear_bookings(records, random);
@@ -2917,5 +3007,47 @@ mod tests {
             count += 1;
         }
         assert!(count > 140 && signed > 0 && kept > 0, "{count}: {signed} shirts signed, {kept} kept");
+    }
+
+    /// The new season's shirt numbers: from the season-end save every
+    /// club's players come out with a number, and the
+    /// original's turn agrees for every player it numbers the same club
+    /// and position by, where no draw was needed.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_shirts_are_numbered_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let before: Vec<u8> = ours.players.iter().map(|p| p.get::<u8>(0x223)).collect();
+        number_shirts(&mut ours, &mut Random::new(5));
+        let (mut kept, mut same) = (0, 0);
+        for i in 0..ours.teams.len() {
+            let country = i16::from(ours.teams[i].country());
+            if country == 0 || !ours.globals.played(country) {
+                continue;
+            }
+            let squad: Vec<usize> = ours.teams[i].players().into_iter().filter(|&id| id != 0).map(usize::from).collect();
+            for &id in &squad {
+                let n = ours.players[id].get::<u8>(0x223);
+                // (A number held further down the order is marked only when
+                // the order reaches it, so the original may hand it out
+                // twice; every player has one.)
+                assert!(n != 0, "team {i} player {id}");
+                // A player whose number stood alone keeps it, here as there
+                // when the original kept him at the club.
+                let alone = before[id] != 0 && squad.iter().filter(|&&o| before[o] == before[id]).count() == 1;
+                if alone && theirs.teams[i].players().contains(&(id as u16)) {
+                    kept += 1;
+                    assert_eq!(n, before[id], "team {i} player {id}");
+                    same += i32::from(theirs.players[id].get::<u8>(0x223) == n);
+                }
+            }
+        }
+        assert!(kept > 1000 && same * 100 >= kept * 95, "{same} of {kept} kept as the original");
     }
 }
