@@ -449,7 +449,8 @@ pub fn clear_bookings(records: &mut Records) {
 /// (flag 1) or the Champions League's holder, else two millions for a
 /// club in Europe (flag 0x4000), 1 200 000 more for the holder of the
 /// first or second European cup (`FUN_0042419d` over `DAT_00ae6dd4`).
-/// The squad's salaries stand at +0x17c (`FUN_0062023c`).
+/// The squad's salaries stand at +0x17c (`FUN_0062023c`), +0x1fc at
+/// twenty or +0x304's figure (`FUN_00716a87`'s tail).
 /// Measured on the pair: every one of the 147 clubs planned agrees. The
 /// walk's drawn parts (the TV's and the boards' money, +0x18c, +0x1a8,
 /// +0x1a4), the sponsors it signs (`FUN_00716a87`) and the first
@@ -457,6 +458,7 @@ pub fn clear_bookings(records: &mut Records) {
 const PLAN_STEP: i32 = 25_000;
 const PLAN_1B8: i32 = 100_000;
 const PLAN_5C4: u16 = 50;
+const PLAN_1FC: u16 = 20;
 const PLAN_1B0: [i32; 3] = [800_000, 450_000, 200_000];
 const CLUB_CLASS: usize = 0x875;
 const HIGH_CLASS: u8 = 5;
@@ -622,6 +624,10 @@ fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
     }
     put::<i32>(team, 0x1b8, PLAN_1B8);
     put::<i32>(team, 0x17c, cover.wages);
+    // The sponsors' signing closes with +0x1fc: twenty, or what +0x304
+    // holds once set (`FUN_00716a87`'s tail).
+    let set = club::<u16>(team, 0x304);
+    put::<u16>(team, 0x1fc, if set == 0 { PLAN_1FC } else { set });
     match level {
         0 => put::<u8>(team, 0x1f8, if team.get::<u8>(CLUB_CLASS) < HIGH_CLASS { 1 } else { 2 }),
         1 => put::<u8>(team, 0x1f8, 1),
@@ -2469,6 +2475,7 @@ mod tests {
                 put::<u8>(team, at, 0);
             }
             put::<u16>(team, 0x5c4, 0);
+            put::<u16>(team, 0x1fc, 0);
         }
         let (mut count, mut kept) = (0, 0);
         for i in 0..ours.teams.len() {
@@ -2506,6 +2513,7 @@ mod tests {
                 assert_eq!(club::<u8>(x, at), club::<u8>(y, at), "{i} +{at:#x}");
             }
             assert_eq!(club::<u16>(x, 0x5c4), club::<u16>(y, 0x5c4), "{i} +0x5c4");
+            assert_eq!(club::<u16>(x, 0x1fc), club::<u16>(y, 0x1fc), "{i} +0x1fc");
             count += 1;
         }
         assert!(count > 140 && kept > 0, "{count} planned, {kept} kept");
