@@ -429,6 +429,10 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
     if count == crate::honours::CHAMPIONS_DAY {
         crate::honours::champions_day(records);
     }
+    // And the autumn's half weeks their Herbstmeister.
+    if (crate::honours::AUTUMN_FIRST..=crate::honours::AUTUMN_LAST).contains(&count) {
+        crate::honours::autumn_day(records, count);
+    }
 }
 
 /// The new season lifts a weak computer squad (`FUN_0077655c`, from the

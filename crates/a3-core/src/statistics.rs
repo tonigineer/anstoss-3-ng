@@ -2314,7 +2314,7 @@ pub const MOST_RELEGATIONS_PAGE: i16 = 0x3b;
 
 /// The half-season leaders (`DAT_00b18660`, 0xf0 a slot; `FUN_0071d686`
 /// at the half-season's turn) laid like the champions.
-const AUTUMN: (usize, usize) = (0xcfa8, 0xf0);
+pub(crate) const AUTUMN: (usize, usize) = (0xcfa8, 0xf0);
 
 fn champion_entries(records: &Records, country: u16, list: (usize, usize)) -> Vec<Champion> {
     let Some(b) = country_list(records, country, list) else { return Vec::new() };

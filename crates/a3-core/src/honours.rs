@@ -153,30 +153,64 @@ const HISTORY_YEARS_END: usize = 0xc;
 const TEAM_HONOURS: usize = 0x8ea;
 const CHAMPION_ENTRY: usize = 0xc;
 
+/// The Herbstmeister (`FUN_0071d175` on the half weeks 0x2f to 0x38,
+/// `FUN_0071d686`): a country whose half week has come — its entry of
+/// `DAT_008a7cb8` by its index, the main country's at `0xb5cbb2`, the
+/// more countries' at `0xb5cbbc` beside them at `0xb5cbb4` — enters its
+/// first league's leader by the table then into its list of autumn
+/// champions as the champions' list keeps its own.
+const AUTUMN_DAYS: [u16; 5] = [48, 54, 48, 56, 56];
+pub const AUTUMN_FIRST: u16 = 0x2f;
+pub const AUTUMN_LAST: u16 = 0x38;
+const MAIN_INDEX: usize = 0xb5cbb2;
+const MORE_COUNTRIES: usize = 0xb5cbb4;
+const MORE_INDEX: usize = 0xb5cbbc;
+const MORE_COUNT: usize = 0xb5cbae;
+
+pub fn autumn_day(records: &mut Records, half_week: u16) {
+    let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+    let mut countries = vec![(main, records.globals.get::<i16>(MAIN_INDEX))];
+    for k in 0..usize::try_from(records.globals.get::<i16>(MORE_COUNT)).unwrap_or(0).min(4) {
+        let country = records.globals.get::<i16>(MORE_COUNTRIES + 2 * k);
+        countries.push((u16::try_from(country).unwrap_or(0), records.globals.get::<i16>(MORE_INDEX + 2 * k)));
+    }
+    for (country, index) in countries {
+        let due = usize::try_from(index).ok().and_then(|i| AUTUMN_DAYS.get(i)).copied();
+        if due == Some(half_week) {
+            enter_leader(records, country, crate::statistics::AUTUMN, crate::statistics::ALL);
+        }
+    }
+}
+
+/// A country's first league's leader by the table of `kind` into one of
+/// its lists of twenty champions' entries, the oldest dropped
+/// (`FUN_0071d76d`): the start year, the club's country and number, its
+/// points and goals. Gives the leader's number.
+fn enter_leader(records: &mut Records, country: u16, (at, per): (usize, usize), kind: u8) -> Option<u16> {
+    let league = crate::opponent::League::of(records, country, 0)?;
+    let row = crate::statistics::table(records, &league, kind).first().cloned()?;
+    let number = u16::try_from(row.team).ok()?;
+    let year = records.globals.start_year();
+    let slot = usize::from(records.countries.slot(usize::from(country)));
+    let list = records.block_mut(crate::statistics::LISTS)?.get_mut(at + slot * per..at + (slot + 1) * per)?;
+    list.copy_within(CHAMPION_ENTRY.., 0);
+    let e = &mut list[per - CHAMPION_ENTRY..];
+    e[0..2].copy_from_slice(&year.to_le_bytes());
+    e[2] = country as u8;
+    e[3] = 0;
+    e[4..6].copy_from_slice(&row.team.to_le_bytes());
+    e[6..8].copy_from_slice(&(row.points as i16).to_le_bytes());
+    e[8..10].copy_from_slice(&(row.goals_for as i16).to_le_bytes());
+    e[10..12].copy_from_slice(&(row.goals_against as i16).to_le_bytes());
+    Some(number)
+}
+
 pub fn champions_day(records: &mut Records) {
     use crate::statistics::{CHAMPIONS, LISTS, TITLES, TITLES_SLOT};
-    let year = records.globals.start_year();
     for country in crate::opponent::played_nations(records) {
-        let Some(league) = crate::opponent::League::of(records, country, 0) else { continue };
-        let Some(row) = crate::statistics::table(records, &league, crate::statistics::ALL).first().cloned() else {
-            continue;
-        };
-        let Ok(number) = u16::try_from(row.team) else { continue };
+        let Some(number) = enter_leader(records, country, CHAMPIONS, crate::statistics::ALL) else { continue };
         let slot = usize::from(records.countries.slot(usize::from(country)));
         if let Some(b) = records.block_mut(LISTS) {
-            let (at, per) = CHAMPIONS;
-            let from = at + slot * per;
-            if let Some(list) = b.get_mut(from..from + per) {
-                list.copy_within(CHAMPION_ENTRY.., 0);
-                let e = &mut list[per - CHAMPION_ENTRY..];
-                e[0..2].copy_from_slice(&year.to_le_bytes());
-                e[2] = country as u8;
-                e[3] = 0;
-                e[4..6].copy_from_slice(&row.team.to_le_bytes());
-                e[6..8].copy_from_slice(&(row.points as i16).to_le_bytes());
-                e[8..10].copy_from_slice(&(row.goals_for as i16).to_le_bytes());
-                e[10..12].copy_from_slice(&(row.goals_against as i16).to_le_bytes());
-            }
             let titles = TITLES[0] + slot * TITLES_SLOT + usize::from(number) * 2;
             if let Some(w) = b.get_mut(titles..titles + 2) {
                 let v = i16::from_le_bytes([w[0], w[1]]).wrapping_add(1);
@@ -323,10 +357,24 @@ mod tests {
             let tie = cup[at..at + FINAL_PAIRING].to_vec();
             cup_final(&mut day, country, &tie);
         }
+        // The Herbstmeister by the first round's table, which on the
+        // countries' autumn days stood played.
+        {
+            let b = day.block_mut(LISTS).unwrap();
+            for country in crate::opponent::played_nations(&new) {
+                let slot = usize::from(a.countries.slot(usize::from(country)));
+                let (at, per) = crate::statistics::AUTUMN;
+                let r = at + slot * per..at + (slot + 1) * per;
+                b[r.clone()].copy_from_slice(&lists[r]);
+            }
+        }
+        for country in crate::opponent::played_nations(&new) {
+            enter_leader(&mut day, country, crate::statistics::AUTUMN, crate::statistics::FIRST_ROUND);
+        }
         let (x, y) = (day.block(LISTS).unwrap(), end.block(LISTS).unwrap());
         for country in crate::opponent::played_nations(&new) {
             let slot = usize::from(a.countries.slot(usize::from(country)));
-            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT), crate::statistics::CUP_WINNERS, (TITLES[1], TITLES_SLOT)] {
+            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT), crate::statistics::CUP_WINNERS, (TITLES[1], TITLES_SLOT), crate::statistics::AUTUMN] {
                 let r = at + slot * per..at + (slot + 1) * per;
                 assert_eq!(x[r.clone()], y[r], "{country}'s list at {at:#x}");
             }
