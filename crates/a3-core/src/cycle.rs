@@ -840,6 +840,14 @@ impl Cycle {
                                 &self.data.calendar,
                                 season,
                             );
+                            // The youth leagues play beside them
+                            // (`FUN_0062a959`, after the day's matches).
+                            crate::youth_league::play_day(
+                                records,
+                                &self.data.calendar,
+                                season.day,
+                                &mut season.random,
+                            );
                         }
                         let start = season.day % WEEK_DAYS == 0;
                         if start {

@@ -317,7 +317,7 @@ pub fn any_player(records: &Records, data: &Data, id: u16) -> Option<(Player, Fi
 /// Days from today to a year and a day of the year, as `FUN_00636638`
 /// reckons them: none for a day gone by. (The original takes the days of
 /// the years in between from a table, `DAT_00b1f85e`; here they have 365.)
-fn days_to(globals: &Globals, [year, day]: [u16; 2]) -> i32 {
+pub(crate) fn days_to(globals: &Globals, [year, day]: [u16; 2]) -> i32 {
     let [_, _, this_year] = globals.date();
     let today = i32::from(globals.day_of_year());
     let days = match year.cmp(&this_year) {
