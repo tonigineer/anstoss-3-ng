@@ -538,6 +538,7 @@ pub fn open_season_with(
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
+    open_tactics(records, random);
     set_classes(records);
     open_standings(records, random);
     crate::statistics::open_fielded(records);
@@ -851,7 +852,7 @@ pub(crate) fn set_classes(records: &mut Records) {
 }
 
 /// What each played club's standing opens the new season at, beside its
-/// class (`FUN_00772bee`): the respect it is held in (club +0x92, team
+/// class (`FUN_00772bee`, its tactics set before by [`open_tactics`]): the respect it is held in (club +0x92, team
 /// +0xb6) five for each club below it in its league and thirty — a club in
 /// no league counted as of 24 —, ten more by a byte at +0x134 of 16 and
 /// up, ten less below 5; the mood (club +0x9e, team +0xc4) 80 and a draw
@@ -861,6 +862,16 @@ pub(crate) fn set_classes(records: &mut Records) {
 /// relegated 30 less mood, 10 more respect, the will ten down — the first
 /// of these that holds —, and the cup winner 20 more mood and 10 more
 /// respect besides. Last a draw below 100 at club +0xdf0 (team +0x302).
+/// The club's tactics (`FUN_00698598` … `FUN_00698bde`): five fields of
+/// three bits in club +0xa2 (team +0xc8) and the bytes +0x9f and +0xa5
+/// (team +0xc5, +0xcb), each 0 to 5; the new season sets them all to 5
+/// less a fifth of the club's place, one more two times in three.
+const TACTICS_TOP: i32 = 5;
+const TACTICS_PLACES: i32 = 5;
+const TACTICS_AT: usize = 0xc8;
+const TACTIC_FIELDS: u16 = 5;
+const TACTIC_BITS: u16 = 0x7fff;
+const TACTIC_BYTES: [usize; 2] = [0xc5, 0xcb];
 const RESPECT_FLOOR: i32 = 30;
 /// The respect stays within nought and 200, as every change of it keeps
 /// it (`FUN_00714849`).
@@ -883,6 +894,26 @@ const SEASON_DRAW: usize = 0x302;
 /// cup, the cup.
 const PAST_SEASONS: [usize; 2] = [0x11e, 0x11f];
 const HONOURS: u16 = 1 | 2 | 0x10 | 0x1000;
+
+/// The tactics every played club opens the season with, set before its
+/// class — a club gone down to no league still by the place it last held.
+pub(crate) fn open_tactics(records: &mut Records, random: &mut Random) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            let mut setting = TACTICS_TOP - i32::from(team.league_place()) / TACTICS_PLACES;
+            if random.below(3) != 0 {
+                setting += 1;
+            }
+            let setting = setting.clamp(0, TACTICS_TOP) as u16;
+            let fields = (0..TACTIC_FIELDS).fold(0u16, |v, k| v | setting << (3 * k));
+            team.put::<u16>(TACTICS_AT, team.get::<u16>(TACTICS_AT) & !TACTIC_BITS | fields);
+            for at in TACTIC_BYTES {
+                team.put::<u8>(at, setting as u8);
+            }
+        }
+    }
+}
 
 pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
     for country in crate::opponent::played_nations(records) {
@@ -1696,7 +1727,7 @@ mod tests {
     /// From the original's NewSeason000 — its clubs in their new leagues
     /// and places, the UEFA cup's mark (set after) taken off — the respect
     /// every played club opens the season at comes out as the original's,
-    /// the mood within its draw.
+    /// the mood and the tactics within their draws.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_open_the_season_with_the_originals_respect() {
@@ -1715,6 +1746,7 @@ mod tests {
                 team.set_respect(-1);
             }
         }
+        open_tactics(&mut ours, &mut Random::new(2));
         open_standings(&mut ours, &mut Random::new(2));
         let (mut same, mut all) = (0, 0);
         for &c in &played {
@@ -1722,6 +1754,13 @@ mod tests {
                 let (x, y) = (ours.team(c, t).unwrap(), theirs.team(c, t).unwrap());
                 all += 1;
                 same += i32::from(x.respect() == y.respect());
+                // The tactics: one setting throughout, as the original's or
+                // one off by the draw.
+                let (mine, theirs) = (x.get::<u8>(TACTIC_BYTES[0]), y.get::<u8>(TACTIC_BYTES[0]));
+                // (A club in no league had its place put to nought after.)
+                assert!(y.level() == 10 || mine.abs_diff(theirs) <= 1, "{c}/{t}: {mine} {theirs}");
+                let fields = (0..TACTIC_FIELDS).fold(0u16, |v, k| v | u16::from(mine) << (3 * k));
+                assert_eq!((x.get::<u16>(TACTICS_AT) & TACTIC_BITS, x.get::<u8>(TACTIC_BYTES[1])), (fields, mine), "{c}/{t}");
                 // The past seasons' bytes move on from where the original's
                 // stand, the second taking the season's honours.
                 let honours = u8::from(x.get::<u16>(SEASON_FLAGS) & HONOURS != 0);
