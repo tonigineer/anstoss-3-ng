@@ -430,6 +430,13 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
         crate::honours::champions_day(records);
         crate::honours::top_scorers_day(records);
     }
+    // The winter's Hallenturniere, Germany's and France's where they are
+    // played (`FUN_00771959`).
+    for (half, country) in [(crate::tournament::GERMANY_HALLS, 14), (crate::tournament::FRANCE_HALLS, 20)] {
+        if count == half && records.globals.played(country) {
+            crate::tournament::open_winter(records, country as u8, count, random);
+        }
+    }
     // And the autumn's half weeks their Herbstmeister.
     if (crate::honours::AUTUMN_FIRST..=crate::honours::AUTUMN_LAST).contains(&count) {
         crate::honours::autumn_day(records, count);

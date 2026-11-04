@@ -1497,6 +1497,8 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     if let Some(rules) = rules {
         crate::season::open_goals(records, rules, random);
     }
+    // The pre-season's Turniere (`FUN_007719a6`), before the clubs' walk.
+    crate::tournament::open_preseason(records, random);
     count_down_contracts(records);
     number_shirts(records, random);
     crate::finances::keep_last_season(records);

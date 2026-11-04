@@ -7,6 +7,7 @@
 //! in the winter break; a human hosts his own by inviting the clubs the
 //! turn offers him for the day, the friendly's ([`crate::friendly`]).
 
+use crate::random::Random;
 use crate::records::{PLANNER_ENTRY, Planner, Records};
 
 /// The kinds of tournament; the calendar's kind is two more.
@@ -289,6 +290,152 @@ pub fn fee(records: &Records, host: (u8, i16), guest: (u8, i16)) -> i32 {
     }
 }
 
+/// The clubs' flags of the tournaments they host (club +0xf7, team
+/// +0x125): a Turnier, a hall's.
+const HOSTING: usize = 0x125;
+const HOSTS_TURNIER: u8 = 1;
+const HOSTS_HALL: u8 = 2;
+/// A host's slot keeps in its second byte what the original's stack held
+/// there as it made the entry: always this for a Turnier, this for a hall.
+const TURNIER_STACK: u8 = 0x1a;
+const HALL_STACK: u8 = 0xc7;
+/// The main country's Turniere of the pre-season, up to day 39, the
+/// lower divisions' only before day 21, a second on these weekdays from
+/// day 19 (`DAT_008ac840`); the other played countries' from day 14 to 33.
+/// No tournament starts on a day that leaves 6 by 7.
+const PRESEASON_LAST: i16 = 39;
+const LOWER_UNTIL: i16 = 21;
+const LOWER: u8 = 2;
+const SECOND_FROM: i16 = 19;
+const SECOND: [bool; 7] = [false, false, true, true, false, true, true];
+const OTHERS: std::ops::RangeInclusive<i16> = 14..=33;
+const NO_START: i16 = 6;
+/// A pick tries this many clubs (`FUN_00771dfc`, `FUN_0064cadd`).
+const TRIES: usize = 10;
+/// The UEFA Cup's clubs host no Turnier (team +0x110).
+const IN_UEFA: u16 = 0x20;
+/// The winter's halls: Germany's from half week 48, ten days from the
+/// week's first day plus 10 and thirteen from plus 20 (two a day, one of
+/// them from the lower divisions), France's from half week 52, twelve
+/// days from plus 10.
+pub const GERMANY_HALLS: u16 = 48;
+pub const FRANCE_HALLS: u16 = 52;
+const GERMANY: u8 = 14;
+const FRANCE: u8 = 20;
+
+/// A club of the country to host (`FUN_00771dfc`, `FUN_0064cadd`): ten
+/// tries at random, each taking a club of at least the division `lowest`
+/// (0 the first) that is no human's and hosts no tournament of the kind
+/// yet — a Turnier's not in the UEFA Cup either.
+fn pick(records: &Records, country: u8, lowest: u8, flag: u8, random: &mut Random) -> Option<i16> {
+    let clubs = u32::try_from(records.countries.team_count(country.into())).unwrap_or(0);
+    for _ in 0..TRIES {
+        let number = random.below(clubs) as i16;
+        let Some(team) = records.team(country.into(), number as u16) else { continue };
+        let fits = team.level() >= lowest
+            && (flag != HOSTS_TURNIER || team.get::<u16>(0x110) & IN_UEFA == 0)
+            && !crate::statistics::is_human(records, country, number)
+            && team.get::<u8>(HOSTING) & flag == 0;
+        if fits {
+            return Some(number);
+        }
+    }
+    None
+}
+
+/// A computer club's tournament on a day (`FUN_00760036`): the host its
+/// only club so far; the host marked as hosting one of the kind
+/// (`FUN_007719bf`, `FUN_0064c72d`).
+fn host(records: &mut Records, (country, number): (u8, i16), day: i16, kind: u8) -> Tournament {
+    let (flag, stack) = if kind == TURNIER { (HOSTS_TURNIER, TURNIER_STACK) } else { (HOSTS_HALL, HALL_STACK) };
+    let mut t = Tournament([0; ENTRY]);
+    t.0[KIND] = kind;
+    t.0[ID..ID + 4].copy_from_slice(&id((country, number), day).to_le_bytes());
+    t.set_word(DAY, day);
+    t.add((country, number));
+    t.0[SLOTS + 1] = stack;
+    if let Some(team) = records.team_mut(country.into(), number as u16) {
+        team.put::<u8>(HOSTING, team.get::<u8>(HOSTING) | flag);
+    }
+    t
+}
+
+/// The pre-season's Turniere, as the new season opens (`FUN_007719a6`'s
+/// `FUN_00771a61`): the list starts afresh; the main country's clubs host
+/// one a day up to day 39 — before day 21 a club below the second
+/// division — and a second on some weekdays from day 19, the other played
+/// countries' one a day from day 14 to 33. A club hosts one at most.
+pub fn open_preseason(records: &mut Records, random: &mut Random) {
+    let mut list: Vec<Tournament> = Vec::new();
+    let upsert = |list: &mut Vec<Tournament>, t: Tournament| match list.iter().position(|e| e.id() == t.id()) {
+        Some(k) => list[k] = t,
+        None if list.len() < MOST => list.push(t),
+        None => {}
+    };
+    let main = records.globals.main_country() as u8;
+    for day in 1..=PRESEASON_LAST {
+        if day % 7 == NO_START {
+            continue;
+        }
+        let lowest = if day < LOWER_UNTIL { LOWER } else { 0 };
+        if let Some(number) = pick(records, main, lowest, HOSTS_TURNIER, random) {
+            let t = host(records, (main, number), day, TURNIER);
+            upsert(&mut list, t);
+        }
+        if day >= SECOND_FROM && SECOND[day as usize % 7] {
+            if let Some(number) = pick(records, main, 0, HOSTS_TURNIER, random) {
+                let t = host(records, (main, number), day, TURNIER);
+                upsert(&mut list, t);
+            }
+        }
+    }
+    let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
+    let countries: Vec<u8> = records.globals.more_countries().iter().take(more).map(|&c| c as u8).collect();
+    for country in countries {
+        for day in OTHERS {
+            if day % 7 == NO_START {
+                continue;
+            }
+            if let Some(number) = pick(records, country, 0, HOSTS_TURNIER, random) {
+                let t = host(records, (country, number), day, TURNIER);
+                upsert(&mut list, t);
+            }
+        }
+    }
+    store(records, &list);
+}
+
+/// The winter's Hallenturniere of a country (`FUN_00771959`'s
+/// `FUN_0064c795`), as half week 48 (Germany) or 52 (France) begins,
+/// counted from the week's first day as the original's cycle has it then
+/// — 161 and 175 —, appended to the list; a club hosts one at most.
+pub fn open_winter(records: &mut Records, country: u8, half_weeks: u16, random: &mut Random) {
+    let week = (i16::try_from(half_weeks).unwrap_or(0) / 2 - 1) * 7;
+    let days: Vec<(i16, &[u8])> = match country {
+        GERMANY => (0..=9)
+            .map(|i| (week + 10 + i, &[0][..]))
+            .chain((0..=12).map(|i| (week + 20 + i, &[0, LOWER][..])))
+            .collect(),
+        FRANCE => (0..=11).map(|i| (week + 10 + i, &[0][..])).collect(),
+        _ => return,
+    };
+    let mut list = tournaments(records);
+    for (day, lowests) in days {
+        if day % 7 == NO_START {
+            continue;
+        }
+        for &lowest in lowests {
+            if let Some(number) = pick(records, country, lowest, HOSTS_HALL, random) {
+                let t = host(records, (country, number), day, HALLE);
+                if list.len() < MOST {
+                    list.push(t);
+                }
+            }
+        }
+    }
+    store(records, &list);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +493,90 @@ mod tests {
         assert!(first[8..].iter().chain(&second[8..]).all(|&b| b == 0));
         assert_eq!(calendar.entry(174)[0], 0);
         assert!(!free(&calendar, 172) && !free(&calendar, 171) && free(&calendar, 174));
+    }
+}
+
+#[cfg(test)]
+mod saves {
+    use super::*;
+    use a3_files::an3::Save;
+    use std::collections::BTreeMap;
+
+    fn read(name: &str) -> Records {
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap()
+    }
+
+    /// The tournaments of a kind by day and host country, how many each.
+    fn by_day(records: &Records, kind: u8) -> BTreeMap<(i16, u8), usize> {
+        let mut days = BTreeMap::new();
+        for t in tournaments(records).iter().filter(|t| t.kind() == kind) {
+            *days.entry((t.day(), t.host().0)).or_default() += 1;
+        }
+        days
+    }
+
+    /// What every computer host keeps to: one tournament of the kind, no
+    /// human's, its flag set, its slot's second byte the original's.
+    fn hosts_keep_the_rules(records: &Records, kind: u8, flag: u8, stack: u8) {
+        let mut seen = std::collections::BTreeSet::new();
+        for t in tournaments(records).iter().filter(|t| t.kind() == kind) {
+            let (country, number) = t.host();
+            assert!(seen.insert((country, number)), "{country}/{number} hosts twice");
+            assert!(!crate::statistics::is_human(records, country, number));
+            let team = records.team(country.into(), number as u16).unwrap();
+            assert_eq!(team.get::<u8>(HOSTING) & flag, flag, "{country}/{number}");
+            assert_eq!(t.0[SLOTS + 1], stack);
+            assert_eq!((t.count(), t.id()), (1, id((country, number), t.day())));
+        }
+    }
+
+    /// The new season's Turniere (SeasonEnd364 → NewSeason000) fall on the
+    /// original's days in its countries, the main country's below the
+    /// second division before day 21. The hosts are drawn, and a thin
+    /// country may find none in ten tries — the original's England did not
+    /// on day 32 —, so some draw of the new season's state reproduces the
+    /// original's days.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_holds_the_originals_turniere() {
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        crate::settlement::open_season(&mut ours, &mut Random::new(7));
+        // Only the hosts' flags and the list are the pre-season's: taken
+        // back, the state stands as the Turniere found it.
+        let seed = (0..400).find(|&seed| {
+            for team in &mut ours.teams {
+                team.put::<u8>(HOSTING, team.get::<u8>(HOSTING) & !HOSTS_TURNIER);
+            }
+            store(&mut ours, &[]);
+            open_preseason(&mut ours, &mut Random::new(seed));
+            by_day(&ours, TURNIER) == by_day(&theirs, TURNIER)
+        });
+        assert!(seed.is_some(), "no draw holds the original's days");
+        hosts_keep_the_rules(&ours, TURNIER, HOSTS_TURNIER, TURNIER_STACK);
+        hosts_keep_the_rules(&theirs, TURNIER, HOSTS_TURNIER, TURNIER_STACK);
+        let main = ours.globals.main_country() as u8;
+        for t in tournaments(&ours).iter().filter(|t| t.day() < LOWER_UNTIL && t.host().0 == main) {
+            assert!(ours.team(main.into(), t.host().1 as u16).unwrap().level() >= LOWER);
+        }
+        assert_eq!(tournaments(&ours).len(), tournaments(&theirs).len());
+    }
+
+    /// The winter's halls, Germany's at half week 48 and France's at 52,
+    /// fall on the days the original's season S2c holds them, one or two a
+    /// day.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_winter_holds_the_originals_halls() {
+        let (mut ours, theirs) = (read("A.an3"), read("S2c.an3"));
+        let mut random = Random::new(3);
+        open_winter(&mut ours, GERMANY, GERMANY_HALLS, &mut random);
+        open_winter(&mut ours, FRANCE, FRANCE_HALLS, &mut random);
+        assert_eq!(by_day(&ours, HALLE), by_day(&theirs, HALLE));
+        hosts_keep_the_rules(&ours, HALLE, HOSTS_HALL, HALL_STACK);
+        hosts_keep_the_rules(&theirs, HALLE, HOSTS_HALL, HALL_STACK);
     }
 }
