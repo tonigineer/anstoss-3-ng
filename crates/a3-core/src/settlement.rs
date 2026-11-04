@@ -512,6 +512,8 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         plan_staff(records, i);
         if records.teams[i].humans()[1] == 0 {
             plan_bonuses(&mut records.teams[i], system);
+            let bonuses = expected_bonuses(records, &records.teams[i]);
+            put::<i32>(&mut records.teams[i], EXPECTED_BONUSES, bonuses);
         }
         let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
         let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
@@ -924,6 +926,63 @@ fn plan_bonuses(team: &mut Team, system: usize) {
     put::<i32>(team, LAST_BONUS, drop);
 }
 
+/// The team bonuses the season is expected to cost, which the clearing
+/// plans at +0x180 (`FUN_0061f64f(club, 0)`): the matches the board's
+/// goal (team +0x135, the object's +0x10c) expects won —
+/// `DAT_008a532c`'s first figure and its second for each club of the
+/// league above ten (`FUN_006a2849`; a league's size by `FUN_00635a35`,
+/// 18 from the sixth level on) — times fourteen times the bonus rows the
+/// goal picks (`DAT_008911f8`: the first two, three in a row from the
+/// next, or the last two, averaged), raised by +0x5c4 in three hundredths
+/// (as it stands before the plan sets it); the title's and a European
+/// place's bonus for each of the squad in the first league by the goal,
+/// the promotion's below it for a club with a stadium of its own, the
+/// last one's for each; and the squad's appearance bonuses (player
+/// +0x152) over the season's matchdays, fourteen hundreds each. Measured
+/// on the original's first new-season day: all 211 computer clubs agree.
+const EXPECTED_BONUSES: usize = 0x180;
+const GOAL_ROWS: [usize; 12] = [0, 1, 1, 1, 2, 2, 3, 3, 3, 3, 4, 4];
+const GOAL_WINS: [(i32, i32); 12] = [(66, 5), (60, 4), (60, 4), (56, 4), (52, 4), (48, 3), (48, 3), (46, 3), (44, 3), (40, 2), (38, 2), (10, 1)];
+const BOARD_GOAL_AT: usize = 0x135;
+const NO_LEAGUE_TEAMS: i32 = 18;
+
+fn expected_bonuses(records: &Records, team: &Team) -> i32 {
+    let level = team.level();
+    let teams = if level < 6 {
+        crate::opponent::League::of(records, u16::from(team.country()), level).map_or(NO_LEAGUE_TEAMS, |l| l.teams() as i32)
+    } else {
+        NO_LEAGUE_TEAMS
+    };
+    let goal = usize::try_from(team.get::<i8>(BOARD_GOAL_AT)).unwrap_or(0).min(GOAL_ROWS.len() - 1);
+    let rows: [i32; 5] = std::array::from_fn(|k| i32::from(club::<u16>(team, BONUS_ROWS_AT + 2 * k)));
+    let row = match GOAL_ROWS[goal] {
+        0 => (rows[0] + rows[1]) / 2,
+        4 => (rows[3] + rows[4]) / 2,
+        s => (rows[s - 1] + rows[s] + rows[s + 1]) / 3,
+    };
+    let (wins, per_club) = GOAL_WINS[goal];
+    let won = wins + per_club * (teams - 10);
+    let raise = i64::from(club::<u16>(team, 0x5c4) as i16) + 300;
+    let mut v = (i64::from(won.wrapping_mul(14).wrapping_mul(row)) * raise / 300) as i32;
+    let squad = i32::from(team.player_count() as i16);
+    if level == 0 {
+        if goal < 2 {
+            v = v.wrapping_add(club::<i32>(team, TITLE_BONUS).wrapping_mul(squad));
+        }
+        if goal != 0 && goal < 4 {
+            v = v.wrapping_add(squad.wrapping_mul(club::<i32>(team, EUROPE_BONUS)));
+        }
+    } else if team.get::<i8>(SHARED_AT) < 0 && goal < 4 {
+        v = v.wrapping_add(squad.wrapping_mul(club::<i32>(team, PROMOTED_BONUS)));
+    }
+    v = v.wrapping_add(club::<i32>(team, LAST_BONUS).wrapping_mul(squad));
+    if squad > 0 {
+        let sum = team.players().into_iter().filter_map(|id| records.player(id)).fold(0i32, |s, p| s + i32::from(p.appearance_bonus()));
+        v = v.wrapping_add(sum * (teams - 1) * 2 / squad * 14 * 100);
+    }
+    v
+}
+
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
 fn planned(team: &Team) -> bool {
     team.humans()[1] == 0 && team.level() < 10
@@ -1204,14 +1263,14 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     open_season_with(records, random, None);
 }
 
-/// The new season as [`open_season`] opens it, the kept countries' clubs
-/// taking new players where they are thin when the contract and value
-/// tables are at hand ([`crate::newplayer::for_kept_club`]).
-pub fn open_season_with(
-    records: &mut Records,
-    random: &mut Random,
-    tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
-) {
+/// The new season as [`open_season`] opens it, when the game's rules are
+/// at hand: the kept countries' clubs taking new players where they are
+/// thin ([`crate::newplayer::for_kept_club`] by the contract and value
+/// tables) and the boards setting every club's goals before the walk plans
+/// the clubs by them ([`crate::season::open_goals`], `FUN_00772bee` in
+/// `FUN_0065e659`, which comes before `FUN_0042b2fc`).
+pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Option<&crate::season::Rules>) {
+    let tables = rules.map(|r| (&r.contract, &r.value));
     roll_globals(&mut records.globals, random);
     clear_objects(records);
     // The ranked leagues' clubs by their squads (`FUN_00778394`).
@@ -1242,6 +1301,9 @@ pub fn open_season_with(
     open_managers(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
+    if let Some(rules) = rules {
+        crate::season::open_goals(records, rules, random);
+    }
     count_down_contracts(records);
     number_shirts(records, random);
     crate::finances::keep_last_season(records);
@@ -3096,7 +3158,8 @@ mod tests {
 
     /// The team bonuses come out as the original's: on its first
     /// new-season day every computer club, the fields put to nought, is
-    /// planned back to its rows and bonuses.
+    /// planned back to its rows and bonuses, and its season's expected
+    /// bonuses with them.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_team_bonuses_are_planned_as_the_original() {
@@ -3106,6 +3169,7 @@ mod tests {
             .unwrap()
             .join("saves-kept");
         let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let last = Records::from_save(Save::read(&keeps.join("SeasonEnd364.an3")).unwrap()).unwrap();
         let mut count = 0;
         for i in 0..theirs.teams.len() {
             let country = i16::from(theirs.teams[i].country());
@@ -3121,6 +3185,10 @@ mod tests {
                 put::<i32>(&mut team, at, -1);
             }
             plan_bonuses(&mut team, system);
+            // The expected bonuses by the +0x5c4 the season's end left.
+            let old = club::<u16>(&last.teams[i], 0x5c4);
+            put::<u16>(&mut team, 0x5c4, old);
+            assert_eq!(expected_bonuses(&theirs, &team), club::<i32>(&theirs.teams[i], EXPECTED_BONUSES), "{i} expected bonuses");
             for k in 0..5 {
                 let at = BONUS_ROWS_AT + 2 * k;
                 assert_eq!(club::<u16>(&team, at), club::<u16>(&theirs.teams[i], at), "{i} +{at:#x}");

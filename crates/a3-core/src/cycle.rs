@@ -982,7 +982,7 @@ impl Cycle {
                 (state.season.as_mut(), state.records.as_mut())
             {
                 let rules = &self.data.rules;
-                crate::settlement::open_season_with(records, &mut season.random, Some((&rules.contract, &rules.value)));
+                crate::settlement::open_season_with(records, &mut season.random, Some(rules));
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);
@@ -992,9 +992,6 @@ impl Cycle {
                 // The game's best players of each position and ability are
                 // picked anew (`FUN_0077841a`).
                 crate::stars::pick(records, &self.data);
-                // The boards set every club's goals by its squad's rank
-                // (`FUN_00772bee`).
-                crate::season::open_goals(records, &self.data.rules, &mut season.random);
                 // The humans' calendars start empty and take their clubs'
                 // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
                 crate::year::open_season(records, &self.data.calendar);

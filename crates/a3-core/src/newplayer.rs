@@ -657,7 +657,7 @@ mod tests {
             crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
             crate::settlement::settle_season(&mut ours, &tables);
             crate::promotion::take(&mut ours, &drawn);
-            crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
+            crate::settlement::open_season_with(&mut ours, &mut random, Some(&data.rules));
             let year = ours.globals.start_year();
             let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
             let renewed = |r: &Records| -> Vec<(u16, u16)> {
@@ -730,7 +730,7 @@ mod tests {
             crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
             crate::settlement::settle_season(&mut ours, &tables);
             crate::promotion::take(&mut ours, &drawn);
-            crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
+            crate::settlement::open_season_with(&mut ours, &mut random, Some(&data.rules));
             let year = i32::from(ours.globals.start_year());
             let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
             let count = |r: &Records| {
