@@ -821,6 +821,14 @@ fn roll_globals(globals: &mut Globals, random: &mut Random) {
     globals.set_day_of_year(start.ordinal0() as u16);
     let leap = y % 4 == 0 && (y % 400 == 0 || y % 100 != 0);
     globals.set_year_days(if leap { 366 } else { 365 });
+    // Ten bytes at 0xb5dfb0 back to 0xff, the word at 0xb5dfc4 to nought
+    // (`FUN_0065e659`), and 0xb5d1a4 to one (`FUN_0077655c`, for every
+    // played country).
+    for k in 0..10 {
+        globals.put::<u8>(0xb5dfb0 + k, 0xff);
+    }
+    globals.put::<u16>(0xb5dfc4, 0);
+    globals.put::<u16>(0xb5d1a4, 1);
 }
 
 /// Settles a club's season (`FUN_006219d2`), of the country `country`,
@@ -1524,6 +1532,9 @@ mod tests {
         assert_eq!((a.europe_stage(), a.uefa_round()), (b.europe_stage(), b.uefa_round()));
         assert_eq!(b.lottery(), 995, "the original's drawn lottery");
         assert!(a.lottery() < 1000, "the replica draws one of its own");
+        for at in (0xb5dfb0..0xb5dfba).chain([0xb5dfc4, 0xb5dfc5, 0xb5d1a4, 0xb5d1a5]) {
+            assert_eq!(a.get::<u8>(at), b.get::<u8>(at), "globals {at:#x}");
+        }
         for nation in opponent::played_nations(&closed) {
             for level in 0..closed.countries.leagues(usize::from(nation)).max(0) {
                 let (x, y) = (
