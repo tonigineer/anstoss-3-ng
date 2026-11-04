@@ -44,6 +44,41 @@ fn counter(kind: u8) -> Option<usize> {
     }
 }
 
+/// The kinds a club marks in its season's titles (`DAT_008a56b8`, the
+/// kinds of a promotion and below not among them).
+const MARKED: [bool; 14] = [false, true, false, false, true, true, true, true, true, true, true, true, true, false];
+/// The season's titles in the past seasons' byte (team +0x11e, the club
+/// object's +0xee): its low two bits, three at most.
+const SEASON_TITLES: usize = 0x11e;
+
+/// A club's title of `kind` (`FUN_006b50a4`): its trainer counts it
+/// ([`honour`]), the club marks it among the season's titles (+0x11e's
+/// low two bits one more, three at most; `FUN_00698e00`), and for the
+/// cup every man of its squad counts it in his second honour (player
+/// +0x29a, `FUN_006b4fdb`). (A human club's season object, `FUN_0061436f`,
+/// and the European cups' squads, `FUN_006b501e`, `FUN_006b5061`, are not
+/// built.)
+pub fn title(records: &mut Records, country: u16, number: u16, kind: u8) {
+    honour(records, country, number, kind);
+    if MARKED.get(usize::from(kind)).copied().unwrap_or(false) {
+        if let Some(t) = records.team_mut(country, number) {
+            let v = t.get::<u8>(SEASON_TITLES);
+            let titles = ((v & 3) + 1).min(3);
+            t.put::<u8>(SEASON_TITLES, v & !3 | titles);
+        }
+    }
+    if kind == CUP {
+        let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
+        for id in squad {
+            if let Some(p) = records.player_mut(id) {
+                let mut h = p.honours();
+                h[1] = h[1].wrapping_add(1);
+                p.set_honours(h);
+            }
+        }
+    }
+}
+
 /// A club's title of `kind` in its trainer's career (`FUN_006b5190`'s
 /// computer branch).
 pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
@@ -69,7 +104,7 @@ pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
 /// - it marks the title in its honours byte (team +0x8ea, 0x80;
 ///   `FUN_00699fe1`) and every man of its squad counts it in his own
 ///   first honour (player +0x299, `FUN_007045c9` in `FUN_0071d2d0`);
-/// - its trainer counts it in his career ([`honour`]).
+/// - and it takes the title ([`title`]).
 /// (The club's history, `FUN_0064089e`, the human's event 0x6a and
 /// country 0x3b's play-off, `FUN_006d8bb0`, are not built.)
 const CHAMPION_MARK: u8 = 0x80;
@@ -117,7 +152,7 @@ pub fn champions_day(records: &mut Records) {
                 p.set_honours(h);
             }
         }
-        honour(records, country, number, CHAMPIONSHIP);
+        title(records, country, number, CHAMPIONSHIP);
     }
 }
 
@@ -148,17 +183,34 @@ mod tests {
         let mut count = 0;
         for country in crate::opponent::played_nations(&new) {
             if let Some(champion) = crate::statistics::champions(&end, country).first() {
-                honour(&mut ours, country, champion.club.1 as u16, CHAMPIONSHIP);
+                title(&mut ours, country, champion.club.1 as u16, CHAMPIONSHIP);
                 count += 1;
             }
             for number in 0..new.countries.team_count(usize::from(country)).max(0) as u16 {
                 if new.team(country, number).unwrap().get::<u16>(0x110) & 0x1000 != 0 {
-                    honour(&mut ours, country, number, CUP);
+                    title(&mut ours, country, number, CUP);
                     count += 1;
+                    // The cup's men count it.
+                    for id in end.team(country, number).unwrap().players() {
+                        let (Some(was), Some(now)) = (a.player(id), end.player(id)) else { continue };
+                        if was.birthday() == now.birthday() && a.team(country, number).unwrap().players().contains(&id) {
+                            assert_eq!(ours.player(id).unwrap().honours()[1], now.honours()[1], "player {id}'s cups");
+                        }
+                    }
                 }
             }
         }
         assert_eq!(count, 10, "five champions and five cup winners");
+        // The season's titles, but where a European one came beside.
+        let mut marked = 0;
+        for i in 0..ours.teams.len() {
+            let (x, y) = (ours.teams[i].get::<u8>(SEASON_TITLES) & 3, end.teams[i].get::<u8>(SEASON_TITLES) & 3);
+            if x != a.teams[i].get::<u8>(SEASON_TITLES) & 3 {
+                marked += 1;
+                assert!(x == y || y > x, "team {i}'s season titles {x} {y}");
+            }
+        }
+        assert_eq!(marked, 10, "ten clubs marked");
         for id in 1..=usize::from(LAST_PERSON) {
             for at in [0x3c, 0x3e] {
                 assert_eq!(ours.persons[id].get::<i16>(at), end.persons[id].get::<i16>(at), "person {id} +{at:#x}");

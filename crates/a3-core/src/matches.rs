@@ -252,7 +252,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         // The final's winner counts the cup in its trainer's career
         // (`FUN_006b50a4` with kind 4).
         if round >= FINAL_ROUND {
-            crate::honours::honour(records, u16::from(country), number, crate::honours::CUP);
+            crate::honours::title(records, u16::from(country), number, crate::honours::CUP);
         }
     }
     // On the human's year calendar the round's day fills its score, the
@@ -524,7 +524,7 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
         // Its winner counts the supercup in its trainer's career
         // (`FUN_006cc61b`: `FUN_006b50a4` with kind 5).
         let w = usize::from(winner.unwrap_or(0) != 0) * 4;
-        crate::honours::honour(records, u16::from(tie[w]), u16_at(&tie, w + 2), crate::honours::SUPERCUP);
+        crate::honours::title(records, u16::from(tie[w]), u16_at(&tie, w + 2), crate::honours::SUPERCUP);
         let final_tie = records.block(&name).and_then(|b| b.get(FINAL_TIE..FINAL_TIE + FINAL_ENTRY - 2)).map(<[u8]>::to_vec);
         let year = records.globals.start_year();
         if let (Some(t), Some(b)) = (final_tie, records.block_mut(FINALS_BLOCK)) {
@@ -673,7 +673,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         // The final's winner counts the league cup in its trainer's career
         // (`FUN_0067e911`: `FUN_006b50a4` with kind 0xb or 0xc).
         for side in sides {
-            crate::honours::honour(records, u16::from(side[0]), u16::from_le_bytes([side[2], side[3]]), crate::honours::LEAGUE_CUP);
+            crate::honours::title(records, u16::from(side[0]), u16::from_le_bytes([side[2], side[3]]), crate::honours::LEAGUE_CUP);
         }
         return;
     }
