@@ -1,9 +1,9 @@
 # Anstoss 3.1
 
 <p align="center">
-  <a href="#work-in-progress"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tonigineer/anstoss-3.1/main/.github/badges/progress.json" alt="Progress"></a>
-  <a href="https://github.com/tonigineer/anstoss-3.1/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tonigineer/anstoss-3.1/ci.yml?branch=main&label=CI" alt="CI"></a>
-  <a href="https://github.com/tonigineer/anstoss-3.1/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tonigineer/anstoss-3.1/main/.github/badges/tests.json" alt="Tests"></a>
+  <a href="#work-in-progress"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tonigineer/anstoss-3-ng/main/.github/badges/progress.json" alt="Progress"></a>
+  <a href="https://github.com/tonigineer/anstoss-3-ng/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tonigineer/anstoss-3-ng/ci.yml?branch=main&label=CI" alt="CI"></a>
+  <a href="https://github.com/tonigineer/anstoss-3-ng/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tonigineer/anstoss-3-ng/main/.github/badges/tests.json" alt="Tests"></a>
   <br>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-1.97%2B-orange?logo=rust" alt="Rust 1.97+"></a>
   <a href="https://bevyengine.org"><img src="https://img.shields.io/badge/Bevy-0.20-232326" alt="Bevy 0.20"></a>
@@ -60,7 +60,7 @@ code, and compares every finished screen against the original.
    installer with Wine, [Bottles](https://usebottles.com/) or `innoextract`
    (untested); the game itself need not run under Wine.
 2. Unpack the archive for your system from the
-   [releases](https://github.com/tonigineer/anstoss-3.1/releases) — none
+   [releases](https://github.com/tonigineer/anstoss-3-ng/releases) — none
    is published yet; until then, [build from source](#building-from-source).
 3. Point it at the game folder and run `anstoss-3-1` / `anstoss-3-1.exe`.
 
@@ -102,7 +102,7 @@ older, so use [rustup](https://rustup.rs). The binary lands at
 sudo pacman -S --needed base-devel git rustup pkgconf alsa-lib systemd-libs \
     libxkbcommon wayland libx11
 rustup default stable
-git clone https://github.com/tonigineer/anstoss-3.1.git && cd anstoss-3.1
+git clone https://github.com/tonigineer/anstoss-3-ng.git && cd anstoss-3-ng
 cargo build --release -p a3-app
 ```
 
