@@ -695,10 +695,10 @@ mod tests {
     }
 
     /// Over the original's turn the played countries' computer clubs fill
-    /// their thin positions about as the original's do: as many new
-    /// youngsters within a tenth (95 against 91 on the pair), as many of
-    /// their own amateurs moved up within a fifth, every youngster 18 or 19
-    /// on two years' terms with the club's nation.
+    /// their thin positions about as the original's do: over four turns as
+    /// many new youngsters within a tenth (one turn 95 against 91 on the
+    /// pair), as many of their own amateurs moved up within a fifth, every
+    /// youngster 18 or 19 on two years' terms with the club's nation.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_played_clubs_fill_their_squads_as_the_original() {
@@ -706,57 +706,67 @@ mod tests {
         let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let keeps = dir.parent().unwrap().join("saves-kept");
         let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
-        let (mut ours, theirs, before) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let (theirs, before) = (load("NewSeason000.an3"), load("SeasonEnd364.an3"));
         let data = crate::data::Data::load(&dir).unwrap();
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let tables = crate::league::LeagueTables::load(&exe).unwrap();
-        let mut random = Random::new(3);
-        let drawn = crate::promotion::draw(&mut ours, &mut random);
-        crate::promotion::count(&mut ours);
-        crate::development::develop_played(&mut ours, false, &mut random);
-        crate::rollover::retire_announced(&mut ours, &mut random);
-        crate::statistics::archive_leagues(&mut ours);
-        crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
-        crate::rollover::count_first_seasons(&mut ours);
-        let agents = crate::free_agents::release(&mut ours, &mut random);
-        crate::deals::execute(&mut ours, &mut random);
-        crate::rollover::close_played(&mut ours, &mut random);
-        crate::rollover::close_kept(&mut ours, &mut random);
-        crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
-        crate::settlement::settle_season(&mut ours, &tables);
-        crate::promotion::take(&mut ours, &drawn);
-        crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
-        let year = i32::from(ours.globals.start_year());
-        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
-        let count = |r: &Records| {
-            let (mut fresh, mut promoted, mut ids) = (0, 0, Vec::new());
-            for c in crate::opponent::played_nations(&before) {
-                for t in 0..before.countries.team_count(usize::from(c)).max(0) as u16 {
-                    let old = before.team(c, t).unwrap().players();
-                    for id in r.team(c, t).unwrap().players() {
-                        if old.contains(&id) {
-                            continue;
-                        }
-                        let (o, p) = (before.player(id).unwrap(), r.player(id).unwrap());
-                        if o.first_name() != p.first_name() || o.birthday() != p.birthday() {
-                            fresh += 1;
-                            ids.push((c, id));
-                        } else if o.club() == p.club() {
-                            promoted += 1;
+        // Four turns of the season, the counts summed: one draw's count
+        // swings with every other draw of the turn.
+        let (mut fresh_sum, mut promoted_sum, mut their_fresh_sum, mut their_promoted_sum) = (0, 0, 0, 0);
+        for seed in [3, 4, 5, 6] {
+            let mut ours = load("SeasonEnd364.an3");
+            let mut random = Random::new(seed);
+            let drawn = crate::promotion::draw(&mut ours, &mut random);
+            crate::promotion::count(&mut ours);
+            crate::development::develop_played(&mut ours, false, &mut random);
+            crate::rollover::retire_announced(&mut ours, &mut random);
+            crate::statistics::archive_leagues(&mut ours);
+            crate::promotion::flag(&mut ours, &data.rules.forecast.tickets);
+            crate::rollover::count_first_seasons(&mut ours);
+            let agents = crate::free_agents::release(&mut ours, &mut random);
+            crate::deals::execute(&mut ours, &mut random);
+            crate::rollover::close_played(&mut ours, &mut random);
+            crate::rollover::close_kept(&mut ours, &mut random);
+            crate::free_agents::place(&mut ours, &agents, (&data.rules.contract, &data.rules.value), &mut random);
+            crate::settlement::settle_season(&mut ours, &tables);
+            crate::promotion::take(&mut ours, &drawn);
+            crate::settlement::open_season_with(&mut ours, &mut random, Some((&data.rules.contract, &data.rules.value)));
+            let year = i32::from(ours.globals.start_year());
+            let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+            let count = |r: &Records| {
+                let (mut fresh, mut promoted, mut ids) = (0, 0, Vec::new());
+                for c in crate::opponent::played_nations(&before) {
+                    for t in 0..before.countries.team_count(usize::from(c)).max(0) as u16 {
+                        let old = before.team(c, t).unwrap().players();
+                        for id in r.team(c, t).unwrap().players() {
+                            if old.contains(&id) {
+                                continue;
+                            }
+                            let (o, p) = (before.player(id).unwrap(), r.player(id).unwrap());
+                            if o.first_name() != p.first_name() || o.birthday() != p.birthday() {
+                                fresh += 1;
+                                ids.push((c, id));
+                            } else if o.club() == p.club() {
+                                promoted += 1;
+                            }
                         }
                     }
                 }
+                (fresh, promoted, ids)
+            };
+            let ((fresh, promoted, ids), (their_fresh, their_promoted, _)) = (count(&ours), count(&theirs));
+            fresh_sum += fresh;
+            promoted_sum += promoted;
+            their_fresh_sum += their_fresh as i32;
+            their_promoted_sum += their_promoted as i32;
+            for (country, id) in ids {
+                let p = ours.player(id).unwrap();
+                assert!((18..=19).contains(&crate::statistics::age_on(p, today)), "player {id}'s age");
+                assert_eq!(i32::from(p.contract() & 0xfff) - year, 2, "player {id}'s years");
+                assert_eq!(u16::from(p.nation()), country);
             }
-            (fresh, promoted, ids)
-        };
-        let ((fresh, promoted, ids), (their_fresh, their_promoted, _)) = (count(&ours), count(&theirs));
-        assert!((fresh - their_fresh as i32).abs() * 10 <= their_fresh as i32, "{fresh} new against {their_fresh}");
-        assert!((promoted - their_promoted as i32).abs() * 5 <= their_promoted as i32 + 2, "{promoted} up against {their_promoted}");
-        for (country, id) in ids {
-            let p = ours.player(id).unwrap();
-            assert!((18..=19).contains(&crate::statistics::age_on(p, today)), "player {id}'s age");
-            assert_eq!(i32::from(p.contract() & 0xfff) - year, 2, "player {id}'s years");
-            assert_eq!(u16::from(p.nation()), country);
         }
+        assert!((fresh_sum - their_fresh_sum).abs() * 10 <= their_fresh_sum, "{fresh_sum} new against {their_fresh_sum}");
+        assert!((promoted_sum - their_promoted_sum).abs() * 5 <= their_promoted_sum + 8, "{promoted_sum} up against {their_promoted_sum}");
     }
 }
