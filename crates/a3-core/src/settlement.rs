@@ -541,6 +541,9 @@ pub fn open_season_with(
     set_classes(records);
     crate::statistics::open_fielded(records);
     crate::rollover::open_played(records, tables, random);
+    // The played countries' top scorers and trainers take their odds
+    // (`FUN_0077655c`'s `FUN_007776c9`, `FUN_007771ae`).
+    crate::season_odds::open_lists(records, random);
     crate::rollover::open_kept(records, tables, random);
     crate::statistics::open_lists(records, random);
     open_managers(records, random);
