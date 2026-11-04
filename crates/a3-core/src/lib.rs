@@ -60,6 +60,7 @@ pub mod stadium;
 pub mod statistics;
 pub mod state;
 pub mod supercup;
+pub mod stars;
 pub mod stock;
 pub mod tactics;
 pub mod talk;

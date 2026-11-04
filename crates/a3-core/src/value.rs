@@ -16,6 +16,7 @@ const POSITION_AT: u32 = 0x8a7608;
 const ABILITIES_AT: u32 = 0x8a76b0;
 const KEEPER_AT: u32 = 0x8a76c0;
 const CHARACTER_AT: [u32; 2] = [0x8a76d0, 0x8a76f0];
+const KEEPER_CHARACTER_AT: u32 = 0x8a76e0;
 /// How many months of a year each contract year counts, the first twelve.
 const YEARS_AT: u32 = 0x8a77b8;
 /// The months of a contract's first year still to come, by this month.
@@ -39,6 +40,10 @@ pub struct ValueTables {
     abilities: Vec<i8>,
     keeper: Vec<i8>,
     character: [Vec<i8>; 2],
+    /// The keepers' rows read sixteen wide, and their own character row
+    /// (`DAT_008a76e0`), as the best players' pick reads them.
+    keeper_wide: Vec<i8>,
+    keeper_character: Vec<i8>,
     years: Vec<u16>,
     months: Vec<u8>,
 }
@@ -61,9 +66,36 @@ impl ValueTables {
             abilities: signed(ABILITIES_AT, BITS)?,
             keeper: signed(KEEPER_AT, KEEPER_BITS)?,
             character: [signed(CHARACTER_AT[0], BITS)?, signed(CHARACTER_AT[1], BITS)?],
+            keeper_wide: signed(KEEPER_AT, BITS)?,
+            keeper_character: signed(KEEPER_CHARACTER_AT, BITS)?,
             years: exe.u16s(YEARS_AT, YEARS)?,
             months: exe.bytes(MONTHS_AT, MONTHS)?.to_vec(),
         })
+    }
+}
+
+impl ValueTables {
+    /// What a player's abilities and character add in percent as the best
+    /// players' pick counts them (`FUN_00708b80`): every bit of the three
+    /// words, a keeper's first two by the keepers' rows.
+    pub fn pick_percent(&self, good: u16, character: [u16; 2], keeper: bool) -> i32 {
+        let (abilities, first) = if keeper { (&self.keeper_wide, &self.keeper_character) } else { (&self.abilities, &self.character[0]) };
+        (0..BITS)
+            .map(|b| {
+                let bit = 1u16 << b;
+                let mut v = 0;
+                if good & bit != 0 {
+                    v += i32::from(abilities[b]);
+                }
+                if character[0] & bit != 0 {
+                    v += i32::from(first[b]);
+                }
+                if character[1] & bit != 0 {
+                    v += i32::from(self.character[1][b]);
+                }
+                v
+            })
+            .sum()
     }
 }
 
