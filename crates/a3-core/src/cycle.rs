@@ -932,6 +932,8 @@ impl Cycle {
                 crate::settlement::settle_season(records, &self.data.rules.league);
                 crate::settlement::close_managers(records, &mut season.random);
                 crate::statistics::roll_ranking(records);
+                // The transfer list closes the season (`FUN_00428fa2`).
+                crate::transfer_week::close_season(records, &mut season.random);
                 // The original's leagues take their new clubs before its
                 // settlement, which reads the places the archive kept;
                 // the replica's settlement reckons the closed tables

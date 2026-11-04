@@ -370,9 +370,7 @@ fn delist(records: &mut Records, id: u16) {
             block[0..2].copy_from_slice(&((count - 1) as i16).to_le_bytes());
         }
     };
-    if let Some(list) = records.block_mut(TRANSFER_LIST).filter(|b| b.len() >= LISTED_FIRST + LISTED_MOST * LISTED) {
-        unlist(list, LISTED_FIRST, LISTED, LISTED_MOST);
-    }
+    delist_transfer(records, id);
     for slot in 0..WATCH_LISTS {
         if let Some(list) = records.block_mut(&format!("0xa4d0f8[{slot}]")).filter(|b| b.len() >= WATCHED_FIRST + 50 * WATCHED) {
             unlist(list, WATCHED_FIRST, WATCHED, 50);
@@ -380,13 +378,15 @@ fn delist(records: &mut Records, id: u16) {
     }
 }
 
-/// A player off the transfer list only (`FUN_0075a636` → `FUN_00758f42`).
+/// A player off the transfer list only (`FUN_0075a636` → `FUN_00758f42`):
+/// the entries behind his move up, all four hundred places through, the
+/// last staying as it was.
 pub(crate) fn delist_transfer(records: &mut Records, id: u16) {
     if let Some(list) = records.block_mut(TRANSFER_LIST).filter(|b| b.len() >= LISTED_FIRST + LISTED_MOST * LISTED) {
         let count = usize::try_from(i16::from_le_bytes([list[0], list[1]])).unwrap_or(0).min(LISTED_MOST);
         let id_at = |list: &[u8], k: usize| u16::from_le_bytes([list[LISTED_FIRST + k * LISTED], list[LISTED_FIRST + k * LISTED + 1]]);
         if let Some(k) = (0..count).find(|&k| id_at(list, k) == id) {
-            list.copy_within(LISTED_FIRST + (k + 1) * LISTED..LISTED_FIRST + count * LISTED, LISTED_FIRST + k * LISTED);
+            list.copy_within(LISTED_FIRST + (k + 1) * LISTED..LISTED_FIRST + LISTED_MOST * LISTED, LISTED_FIRST + k * LISTED);
             list[0..2].copy_from_slice(&((count - 1) as i16).to_le_bytes());
         }
     }

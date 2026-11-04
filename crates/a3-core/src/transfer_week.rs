@@ -74,6 +74,112 @@ pub fn week(records: &mut Records, random: &mut Random) {
             }
         }
     }
+    stale_listings(records, false, random);
+}
+
+/// A listing stands this long before its club takes it off: a kept
+/// country's, a played country's (`FUN_00428e4d`).
+const STALE_KEPT: i32 = 30;
+const STALE_PLAYED: i32 = 140;
+/// A stale listing's player this old retires (`FUN_00428c9f`).
+const OLD: i32 = 32;
+/// The days the season's end takes off every listing's day
+/// (`FUN_00759d0c`).
+const SEASON_SHIFT: i16 = 360;
+/// A country of no data, and one played in full.
+const ABROAD: u8 = 0;
+
+/// The listings that stood too long (`FUN_00428ea5`, behind every week's
+/// market and at the season's end): of each listing whose player is in
+/// no talks, a club abroad sends him away at once — from the second
+/// week of his listing unless the season ends —, a kept country's club
+/// after thirty days, a played country's after a hundred and forty
+/// (`FUN_00428e4d`): with no year left he leaves for good, in his last
+/// he retires once over 32, with more he comes off the list — over 32
+/// retiring and down to one year (`FUN_00428c9f`). His listing's mark
+/// stays.
+pub(crate) fn stale_listings(records: &mut Records, season_end: bool, random: &mut Random) {
+    let today = i32::from(records.globals.day());
+    for l in crate::transfers::listings(records) {
+        if crate::transfers::pending(records, l.id) {
+            continue;
+        }
+        let age = today - i32::from(l.day);
+        let club = (l.country, l.number as i16);
+        let kind = records.countries.kind(usize::from(l.country));
+        if kind == ABROAD {
+            if age == 0 && !season_end {
+                continue;
+            }
+            leave(records, club, l.id, random);
+            continue;
+        }
+        let played = records.globals.played(i16::from(l.country));
+        if age <= if played { STALE_PLAYED } else { STALE_KEPT } {
+            continue;
+        }
+        let in_squad = records.team(u16::from(l.country), l.number).is_some_and(|t| t.players().contains(&l.id));
+        let Some(p) = records.player(l.id).filter(|_| in_squad) else { continue };
+        let (years, old) = (years_left(records, p), age_of(records, p) > OLD);
+        match years {
+            0 => leave(records, club, l.id, random),
+            1 => {
+                if old {
+                    crate::rollover::delist_transfer(records, l.id);
+                    if let Some(p) = records.player_mut(l.id) {
+                        p.set_retiring(p.retiring() | RETIRES);
+                    }
+                }
+            }
+            _ => {
+                crate::rollover::delist_transfer(records, l.id);
+                if old {
+                    let year = records.globals.start_year();
+                    if let Some(p) = records.player_mut(l.id) {
+                        p.set_retiring(p.retiring() | RETIRES);
+                        p.set_contract(year + 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A listed player leaves his club for good (`FUN_0070de6c`): out of its
+/// squad, line-up and bench (`FUN_0070e01a`), off the list, his career
+/// over (`FUN_0066d975`).
+fn leave(records: &mut Records, (country, number): (u8, i16), id: u16, random: &mut Random) {
+    let Ok(number) = u16::try_from(number) else { return };
+    if let Some(team) = records.team_mut(u16::from(country), number) {
+        let squad: Vec<u16> = team.players().into_iter().filter(|&p| p != id).collect();
+        team.set_players(&squad);
+        let mut lineup = team.lineup();
+        lineup.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_lineup(lineup);
+        let mut bench = team.bench();
+        bench.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_bench(bench);
+    }
+    crate::rollover::delist_transfer(records, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_retiring(p.retiring() & !LISTED);
+    }
+    crate::rollover::end_career(records, id, random);
+}
+
+/// The transfer list at the season's end (`FUN_00428fa2`, after the
+/// ranking's roll): the stale listings are dealt with as every week
+/// (`FUN_00428ea5`), and every listing's day moves 360 back into the new
+/// season's count (`FUN_00759d0c`). (`FUN_00428b95` before them would
+/// take the countries not played off, but it removes from a copy it
+/// never loaded: nothing changes.)
+pub fn close_season(records: &mut Records, random: &mut Random) {
+    stale_listings(records, true, random);
+    crate::transfers::shift_days(records, SEASON_SHIFT);
+}
+
+fn age_of(records: &Records, p: &Player) -> i32 {
+    age(records, p)
 }
 
 fn today(records: &Records) -> Option<NaiveDate> {
@@ -261,7 +367,8 @@ mod tests {
     /// the original's save A at day 336 every such player of a club of
     /// the first six leagues — the human club's too — goes onto the
     /// transfer list or says he retires, while the list has room, and
-    /// the late listings stand at terms 0.
+    /// the late listings stand at terms 0; the save's own listings, by
+    /// then long stale, come off at the week's end.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_last_weeks_list_every_last_year() {
@@ -286,8 +393,9 @@ mod tests {
         }
         assert!(before.iter().any(|&(_, human)| human), "no human last year");
         assert!(onto > 200 && retiring > 0, "{onto} listed, {retiring} retiring of {}", before.len());
-        // Those left over found the list full, or were in talks.
-        assert!(left == 0 || listed.len() == 400, "{left} left, {} listed", listed.len());
+        // Those left over found the list full — before the week's end took
+        // its stale listings off —, or were in talks.
+        assert!(left == 0 || listed_before + onto >= 400, "{left} left, {onto} onto {listed_before}");
         assert!(listed.len() > listed_before);
         let start = i32::from(records.globals.start_year());
         for l in crate::transfers::listings(&records) {
@@ -345,5 +453,51 @@ mod tests {
         assert!(off < 0.1, "{} marks against the original's {}", ours.len(), theirs.len());
         assert!(ours.iter().all(|&age| age >= 26), "{ours:?}");
         assert_eq!(ours.iter().max(), theirs.iter().max());
+    }
+}
+
+#[cfg(test)]
+mod season_tests {
+    use super::*;
+
+    /// The original's turn (SeasonEnd364 → NewSeason000) run by the
+    /// replica's season end: its transfer list comes out byte for byte as
+    /// the original's — the stale listings off (a kept country's three of
+    /// day 336 staying, being under thirty days old), every day 360 back,
+    /// and the removed entries' places moved as the original moves them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_transfer_list_closes_the_season_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut b, n) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut r = Random::new(3);
+        let drawn = crate::promotion::draw(&mut b, &mut r);
+        crate::promotion::count(&mut b);
+        crate::statistics::archive_strengths(&mut b);
+        crate::development::develop_played(&mut b, false, &mut r);
+        crate::rollover::retire_announced(&mut b, &mut r);
+        crate::statistics::archive_leagues(&mut b);
+        crate::statistics::fold_eternal(&mut b);
+        crate::promotion::flag(&mut b, &data.rules.forecast.tickets);
+        crate::europe_entry::qualify(&mut b, &mut r);
+        crate::rollover::count_first_seasons(&mut b);
+        let agents = crate::free_agents::release(&mut b, &mut r);
+        crate::deals::execute(&mut b, &mut r);
+        crate::rollover::close_played(&mut b, &mut r);
+        crate::rollover::close_kept(&mut b, &mut r);
+        crate::free_agents::place(&mut b, &agents, (&data.rules.contract, &data.rules.value), &mut r);
+        crate::settlement::settle_season(&mut b, &data.rules.league);
+        crate::settlement::close_managers(&mut b, &mut r);
+        crate::statistics::roll_ranking(&mut b);
+        close_season(&mut b, &mut r);
+        crate::promotion::take(&mut b, &drawn);
+        let name = "0x1c49278";
+        let (x, y) = (b.block(name).unwrap(), n.block(name).unwrap());
+        assert_eq!(crate::transfers::listings(&b).len(), 66);
+        assert!(x == y, "{} bytes differ", (0..x.len()).filter(|&k| x[k] != y[k]).count());
     }
 }

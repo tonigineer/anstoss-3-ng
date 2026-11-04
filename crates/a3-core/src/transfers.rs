@@ -490,6 +490,17 @@ pub(crate) fn list_for_terms(records: &mut Records, id: u16, terms: u8) -> bool 
     true
 }
 
+/// Every listing's day moved back by `days` (`FUN_00759d0c`).
+pub(crate) fn shift_days(records: &mut Records, days: i16) {
+    let Some(b) = records.block_mut(&list_name()) else { return };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(LIST_SIZE);
+    for k in 0..count {
+        let at = LIST_FIRST + k * LIST_ENTRY + 0xa;
+        let day = word(b, at).wrapping_sub(days);
+        put16(b, at, day);
+    }
+}
+
 /// Late in the season (`FUN_0075926f`, at each week's market after day
 /// 216): a listing whose player has under two years left loses its terms,
 /// so his club cannot take him off any more.
