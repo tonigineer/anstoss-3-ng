@@ -420,6 +420,7 @@ pub fn clear_bookings(records: &mut Records) {
         let system = usize::from(records.countries.cup_system(usize::from(records.teams[i].country())));
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
+        plan_staff(records, i);
         let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
         let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
         if planned(&records.teams[i]) {
@@ -482,6 +483,44 @@ fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
                 && holders.get(at + 2..at + 4).map(|w| usize::from(u16::from_le_bytes([w[0], w[1]]))) == Some(number)
         })
         .map_or(0, |k| k + 1)
+}
+
+/// The staff's salaries for what is left of the season, which the
+/// clearing plans again (`FUN_00672839`): the trainer's (team +0x9e) at
+/// +0x158 (`FUN_00620453`) and the manager-trainer's (+0x9c), or with
+/// none the manager's (+0xa0), at +0x154 (`FUN_0062053b`) — the yearly
+/// salary (the person's +0x30, `FUN_006317c6`) in twelfths times the
+/// months left (`DAT_0089e220` by the month, `_DAT_00b5cbdc`), its rest
+/// beside from July on. A human club's, from its manager's own salary,
+/// is not built.
+const MONTHS_LEFT: [i32; 13] = [0, 6, 5, 4, 3, 2, 1, 12, 11, 10, 9, 8, 7];
+const MONTH_AT: usize = 0xb5cbdc;
+const PERSON_SALARY: usize = 0x30;
+const FIRST_HALF: i16 = 6;
+
+fn plan_staff(records: &mut Records, team: usize) {
+    let month = records.globals.get::<i16>(MONTH_AT);
+    let left = MONTHS_LEFT.get(usize::try_from(month).unwrap_or(0)).copied().unwrap_or(0);
+    let share = |id: u16| -> i32 {
+        if id == 0 || id > LAST_PERSON {
+            return 0;
+        }
+        let salary = records.persons.get(usize::from(id)).map_or(0, |p| p.get::<i32>(PERSON_SALARY));
+        let rest = if month > FIRST_HALF { salary % 12 } else { 0 };
+        (salary / 12).wrapping_mul(left).wrapping_add(rest)
+    };
+    let t = &records.teams[team];
+    let [first, second] = t.humans();
+    let [manager_trainer, trainer, manager] = t.staff();
+    let trainers = (first == 0).then(|| share(trainer));
+    let managers = (second == 0).then(|| share(if manager_trainer == 0 { manager } else { manager_trainer }));
+    let t = &mut records.teams[team];
+    if let Some(v) = trainers {
+        put::<i32>(t, 0x158, v);
+    }
+    if let Some(v) = managers {
+        put::<i32>(t, 0x154, v);
+    }
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -631,8 +670,9 @@ fn plan_rest(team: &mut Team, cover: Cover) {
 /// thousands by the cup system's row and the league (`DAT_0089dd50`,
 /// `DAT_008a0308`), +0x13c 600 000 more with flag 0x20, both standing in
 /// the season's block as well (+0x240, +0x244); and two millions at
-/// +0x5e8 and +0x5ec. (The plan's salaries, the stadium's and the
-/// youth's sums, its drawn parts and the prices are not built.)
+/// +0x5e8 and +0x5ec. (The staff's two salaries follow in `plan_staff`;
+/// the other salaries, the stadium's and the youth's sums, its drawn
+/// parts and the prices are not built.)
 const BAND_COSTS: [i32; 3] = [12, 24, 72];
 const PLAN_ROWS_START: [usize; 8] = [0, 6, 10, 12, 14, 16, 17, 18];
 const PLAN_ROW: [i32; 23] = [800, 500, 90, 90, 90, 90, 600, 200, 50, 20, 400, 120, 1000, 120, 1000, 120, 200, 400, 100, 100, 100, 200, 500];
@@ -2439,5 +2479,36 @@ mod tests {
             count += 1;
         }
         assert!(count > 140 && kept > 0, "{count} planned, {kept} kept");
+    }
+
+    /// The staff's salaries for the season come out as the original's on
+    /// its first new-season day: every computer club's trainer at +0x158
+    /// and manager-trainer or manager at +0x154, the whole year's in July.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_staffs_salaries_are_planned_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
+        assert_eq!(ours.globals.get::<i16>(MONTH_AT), 7, "July");
+        let mut count = 0;
+        for i in 0..ours.teams.len() {
+            let country = i16::from(ours.teams[i].country());
+            if country == 0 || !ours.globals.played(country) || ours.teams[i].humans() != [0, 0] {
+                continue;
+            }
+            put::<i32>(&mut ours.teams[i], 0x154, -1);
+            put::<i32>(&mut ours.teams[i], 0x158, -1);
+            plan_staff(&mut ours, i);
+            for at in [0x154, 0x158] {
+                assert_eq!(club::<i32>(&ours.teams[i], at), club::<i32>(&theirs.teams[i], at), "{i} +{at:#x}");
+            }
+            count += 1;
+        }
+        assert!(count > 200, "{count}");
     }
 }
