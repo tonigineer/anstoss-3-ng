@@ -5,11 +5,14 @@ name: CI
 # count reaches the README through tools/badges.py. A pull request must come
 # from a feature/ or fix/ branch, and a feature/ branch must raise the version
 # above main's (fix/ branches may keep it): main's ruleset requires all four
-# checks.
+# checks. Started by hand on a branch (gh workflow run ci.yml --ref
+# feature/…), the same four checks land on its head commit, measured against
+# main, for a pull request whose own events started no run.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,12 +25,12 @@ env:
 jobs:
   branch-name:
     name: Branch name
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Only feature/ and fix/ branches merge into main
         env:
-          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
           case "$HEAD_REF" in
             feature/*|fix/*) echo "$HEAD_REF may be merged" ;;
@@ -36,15 +39,15 @@ jobs:
 
   version:
     name: Version
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: A feature/ branch raises the version
         env:
-          HEAD_REF: ${{ github.head_ref }}
-          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
           git fetch -q --depth=1 origin "$BASE_REF"
           python3 - <<'EOF'
