@@ -422,6 +422,9 @@ pub fn clear_bookings(records: &mut Records) {
         plan_club(&mut records.teams[i], system);
         let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
         let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
+        if planned(&records.teams[i]) {
+            insure_squad(records, i);
+        }
         let cover = insurance(records, &records.teams[i]);
         plan_season(&mut records.teams[i], second, held, cover);
     }
@@ -480,10 +483,40 @@ fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
         .map_or(0, |k| k + 1)
 }
 
+/// Whether the walk plans a club: below the tenth level, its +0x8b clear.
+fn planned(team: &Team) -> bool {
+    team.humans()[1] == 0 && team.level() < 10
+}
+
+/// The walk insures a planned club's players anew (`FUN_00767980` for
+/// each of the squad): one below strength five not at all, else a fifth
+/// of his salary when often hurt (the knocks' flag 8), three twentieths
+/// now and then (4), a tenth else — in thousands at player +0x1f4.
+const INSURED_FROM: u8 = 5;
+const OFTEN_HURT: u16 = 8;
+const NOW_AND_THEN: u16 = 4;
+
+fn insure_squad(records: &mut Records, team: usize) {
+    for id in records.teams[team].players() {
+        let Some(p) = records.players.get_mut(usize::from(id)).filter(|_| id != 0) else { continue };
+        let salary = u32::from(p.salary());
+        let cover = if p.strength() < INSURED_FROM {
+            0
+        } else if p.knocks() & OFTEN_HURT != 0 {
+            salary / 5
+        } else if p.knocks() & NOW_AND_THEN != 0 {
+            salary * 3 / 20
+        } else {
+            salary / 10
+        };
+        p.put::<i16>(EXTRA_INSURANCE, cover as i16);
+    }
+}
+
 fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
-    let [manager, human] = team.humans();
+    let manager = team.humans()[0];
     let level = team.level();
-    if human != 0 || level >= 10 {
+    if !planned(team) {
         return;
     }
     let band = level.min(2);
@@ -2364,7 +2397,7 @@ mod tests {
             }
             put::<u16>(team, 0x5c4, 0);
         }
-        let (mut planned, mut kept) = (0, 0);
+        let (mut count, mut kept) = (0, 0);
         for i in 0..ours.teams.len() {
             let country = i16::from(ours.teams[i].country());
             if country == 0 || !ours.globals.played(country) {
@@ -2373,6 +2406,18 @@ mod tests {
             let holders = theirs.block(HOLDERS).unwrap().to_vec();
             let first = theirs.countries.first_team(usize::from(ours.teams[i].country())) as usize;
             let held = holder(&holders, ours.teams[i].country(), i - first);
+            if planned(&ours.teams[i]) {
+                for id in ours.teams[i].players() {
+                    if let Some(p) = ours.players.get_mut(usize::from(id)).filter(|_| id != 0) {
+                        p.put::<i16>(EXTRA_INSURANCE, -1);
+                    }
+                }
+                insure_squad(&mut ours, i);
+                for id in ours.teams[i].players().into_iter().filter(|&id| id != 0) {
+                    let (x, y) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    assert_eq!(x.get::<i16>(EXTRA_INSURANCE), y.get::<i16>(EXTRA_INSURANCE), "{i} player {id}");
+                }
+            }
             let cover = insurance(&ours, &ours.teams[i]);
             plan_season(&mut ours.teams[i], true, held, cover);
             let (x, y) = (&ours.teams[i], &theirs.teams[i]);
@@ -2388,8 +2433,8 @@ mod tests {
                 assert_eq!(club::<u8>(x, at), club::<u8>(y, at), "{i} +{at:#x}");
             }
             assert_eq!(club::<u16>(x, 0x5c4), club::<u16>(y, 0x5c4), "{i} +0x5c4");
-            planned += 1;
+            count += 1;
         }
-        assert!(planned > 140 && kept > 0, "{planned} planned, {kept} kept");
+        assert!(count > 140 && kept > 0, "{count} planned, {kept} kept");
     }
 }
