@@ -663,8 +663,14 @@ fn offer(list: &mut [u8], new: [u8; MOST_ENTRY]) {
 /// (`FUN_007104dc`, `FUN_00710373` per played country: `FUN_0071021f`,
 /// `FUN_00710309`): every player one promotion or relegation more, and
 /// with a club of the main country each offered to the record lists of
-/// the most promotions and relegations. (The trainers' careers the
-/// promotion counts as well, `FUN_006b53ad`, are not built.)
+/// the most promotions and relegations. A promoted club with no human
+/// trainer (club +0x8a) counts the promotion in its staff's careers too:
+/// its trainer's, manager's and manager-trainer's person +0x44 one more
+/// (`FUN_006b53ad` with kind 2, `FUN_00408e0a`). (The trainers' all-time
+/// list beside, `FUN_00725f33`, is not built.)
+const STAFF_PROMOTIONS: usize = 0x44;
+const LAST_PERSON: u16 = 0x5db;
+
 pub fn count(records: &mut Records) {
     let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
     for country in crate::opponent::played_nations(records) {
@@ -676,6 +682,14 @@ pub fn count(records: &mut Records) {
                 for &club in clubs {
                     let Ok(number) = u16::try_from(club) else { continue };
                     let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
+                    if counter == PROMOTIONS {
+                        let staff = records.team(country, number).filter(|t| t.humans()[0] == 0).map_or([0; 3], |t| t.staff());
+                        for id in staff.into_iter().filter(|&id| id != 0 && id <= LAST_PERSON) {
+                            if let Some(p) = records.persons.get_mut(usize::from(id)) {
+                                p.put::<i16>(STAFF_PROMOTIONS, p.get::<i16>(STAFF_PROMOTIONS).wrapping_add(1));
+                            }
+                        }
+                    }
                     for &id in &squad {
                         if let Some(p) = records.player_mut(id) {
                             p.put::<u8>(counter, p.get::<u8>(counter).wrapping_add(1));
@@ -1078,6 +1092,14 @@ mod tests {
                 }
             }
         }
+        // The promoted clubs' staff count it in their careers.
+        let mut moved = 0;
+        for id in 1..=usize::from(LAST_PERSON).min(ours.persons.len() - 1) {
+            let (x, y) = (ours.persons[id].get::<i16>(STAFF_PROMOTIONS), theirs.persons[id].get::<i16>(STAFF_PROMOTIONS));
+            assert_eq!(x, y, "person {id}'s promotions");
+            moved += i32::from(x != before.persons[id].get::<i16>(STAFF_PROMOTIONS));
+        }
+        assert!(moved > 20, "{moved} staff promoted");
         for list in [MOST_PROMOTED, MOST_RELEGATED] {
             let (x, y) = (ours.block(list).unwrap(), theirs.block(list).unwrap());
             for k in 0..MOST * MOST_ENTRY {
