@@ -411,6 +411,7 @@ pub fn count_down_contracts(records: &mut Records) {
 /// [`open_season`].
 pub fn clear_bookings(records: &mut Records) {
     let second = records.globals.seasons() > 1;
+    let holders = records.block(HOLDERS).map(<[u8]>::to_vec).unwrap_or_default();
     for i in 0..records.teams.len() {
         let country = i16::from(records.teams[i].country());
         if country == 0 || !records.globals.played(country) {
@@ -419,7 +420,9 @@ pub fn clear_bookings(records: &mut Records) {
         let system = usize::from(records.countries.cup_system(usize::from(records.teams[i].country())));
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
-        plan_season(&mut records.teams[i], second);
+        let first = usize::try_from(records.countries.first_team(usize::from(records.teams[i].country()))).unwrap_or(0);
+        let held = holder(&holders, records.teams[i].country(), i.wrapping_sub(first));
+        plan_season(&mut records.teams[i], second, held);
     }
 }
 
@@ -435,6 +438,12 @@ pub fn clear_bookings(records: &mut Records) {
 /// the league a season after the first (800 000, 450 000, 200 000) and
 /// +0x1f8 one in the second league and in the first, two there for a
 /// club of class five or more (team +0x875, the object's +0x11e0).
+/// Its two sums from the season's flags: +0x12c 400 000, 200 000 or
+/// 100 000 by the band (`DAT_008774c4` thousands), a million more for the
+/// cup's winner (flag 0x1000); +0x130 five millions for the champion
+/// (flag 1) or the Champions League's holder, else two millions for a
+/// club in Europe (flag 0x4000), 1 200 000 more for the holder of the
+/// first or second European cup (`FUN_0042419d` over `DAT_00ae6dd4`).
 /// Measured on the pair: every one of the 147 clubs planned agrees. The
 /// walk's drawn parts (the TV's and the boards' money, +0x18c, +0x1a8,
 /// +0x1a4), the sponsors it signs (`FUN_00716a87`) and the first
@@ -446,13 +455,48 @@ const PLAN_1B0: [i32; 3] = [800_000, 450_000, 200_000];
 const CLUB_CLASS: usize = 0x875;
 const HIGH_CLASS: u8 = 5;
 
-fn plan_season(team: &mut Team, second: bool) {
+const PLAN_12C: [i32; 3] = [400_000, 200_000, 100_000];
+const PLAN_CUP_WINNER: i32 = 1_000_000;
+const PLAN_CHAMPION: i32 = 5_000_000;
+const PLAN_EUROPE: i32 = 2_000_000;
+const PLAN_HOLDER: i32 = 1_200_000;
+const CHAMPION_FLAG: u16 = 1;
+const EUROPE_FLAG: u16 = 0x4000;
+const CUP_WINNER_FLAG: u16 = 0x1000;
+/// The holders of the European cups, a country byte and a club word in
+/// each four (`DAT_00ae6dd4`).
+const HOLDERS: &str = "0xae6dd4";
+
+/// Which European cup's holder a club is, one to three, or nought
+/// (`FUN_0042419d`).
+fn holder(holders: &[u8], country: u8, number: usize) -> u8 {
+    (0..3u8)
+        .find(|&k| {
+            let at = usize::from(k) * 4;
+            holders.get(at) == Some(&country)
+                && holders.get(at + 2..at + 4).map(|w| usize::from(u16::from_le_bytes([w[0], w[1]]))) == Some(number)
+        })
+        .map_or(0, |k| k + 1)
+}
+
+fn plan_season(team: &mut Team, second: bool, held: u8) {
     let [manager, human] = team.humans();
     let level = team.level();
     if human != 0 || level >= 10 {
         return;
     }
     let band = level.min(2);
+    let flags = team.get::<u16>(FLAGS_AT);
+    let cup = if flags & CUP_WINNER_FLAG != 0 { PLAN_CUP_WINNER } else { 0 };
+    put::<i32>(team, 0x12c, PLAN_12C[usize::from(band)] + cup);
+    let europe = if flags & CHAMPION_FLAG != 0 || held == 1 {
+        PLAN_CHAMPION
+    } else if flags & EUROPE_FLAG != 0 {
+        PLAN_EUROPE
+    } else {
+        0
+    };
+    put::<i32>(team, 0x130, europe + if held == 1 || held == 2 { PLAN_HOLDER } else { 0 });
     let place = team.league_place();
     let steps = PLAN_STEP * (3 - i32::from(band));
     put::<i32>(team, 0x19c, steps);
@@ -2248,7 +2292,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
-        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8];
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130];
         let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8];
         for team in ours.teams.iter_mut() {
             for at in words {
@@ -2265,7 +2309,10 @@ mod tests {
             if country == 0 || !ours.globals.played(country) {
                 continue;
             }
-            plan_season(&mut ours.teams[i], true);
+            let holders = theirs.block(HOLDERS).unwrap().to_vec();
+            let first = theirs.countries.first_team(usize::from(ours.teams[i].country())) as usize;
+            let held = holder(&holders, ours.teams[i].country(), i - first);
+            plan_season(&mut ours.teams[i], true, held);
             let (x, y) = (&ours.teams[i], &theirs.teams[i]);
             if y.humans()[1] != 0 || y.level() >= 10 {
                 assert_eq!(club::<i32>(x, 0x19c), 0, "{i} not planned");
