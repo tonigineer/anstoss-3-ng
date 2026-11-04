@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod cards;
 pub mod cohesion;
 pub mod contract;
+pub mod crowd;
 pub mod cup_draw;
 pub mod cycle;
 pub mod doping;

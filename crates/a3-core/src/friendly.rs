@@ -654,6 +654,20 @@ pub fn friendlies(records: &Records) -> Vec<Friendly> {
         .collect()
 }
 
+/// A friendly's goals into every entry of its id (`FUN_0075f733`,
+/// `FUN_0062555e`).
+pub(crate) fn set_goals(records: &mut Records, id: u32, (home, away): (u8, u8)) {
+    let Some(block) = records.block_mut(LIST_AT) else { return };
+    let count = usize::try_from(i16::from_le_bytes([block[0], block[1]])).unwrap_or(0).min(LIST_MOST);
+    for k in 0..count {
+        let at = LIST_ENTRIES + k * LIST_ENTRY;
+        if block.get(at..at + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == id) {
+            block[at + 0xe] = home;
+            block[at + 0xf] = away;
+        }
+    }
+}
+
 /// Whether the club has a friendly booked on the day (`FUN_006250b9`).
 fn friendly_on(records: &Records, club: (u8, i16), day: i16) -> bool {
     friendlies(records).iter().any(|f| f.day == day && (f.club == club || f.opponent == club))

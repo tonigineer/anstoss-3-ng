@@ -592,9 +592,46 @@ fn distance_to(records: &Records, side: &Side, ground: (u8, i16)) -> f32 {
 /// to a first league side doubled, the round's pull, and Germany at home
 /// to country 0x43 five times its guests.
 fn international_demand(records: &Records, home: &Side, away: &Side, sale: &Sale, issuer: (u8, i16), t: &PresaleTables) -> i32 {
+    let (h, a) = international_halves(records, home, away, sale, issuer, t);
+    h + a
+}
+
+/// The demand of a friendly's or a tournament game's two sides
+/// (`FUN_0078b26c`'s branch for them: `FUN_0078f369` with the game's
+/// round index — 5 a friendly, 3, 2 and 5 a Turnier's semifinals, third
+/// place and final —, the ground as the issuer, the home club's league
+/// prices for its standing and seats and 15 and 20 above), its halves
+/// apart: the home fans, the visitors.
+pub(crate) fn match_demand(
+    records: &Records,
+    home: (u8, i16),
+    away: (u8, i16),
+    ground: (u8, i16),
+    prices: [i16; 2],
+    round: i16,
+    t: &PresaleTables,
+) -> Option<(i32, i32)> {
+    let (h, a) = (Side::of(records, home.0, home.1)?, Side::of(records, away.0, away.1)?);
+    let sale = Sale {
+        at: 0,
+        home,
+        away,
+        issuer: ground,
+        day: 0,
+        kind: 0,
+        extra: round,
+        sold: 0,
+        prices: [prices[0], prices[1], 15, 20],
+    };
+    Some(international_halves(records, &h, &a, &sale, ground, t))
+}
+
+/// `FUN_0078f369`'s two sides: the home fans over the four classes'
+/// shares, the visitors over the side seats and the standing.
+fn international_halves(records: &Records, home: &Side, away: &Side, sale: &Sale, issuer: (u8, i16), t: &PresaleTables) -> (i32, i32) {
     let (lh, la) = (fan_class(home, away, t), fan_class(away, home, t));
     if sale.extra == FINAL {
-        return 250_000 + 250_000;
+        return (250_000, 250_000);
     }
     let fa = distance_to(records, away, issuer);
     let fh = distance_to(records, home, issuer);
@@ -614,7 +651,7 @@ fn international_demand(records: &Records, home: &Side, away: &Side, sale: &Sale
         a *= 5.0;
     }
     let (s, w_side, w_stand) = shares(home.class(), [3.0, 30.0, 10.0], 100.0, sale.prices);
-    over(h, s) + guests(a, w_side, w_stand)
+    (over(h, s), guests(a, w_side, w_stand))
 }
 
 /// How many a cup or international tie's record has sold by now

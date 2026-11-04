@@ -861,6 +861,7 @@ impl Cycle {
                             let shown = crate::exhibition::play_day(
                                 records,
                                 &self.data.calendar,
+                                &self.data.presale,
                                 today as i16,
                                 &mut season.random,
                             );
