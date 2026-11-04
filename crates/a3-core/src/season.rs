@@ -429,6 +429,9 @@ pub struct Season {
     /// it back, and the week's advance sales clear it (`FUN_0064e40f`) —
     /// so the first week end after a load rolls no market.
     pub week_hold: bool,
+    /// The friendlies' opponents offered this turn (`CDatenGegnerliste`,
+    /// which no save keeps): empty in a fresh program, as after a load.
+    pub opponents: crate::friendly::Cache,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -824,6 +827,7 @@ impl Season {
             donations: Vec::new(),
             statement: false,
             week_hold: false,
+            opponents: Default::default(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

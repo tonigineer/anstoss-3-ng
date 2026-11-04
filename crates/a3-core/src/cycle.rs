@@ -281,6 +281,8 @@ pub enum Args {
     Statement,
     /// The world map of the training camps' places, for a camp from a day.
     CampDay(usize),
+    /// The choice of a friendly's opponent, for a day.
+    FriendlyDay(usize),
     /// A camp's place to confirm, from 0, and its first day.
     Camp { place: usize, day: usize },
     /// The choice among a group's other places, from 0: up to three.
@@ -728,6 +730,9 @@ impl Cycle {
                         // The human clubs' trials go on a week, or end
                         // (`FUN_0064e25b`).
                         crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
+                        // It forgets the last friendlies more than six
+                        // weeks gone (`FUN_0043539b`).
+                        crate::friendly::forget_last_friendlies(records, season.day as i16);
                         crate::stock::roll_week(records, season.day as i32, &mut season.random);
                     }
                 }
@@ -743,6 +748,7 @@ impl Cycle {
                     (state.season.as_mut(), state.records.as_mut())
                 {
                     let today = season.day as i32;
+                    let held = season.week_hold;
                     // The human clubs' players keep their forms for the
                     // trend (`FUN_007863d0`), and each human manager a
                     // copy of his club's money (`FUN_0078605e`), as the
@@ -764,6 +770,11 @@ impl Cycle {
                     // (`FUN_0064e40f`'s `FUN_0042a76e`), so the week's
                     // games are scored by their squads as they stand.
                     crate::autolineup::computer_lineups(records, &self.data);
+                    // The friendlies' offers are drawn anew for the next
+                    // turns, but not after a load (`FUN_0064e40f`).
+                    if !held {
+                        season.opponents.clear();
+                    }
                 }
             }
             // The careers ended in the turns end before the week does

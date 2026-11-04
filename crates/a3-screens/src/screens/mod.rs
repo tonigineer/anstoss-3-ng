@@ -17,6 +17,7 @@ pub mod doping;
 pub mod duties;
 pub mod finances;
 pub mod formations;
+pub mod friendly;
 pub mod grounds;
 pub mod help;
 pub mod honours;
@@ -274,6 +275,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(camp::WorldMap::default()),
         Box::new(camp::CampConfirm),
         Box::new(camp::CampGroup),
+        Box::new(friendly::FriendlyChoice::default()),
         Box::new(donations::Donations::default()),
         Box::new(licence::Licence),
     ]
@@ -307,6 +309,7 @@ pub fn compose(game: &mut Game) {
     training::rooms::compose(&mut game.dialogs);
     training::career::compose(&mut game.dialogs);
     camp::compose(&mut game.dialogs, &game.data.rules);
+    friendly::compose(&mut game.dialogs);
     donations::compose(&mut game.dialogs);
     licence::compose(&mut game.dialogs);
     popups::compose(&mut game.dialogs);

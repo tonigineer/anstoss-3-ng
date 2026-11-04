@@ -114,7 +114,13 @@ AREAS = {
               (*bar(5, 346, "now rclick 5035 item 0", "until dialog 350", "now click 35003"), 350)],
     "individual": [(*bar(6, 347), 347), (*bar(6, 347, "now cell 3298 1 8"), 347),
                    (*bar(6, 347, "now press 6151", "until dialog 403"), 403)],
-    "calendar": [(*bar(7, 348), 348), (*bar(7, 348, "now drag at 544 355 to 244 180"), 348)],
+    "calendar": [(*bar(7, 348), 348), (*bar(7, 348, "now drag at 544 355 to 244 180"), 348),
+                 # The friendly dropped on the 17th offers its opponents
+                 # (72); Sporting taken stands on the day.
+                 (*bar(7, 348, "now random 12345 67890", "now drag at 540 403 to 180 260",
+                       "until dialog 72"), 72),
+                 (*bar(7, 348, "now random 12345 67890", "now drag at 540 403 to 180 260",
+                       "until dialog 72", "now row 1666 3", "until dialog 348"), 348)],
     "planner": [(*bar(8, 413), 413), (*bar(8, 413, "now press 6215", "until dialog 358"), 358),
                 (*bar(8, 413, "now press 5036", "until dialog 397"), 397),
                 (*bar(8, 413, "now press 5036", "until dialog 397",

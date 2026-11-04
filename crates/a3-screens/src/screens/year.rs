@@ -4,8 +4,8 @@
 //! camp, a tournament, a friendly, a match and its result, a party or an
 //! event. A party or an event is booked by dragging its label onto a day,
 //! and gone again by a click on its row; a click in the camp column moves
-//! the camp's end. The camp, the tournaments and the friendly need screens
-//! not built yet.
+//! the camp's end. A camp's label opens the world map of its places, the
+//! friendly's the choice of its opponent; the tournaments' are not built.
 
 use std::collections::HashMap;
 
@@ -32,9 +32,12 @@ const EVENT_LABEL: u16 = 5133;
 const EVENT_SPIN: u16 = 5134;
 const PARTY_LABEL: u16 = 5135;
 const PARTY_SPIN: u16 = 5136;
-/// The training camp's label, dragged as its button's picture.
+/// The training camp's label, dragged as its button's picture; the
+/// friendly's.
 const CAMP_LABEL: u16 = 5038;
 const CAMP_PICTURE: u16 = 2613;
+const FRIENDLY_LABEL: u16 = 5137;
+const FRIENDLY_PICTURE: u16 = 2619;
 /// The OK, whose place the bar takes.
 const OK: u16 = 1;
 const CAPTION_ID: u16 = 9931;
@@ -101,6 +104,8 @@ pub struct YearCalendar {
     whistle: bool,
     /// The day a camp was dropped on, while the world map is open.
     camp_day: Option<usize>,
+    /// Whether the friendly's choice of an opponent is open.
+    friendly: bool,
 }
 
 impl Screen for YearCalendar {
@@ -122,9 +127,12 @@ impl Screen for YearCalendar {
             list.by_column = true;
             list.keyed = vec![CAMP_DOT];
         }
-        for (label, picture) in
-            [(EVENT_LABEL, EVENT_PICTURE), (PARTY_LABEL, PARTY_PICTURE), (CAMP_LABEL, CAMP_PICTURE)]
-        {
+        for (label, picture) in [
+            (EVENT_LABEL, EVENT_PICTURE),
+            (PARTY_LABEL, PARTY_PICTURE),
+            (CAMP_LABEL, CAMP_PICTURE),
+            (FRIENDLY_LABEL, FRIENDLY_PICTURE),
+        ] {
             let Some(c) = control(dialog, label) else { continue };
             view.set_clickable(c, true);
             if let Some(crate::controls::ControlState::Static(s)) =
@@ -189,7 +197,7 @@ impl Screen for YearCalendar {
                 }
             }
             Target::Drop { from: Grip::Control(c), moved, .. }
-                if [EVENT_LABEL, PARTY_LABEL, CAMP_LABEL].contains(&id(c)) =>
+                if [EVENT_LABEL, PARTY_LABEL, CAMP_LABEL, FRIENDLY_LABEL].contains(&id(c)) =>
             {
                 let at = dialog.controls[c].rect.min
                     + bevy_math::Vec2::new(f32::from(moved.0), f32::from(moved.1));
@@ -210,6 +218,10 @@ impl Screen for YearCalendar {
             if let Reply::Choice(place) = reply {
                 change_calendar(cx, |c| year::book_camp(c, day, place as i16));
             }
+            self.fill(cx, view);
+        }
+        // The friendly's choice books it itself; the month shows it.
+        if std::mem::take(&mut self.friendly) {
             self.fill(cx, view);
         }
         Outcome::Stay
@@ -346,6 +358,18 @@ impl YearCalendar {
         }
         if day > LAST_BOOKING {
             return Outcome::Popup(Request::with(NOTICE, Args::Text(TOO_LATE)));
+        }
+        if label == FRIENDLY_LABEL {
+            let tables = &cx.game.rules.year;
+            let Some(calendar) = calendar_of(cx) else { return Outcome::Stay };
+            if !tables.free(calendar, day, FRIENDLY) {
+                return Outcome::Stay;
+            }
+            if year::in_camp(calendar, day) && !tables.allowed_in_camp(FRIENDLY) {
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(IN_CAMP)));
+            }
+            self.friendly = true;
+            return Outcome::Popup(Request::with(super::friendly::CHOICE, Args::FriendlyDay(day)));
         }
         if label == CAMP_LABEL {
             let tables = &cx.game.rules.year;
