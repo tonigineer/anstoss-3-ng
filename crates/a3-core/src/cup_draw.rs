@@ -70,9 +70,19 @@ const ROUNDS: [[(usize, usize, usize, usize); 3]; 6] = [
     [(0, 35, 22, 70), (35, 25, 7, 15), (60, 16, 0, 7)],
     [(0, 0, 0, 0), (35, 25, 7, 50), (60, 16, 0, 7)],
 ];
+/// The entrants a round of a cup's type takes in beside the winners
+/// before it: the first and how many (the round table's third and fourth
+/// columns).
+pub(crate) fn joining(kind: usize, round: usize) -> (usize, usize) {
+    ROUNDS.get(kind).and_then(|r| r.get(round)).map_or((0, 0), |&(_, _, from, count)| (from, count))
+}
+
+/// The entrants' table of a cup object, four bytes each.
+pub(crate) const ENTRANTS_AT: usize = ENTRANTS;
+
 /// England's league cup (the object `0x1ba7488`, a cup's layout).
 const ENGLAND: u16 = 0x10;
-const LEAGUE_CUP: &str = "0x1ba7488";
+pub(crate) const LEAGUE_CUP: &str = "0x1ba7488";
 const LEAGUE_CUP_LEVELS: u8 = 4;
 
 /// A cup's setup by `FUN_006cef0b`'s case: its type, the round it draws
