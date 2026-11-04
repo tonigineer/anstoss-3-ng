@@ -632,13 +632,14 @@ pub fn open_managers(records: &mut Records, random: &mut Random) {
     }
 }
 
-/// The human manager's copy of his club's money as the new season opens
+/// The human manager's copy of his club's money, as the new season opens
 /// it (`FUN_00775219`'s `FUN_0078605e`: the club object's thousand bytes
-/// from +0x210 into the manager's +0x1370, record +0x14c0).
+/// from +0x210 into the manager's +0x1370, record +0x14c0) and as every
+/// week ends, before the advance sales (`FUN_0064e40f`).
 const MANAGER_MONEY: usize = 0x14c0;
 const MONEY_LEN: usize = 1000;
 
-fn keep_club_money(records: &mut Records) {
+pub(crate) fn keep_club_money(records: &mut Records) {
     for n in 0..usize::from(records.globals.humans()) {
         let Some(m) = records.managers.get(n) else { continue };
         let (country, number) = (m.country(), m.team());

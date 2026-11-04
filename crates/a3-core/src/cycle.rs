@@ -743,6 +743,9 @@ impl Cycle {
                     (state.season.as_mut(), state.records.as_mut())
                 {
                     let today = season.day as i32;
+                    // Each human manager keeps a copy of his club's money
+                    // as the week ends (`FUN_0064e40f`'s `FUN_0078605e`).
+                    crate::settlement::keep_club_money(records);
                     for club in crate::statistics::human_clubs(records) {
                         crate::presale::week_end(
                             records,
