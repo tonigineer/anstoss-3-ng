@@ -32,7 +32,6 @@ const HANDLE_COLOUR: u8 = 0x70;
 const HANDLE_SHIFT: u8 = 4;
 
 const ROW: i32 = 16;
-const LEAST_ROW: i32 = 13;
 /// The list starts this far below the field's top; its window reaches as
 /// far below the field as the combo box says.
 const LIST_TOP: i32 = 20;
@@ -45,6 +44,8 @@ const ARROW: f32 = 20.0;
 const BAR: i32 = 20;
 /// Where the texts start: in the field, in a row.
 const FIELD_TEXT: i32 = 2;
+/// How far before the arrow the field's text is cut off.
+const FIELD_MARGIN: i32 = 4;
 const ROW_TEXT: i32 = 2;
 const LIST: Rgba<u8> = Rgba([220, 216, 225, 255]);
 const STRIP: Rgba<u8> = Rgba([225, 216, 220, 255]);
@@ -72,12 +73,19 @@ fn draw_text(
 ) {
     match &control.kind {
         Kind::Combo { columns: c, .. } if c.len() > 1 => {
-            let mut tabs: Vec<f32> = c.iter().map(|c| c.at).collect();
-            tabs[0] += first as f32;
+            // Every column set to the left starts a pixel in, the first's
+            // as a later one's (410's world champions, odds left at 105).
+            let tabs: Vec<f32> =
+                c.iter().map(|c| if c.align.is_none() { c.at + first as f32 } else { c.at }).collect();
             let aligns: Vec<Option<(Align, f32)>> = c.iter().map(|c| c.align).collect();
-            columns(font, frame, at, text.split('\t'), &tabs, &aligns, color, right);
+            columns(font, frame, at, text.split('\t'), &tabs, &aligns, color, right, 0);
         }
-        _ => font.draw(frame, at.0 + first, at.1, text, color, false),
+        // Without columns only what stands before a tab shows (410's
+        // places, "%2d\t%.1f" of a place and its odds).
+        _ => {
+            let shown = text.split('\t').next().unwrap_or_default();
+            font.draw_clipped(frame, at.0 + first, at.1, shown, color, false, right);
+        }
     }
 }
 
@@ -144,9 +152,12 @@ impl ComboState {
         control.rect.min.y + (LIST_TOP + Self::height(control)) as f32 > SCREEN_HEIGHT
     }
 
-    /// How many rows the list shows.
+    /// How many rows the list shows: its height and a line over the rows'
+    /// 16 (`FUN_0079aef3`, `FUN_0079af38`), the last cut short where it
+    /// does not fit — 306's tenth shows whole, 403's fifth with 12 of its
+    /// lines, 154's ninth trait not at all.
     fn rows(control: &Control) -> usize {
-        (Self::height(control) / ROW).max(1) as usize
+        ((Self::height(control) + 1) / ROW).max(1) as usize
     }
 
     fn scrolls(&self, control: &Control) -> bool {
@@ -185,15 +196,8 @@ impl ComboState {
     /// down.
     pub(crate) fn draw(&self, frame: &mut RgbaImage, paint: &Paint) {
         let r = paint.control.rect;
-        if self.open
-            && let Some(held) = paint.widget(FIELD_HELD)
-        {
-            let (left, up) = if Self::above(paint.control) {
-                (HELD_AT.0, HELD_AT.1 - Self::field_excess(paint.control))
-            } else {
-                HELD_AT_BELOW
-            };
-            paste(frame, held, Vec2::new(r.max.x - left, r.min.y - up));
+        if self.open {
+            self.draw_held(frame, paint);
         }
         let (x, y) = (r.min.x as i32, r.min.y as i32);
         if let (Some(font), Some(s)) = (paint.font(), self.selected)
@@ -202,8 +206,23 @@ impl ComboState {
             // Centred top to bottom in whole pixels.
             let top = y + (r.height() as i32 - font.height() as i32) / 2;
             let at = (x + FIELD_TEXT, top);
-            draw_text(font, frame, paint.control, at, 0, text, r.max.x as i32, self.ink(s));
+            // The text stops short of the arrow (410's place field, 98
+            // pixels: "Bitte auswählen" loses its last letter).
+            let right = r.max.x as i32 - ARROW as i32 - FIELD_MARGIN;
+            draw_text(font, frame, paint.control, at, 0, text, right, self.ink(s));
         }
+    }
+
+    /// The field's arrow held while the list is down.
+    fn draw_held(&self, frame: &mut RgbaImage, paint: &Paint) {
+        let r = paint.control.rect;
+        let Some(held) = paint.widget(FIELD_HELD) else { return };
+        let (left, up) = if Self::above(paint.control) {
+            (HELD_AT.0, HELD_AT.1 - Self::field_excess(paint.control))
+        } else {
+            HELD_AT_BELOW
+        };
+        paste(frame, held, Vec2::new(r.max.x - left, r.min.y - up));
     }
 
     /// The dropped list, over everything else.
@@ -224,19 +243,23 @@ impl ComboState {
         fill(frame, x0, y1 - 1, w - 1, 1, EDGE);
         let scrolls = self.scrolls(control);
         let right = if scrolls { x1 - 1 - BAR } else { x1 - 1 };
-        // The rows, clipped above that line, from a line below the top —
-        // from the top in a list above the field.
+        // The rows, from a line below the top — from the top in a list
+        // above the field —, their ground short of that line; but the
+        // texts reach into it, as a last row cut short shows with its
+        // descenders.
         let first = if Self::above(control) { y0 } else { y0 + 1 };
         let mut rows =
-            RgbaImage::from_pixel((right - x0 - 1).max(1) as u32, (y1 - 2 - first) as u32, LIST);
+            RgbaImage::from_pixel((right - x0 - 1).max(1) as u32, (y1 - 1 - first) as u32, LIST);
+        let open_line = rows.height() - 1;
+        for x in 0..rows.width() {
+            rows.put_pixel(x, open_line, image::Rgba([0, 0, 0, 0]));
+        }
         let font = paint.font();
         for (i, text) in self.items.iter().enumerate().skip(self.scroll) {
-            let top = ((i - self.scroll) as i32) * ROW;
-            // A last row shows only with 13 of its 16 lines (306's tenth
-            // shows, 154's ninth trait does not).
-            if top + LEAST_ROW > rows.height() as i32 {
+            if i - self.scroll >= Self::rows(control) {
                 break;
             }
+            let top = ((i - self.scroll) as i32) * ROW;
             if self.selected == Some(i) {
                 let width = rows.width() as i32;
                 fill(&mut rows, 0, top, width, ROW, CHOSEN);
@@ -274,6 +297,11 @@ impl ComboState {
                 paste(frame, &handle, Vec2::new(bar as f32, (y0 + 1 + BAR + down + lift) as f32));
             }
         }
+        // A list above the field ends on its arrow's top, and the held
+        // arrow lies over the list's edge there (411's trainers).
+        if Self::above(control) {
+            self.draw_held(frame, paint);
+        }
     }
 
     /// Closed, the field opens it. Open, its rows and arrows lie over the
@@ -309,7 +337,7 @@ impl ComboState {
         let l = Self::list(control);
         let scrolls = self.scrolls(control);
         let right = if scrolls { l.max.x - 1.0 - BAR as f32 } else { l.max.x - 1.0 };
-        let shown = self.items.len().saturating_sub(self.scroll).min(Self::rows(control) + 1);
+        let shown = self.items.len().saturating_sub(self.scroll).min(Self::rows(control));
         let first = if Self::above(control) { l.min.y } else { l.min.y + 1.0 };
         for row in 0..shown {
             let top = first + (row as i32 * ROW) as f32;

@@ -411,6 +411,9 @@ const SPIEL_FOULS_ROW_COLUMNS: [(u16, u16); 9] = [
 const FINANZEN_TRANSFERS_TITLE: u16 = 0x962;
 const FINANZEN_TRANSFERS_UNIT: u16 = 0xa55;
 const FINANZEN_TRANSFERS_NONE: u16 = 0xa57;
+/// The Werbeeinnahmen page's header (`FUN_0045c4ae` with 0x961); its unit
+/// label is the Transferbilanz's.
+const FINANZEN_SPONSORS_TITLE: u16 = 0x961;
 /// The longest bar of the page, and how far its bars stand lower than
 /// the goal pages' (graph +0x7bc).
 const FINANZEN_TRANSFERS_PLOT: i32 = 384;
@@ -1181,7 +1184,11 @@ const STRENGTH_HIDDEN: u8 = 0x40;
 /// - the Vorlagen (`FUN_0046b4cf`, 0x87e400 and 0x87e3e0): those with
 ///   assists by them, the last match's in brackets;
 /// - the Gelbe Karten (`FUN_00467de7`, 0x87dea8 and 0x87de80): all by
-///   their yellow cards in the league, then the cup, then Europe.
+///   their yellow cards in the league, then the cup, then Europe;
+/// - the Joker (`FUN_0046bd01`): those with joker goals by them, on a tie
+///   the fewer came-ons first, with the goals per came-on as "%3.1f";
+/// - the Mannschaft's Eigentore (`FUN_00468c74`): those with own goals,
+///   by them.
 fn squad_page(code: i16) -> Option<SquadPage> {
     Some(match code {
         statistics::SQUAD_SCORERS_PAGE => SquadPage {
@@ -1405,6 +1412,45 @@ fn squad_page(code: i16) -> Option<SquadPage> {
             figures: |p| {
                 format!("{}\t{}\t{}", p.league_cards()[0], p.cup_cards()[0], p.europe_cards()[0])
             },
+        },
+        statistics::SQUAD_JOKER_PAGE => SquadPage {
+            header: 3038,
+            header_columns: &[
+                (C, 0x14),
+                (0x19, 0),
+                (C | 0xc8, 0x28),
+                (C | 0xfa, 0x28),
+                (C | 0x12c, 0x28),
+            ],
+            columns: &[
+                (R, 0x14),
+                (0x19, 0),
+                (C | 0xc8, 0x28),
+                (C | 0xfa, 0x28),
+                (C | 0x12c, 0x28),
+            ],
+            centred: false,
+            keep: |p| p.joker_goals() != 0,
+            // By their joker goals, on a tie the fewer came-ons first.
+            key: |p| i32::from(p.joker_goals()) << 8 | 0xff - i32::from(p.league_less()[0]),
+            figures: |p| {
+                let (joker, came_on) = (p.joker_goals(), p.league_less()[0]);
+                let average = if came_on == 0 {
+                    String::new()
+                } else {
+                    tenths(f64::from(joker) / f64::from(came_on))
+                };
+                format!("{joker}\t{came_on}\t{average}")
+            },
+        },
+        statistics::SQUAD_OWN_GOALS_PAGE => SquadPage {
+            header: 2409,
+            header_columns: &[(R, 0x14), (0x19, 0), (C | 0xc8, 0x3c)],
+            columns: &[(R, 0x14), (0x19, 0), (R | 0xc8, 0x28)],
+            centred: false,
+            keep: |p| p.own_goals() != 0,
+            key: |p| i32::from(p.own_goals()),
+            figures: |p| p.own_goals().to_string(),
         },
         _ => return None,
     })
@@ -1735,6 +1781,155 @@ const STANDINGS_COLUMNS: [(u16, u16); 8] = [
     (310, 0),
 ];
 /// The own club's rows red, the others black (COLORREF 0xff).
+/// The Endtabelle's header (text 3014 "Nr.\tVerein\tPkt\tDiff\tTore",
+/// 0x87cf30 and 0x87cf4c) and its seven row columns (0x87cef8, 0x87cf14).
+const FINAL_TABLE_HEADER: u16 = 3014;
+const FINAL_TABLE_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 20), (25, 0), (C | 207, 30), (C | 248, 30), (C | 278, 40)];
+const FINAL_TABLE_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 20), (25, 0), (R | 200, 30), (R | 240, 30), (R | 275, 25), (302, 0), (305, 0)];
+/// The Endtabelle's place boxes by the season's mark (`FUN_0045ebbf`):
+/// COLORREFs 0xffff00, 0x808000, 0xa000, 0xffa0a0, 0xc800, 0xc80000 and
+/// 0x8080 — the Tabellen's values with red and blue the other way round.
+const FINAL_MARK_COLOURS: [[u8; 3]; 7] =
+    [[0, 255, 255], [0, 128, 128], [0, 160, 0], [160, 160, 255], [0, 200, 0], [0, 0, 200], [128, 128, 0]];
+/// The Resultate's headers: the last season, and so many years ago.
+const ARCHIVED_RESULTS_LAST: u16 = 3033;
+const ARCHIVED_RESULTS_AGO: u16 = 3034;
+/// The international competitions' strip: text 3008 "E.Supercup" and 3009
+/// "Klub-WM  " after the two cups' names.
+const EUROPEAN_SUPERCUP: u16 = 3008;
+const CLUB_WORLD_CUP: u16 = 3009;
+/// The Int. Wettbewerbe's headers and columns (`FUN_0045feac`): the club
+/// world cup's two legs (text 3018) — though its rows hold one score —,
+/// else one result (3019).
+const INTERNATIONAL_HEADER: u16 = 3019;
+const INTERNATIONAL_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 60), (60, 0), (195, 0), (C | 355, 50), (410, 0)];
+const INTERNATIONAL_ROW_COLUMNS: [(u16, u16); 8] =
+    [(0, 0), (60, 0), (190, 0), (195, 0), (R | 360, 20), (382, 0), (385, 0), (410, 0)];
+const WORLD_CUP_HEADER: u16 = 3018;
+const WORLD_CUP_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(C, 60), (60, 0), (195, 0), (C | 310, 50), (C | 360, 50), (415, 0)];
+const WORLD_CUP_ROW_COLUMNS: [(u16, u16); 11] = [
+    (0, 0),
+    (60, 0),
+    (190, 0),
+    (195, 0),
+    (R | 320, 20),
+    (342, 0),
+    (345, 0),
+    (R | 360, 20),
+    (382, 0),
+    (385, 0),
+    (415, 0),
+];
+const WORLD_CUP: usize = 3;
+/// The Torschützenkönige's and Torrekorde's headers (texts 3020 and 3021,
+/// "Saison\tName\tVerein\tTreffer") and columns.
+const KINGS_HEADER: u16 = 3020;
+const TALLIES_HEADER: u16 = 3021;
+const TALLIES_HEADER_COLUMNS: [(u16, u16); 4] = [(C, 60), (60, 0), (200, 0), (C | 355, 70)];
+const TALLIES_ROW_COLUMNS: [(u16, u16); 4] = [(0, 0), (60, 0), (200, 0), (R | 370, 30)];
+/// The Rekordnationalspieler's header (text 3024 "Nr.\tName\tSpiele\tNoch
+/// aktiv") and columns.
+const CAPS_HEADER: u16 = 3024;
+const CAPS_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (C | 250, 40), (C | 290, 70)];
+const CAPS_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (30, 0), (R | 240, 35), (C | 310, 30)];
+/// The Nat. Meister's header (text 3027 "Saison\tVerein\tPunkte\tDiff
+/// \tTore") and its seven row columns.
+const CHAMPIONS_HEADER: u16 = 3027;
+const CHAMPIONS_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 75), (80, 0), (C | 200, 50), (C | 260, 40), (C | 308, 40)];
+const CHAMPIONS_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 65), (80, 0), (R | 200, 30), (R | 260, 30), (R | 305, 25), (332, 0), (337, 0)];
+/// The Nat. Pokalsieger's headers: two legs for Italy's cup (3029), else
+/// one result (3030); the rows' eleven columns.
+const CUP_WINNERS_TWO_LEGS: u16 = 3029;
+const CUP_WINNERS_TWO_LEGS_COLUMNS: [(u16, u16); 4] = [(0, 60), (C | 60, 240), (C | 310, 50), (C | 360, 60)];
+const CUP_WINNERS_HEADER: u16 = 3030;
+const CUP_WINNERS_HEADER_COLUMNS: [(u16, u16); 3] = [(0, 60), (C | 60, 240), (C | 300, 85)];
+const CUP_WINNERS_ROW_COLUMNS: [(u16, u16); 11] = [
+    (0, 0),
+    (60, 0),
+    (180, 0),
+    (185, 0),
+    (R | 315, 20),
+    (337, 0),
+    (342, 0),
+    (R | 365, 20),
+    (387, 0),
+    (392, 0),
+    (415, 0),
+];
+const ITALY: u16 = 28;
+/// Europameister and Weltmeister (text 3485 "Jahr\tGastgeber\tSieger
+/// \tFinalgegner\tErgebnis"), their top scorers (3484 "Jahr\tGastgeber
+/// \tSpieler\tTreffer").
+const TOURNAMENTS_HEADER: u16 = 3485;
+const TOURNAMENTS_HEADER_COLUMNS: [(u16, u16); 5] = [(0, 0), (40, 0), (130, 0), (230, 0), (R | 320, 50)];
+const TOURNAMENTS_ROW_COLUMNS: [(u16, u16); 8] =
+    [(0, 0), (40, 0), (130, 0), (225, 0), (230, 0), (R | 330, 18), (350, 0), (365, 0)];
+const TOURNAMENT_SCORERS_HEADER: u16 = 3484;
+const TOURNAMENT_SCORERS_COLUMNS: [(u16, u16); 4] = [(0, 0), (40, 0), (160, 0), (C | 340, 50)];
+/// The awards' headers: "Saison\tManager\tVerein" (0xe70) for the
+/// trainer, "Saison\tSpieler\tVerein" (0xe71) for the players.
+const TRAINER_AWARD_HEADER: u16 = 0xe70;
+const PLAYER_AWARD_HEADER: u16 = 0xe71;
+const AWARD_COLUMNS: [(u16, u16); 3] = [(R, 40), (60, 0), (250, 0)];
+/// The Erfolgreichste Trainer (0x1280 "Pl.\tTrainer\tMeister\tPokale\tEPs
+/// \tSonstige\tAufstiege").
+const SUCCESSFUL_HEADER: u16 = 0x1280;
+const SUCCESSFUL_HEADER_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (C | 190, 50), (C | 240, 40), (C | 280, 40), (C | 320, 40), (C | 370, 60)];
+const SUCCESSFUL_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (R | 190, 35), (R | 240, 30), (R | 280, 30), (R | 320, 30), (R | 370, 40)];
+/// The Beste Mannschaft (0x1295 "Saison\tVerein\tLand\tStärke\tSpieler
+/// \tSchnitt").
+const BEST_TEAMS_HEADER: u16 = 0x1295;
+const BEST_TEAMS_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(R, 60), (65, 0), (180, 0), (C | 300, 40), (C | 340, 40), (C | 380, 50)];
+const BEST_TEAMS_ROW_COLUMNS: [(u16, u16); 6] =
+    [(R, 60), (65, 0), (180, 0), (R | 300, 25), (R | 340, 25), (R | 380, 30)];
+/// The Herbstmeister (text 3028, the Nat. Meister's columns) and its
+/// closing line (3698 "In den letzten Jahren sind %.1f%% der Herbstmeister
+/// auch Meister geworden.").
+const AUTUMN_HEADER: u16 = 3028;
+const AUTUMN_SHARE: u16 = 3698;
+/// The Rekordmeister (text 3026 "Nr.\tVerein\tMeister\tPokal\tEuro").
+const RECORD_CHAMPIONS_HEADER: u16 = 3026;
+const RECORD_CHAMPIONS_HEADER_COLUMNS: [(u16, u16); 5] =
+    [(C, 20), (25, 0), (C | 225, 50), (C | 275, 40), (C | 315, 40)];
+const RECORD_CHAMPIONS_ROW_COLUMNS: [(u16, u16); 5] =
+    [(R, 20), (25, 0), (R | 220, 30), (R | 270, 30), (R | 310, 30)];
+/// The Rekordaufsteiger (0x1293) and Rekordabsteiger (0x1294).
+const RECORD_PROMOTED_HEADER: u16 = 0x1293;
+const RECORD_PROMOTED_HEADER_COLUMNS: [(u16, u16); 6] =
+    [(R, 25), (40, 0), (C | 200, 50), (C | 250, 40), (C | 290, 40), (C | 330, 40)];
+const RECORD_PROMOTED_ROW_COLUMNS: [(u16, u16); 6] =
+    [(R, 25), (40, 0), (R | 200, 30), (R | 250, 30), (R | 290, 30), (R | 330, 30)];
+const RECORD_RELEGATED_HEADER: u16 = 0x1294;
+const RECORD_RELEGATED_HEADER_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (C | 180, 60), (C | 240, 50), (C | 290, 50), (C | 340, 50), (C | 390, 50)];
+const RECORD_RELEGATED_ROW_COLUMNS: [(u16, u16); 7] =
+    [(R, 25), (40, 0), (R | 180, 35), (R | 240, 30), (R | 290, 30), (R | 340, 30), (R | 390, 30)];
+/// The Meiste Aufstiege (0x1296) and Meiste Abstiege (0x1297), both
+/// "Pl.\tSpieler\tAnzahl\tVerein".
+const MOST_PROMOTIONS_HEADER: u16 = 0x1296;
+const MOST_RELEGATIONS_HEADER: u16 = 0x1297;
+const MOST_MOVES_HEADER_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (C | 200, 50), (250, 0)];
+const MOST_MOVES_ROW_COLUMNS: [(u16, u16); 4] = [(R, 25), (40, 0), (R | 200, 30), (250, 0)];
+/// The Restprogramm (text 3042 "Verein\tPlatz\tPunkte\tTore"), the
+/// fixtures' "H: %s" and "A: %s" (2152, 2153), and how many clubs it
+/// shows around the own one.
+const REST_HEADER: u16 = 3042;
+const REST_HEADER_COLUMNS: [(u16, u16); 4] = [(0, 0), (C | 145, 40), (C | 185, 40), (C | 220, 50)];
+const REST_ROW_COLUMNS: [(u16, u16); 6] =
+    [(0, 0), (R | 140, 30), (R | 180, 30), (R | 220, 24), (245, 0), (250, 24)];
+const REST_HOME: u16 = 2152;
+const REST_AWAY: u16 = 2153;
+const REST_CLUBS: usize = 6;
+const REST_MATCHDAYS: usize = 6;
 const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
@@ -2103,7 +2298,7 @@ fn pairing_text(game: &Game, records: &Records, p: &statistics::CupPairing) -> S
 
 /// A name from the pool's ids as `FUN_00637cbb` spells it, "%s %s", or
 /// just one of the two where the other's id is 0, nothing where both are.
-fn spelled(records: &Records, first: u16, last: u16) -> String {
+pub(crate) fn spelled(records: &Records, first: u16, last: u16) -> String {
     match (first, last) {
         (0, 0) => String::new(),
         (0, _) => records.name(last).to_owned(),
@@ -2291,6 +2486,13 @@ impl Statistics {
             }
             // The Europa League: as many round names as are played, the
             // counter at 0xb5d166 one below the round being played.
+            // The international competitions (`FUN_004599d8` kind 12): the
+            // Champions League's and the UEFA cup's names as the new game
+            // set them, the European Supercup and the club world cup.
+            statistics::INTERNATIONAL_STRIP => {
+                let [champions, uefa] = records.countries.cup_names();
+                vec![champions, uefa, text(EUROPEAN_SUPERCUP), text(CLUB_WORLD_CUP)]
+            }
             k if k == statistics::UEFA_STRIP => {
                 let n = statistics::uefa_round_count(records);
                 statistics::UEFA_ROUND_NAMES[..n].iter().map(|&r| text(r)).collect()
@@ -2361,6 +2563,9 @@ impl Statistics {
             }
             Some(code) if self.category == MANNSCHAFT && squad_page(code).is_some() => {
                 self.squad_stats_page(cx, view, code)
+            }
+            Some(statistics::REST_PROGRAM_PAGE) if self.category == MANNSCHAFT => {
+                self.rest_program_page(cx, view)
             }
             Some(statistics::SQUAD_TRAITS_PAGE) if self.category == MANNSCHAFT => {
                 self.traits_page(cx, view)
@@ -2434,7 +2639,73 @@ impl Statistics {
             Some(code @ (statistics::ABSOLUTE_PAGE | statistics::RELATIVE_PAGE))
                 if self.category == HISTORY =>
             {
-                self.eternal_page(cx, view, code == statistics::RELATIVE_PAGE)
+                self.eternal_page(cx, view, code == statistics::RELATIVE_PAGE, statistics::ALL)
+            }
+            Some(code @ (statistics::ETERNAL_HOME_PAGE | statistics::ETERNAL_AWAY_PAGE))
+                if self.category == HISTORY =>
+            {
+                let kind = if code == statistics::ETERNAL_HOME_PAGE { statistics::HOME } else { statistics::AWAY };
+                self.eternal_page(cx, view, false, kind)
+            }
+            Some(code) if self.category == HISTORY && statistics::FINAL_TABLE_PAGES.contains(&code) => {
+                self.final_table_page(cx, view, code)
+            }
+            Some(code)
+                if self.category == HISTORY && statistics::ARCHIVED_RESULTS_PAGES.contains(&code) =>
+            {
+                self.archived_results_page(cx, view, code)
+            }
+            Some(statistics::INTERNATIONAL_PAGE) if self.category == HISTORY => {
+                self.international_page(cx, view)
+            }
+            Some(code @ (statistics::KINGS_PAGE | statistics::TALLIES_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tallies_page(cx, view, code == statistics::KINGS_PAGE)
+            }
+            Some(statistics::CAPS_PAGE) if self.category == HISTORY => self.caps_page(cx, view),
+            Some(statistics::CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.champions_page(cx, view)
+            }
+            Some(statistics::CUP_WINNERS_PAGE) if self.category == HISTORY => {
+                self.cup_winners_page(cx, view)
+            }
+            Some(code @ (statistics::EUROS_PAGE | statistics::WORLD_CUPS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tournaments_page(cx, view, code == statistics::WORLD_CUPS_PAGE)
+            }
+            Some(code @ (statistics::EURO_SCORERS_PAGE | statistics::WORLD_CUP_SCORERS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.tournament_scorers_page(cx, view, code == statistics::WORLD_CUP_SCORERS_PAGE)
+            }
+            Some(code @ statistics::TRAINER_AWARD_PAGE..=statistics::EUROPE_AWARD_PAGE)
+                if self.category == HISTORY =>
+            {
+                self.awards_page(cx, view, (code - statistics::TRAINER_AWARD_PAGE) as usize)
+            }
+            Some(statistics::AUTUMN_CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.autumn_champions_page(cx, view)
+            }
+            Some(statistics::RECORD_CHAMPIONS_PAGE) if self.category == HISTORY => {
+                self.record_champions_page(cx, view)
+            }
+            Some(code @ (statistics::RECORD_PROMOTED_PAGE | statistics::RECORD_RELEGATED_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.record_moves_page(cx, view, code == statistics::RECORD_RELEGATED_PAGE)
+            }
+            Some(code @ (statistics::MOST_PROMOTIONS_PAGE | statistics::MOST_RELEGATIONS_PAGE))
+                if self.category == HISTORY =>
+            {
+                self.most_moves_page(cx, view, code == statistics::MOST_RELEGATIONS_PAGE)
+            }
+            Some(statistics::BEST_TEAMS_PAGE) if self.category == HISTORY => {
+                self.best_teams_page(cx, view)
+            }
+            Some(statistics::SUCCESSFUL_TRAINERS_PAGE) if self.category == HISTORY => {
+                self.successful_trainers_page(cx, view)
             }
             Some(statistics::SCORES_PAGE) if self.category == HISTORY => self.scores_page(cx, view),
             Some(statistics::SACKED_PAGE) if self.category == HISTORY => self.sacked_page(cx, view),
@@ -2570,6 +2841,9 @@ impl Statistics {
             Some(statistics::FINANZEN_SHIRTS) if self.category == FINANZEN => {
                 self.finanzen_shirts_page(cx, view)
             }
+            Some(statistics::FINANZEN_SPONSORS) if self.category == FINANZEN => {
+                self.finanzen_sponsors_page(cx, view)
+            }
             _ => false,
         };
         let table = control(dialog, TABLE);
@@ -2646,6 +2920,597 @@ impl Statistics {
             };
         }
         true
+    }
+
+    /// Endtabelle of a season gone by (`FUN_0045ebbf`, archive slot nine
+    /// less the code): the league the strip stands on as the archive
+    /// keeps it, its rows reckoned from the stored results — place, the
+    /// club's name, points, difference and goals —, the own club red and
+    /// each place's box from the season's marks.
+    fn final_table_page(&self, cx: &Cx, view: &mut View, code: i16) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(&(country, level)) = self.leagues.get(self.chosen) else { return false };
+        let slot = statistics::ARCHIVE_SEASONS - 1 - usize::try_from(code).unwrap_or(0);
+        let Some(table) = statistics::final_table(records, country, level, slot) else { return false };
+        set_header(view, dialog, game.text(FINAL_TABLE_HEADER).to_owned(), &FINAL_TABLE_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), t.number()));
+        let rows = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let name = game.club_name(Some(records), table.country as u8, i16::from(row.team));
+                let text = format!(
+                    "{}.\t{name}\t{}\t{}\t{}\t:\t{}",
+                    i + 1,
+                    row.points,
+                    row.goals_for - row.goals_against,
+                    row.goals_for,
+                    row.goals_against
+                );
+                let mark = usize::try_from(table.marks.get(i).copied().unwrap_or(0) - 1)
+                    .ok()
+                    .and_then(|k| FINAL_MARK_COLOURS.get(k).copied());
+                let ink = if own == Some((table.country, row.team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark, columns: None }
+            })
+            .collect();
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns: FINAL_TABLE_ROW_COLUMNS.to_vec(),
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: None,
+            };
+        }
+        true
+    }
+
+    /// Resultate of a season gone by (`FUN_00463e8d`, archive slot 0x13
+    /// less the code): the league the strip stands on as the archive keeps
+    /// it, laid crosswise in the game's `CTabellenWnd` as the season's
+    /// results are — rows and columns in the archive's order, each cell
+    /// the row's home game against the column's —, under "Resultate
+    /// letzte Saison" (3033) or "Resultate vor %d Jahren" (3034).
+    fn archived_results_page(&self, cx: &Cx, view: &mut View, code: i16) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(&(country, level)) = self.leagues.get(self.chosen) else { return false };
+        let ago = usize::try_from(code - statistics::ARCHIVED_RESULTS_PAGES.start()).unwrap_or(0) + 1;
+        let slot = statistics::ARCHIVE_SEASONS - ago;
+        let Some(table) = statistics::final_table(records, country, level, slot) else { return false };
+        let header = if ago == 1 {
+            game.text(ARCHIVED_RESULTS_LAST).to_owned()
+        } else {
+            game.text(ARCHIVED_RESULTS_AGO).replace("%d", &ago.to_string())
+        };
+        set_header(view, dialog, header, &[(0, 0)]);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), t.number()));
+        let n = table.teams.len();
+        let last = (self.across + 10).min(n);
+        let rows = (0..n)
+            .map(|i| {
+                let team = table.teams[i];
+                let name = game.club_name(Some(records), table.country as u8, i16::from(team));
+                let mut text = format!("{} {}", i + 1, name);
+                for j in self.across..last {
+                    text.push('\t');
+                    if let Some((a, b)) = table.games[i][j] {
+                        text.push_str(&format!("{a}:{b}"));
+                    }
+                }
+                let ink = if own == Some((table.country, team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark: None, columns: None }
+            })
+            .collect();
+        let mut columns: Vec<(u16, u16)> = vec![(2, 138)];
+        for j in self.across..last {
+            columns.push((C | (139 + 31 * (j - self.across) as u16), 30));
+        }
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns,
+                rows,
+                width: CROSS_WIDTH,
+                centred: -1,
+                scroll: 0,
+                cross: Some(self.across),
+                graph: None,
+            };
+        }
+        true
+    }
+
+    /// Int. Wettbewerbe (`FUN_0045feac`): the finals of the competition
+    /// the strip stands at, the newest at the top, each "%s\t%s\t-\t%s\t%d
+    /// \t:\t%d\t%s" of the season, both clubs, the goals and "n.E.", "n.V."
+    /// or a blank; red where the own club played it.
+    fn international_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let list = self.chosen;
+        let (header, header_columns, columns): (u16, &[(u16, u16)], &[(u16, u16)]) = if list == WORLD_CUP {
+            (WORLD_CUP_HEADER, &WORLD_CUP_HEADER_COLUMNS, &WORLD_CUP_ROW_COLUMNS)
+        } else {
+            (INTERNATIONAL_HEADER, &INTERNATIONAL_HEADER_COLUMNS, &INTERNATIONAL_ROW_COLUMNS)
+        };
+        set_header(view, dialog, game.text(header).to_owned(), header_columns);
+        let own = own_team(cx).map(|t: &Team| (t.country(), i16::from(t.number())));
+        let rows = statistics::international_finals(records, list)
+            .iter()
+            .map(|f| {
+                let club = |(c, n): (u8, i16)| game.club_name(Some(records), c, n);
+                let note = if f.penalties {
+                    game.text(PENALTIES)
+                } else if f.extra_time {
+                    game.text(EXTRA_TIME)
+                } else {
+                    " "
+                };
+                let text = format!(
+                    "{}\t{}\t-\t{}\t{}\t:\t{}\t{note}",
+                    season_text(i32::from(f.year)),
+                    club(f.a),
+                    club(f.b),
+                    f.goals.0,
+                    f.goals.1
+                );
+                let ours = own == Some(f.a) || own == Some(f.b);
+                TableRow { text, ink: if ours { OWN_INK } else { INK }, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, columns, rows);
+        true
+    }
+
+    /// Torschützenkönige (`FUN_004608ce`) and Torrekorde (`FUN_00460c7a`)
+    /// of the country the strip stands at: the seasons' top scorers, the
+    /// newest first, or the ten best tallies; each "%s\t%s\t%s\t%d" of the
+    /// season, the player, his club and his goals, the own club's red.
+    fn tallies_page(&self, cx: &Cx, view: &mut View, kings: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        let header = if kings { KINGS_HEADER } else { TALLIES_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &TALLIES_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (u16::from(t.country()), i16::from(t.number())));
+        let list = if kings {
+            statistics::top_scorers(records, country)
+        } else {
+            statistics::best_tallies(records, country)
+        };
+        let rows = list
+            .iter()
+            .map(|t| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}",
+                    season_text(i32::from(t.year)),
+                    spelled(records, t.names[0], t.names[1]),
+                    game.club_name(Some(records), country as u8, t.team),
+                    t.goals
+                );
+                let ink = if own == Some((country, t.team)) { OWN_INK } else { INK };
+                TableRow { text, ink, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TALLIES_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordnationalspieler (`FUN_00461e6a`): the country's most capped
+    /// players, "%d.\t%s\t%d\t%s" of the place, the name, the caps and a
+    /// star for one still playing, in black.
+    fn caps_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(CAPS_HEADER).to_owned(), &CAPS_HEADER_COLUMNS);
+        let rows = statistics::most_capped(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, &(names, caps, active))| {
+                let star = if active { "*" } else { " " };
+                let text = format!("{}.\t{}\t{caps}\t{star}", i + 1, spelled(records, names[0], names[1]));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CAPS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Nat. Meister (`FUN_004629fe`): the country's champions, the newest
+    /// first, "%s\t%s\t%d\t%d\t%d\t:\t%d" of the season, the club, its
+    /// points, difference and goals, in black.
+    fn champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(CHAMPIONS_HEADER).to_owned(), &CHAMPIONS_HEADER_COLUMNS);
+        let rows = statistics::champions(records, country)
+            .iter()
+            .map(|c| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t:\t{}",
+                    season_text(i32::from(c.year)),
+                    game.club_name(Some(records), c.club.0, c.club.1),
+                    c.points,
+                    c.goals_for - c.goals_against,
+                    c.goals_for,
+                    c.goals_against
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Nat. Pokalsieger (`FUN_00463213`): the country's cup finals, the
+    /// newest first, the year as stored and the pairing as the cup's
+    /// rounds show it (`FUN_0044893f`), in black; Italy's two-legged final
+    /// under its own header.
+    fn cup_winners_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        if country == ITALY {
+            set_header(view, dialog, game.text(CUP_WINNERS_TWO_LEGS).to_owned(), &CUP_WINNERS_TWO_LEGS_COLUMNS);
+        } else {
+            set_header(view, dialog, game.text(CUP_WINNERS_HEADER).to_owned(), &CUP_WINNERS_HEADER_COLUMNS);
+        }
+        let rows = statistics::cup_winners(records, country)
+            .iter()
+            .map(|(year, p)| {
+                let text = format!("{year}\t{}", pairing_text(game, records, p));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &CUP_WINNERS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Europameister and Weltmeister (`FUN_0046445e`, `FUN_004647b4`): the
+    /// tournaments kept, the newest first — the year, the host, the
+    /// winner before the loser and the score the winner's way round
+    /// (equal goals put the second side first), and "n.V." or "n.E.".
+    fn tournaments_page(&self, cx: &Cx, view: &mut View, world: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(TOURNAMENTS_HEADER).to_owned(), &TOURNAMENTS_HEADER_COLUMNS);
+        let rows = statistics::tournaments(records, world)
+            .iter()
+            .map(|t| {
+                let f = &t.final_;
+                let a = game.club_name(Some(records), f.home_country, f.home);
+                let b = game.club_name(Some(records), f.away_country, f.away);
+                let (ga, gb) = f.first.unwrap_or((0, 0));
+                let (pairing, score) = if ga > gb {
+                    (format!("{a}\t-\t{b}"), f.first.map(|_| format!("{ga}\t:{gb}")))
+                } else {
+                    (format!("{b}\t-\t{a}"), f.first.map(|_| format!("{gb}\t:{ga}")))
+                };
+                let note = if f.penalties {
+                    game.text(PENALTIES)
+                } else if f.extra_time {
+                    game.text(EXTRA_TIME)
+                } else {
+                    " "
+                };
+                let text = format!(
+                    "{}\t{}\t{pairing}\t{}\t{note}",
+                    t.year,
+                    game.world.nation(t.host as u16),
+                    score.unwrap_or_else(|| "\t".to_owned())
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TOURNAMENTS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// EM- and WM-Torschützenkönige (`FUN_00464b0a`, `FUN_00464d01`): each
+    /// tournament's top scorer, the newest first, "%d\t%s\t%s (%s)\t%d" of
+    /// the year, the host, his last name and nation, and his goals.
+    fn tournament_scorers_page(&self, cx: &Cx, view: &mut View, world: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(
+            view,
+            dialog,
+            game.text(TOURNAMENT_SCORERS_HEADER).to_owned(),
+            &TOURNAMENT_SCORERS_COLUMNS,
+        );
+        let rows = statistics::tournaments(records, world)
+            .iter()
+            .map(|t| {
+                let text = format!(
+                    "{}\t{}\t{} ({})\t{}",
+                    t.year,
+                    game.world.nation(t.host as u16),
+                    records.name(t.scorer[1]),
+                    game.world.nation(u16::from(t.scorer_nation)),
+                    t.scorer_goals
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &TOURNAMENT_SCORERS_COLUMNS, rows);
+        true
+    }
+
+    /// Trainer des Jahres, Spieler des Jahres (of the country the strip
+    /// stands at) and Fußballer Europas (`FUN_00464ef8`, `FUN_00465122`,
+    /// `FUN_0046534c`): the awards kept, the newest first, "%d\t%s\t%s" of
+    /// the year, the name and the club, in black.
+    fn awards_page(&self, cx: &Cx, view: &mut View, kind: usize) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let header = if kind == 0 { TRAINER_AWARD_HEADER } else { PLAYER_AWARD_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &AWARD_COLUMNS);
+        let country = self.strip_country(records);
+        let rows = statistics::awards(records, kind, country)
+            .iter()
+            .map(|a| {
+                let club = game.club_name(Some(records), a.club.0, a.club.1);
+                let text = format!("{}\t{}\t{club}", a.year, a.name);
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &AWARD_COLUMNS, rows);
+        true
+    }
+
+    /// Erfolgreichste Trainer (`FUN_00465abb`): the country's trainers with
+    /// the most titles, "%d.\t%s\t%d\t%d\t%d\t%d\t%d" of the place, the
+    /// name, titles, cups, European cups, the others and the promotions.
+    fn successful_trainers_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(SUCCESSFUL_HEADER).to_owned(), &SUCCESSFUL_HEADER_COLUMNS);
+        let country = self.strip_country(records);
+        let rows = statistics::successful_trainers(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let text = format!(
+                    "{}.\t{}\t{}\t{}\t{}\t{}\t{}",
+                    i + 1,
+                    t.name,
+                    t.titles,
+                    t.cups,
+                    t.european,
+                    t.others,
+                    t.promotions
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &SUCCESSFUL_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Beste Mannschaft (`FUN_004665dd`): each completed season's
+    /// strongest squad, the oldest first, "%s\t%s\t%s\t%d\t%d\t%2.1f" of
+    /// the season, the club, its country, the squad's strength, its size
+    /// and the strength a man, in black.
+    fn best_teams_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        set_header(view, dialog, game.text(BEST_TEAMS_HEADER).to_owned(), &BEST_TEAMS_HEADER_COLUMNS);
+        let rows = statistics::best_teams(records)
+            .iter()
+            .map(|t| {
+                let each = if t.squad > 0 { f64::from(t.strength) / f64::from(t.squad) } else { 0.0 };
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t{each:2.1}",
+                    season_text(i32::from(t.year)),
+                    game.club_name(Some(records), t.club.0, t.club.1),
+                    game.world.nation(u16::from(t.club.0)),
+                    t.strength,
+                    t.squad
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &BEST_TEAMS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Herbstmeister (`FUN_00462d17`): the half-season leaders, the newest
+    /// first, laid like the champions, the own club red; then, across the
+    /// whole row, how many of them became champions too.
+    fn autumn_champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(view, dialog, game.text(AUTUMN_HEADER).to_owned(), &CHAMPIONS_HEADER_COLUMNS);
+        let own = own_team(cx).map(|t: &Team| (t.country(), i16::from(t.number())));
+        let (leaders, share) = statistics::autumn_champions(records, country);
+        let mut rows: Vec<TableRow> = leaders
+            .iter()
+            .map(|c| {
+                let text = format!(
+                    "{}\t{}\t{}\t{}\t{}\t:\t{}",
+                    season_text(i32::from(c.year)),
+                    game.club_name(Some(records), c.club.0, c.club.1),
+                    c.points,
+                    c.goals_for - c.goals_against,
+                    c.goals_for,
+                    c.goals_against
+                );
+                TableRow { text, ink: if own == Some(c.club) { OWN_INK } else { INK }, mark: None, columns: None }
+            })
+            .collect();
+        if let Some(share) = share {
+            let text = game.text(AUTUMN_SHARE).replace("%.1f%%", &format!("{share:.1}%"));
+            rows.push(TableRow { text, ink: INK, mark: None, columns: Some(vec![(0, 0)]) });
+        }
+        self.fill_list(view, dialog, &CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordmeister (`FUN_004624fc`): the country's clubs with a title,
+    /// by titles, cups and European cups, "%d.\t%s\t%d\t%d\t%d", in black.
+    fn record_champions_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = self.strip_country(records);
+        set_header(
+            view,
+            dialog,
+            game.text(RECORD_CHAMPIONS_HEADER).to_owned(),
+            &RECORD_CHAMPIONS_HEADER_COLUMNS,
+        );
+        let rows = statistics::record_champions(records, country)
+            .iter()
+            .enumerate()
+            .map(|(i, &(team, [a, b, c]))| {
+                let text =
+                    format!("{}.\t{}\t{a}\t{b}\t{c}", i + 1, game.club_name(Some(records), country as u8, team));
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &RECORD_CHAMPIONS_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Rekordaufsteiger and Rekordabsteiger (`FUN_00465f1a`,
+    /// `FUN_00466266`): the main country's clubs by their promotions or
+    /// relegations, the total and by league; the promotions' number goes
+    /// without its dot.
+    fn record_moves_page(&self, cx: &Cx, view: &mut View, relegations: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let country = records.globals.main_country() as u8;
+        let (header, header_columns, columns): (u16, &[(u16, u16)], &[(u16, u16)]) = if relegations {
+            (RECORD_RELEGATED_HEADER, &RECORD_RELEGATED_HEADER_COLUMNS, &RECORD_RELEGATED_ROW_COLUMNS)
+        } else {
+            (RECORD_PROMOTED_HEADER, &RECORD_PROMOTED_HEADER_COLUMNS, &RECORD_PROMOTED_ROW_COLUMNS)
+        };
+        set_header(view, dialog, game.text(header).to_owned(), header_columns);
+        let rows = statistics::record_moves(records, relegations)
+            .iter()
+            .enumerate()
+            .map(|(i, (team, figures))| {
+                let mut text = format!(
+                    "{}{}\t{}",
+                    i + 1,
+                    if relegations { "." } else { "" },
+                    game.club_name(Some(records), country, *team)
+                );
+                for f in figures {
+                    text.push_str(&format!("\t{f}"));
+                }
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, columns, rows);
+        true
+    }
+
+    /// Meiste Aufstiege and Meiste Abstiege (`FUN_00466c6f`,
+    /// `FUN_00466e72`): the players most often promoted or relegated,
+    /// "%d\t%s\t%d\t%s" of the place, the name, how often and the club.
+    fn most_moves_page(&self, cx: &Cx, view: &mut View, relegations: bool) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let header = if relegations { MOST_RELEGATIONS_HEADER } else { MOST_PROMOTIONS_HEADER };
+        set_header(view, dialog, game.text(header).to_owned(), &MOST_MOVES_HEADER_COLUMNS);
+        let rows = statistics::most_moves(records, relegations)
+            .iter()
+            .enumerate()
+            .map(|(i, (names, (country, team), count))| {
+                let text = format!(
+                    "{}\t{}\t{count}\t{}",
+                    i + 1,
+                    spelled(records, names[0], names[1]),
+                    game.club_name(Some(records), *country, *team)
+                );
+                TableRow { text, ink: INK, mark: None, columns: None }
+            })
+            .collect();
+        self.fill_list(view, dialog, &MOST_MOVES_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Restprogramm (`FUN_0046d3d6`): in the last matchdays of the own
+    /// club's league, the six clubs around its place in the table — from
+    /// three above to two below, the window kept inside the table —, each
+    /// with its place, points and goals, then its fixtures still to come,
+    /// "H: %s" at home or "A: %s" away, and an empty row; the own club red,
+    /// and a fixture against it. Nothing while more matchdays are left.
+    fn rest_program_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(team) = own_team(cx) else { return false };
+        let (country, own) = (u16::from(team.country()), i16::from(team.number()));
+        let Some(league) = League::of(records, country, team.level()) else { return false };
+        let (played, total) = (league.played(), league.matchdays());
+        if played + REST_MATCHDAYS < total || played >= total {
+            return true;
+        }
+        set_header(view, dialog, game.text(REST_HEADER).to_owned(), &REST_HEADER_COLUMNS);
+        let table = statistics::table(records, &league, statistics::ALL);
+        let n = table.len();
+        let p = table.iter().position(|r| r.team == own).unwrap_or(0);
+        let mut start = p as i64 - 3;
+        if start + REST_CLUBS as i64 > n as i64 {
+            start = n as i64 - REST_CLUBS as i64;
+        }
+        let start = start.max(0) as usize;
+        let name = |t: i16| game.club_name(Some(records), country as u8, t);
+        let ink = |t: i16| if t == own { OWN_INK } else { INK };
+        let mut rows = Vec::new();
+        for (k, row) in table.iter().enumerate().skip(start).take(REST_CLUBS) {
+            let text = format!(
+                "{}\t{}\t{}\t{}\t:\t{}",
+                name(row.team),
+                k + 1,
+                row.points,
+                row.goals_for,
+                row.goals_against
+            );
+            rows.push(TableRow { text, ink: ink(row.team), mark: None, columns: None });
+            for md in played..total {
+                let fixture = league.games(md).into_iter().find_map(|(h, a, _)| {
+                    let (home, away) = (league.team(h), league.team(a));
+                    if home == row.team {
+                        Some((REST_HOME, away))
+                    } else if away == row.team {
+                        Some((REST_AWAY, home))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((side, other)) = fixture {
+                    let text = game.text(side).replace("%s", &name(other));
+                    rows.push(TableRow { text, ink: ink(other), mark: None, columns: None });
+                }
+            }
+            rows.push(TableRow { text: String::new(), ink: INK, mark: None, columns: None });
+        }
+        self.fill_list(view, dialog, &REST_ROW_COLUMNS, rows);
+        true
+    }
+
+    /// Fills the page's table with plain rows in its columns.
+    fn fill_list(&self, view: &mut View, dialog: &Dialog, columns: &[(u16, u16)], rows: Vec<TableRow>) {
+        if let Some(t) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *t = TableState {
+                columns: columns.to_vec(),
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: None,
+            };
+        }
     }
 
     /// Zuschauer Liga (`CStatistikWnd` over the attendance kept at
@@ -3333,6 +4198,10 @@ impl Statistics {
             .map(|(_, e)| e);
         let target = team.ticket_target();
         let mut seasons = extra.map_or_else(Vec::new, |e| e.history());
+        // The past seasons' rows keep the club's +0x124 at their +8, the
+        // season tickets' target and not what was sold (`FUN_0071d0a4`
+        // reading it into the row); the season running stands there at
+        // the holders themselves, the club's +0x498 (`FUN_004766b1`).
         seasons.push(SeasonHistory {
             tickets: team.tickets(),
             level: team.level().min(2),
@@ -3759,6 +4628,54 @@ impl Statistics {
             rows.push(TableRow { text, ink: INK, mark: None, columns: None });
             let ink = if v > 0 { PROFIT_INK } else if v < 0 { LOSS_INK } else { BAR_INK };
             bars.push(((f64::from(v.unsigned_abs()) * s + 0.5) as i32, ink));
+        }
+        if let Some(table) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
+            *table = TableState {
+                columns: vec![],
+                rows,
+                width: ROW_WIDTH,
+                centred: -1,
+                scroll: self.scrolled,
+                cross: None,
+                graph: Some(Graph {
+                    bars,
+                    steps,
+                    top: FINANZEN_TRANSFERS_TOP,
+                    unit: game.text(FINANZEN_TRANSFERS_UNIT).to_owned(),
+                    ..Graph::default()
+                }),
+            };
+        }
+        true
+    }
+
+    /// Werbeeinnahmen (`FUN_0045c4ae`): the sponsor money of the kept
+    /// seasons and of the running one (club +0x2f4, +0x2f8 and +0x2fc
+    /// together) as black bars, newest at the top and twenty at most, each
+    /// "%d (%s)" of the year and the money (0x87ce78, tighter than the
+    /// Transferbilanz's); a season without any shows
+    /// nothing. The longest bar ends at the greatest amount's steps shared
+    /// into 384 pixels, as on the Transferbilanz.
+    fn finanzen_sponsors_page(&self, cx: &Cx, view: &mut View) -> bool {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(records) = cx.state.records.as_ref() else { return false };
+        let Some(team) = own_team(cx) else { return false };
+        set_header(view, dialog, game.text(FINANZEN_SPONSORS_TITLE).to_owned(), &[(0, 0)]);
+        let extra = team.human().checked_sub(1).and_then(|s| records.extras.get(usize::from(s)));
+        let mut seasons = extra.map(|e| e.sponsors()).unwrap_or_default();
+        let club = |c: usize| team.get::<i32>(c + a3_core::finances::CLUB_TO_TEAM);
+        let running = club(0x2f4).wrapping_add(club(0x2f8)).wrapping_add(club(0x2fc));
+        seasons.push((records.globals.start_year() as i16, running));
+        let most = seasons.iter().map(|&(_, v)| v).max().unwrap_or(0).max(1);
+        let (_, steps) = Self::money_steps(most, 20);
+        let plot = if steps > 0 { FINANZEN_TRANSFERS_PLOT / steps * steps } else { 0 };
+        let s = f64::from(plot) / f64::from(most);
+        let mut rows: Vec<TableRow> = Vec::new();
+        let mut bars: Vec<(i32, [u8; 3])> = Vec::new();
+        for &(year, v) in seasons.iter().rev().filter(|&&(_, v)| v != 0).take(0x14) {
+            let text = format!("{year} ({})", super::playerinfo::money(game, i64::from(v)));
+            rows.push(TableRow { text, ink: INK, mark: None, columns: None });
+            bars.push(((f64::from(v) * s + 0.5) as i32, BAR_INK));
         }
         if let Some(table) = control(dialog, TABLE).and_then(|c| view.table_mut(c)) {
             *table = TableState {
@@ -5496,8 +6413,11 @@ impl Statistics {
     /// The Abs. or Rel. ewige Tabelle (`FUN_00460f97`, `FUN_00461ac7`) of
     /// the country the strip stands at: the clubs that played its first
     /// league, by points or by points a game, numbered as shown; the own
-    /// club red. Under Germany's absolute table, its two notes.
-    fn eternal_page(&self, cx: &Cx, view: &mut View, relative: bool) -> bool {
+    /// club red. Under Germany's absolute table, its two notes. With
+    /// `kind` the home or the away games only: the ewige Heim- and
+    /// Auswärtstabelle (`FUN_004613db`, `FUN_00461751`), sorted as the
+    /// absolute one and without the notes.
+    fn eternal_page(&self, cx: &Cx, view: &mut View, relative: bool, kind: u8) -> bool {
         let (game, dialog) = (cx.game, cx.dialog);
         let Some(records) = cx.state.records.as_ref() else { return false };
         let country = self.strip_country(records);
@@ -5507,7 +6427,7 @@ impl Statistics {
             (ABSOLUTE_HEADER, &ABSOLUTE_HEADER_COLUMNS)
         };
         set_header(view, dialog, game.text(header).to_owned(), columns);
-        let mut table = statistics::eternal(records, country);
+        let mut table = statistics::eternal_of(records, country, kind);
         if relative {
             statistics::relative_order(&mut table);
         } else {
@@ -5532,7 +6452,7 @@ impl Statistics {
                 TableRow { text, ink, mark: None, columns: None }
             })
             .collect();
-        if !relative && country == GERMANY {
+        if !relative && kind == statistics::ALL && country == GERMANY {
             for note in GERMAN_NOTES {
                 let text = game.text(note).to_owned();
                 rows.push(TableRow { text, ink: INK, mark: None, columns: Some(vec![(0, 0)]) });

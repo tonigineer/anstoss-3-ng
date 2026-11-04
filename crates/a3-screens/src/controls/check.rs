@@ -46,7 +46,13 @@ impl CheckState {
         let color = if pointed { TEXT_HOVER } else { TEXT };
         let (x, y) = (r.min.x as i32 + LABEL_LEFT, r.min.y as i32);
         let width = (r.width() as i32 - LABEL_LEFT) as u32;
-        font.draw_wrapped(frame, x, y, width, &self.text, color, false);
+        // Its window clips the label: a box too narrow shows none of it.
+        let lines = font.wrap(&self.text, width, false);
+        let right = x + lines.iter().map(|l| font.width(l, false) as i32 + 1).max().unwrap_or(0);
+        let bottom = y + (lines.len() as i32 + 1) * font.height() as i32;
+        super::text::within(frame, r, (x, y, right, bottom), |frame| {
+            font.draw_wrapped(frame, x, y, width, &self.text, color, false);
+        });
     }
 
     pub(crate) fn targets(

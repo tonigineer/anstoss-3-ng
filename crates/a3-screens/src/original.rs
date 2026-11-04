@@ -49,6 +49,8 @@ const ANSWER: Duration = Duration::from_secs(60);
 const FRAMES: [u16; 1] = [214];
 /// The game's day, counted from the start of the first season (16 bits).
 const DAY: u32 = 0xb5cbd4;
+/// The game's random numbers' state, two halves (`DAT_0089dcc0`).
+const RANDOM: u32 = 0x89dcc0;
 /// Keys: to the end of a field, and back over a character.
 const VK_END: u8 = 0x23;
 const VK_BACK: u8 = 0x08;
@@ -187,7 +189,7 @@ impl<'a> Original<'a> {
                 Some(actions) => actions,
                 None => match self.on.get(&up.id) {
                     Some(actions) => actions.clone(),
-                    None => match self.explore.then(|| self.answer(up.id)).flatten() {
+                    None => match self.explore.then(|| self.answer(up.id, turns % 2 == 1)).flatten() {
                         Some(action) => {
                             self.log.push("  (exploring)".into());
                             vec![action]
@@ -210,16 +212,31 @@ impl<'a> Original<'a> {
     }
 
     /// What exploring answers a dialog with: its OK button, or its only
-    /// button.
-    fn answer(&self, id: u16) -> Option<Action> {
+    /// button, or the first of its choices — at once without a button, or
+    /// when the OK did not take it away.
+    fn answer(&self, id: u16, again: bool) -> Option<Action> {
         let dialog = self.game.dialogs.get(&id)?;
+        let choice = || {
+            dialog
+                .controls
+                .iter()
+                .find(|c| matches!(c.kind, Kind::Options { .. }))
+                .and_then(|c| c.id)
+                .map(|id| Action::Choose(id, 0))
+        };
+        // An OK that left the dialog where it was waits for a choice: the
+        // first, then the OK again, by turns.
+        if again && let Some(action) = choice() {
+            return Some(action);
+        }
         if target_of(dialog, id, &Action::Ok).is_ok() {
             return Some(Action::Ok);
         }
         let mut buttons = dialog.controls.iter().filter(|c| matches!(c.kind, Kind::Button { .. }));
         match (buttons.next(), buttons.next()) {
             (Some(button), None) => button.id.map(Action::Press),
-            _ => None,
+            // A question answered by a group of choices takes the first.
+            _ => choice(),
         }
     }
 
@@ -304,6 +321,14 @@ impl<'a> Original<'a> {
         self.log.push(format!("  {action:?}"));
         if let Action::Wait = action {
             return self.wait(up);
+        }
+        if let Action::Random(s1, s2) = *action {
+            for (at, half) in [(RANDOM, s1), (RANDOM + 4, s2)] {
+                let bytes = (half as i32).to_le_bytes();
+                let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                self.probe.ask(format!("poke {at:#x} {hex}").as_bytes())?;
+            }
+            return Ok(());
         }
         if let Action::ClickAt((x, y)) = *action {
             self.click(Vec2::new(f32::from(x), f32::from(y)))?;

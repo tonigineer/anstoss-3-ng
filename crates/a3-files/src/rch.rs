@@ -24,6 +24,9 @@ pub struct Dialog {
     /// Its German title, which a popup shows in its caption; some are
     /// templates the game fills in itself.
     pub title: String,
+    /// Its name in the game's resources, `IDD_…`: what its help topic is
+    /// called by.
+    pub name: String,
     pub background: u16,
     /// What the game adds of its own: [`HELP_FLAG`], [`PRINTER_FLAG`].
     pub flags: u32,
@@ -263,8 +266,10 @@ fn parse_dialog(record: &[u8]) -> Option<Dialog> {
     let size = Vec2::new(u32_at(record, 0x10).ok()? as f32, u32_at(record, 0x14).ok()? as f32);
     let title = cstr(record, TITLE).map_or_else(String::new, |(title, _)| title);
     // The grounds' five dialogs are named DLG_….
-    let name = find(record, b"IDD_").or_else(|| find(record, b"DLG_"))?;
-    let mut pos = name + record[name..].iter().position(|&b| b == 0)? + 1;
+    let at = find(record, b"IDD_").or_else(|| find(record, b"DLG_"))?;
+    let end = at + record[at..].iter().position(|&b| b == 0)?;
+    let name = String::from_utf8_lossy(&record[at..end]).into_owned();
+    let mut pos = end + 1;
     pos = skip_padding(record, pos);
     let background = u16_at(record, pos)?;
     let flags = u32_at(record, pos + 2).unwrap_or(0);
@@ -293,7 +298,7 @@ fn parse_dialog(record: &[u8]) -> Option<Dialog> {
                 Rect::from_corners(control.rect.min + frame.min, control.rect.max + frame.min);
         }
     }
-    Some(Dialog { title, background, flags, controls, frame })
+    Some(Dialog { title, name, background, flags, controls, frame })
 }
 
 fn is_control_start(bytes: &[u8]) -> bool {

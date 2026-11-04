@@ -151,23 +151,25 @@ pub struct League<'a> {
 
 const LEAGUE_AT: u32 = 0x1a09d48;
 /// The league's fields start this far into the saved block.
-const LEAGUE_FIELDS: usize = 0x50 - 0x20;
+pub(crate) const LEAGUE_FIELDS: usize = 0x50 - 0x20;
 const SCHEDULE: usize = 0x50a;
 const MATCHDAY_PAIRS: usize = 0x18;
 /// The results, [home][away] 4 bytes each: 8 bytes before the notes'
 /// G+0xe22 — checked on a save, where every played result lies at 0xe1a by
 /// its matchday's pairs.
-const RESULTS: usize = 0xe1a;
+pub(crate) const RESULTS: usize = 0xe1a;
 const RESULT_ROW: usize = 0x60;
 /// A result not played yet.
 const UNPLAYED: u8 = 0xff;
 /// The table's boxes by place (G+0x1a08).
-const MARKS: usize = 0x1a08;
+pub(crate) const MARKS: usize = 0x1a08;
 /// The league's total attendance per matchday, 24 i32 (L+0x194c).
 const MATCHDAY_CROWDS: usize = 0x191c;
-/// The places held, matchday by matchday: L+0xd0, which is this far into
-/// the saved block, a row of 0x2e bytes for each team.
-const PLACES: usize = 0xd0 - 0x20;
+/// The places held, matchday by matchday (L+0x82): a row of 0x2e bytes
+/// for each team, its byte of matchday k counting from 0 holding the
+/// table place it reached that matchday — checked on a save by reckoning
+/// its table after every matchday played.
+const PLACES: usize = 0x82;
 const PLACES_ROW: usize = 0x2e;
 
 impl<'a> League<'a> {
@@ -234,14 +236,83 @@ impl<'a> League<'a> {
     }
 
     /// The place the team at `place` in the league held a matchday before
-    /// the last one played, 0 none (`FUN_00690fba`: the league's +0xd0, a
-    /// row of 0x2e bytes for each team, by matchdays played).
+    /// the last one played, 0 none. `FUN_00690fba` reads the rows from
+    /// L+0x80 — the byte at matchdays played less two, which is the place
+    /// the team reached after the matchday before the last one played.
     pub fn place_before(&self, place: usize) -> u8 {
         let played = self.played();
         if played <= 1 || played > self.rows() {
             return 0;
         }
-        self.data.get(PLACES + place * PLACES_ROW + played).copied().unwrap_or(0)
+        self.data
+            .get(LEAGUE_FIELDS + PLACES + place * PLACES_ROW + (played - 2))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The place a team number holds as `FUN_0063ee2a` reads it: its row's
+    /// byte at the matchdays played; 0 for a team not in the league.
+    pub fn place_of(&self, team: i16) -> u8 {
+        (0..MATCHDAY_PAIRS)
+            .find(|&c| self.team(c) == team)
+            .and_then(|c| self.data.get(LEAGUE_FIELDS + PLACES + c * PLACES_ROW + self.played()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The byte of the block where the team at `place` keeps its place
+    /// after the matchday that comes next, none past the league's rows.
+    pub fn place_slot(&self, place: usize) -> Option<usize> {
+        if place >= self.teams() || self.played() >= PLACES_ROW {
+            return None;
+        }
+        Some(LEAGUE_FIELDS + PLACES + place * PLACES_ROW + self.played())
+    }
+
+    /// The four bytes of the block where the matchday coming next writes
+    /// the game of a pair of its schedule: the home place, the away place,
+    /// and where the game stands — 0xff in all four while it is unplayed.
+    pub fn open_games(&self) -> Vec<(usize, usize, usize)> {
+        let n = self.teams();
+        let (mut matchday, mut offset) = (self.played(), 0);
+        if self.four_rounds() && n >= 1 && matchday >= 2 * n - 2 {
+            matchday -= 2 * n - 2;
+            offset = n;
+        }
+        if matchday >= self.rows() {
+            return Vec::new();
+        }
+        self.pairs(matchday)
+            .into_iter()
+            .map(|(home, away)| {
+                (home, away, LEAGUE_FIELDS + RESULTS + home * RESULT_ROW + (away + offset) * 4)
+            })
+            // The row only holds its 24 games; a league playing more
+            // rounds than that, and by places beyond, is not written yet.
+            .filter(|(home, away, at)| {
+                *home < n
+                    && *away < n
+                    && *at + 4 <= LEAGUE_FIELDS + RESULTS + (home + 1) * RESULT_ROW
+            })
+            .collect()
+    }
+
+    /// The field of the matchdays played (G+0x16), and the crowd total of
+    /// the matchday coming next, both in the block.
+    pub fn played_slot(&self) -> usize {
+        LEAGUE_FIELDS + 0x16
+    }
+
+    pub fn crowd_slot(&self) -> usize {
+        LEAGUE_FIELDS + MATCHDAY_CROWDS + 4 * self.played()
+    }
+
+    /// The name of the league's block in the save, to change it.
+    pub fn block_name(records: &Records, country: u16, level: u8) -> Option<String> {
+        let first = records.countries.first_league(country.into());
+        let index = i32::from(first) + i32::from(level);
+        let name = format!("{LEAGUE_AT:#x}[{index}]");
+        records.block(&name).map(|_| name)
     }
 
     /// The pairs of a matchday from 0, by places, with their results as
@@ -332,6 +403,83 @@ impl<'a> League<'a> {
 
 /// A league match: the home place, the away place, the goals if played.
 pub type Match = (usize, usize, Option<(u8, u8)>);
+
+/// The countries the game is played in: the main one, then the more ones
+/// in their order.
+pub(crate) fn played_nations(records: &Records) -> Vec<u16> {
+    let globals = &records.globals;
+    let more =
+        usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    std::iter::once(globals.main_country())
+        .chain(globals.more_countries()[..more].iter().copied())
+        .filter_map(|c| u16::try_from(c).ok().filter(|&c| c != 0))
+        .collect()
+}
+
+/// The leagues stand open again for the new season (`FUN_006da3a9`'s
+/// new-season block, measured on the original's pair of its season's last
+/// day and the new season's first): the matchdays played back to nought,
+/// every pairing's result bytes back to 0xff, and every matchday's total
+/// of spectators to nought. The fixture rows, the table's boxes and the
+/// places the season reached stay; only the teams in the slots change —
+/// with the promotions and relegations (`FUN_006af699`), which the
+/// replica has not built.
+pub fn open_leagues(records: &mut Records) {
+    for nation in played_nations(records) {
+        for level in 0..records.countries.leagues(usize::from(nation)).max(0) {
+            let Some(name) = League::block_name(records, nation, level as u8) else { continue };
+            let Some(block) = records.block_mut(&name) else { continue };
+            let (teams, rows, rounds) = {
+                let i16_at = |field: usize| -> i16 {
+                    let at = LEAGUE_FIELDS + field;
+                    block.get(at..at + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
+                };
+                (
+                    i16_at(0).clamp(0, 24) as usize,
+                    i16_at(2).clamp(0, 24) as usize,
+                    usize::from(i16_at(0x1a) > 0) + 1,
+                )
+            };
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x18) {
+                s.copy_from_slice(&0i16.to_le_bytes());
+            }
+            for home in 0..teams {
+                for away in 0..(teams * rounds).min(RESULT_ROW / 4) {
+                    let at = LEAGUE_FIELDS + RESULTS + home * RESULT_ROW + away * 4;
+                    if let Some(s) = block.get_mut(at..at + 4) {
+                        s.copy_from_slice(&[UNPLAYED; 4]);
+                    }
+                }
+            }
+            for row in 0..rows {
+                let at = LEAGUE_FIELDS + MATCHDAY_CROWDS + 4 * row;
+                if let Some(s) = block.get_mut(at..at + 4) {
+                    s.copy_from_slice(&0i32.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+/// The cup's rounds fall away with the season: every drawn pairing stands
+/// zeroed through the block and the last drawn round with it, for the new
+/// season's first round to be drawn into ([`crate::cup_draw`]).
+pub fn open_cups(records: &mut Records) {
+    for nation in played_nations(records) {
+        let slot = records.countries.slot(usize::from(nation));
+        let name = format!("{CUPS_AT:#x}[{slot}]");
+        let Some(cup) = records.block_mut(&name) else { continue };
+        if let Some(b) = cup.get_mut(0x28 - 0x20) {
+            *b = 0;
+        }
+        for q in 0..=HIGHEST_PAIRING {
+            let at = PAIRINGS + q * PAIRING;
+            if let Some(s) = cup.get_mut(at..at + PAIRING) {
+                s.fill(0);
+            }
+        }
+    }
+}
 
 /// A club's stand in its league (`FUN_00692744`, `FUN_0072c2bb`): its
 /// place, points and games, and its last results, oldest first, a letter
@@ -665,7 +813,7 @@ pub enum CupStand {
 
 /// The cups' rounds by mode (the table at 0x8a5e10): where each round's
 /// pairings start, and how many.
-const ROUNDS: [[(usize, usize); 6]; 6] = [
+pub const ROUNDS: [[(usize, usize); 6]; 6] = [
     [(0, 0), (0, 32), (32, 16), (48, 8), (56, 4), (60, 2)],
     [(0, 0), (0, 0), (32, 16), (48, 8), (56, 4), (60, 2)],
     [(0, 20), (20, 32), (52, 16), (68, 8), (76, 4), (80, 2)],
@@ -678,10 +826,26 @@ const ROUNDS: [[(usize, usize); 6]; 6] = [
 /// text 1443.
 const ROUND_NAMES: [u16; 6] = [1528, 1519, 1520, 1521, 1521, 1522];
 const NO_ROUND: u16 = 1443;
+/// Where a cup round's pairings stand, by mode and round counted from 1;
+/// round 6 is the final, one pairing behind the last row entry.
+pub fn cup_pairings(mode: usize, round: usize) -> Option<(usize, usize)> {
+    let mode = mode.min(ROUNDS.len() - 1);
+    match round {
+        1..=5 => {
+            let (start, n) = ROUNDS[mode][round];
+            (n > 0).then_some((start, n))
+        }
+        6 => {
+            let (start, n) = ROUNDS[mode][5];
+            Some((start + n, 1))
+        }
+        _ => None,
+    }
+}
 pub const CUPS_AT: u32 = 0x1ba5390;
 pub const PAIRINGS: usize = 0x2c - 0x20;
 pub const PAIRING: usize = 0xe;
-const HIGHEST_PAIRING: usize = 62;
+pub(crate) const HIGHEST_PAIRING: usize = 62;
 const PLAYED: u8 = 0x08;
 
 pub fn cup_stand(records: &Records, team: &Team) -> CupStand {

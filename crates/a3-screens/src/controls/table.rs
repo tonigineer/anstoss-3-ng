@@ -334,6 +334,11 @@ impl TableState {
                     CENTRE => (right - x - w) / 2,
                     _ => in_,
                 };
+                // The cross-table's cells stand in black whatever the
+                // row's colour: the paint sets black before them
+                // (`FUN_0079daff(0)` in `FUN_0072cec3`), its label alone
+                // takes the row's.
+                let ink = if self.cross.is_some() && k > 0 { Rgba([0, 0, 0, 255]) } else { ink };
                 font.draw(&mut area, x + dx, y, text, ink, false);
                 // A club's own cell, its score over a blue box
                 // (`FUN_0079c74a` with 200, drawn after the text).

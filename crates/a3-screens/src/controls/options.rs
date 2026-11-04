@@ -30,6 +30,13 @@ const TICKED_LABEL: i32 = 12;
 /// Its tick stands a pixel lower than a check box's.
 const TICKED_DOWN: f32 = 3.0;
 
+/// A group without a picture whose labels are centred has no bullets
+/// either: its options are plain fields of the background, the chosen one
+/// unmarked (442's other humans).
+fn plain(control: &Control) -> bool {
+    matches!(control.kind, Kind::Options { image: 0, style, .. } if style & CENTRED_LABELS != 0)
+}
+
 fn ticked(control: &Control) -> bool {
     matches!(control.kind, Kind::Options { style, .. } if style & TICKED != 0)
 }
@@ -115,7 +122,7 @@ impl OptionsState {
         for (item, it) in items.iter().enumerate() {
             // The chosen option shows lit; the game's buttons of this kind
             // do not light up when pointed at.
-            let lit = !self.actions && self.chosen == item;
+            let lit = !self.actions && self.chosen == item && !plain(control);
             if !lit || self.off.get(item).copied().unwrap_or(false) {
                 continue;
             }
@@ -164,7 +171,7 @@ impl OptionsState {
             if *image == 0 && ticked(control) {
                 let left = x + it.rect.min.x as i32 + TICKED_LABEL;
                 font.draw(frame, left, y + it.rect.min.y as i32, label, color, false);
-            } else if *image == 0 {
+            } else if *image == 0 && !plain(control) {
                 // Windows centres a radio button's label on its bullet.
                 let top = (bullet_centre(control, item).y - cell / 2.0).floor() as i32;
                 let left = x + (it.rect.min.x + LABEL_INSET) as i32;

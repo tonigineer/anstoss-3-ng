@@ -39,7 +39,7 @@ macro_rules! numbers {
         }
     )*};
 }
-numbers!(u8, i8, u16, i16, u32, i32, i64);
+numbers!(u8, i8, u16, i16, u32, i32, i64, f32);
 
 impl<T: Field, const N: usize> Field for [T; N] {
     const SIZE: usize = T::SIZE * N;
@@ -118,7 +118,7 @@ macro_rules! record {
 }
 
 /// Text in a record: Windows-1252 up to the first NUL, within `len` bytes.
-fn text(bytes: &[u8], len: usize) -> String {
+pub(crate) fn text(bytes: &[u8], len: usize) -> String {
     let bytes = &bytes[..len.min(bytes.len())];
     cp1252(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
 }
@@ -197,6 +197,9 @@ record! {
     /// Condition and freshness, in hundredths.
     0x1ce => condition, set_condition: i16;
     0x1d0 => freshness, set_freshness: [i16; 3];
+    /// His room in the training camp, 0 to 19; below 0 none (the player
+    /// object's +0xc9, [`crate::rooms`]).
+    0x1d6 => room, set_room: i8;
     /// Set with an injury: the game's day it happened (`FUN_00766b92`).
     0x1d8 => injured_on, set_injured_on: u16;
     /// The injury lasts to this year and day of the year.
@@ -238,6 +241,9 @@ record! {
     0x21a => face, set_face: [u8; 2];
     /// 1 to 12.
     0x21c => strength, set_strength: u8;
+    /// What keeps him from taking a bribe: under 85 he takes any amount
+    /// (the black cash box's `FUN_004c9863`).
+    0x294 => scruples, set_scruples: u8;
     /// The main position, then two side positions, 0 none (1 the keeper).
     0x21d => positions, set_positions: [u8; 3];
     /// His club: its league and number (league 0 none).
@@ -287,6 +293,13 @@ record! {
     0x251 => chances, set_chances: u8;
     0x252 => home_goals, set_home_goals: u8;
     0x24d => free_kicks, set_free_kicks: [u8; 2];
+    /// The foe keeper's big chance counts: saved when a big chance went
+    /// wide, conceded when it went in — the defending line-up's first
+    /// man takes the big chance both ways (`FUN_00741038` at the miss,
+    /// `FUN_00740fb6` at the goal, live bytes +0x50/+0x51). No screen
+    /// names either byte.
+    0x24f => saves, set_saves: u8;
+    0x250 => conceded, set_conceded: u8;
     /// Appearances in all his career: in the cups, in the European cups.
     0x25f => career_cup_appearances, set_career_cup_appearances: [u8; 5];
     0x265 => career_europe_appearances, set_career_europe_appearances: u8;
@@ -305,6 +318,11 @@ record! {
     0x25b => match_bits, set_match_bits: u8;
     /// His grade in the last match, twice it, in the low four bits.
     0x273 => grade, set_grade: u8;
+    /// A count the scorer's own counters `FUN_00740aad` lift before any
+    /// gate — once for every shot that named its man, goals and the wide
+    /// or saved ones alike, own goals and name-less shots aside (meaning
+    /// not traced).
+    0x277 => scorer_marks, set_scorer_marks: u8;
     /// His partner: her kind in the low two bits (0 none, girlfriend,
     /// fiancée, wife), how they stand in bits 2 to 4.
     0x27e => partner, set_partner: u8;
@@ -563,12 +581,18 @@ record! {
 const SQUAD: usize = 0x1f2;
 /// Where its name is, and how long it may be.
 const TEAM_NAME: (usize, usize) = (0x20, 0x7c);
+const SHORT_NAME: usize = 0x34;
 /// The most a team's will to win may be.
 const WILL_MOST: i16 = 200;
 
 impl Team {
     pub fn name(&self) -> String {
         text(&self.0[TEAM_NAME.0 - HEADER..], TEAM_NAME.1)
+    }
+
+    /// Its short name, "FSV" (+0x34), as `strcpy` takes it: to its end.
+    pub fn short_name(&self) -> String {
+        text(&self.0[SHORT_NAME - HEADER..], TEAM_NAME.1)
     }
 
     /// The team's will to win, 0 to 200 (`FUN_0069ee6d`).
@@ -650,6 +674,14 @@ record! {
     0x282a => co_training_focus, set_co_training_focus: [u8; 9];
     /// The player the detective watches (0 nobody).
     0x2834 => detective, set_detective: u16;
+    /// The training units given this season and last week, by unit
+    /// (the club object's +0xcd6 and +0xcaf, copied with the plan); the
+    /// four session counts above are four of the first.
+    0x33c => season_units, set_season_units: [i16; 39];
+    0x315 => week_units, set_week_units: [u8; 39];
+    /// How many weeks of the team's fitness are kept
+    /// ([`Extra::fitness_weeks`]).
+    0xb90 => fitness_count, set_fitness_count: i16;
     /// How many past seasons' balances are kept ([`Extra::balances`]).
     0x1e48 => balance_count, set_balance_count: i16;
     /// How many past seasons' transfer balances are kept
@@ -673,9 +705,9 @@ pub struct SeasonBalance {
 }
 
 /// One past season as the development pages draw it: the sum of the home
-/// gates, what attendance and season tickets were planned, how many were
-/// sold, and the league's level (`FUN_0063410d` appends one at the
-/// season's end).
+/// gates, what the club planned its spectators at and the season tickets'
+/// target — the club object's +0x120 and +0x124 — and the league's level
+/// (`FUN_0063410d` appends one at the season's end).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SeasonHistory {
     pub gates: i32,
@@ -716,11 +748,29 @@ impl Extra {
             .collect()
     }
 
+    /// The team's fitness week by week (`FUN_00632833` copies them out):
+    /// at most fifty records of seven bytes from +0xb92, of which the
+    /// training statistics draw bytes 3, 4 and 6 as their curves.
+    pub fn fitness_weeks(&self) -> Vec<[u8; 7]> {
+        (0..self.fitness_count().clamp(0, 50) as usize)
+            .map(|k| self.get(0xb92 + k * 7))
+            .collect()
+    }
+
     /// The past seasons' transfer balances (`FUN_006336c7`): at most
     /// twenty from +0x2030, the start year and the net, the oldest first.
     pub fn transfers(&self) -> Vec<(i16, i32)> {
         (0..self.transfer_count().clamp(0, 20) as usize)
             .map(|k| (self.get(0x2030 + k * 8), self.get(0x2034 + k * 8)))
+            .collect()
+    }
+
+    /// The past seasons' sponsor money (`FUN_0063393e`): at most fifty
+    /// from +0x20d4 after their count at +0x20d0, the start year and the
+    /// money, the oldest first.
+    pub fn sponsors(&self) -> Vec<(i16, i32)> {
+        (0..self.get::<i16>(0x20d0).clamp(0, 50) as usize)
+            .map(|k| (self.get(0x20d4 + k * 8), self.get(0x20d8 + k * 8)))
             .collect()
     }
 
@@ -738,6 +788,68 @@ impl Extra {
         (0..self.merch_count().clamp(0, 50) as usize)
             .map(|k| self.get(0x2334 + k * 4))
             .collect()
+    }
+
+    /// Appends the season just settled to the past seasons' balances
+    /// (`FUN_00633539`): behind the count when there is room, and when the
+    /// twenty are full the nineteen newer rows slide a place down and the
+    /// new one takes the last. The row's last eight bytes the original
+    /// never writes, and so leaves standing.
+    pub fn add_balance(&mut self, row: SeasonBalance) {
+        let at = self.make_room(0x1e48, 0x1e4c, 0x18, 20);
+        self.put(at, row.year);
+        self.put(at + 2, row.league);
+        self.put(at + 3, row.place);
+        self.put(at + 4, row.points);
+        self.put(at + 5, row.goals);
+        self.put(at + 8, row.strength);
+        self.put(at + 0xc, row.result);
+    }
+
+    /// Appends the season just settled to the past transfer balances
+    /// (`FUN_006337b9`): the start year and the net, the same way as the
+    /// twenty balances fill up.
+    pub fn add_transfer(&mut self, year: i16, net: i32) {
+        let at = self.make_room(0x202c, 0x2030, 8, 20);
+        self.put(at, year);
+        self.put(at + 4, net);
+    }
+
+    /// Appends the season just settled to the past seasons' sponsor money
+    /// (`FUN_00633a30`); the list holds fifty, twice as many as the others.
+    pub fn add_sponsor(&mut self, year: i16, money: i32) {
+        let at = self.make_room(0x20d0, 0x20d4, 8, 50);
+        self.put(at, year);
+        self.put(at + 4, money);
+    }
+
+    /// Appends the season just closed to the past seasons the development
+    /// pages draw (`FUN_0063410d`), the row its caller hands in: the gates,
+    /// the planned attendance, the season tickets' target, and the league's level
+    /// from no class above the second. The caller also puts a one at the
+    /// row's +0xc, which no page reads.
+    pub fn add_history(&mut self, row: SeasonHistory) {
+        let at = self.make_room(0x23fc, 0x2400, 0x10, 20);
+        self.put(at, row.gates);
+        self.put(at + 4, row.planned);
+        self.put(at + 8, row.tickets);
+        self.put(at + 0xc, 1u8);
+        self.put(at + 0xd, row.level);
+    }
+
+    /// Where a season's row goes: the count at `count` rises, and where the
+    /// `most` rows already stand the oldest makes room by the rest sliding
+    /// down onto its place — the original's `memmove` over all of them at
+    /// once.
+    fn make_room(&mut self, count: usize, rows: usize, width: usize, most: usize) -> usize {
+        let mut held = self.get::<i16>(count).clamp(0, most as i16) as usize;
+        if held == most {
+            let from = rows - Self::BASE + width;
+            self.0.copy_within(from..from + width * (most - 1), from - width);
+            held = most - 1;
+        }
+        self.put(count, (held + 1) as i16);
+        rows + held * width
     }
 
     /// What the training sessions add to cohesion, before the game halves
@@ -840,23 +952,59 @@ record! {
     /// 3: under contract.
     0x22 => status, set_status: u8;
     0x23 => level, set_level: u8;
+    /// A player-manager's own career (dialog 403): how hard he trains,
+    /// how hard he goes in a match, how rough he plays — 0 to 4, 0 to 4,
+    /// 0 to 2 (the manager object's +0x28 to +0x2a).
+    0x27 => own_play, set_own_play: [u8; 3];
+    /// The rival he means to foul, a team-mate's id, 0 none (the object's
+    /// +0x2c).
+    0x2c => rival, set_rival: i16;
     0x2e => birth_day, set_birth_day: u8;
     0x2f => birth_month, set_birth_month: u8;
     0x30 => birth_year, set_birth_year: u16;
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
+    /// His years as a trainer ("Trainerjahre", the manager object's +0x38).
+    0x124 => trainer_years, set_trainer_years: i16;
+    /// The black cash box (the manager object's +0xec …, `FUN_006a426b`
+    /// copying ten words from +0x19c): what it holds; the share of the
+    /// gates kept back for it and the share of a cup tie's gate kept from
+    /// the opponent, as fractions; what of it is closed this season, by
+    /// bit ([`crate::illegal`]); the club last incited against, by
+    /// country and number.
+    0x19c => black_cash, set_black_cash: i32;
+    0x1a0 => gate_kept, set_gate_kept: f32;
+    0x1a4 => cup_share_kept, set_cup_share_kept: f32;
+    0x1a8 => illegal_closed, set_illegal_closed: u32;
+    /// The opponent's player chosen to bribe (the object's +0x102).
+    0x1b2 => bribe_target, set_bribe_target: u16;
+    /// The human to attack, by his number, and his player chosen (the
+    /// object's +0x100, +0x104).
+    0x1b0 => attacked, set_attacked: u16;
+    0x1b4 => attacked_player, set_attacked_player: u16;
+    0x1b6 => incited, set_incited: [u16; 2];
     /// How the public, the fans and the media like him, 0 to 100.
     0x126 => popularity, set_popularity: [u8; 3];
+    /// The mode his game is played in, as the globals' [`Globals::mode`]
+    /// (the manager object's +0x40).
+    0x12a => mode, set_mode: i16;
     /// When he signed with his club: day, month, year.
     0x17c => signed_day, set_signed_day: u8;
     0x17d => signed_month, set_signed_month: u8;
     0x17e => signed_year, set_signed_year: u16;
+    /// The national team he manages, by country number, 0 when he manages
+    /// none: the manager object's +0x17e6, whose name the honours page
+    /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
+    0x1f72 => national_team, set_national_team: i16;
     /// The board's confidence in percent, and what it has on top
     /// (`FUN_007701b2` adds them up).
     0x184 => confidence, set_confidence: i16;
     0x186 => confidence_ups, set_confidence_ups: [u8; 2];
     0x188 => confidence_swings, set_confidence_swings: [i8; 2];
+    /// The confidence at the end of each of the last ten periods, oldest
+    /// first, 0 where there was none yet (the manager object's +0xa5).
+    0x18a => confidence_history, set_confidence_history: [u8; 10];
     /// His options: the line-up's view in bits 0 to 3 (0 the pitch, else
     /// the list), the screen his turn starts on in bits 6 and 7, the
     /// short-term training as pictures in bit 8.
@@ -873,6 +1021,21 @@ record! {
     /// `FUN_006ddc1b` reads them for dialog 211's Vertrag (`FUN_006a426b`).
     0x15c => pay_fixed, set_pay_fixed: i32;
     0x160 => pay_point, set_pay_point: i32;
+    /// The premiums the same contract carries: the cup rounds pay the
+    /// trainer one for every round he reaches (`FUN_006cebcd`), a title, a
+    /// promotion or a cup final pay the manager one (`FUN_006228c0`), and
+    /// reaching the class goal pays him one (`FUN_0062292a`) — all into
+    /// [`Manager::cash`] and into the club's bonuses paid. The manager
+    /// object's +0x58, +0x5c and +0x60, the three behind the pay in
+    /// `FUN_006a426b`'s copy of twenty bytes from +0x15c.
+    0x164 => cup_premium, set_cup_premium: i32;
+    0x168 => title_premium, set_title_premium: i32;
+    0x16c => goal_premium, set_goal_premium: i32;
+    /// The class his goal asks for: what the club's own season goal
+    /// (team +0x136) stands at when the board sets it, copied into the
+    /// manager object's +0x64; `FUN_0062292a` pays [`Manager::goal_premium`]
+    /// once the place reaches it.
+    0x170 => goal_class, set_goal_class: i16;
     /// What the game counts as his money, the first mark of the
     /// comparison with the other managers: the manager object's +0x98
     /// (`FUN_006dda52`; ERFOLGE.md §A.6).
@@ -888,9 +1051,15 @@ record! {
     /// What his level's history adds to the last mark of the comparison:
     /// the manager object's +0xd8 (`FUN_006dda52`).
     0x20c => standing_marks, set_standing_marks: i32;
+    /// The two counts of titles the highscore lists add up (the manager
+    /// object's +0xdc and +0xde, `FUN_00656e9b`).
+    0x210 => titles, set_titles: [i16; 2];
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
+    /// The team-mate a player-manager makes friends with, by id
+    /// (`FUN_006a6705`, `FUN_006a66dd`).
+    0x1f66 => friend, set_friend: i16;
     0x1f6e => market_filter, set_market_filter: i16;
     0x1f70 => market_show, set_market_show: i16;
     /// How the week's player in individual training is chosen when nobody
@@ -1086,6 +1255,7 @@ impl Manager {
 
 const MANAGER_FIRST_NAME: (usize, usize) = (0, 0xa);
 const MANAGER_LAST_NAME: (usize, usize) = (0xa, 0x12);
+const MANAGER_PORTRAIT: (usize, usize) = (0x1f20, 0x40);
 
 impl Manager {
     pub fn first_name(&self) -> String {
@@ -1094,6 +1264,12 @@ impl Manager {
 
     pub fn last_name(&self) -> String {
         text(&self.0[MANAGER_LAST_NAME.0..], MANAGER_LAST_NAME.1)
+    }
+
+    /// The file of his portrait in the game's `portrait` folder (+0x1f20,
+    /// `FUN_006a6423`).
+    pub fn portrait(&self) -> String {
+        text(&self.0[MANAGER_PORTRAIT.0..], MANAGER_PORTRAIT.1)
     }
 }
 
@@ -1249,13 +1425,25 @@ record! {
     Globals, 0x1590, base 0xb5cb88;
     /// Whether each human slot is in play: above 0.
     0xb5cb9c => slots, set_slots: [i16; MANAGERS];
+    /// The humans by their numbers in the order they play, −1 after the
+    /// last (`DAT_00b5cb92`).
+    0xb5cb92 => order, set_order: [i16; MANAGERS];
+    /// The game's mode: 0 to 8 a fixed number of seasons, 9 a career, 10
+    /// the endless game (`DAT_00b5cbc6`).
+    0xb5cbc6 => mode, set_mode: i16;
     /// Seasons so far, 1 in the first.
     0xb5cbc8 => seasons, set_seasons: u16;
     /// The funds' prices, which deposits are worth by (`DAT_00b5cc8c`).
     0xb5cc8c => fund_prices, set_fund_prices: [i32; 5];
     /// The bank's rates for loans and for the overdraft, in 1/100 %.
     0xb5cc80 => loan_rate, set_loan_rate: i16;
+    /// What the money in the account earns, in 1/100 % (`DAT_00b5cc82`,
+    /// which `FUN_006482a6` books on it).
+    0xb5cc82 => balance_rate, set_balance_rate: i16;
     0xb5cc84 => overdraft_rate, set_overdraft_rate: i16;
+    /// The credit rate less a band's cut, which only the new season's
+    /// call-money rate weighs (`DAT_00b5cc88`, `FUN_00648a99`).
+    0xb5cc88 => rate_below_credit, set_rate_below_credit: i16;
     /// What a repayable loan for a year costs, in 1/100 % (`DAT_00b5cc86`).
     0xb5cc86 => credit_rate, set_credit_rate: i16;
     /// What call money pays, in 1/100 % (`DAT_00b5cc8a`).
@@ -1313,6 +1501,10 @@ record! {
     /// Where the game cycle goes on after loading (`FUN_006da3a9`): 998
     /// inside the week, the half weeks at a week's turn.
     0xb5d172 => resume, set_resume: u16;
+    /// A lottery drawn for every season after the first, below 1000 (the
+    /// first season sets it to 1): only at 0 does Atlantis open for a
+    /// training camp (`DAT_00b5d174`).
+    0xb5d174 => lottery, set_lottery: u16;
 }
 
 impl Globals {
@@ -1462,6 +1654,16 @@ impl Countries {
     /// amateur clubs after them), others only abroad.
     pub fn kind(&self, country: usize) -> u8 {
         self.get(0xae61ae + country)
+    }
+
+    /// Whether a market entry of this country and number is a club whose
+    /// team the game keeps (`FUN_00405024`'s first look): the countries of
+    /// the first two kinds keep their teams; a country with clubs abroad
+    /// only while the number stays below `DAT_00ae5c22`.
+    pub fn keeps_club(&self, country: usize, number: i16) -> bool {
+        matches!(self.kind(country), 1 | 2)
+            || (self.abroad(country) != 0
+                && number < i16::from(self.get::<u8>(0xae5c22 + country)))
     }
 
     /// Which of the country's crest files a club of it shows, from 0
@@ -1769,6 +1971,15 @@ impl Records {
         Some((self.name(name), *bytes.get(5)?, *bytes.get(6)?))
     }
 
+    /// Whether a referee takes money (his record's +8, which the black
+    /// cash box asks, `FUN_004c8823`).
+    pub fn referee_corruptible(&self, id: i16) -> bool {
+        let Some(id) = usize::try_from(id).ok().filter(|id| (1..=REFEREES).contains(id)) else {
+            return false;
+        };
+        self.block(&format!("{REFEREE_AT:#x}[{id}]")).and_then(|b| b.get(8)).is_some_and(|&b| b != 0)
+    }
+
     /// A referee's full name (`FUN_00637cbb`): first and last name, one
     /// alone where the other is none, nothing where both are.
     pub fn referee_name(&self, id: i16) -> Option<String> {
@@ -1807,6 +2018,10 @@ impl Records {
 
     pub fn player(&self, id: u16) -> Option<&Player> {
         (id != 0).then(|| self.players.get(usize::from(id))).flatten()
+    }
+
+    pub fn player_mut(&mut self, id: u16) -> Option<&mut Player> {
+        (id != 0).then(|| self.players.get_mut(usize::from(id))).flatten()
     }
 
     /// The transfers agreed for the season's end.
@@ -1915,6 +2130,51 @@ mod tests {
         note.set_text("Toni übt");
         assert_eq!(note.text(), "Toni übt");
         assert_eq!(note.bytes()[10..], vec![0; NOTE_LEN - 10]);
+    }
+
+    /// The season's end keeps twenty seasons' balances, twenty transfer
+    /// balances and fifty sponsor years: each new one stands behind the
+    /// rest, and where the list is full it takes the oldest's place.
+    #[test]
+    fn the_archive_shifts_its_oldest_away() {
+        let mut extra = Extra::new(&vec![0; Extra::SIZE]).unwrap();
+        for year in 2000..2021i16 {
+            let row = SeasonBalance {
+                year,
+                league: 1,
+                place: 4,
+                points: 30,
+                goals: [40, 30],
+                strength: 200,
+                result: 1234,
+            };
+            extra.add_balance(row);
+            extra.add_transfer(year, -1000);
+        }
+        for year in 2021..2072i16 {
+            extra.add_sponsor(year, 500);
+        }
+        for year in 2000..2021i16 {
+            extra.add_history(SeasonHistory {
+                gates: i32::from(year),
+                planned: 20_000,
+                tickets: 9_000,
+                level: 2,
+            });
+        }
+        assert_eq!((extra.balance_count(), extra.transfer_count()), (20, 20));
+        assert_eq!(extra.get::<i16>(0x20d0), 50);
+        assert_eq!(extra.get::<i16>(0x23fc), 20);
+        let history = extra.history();
+        assert_eq!((history[0].gates, history[19].gates), (2001, 2020));
+        assert_eq!(extra.get::<u8>(0x240c + 19 * 0x10), 1);
+        let balances = extra.balances();
+        assert_eq!((balances.first().unwrap().year, balances.last().unwrap().year), (2001, 2020));
+        assert_eq!(balances[19].points, 30);
+        assert_eq!(extra.transfers().last().copied().unwrap(), (2020, -1000));
+        assert_eq!(extra.transfers().first().unwrap().0, 2001);
+        let sponsors = extra.sponsors();
+        assert_eq!((sponsors[0].0, sponsors.last().copied().unwrap()), (2022, (2071, 500)));
     }
 
     #[test]

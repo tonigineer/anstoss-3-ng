@@ -8,9 +8,12 @@
 //! club knows them. The same as pictures (dialog 513, `CTrainingKurzGrafik`),
 //! which "Grafik" and "Text" switch between.
 
+pub mod career;
 pub mod editor;
 pub mod individual;
 pub mod long;
+pub mod performance;
+pub mod rooms;
 pub mod settings;
 
 use std::collections::HashMap;

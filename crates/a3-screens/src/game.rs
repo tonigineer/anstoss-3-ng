@@ -33,6 +33,9 @@ pub struct Game {
     flags: Option<Mutex<Archive>>,
     /// The game's fonts, read when first drawn with.
     fonts: OnceLock<Arc<Fonts>>,
+    /// The help, read when it is first opened; none where its files are
+    /// missing.
+    help: OnceLock<Option<a3_files::help::Help>>,
 }
 
 pub struct SaveGame {
@@ -77,6 +80,7 @@ impl Game {
             more: Archive::open(&dir.join("Archives/grafik1.cpr")).ok().map(Mutex::new),
             flags: Archive::open(&dir.join("Archives/flaggen.cpr")).ok().map(Mutex::new),
             fonts: OnceLock::new(),
+            help: OnceLock::new(),
         })
     }
 
@@ -224,6 +228,11 @@ impl Game {
         Ok(picture.to_rgba8())
     }
 
+    /// The help (`Hilfe/anstoss3.rtf`, `anstoss3.cnt`).
+    pub fn help(&self) -> Option<&a3_files::help::Help> {
+        self.help.get_or_init(|| a3_files::help::Help::load(&self.dir).ok()).as_ref()
+    }
+
     /// The fonts the game draws its dialogs' text with.
     pub fn fonts(&self) -> Arc<Fonts> {
         self.fonts.get_or_init(|| Arc::new(Fonts::load(self))).clone()
@@ -263,6 +272,13 @@ impl Game {
     pub fn high_entries(&self, cat: u8) -> Vec<HighEntry> {
         let path = self.dir.join(format!("Highscore/high{cat:02}"));
         let Ok(data) = std::fs::read(path) else { return Vec::new() };
+        HighEntry::list(&data)
+    }
+}
+
+impl HighEntry {
+    /// The entries of a list's bytes.
+    pub fn list(data: &[u8]) -> Vec<HighEntry> {
         data.as_chunks::<48>()
             .0
             .iter()

@@ -21,7 +21,8 @@
 //! <value>`, `rclick <control>`, `drag <box or row> <box or row>|off` (a
 //! box or row is `<control>` or `<list> row <row>`), and `wait` until the
 //! screen moves on by itself; or on the dialog's pixels: `click at <x>
-//! <y>`, `drag at <x> <y> to <x> <y>`. A dialog the script has no actions
+//! <y>`, `drag at <x> <y> to <x> <y>`; and `random <s1> <s2>`, which sets
+//! the game's random numbers to that state. A dialog the script has no actions
 //! for stops it, as does an action for a control the dialog does not have.
 //!
 //! Dialogs go by their ids in the game's dialog file, as the original knows
@@ -98,6 +99,8 @@ pub(crate) enum Action {
     /// a list's row, which the game takes for a choice.
     Dbl(Box<Action>),
     Wait,
+    /// The game's random numbers set to a state, both halves.
+    Random(i64, i64),
 }
 
 /// A control, or a row of a list, by its id.
@@ -240,6 +243,7 @@ fn parse_action(action: &str) -> Option<Action> {
         ["ok"] => Action::Ok,
         ["cancel"] => Action::Cancel,
         ["wait"] => Action::Wait,
+        ["random", s1, s2] => Action::Random(s1.parse().ok()?, s2.parse().ok()?),
         ["press", button] => Action::Press(id(button)?),
         ["click", "bar", symbol] => Action::Bar(symbol.parse().ok()?),
         ["click", control] => Action::Click(id(control)?),
@@ -413,6 +417,12 @@ impl<'a> Runner<'a> {
                 return Ok(());
             }
             Action::Wait => return self.wait(shown),
+            Action::Random(s1, s2) => {
+                if let Some(season) = self.host.state().season.as_mut() {
+                    season.random = a3_core::random::Random::from_state(s1, s2);
+                }
+                return Ok(());
+            }
             Action::PointAt(at) => {
                 self.host.view_mut().hovered = self.click_at(shown, at).ok();
                 self.host.view_mut().pointer = Some(Vec2::new(at.0.into(), at.1.into()));
@@ -441,6 +451,14 @@ impl<'a> Runner<'a> {
                 self.host.view_mut().pointer = Some(Vec2::new(at.0.into(), at.1.into()));
                 // A map's tile is pressed and let go of again, the pointer
                 // staying on it.
+                // A slider's track pages it towards the click.
+                if let Target::SliderTrack(control) = target
+                    && let Some(&value) = self.host.view().value(control)
+                    && let Some(paged) =
+                        crate::controls::slider::paged(&controls.controls[control], &value, f32::from(at.0))
+                {
+                    Target::SliderAt { control, value: paged }
+                } else {
                 match Grip::of(target) {
                     Some(grip @ Grip::Tile { .. }) => {
                         self.host.view_mut().hovered = Some(target);
@@ -448,6 +466,7 @@ impl<'a> Runner<'a> {
                         Target::Drop { from: grip, to: Some(grip), at, moved: (0, 0) }
                     }
                     _ => target,
+                }
                 }
             }
             _ => match target_of(controls, named(shown), action)? {
@@ -495,7 +514,13 @@ impl<'a> Runner<'a> {
         let controls = &self.game.dialogs[&shown];
         let at = Vec2::new(f32::from(x), f32::from(y));
         let rects = crate::pointer::targets(controls, self.host.view(), &Pixels);
-        let found = rects.iter().rev().find(|(_, r)| r.contains(at)).map(|&(t, _)| t);
+        let found = rects.iter().rev().find(|(_, r)| r.contains(at)).map(|&(t, r)| match t {
+            // A drawn picture is told the spot, from its top left.
+            Target::Point { control, .. } => {
+                Target::Point { control, x: x - r.min.x as i16, y: y - r.min.y as i16 }
+            }
+            t => t,
+        });
         found.ok_or_else(|| Error::Unsupported(named(shown), format!("a click at {x} {y}")))
     }
 
@@ -570,6 +595,7 @@ pub(crate) fn target_of(controls: &Dialog, dialog: u16, action: &Action) -> Resu
         Action::RightClick(spot) => Target::Menu(grip(controls, dialog, spot)?),
         Action::Type(id, _) => Target::Edit(find(id)?),
         Action::Wait => return Err(Error::Unsupported(dialog, "wait on a control".into())),
+        Action::Random(..) => return Err(Error::Unsupported(dialog, "random numbers".into())),
         // A double click acts twice; the runner does that, not this.
         Action::Dbl(_) => return Err(Error::Unsupported(dialog, "a double click".into())),
         Action::DragAt(..) | Action::ClickAt(_) | Action::PointAt(_) => {
@@ -655,16 +681,16 @@ mod tests {
         result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
         let state = runner.host.state();
         let season = state.season.as_ref().unwrap();
-        // The Bundesliga starts on day 48, in the seventh week: the season
-        // stops before its first match.
+        // The Bundesliga starts on day 48, in the seventh week; the script
+        // stops at the first turn of day 42, before it.
         assert_eq!(season.day, 42);
         assert!(season.managers[0].club.is_some() && season.managers[1].club.is_none());
         assert_eq!(seen(&runner, WEEK), 6, "{}", runner.log.join("\n"));
-        // Every turn ends with the whistle, one for each manager before each
-        // week; the script stops at the first turn of day 42. (The original
-        // gives the manager without a club no turns.)
+        // Every turn ends with the whistle, one before each week: the
+        // manager without a club plays none (`FUN_0064e40f`); the script
+        // stops at the first turn of day 42.
         let whistles = runner.log.iter().filter(|line| line.trim() == "Bar(18)").count();
-        assert_eq!(whistles, 2 * 6);
+        assert_eq!(whistles, 6);
     }
 
     /// Loads the newest save and stops on the line-up.
@@ -1672,6 +1698,74 @@ mod tests {
         assert_eq!(notice, game.text(4582));
     }
 
+    /// Going public, on A with a profit in each of the last three seasons
+    /// patched in: 645.000 shares offered for 25.80 Mio €, as the original
+    /// offers them; taken, at the random numbers poked into the original
+    /// before its OK, the club stands on the market as the original put it
+    /// there (peeked: drift 1, 1610 shares to be had, 219.45 € high, low
+    /// and current), an AG, the proceeds in the bank.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_bilanz_takes_the_club_public() {
+        let Some(dir) = std::env::var_os("ANSTOSS3_DIR").map(PathBuf::from) else { return };
+        if !dir.join("saves/A.an3").exists() && !dir.join("../saves-kept/A.an3").exists() {
+            return;
+        }
+        let root = patched(&dir, "A", "going-public", |records| {
+            let team = usize::from(records.managers[0].team());
+            for at in [0x908, 0x910, 0x918] {
+                records.teams[team].put::<i64>(at, 0);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let ask = "now click bar 8\nuntil dialog 349\nnow press 6152\nuntil dialog 384";
+        let runner = on_save(&game, "going-public", ask).unwrap();
+        let view = runner.host.view();
+        let question = view.text(control(&game.dialogs[&384], 4738).unwrap()).to_owned();
+        let offered = question.contains("645.000 Aktien") && question.contains("25.80 Mio €");
+        assert!(offered, "{question}");
+
+        let taken = format!("{ask}\nnow random 12345 67890\nnow press 4741\nuntil dialog 349");
+        let runner = on_save(&game, "going-public", &taken).unwrap();
+        let dialog = &game.dialogs[&349];
+        let view = runner.host.view();
+        let text = |id: u16| view.text(control(dialog, id).unwrap()).trim().to_owned();
+        assert_eq!([text(5510), text(5511), text(5512), text(5513)], [
+            "AG",
+            "645.000",
+            "219,44 €",
+            "141.54 Mio €"
+        ]);
+        assert_eq!(text(4463), "31.72 Mio €");
+        assert!(view.disabled(control(dialog, 6152).unwrap()));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let market = records.block("0x8be408").unwrap();
+        assert_eq!(i32::from_le_bytes(market[..4].try_into().unwrap()), 204);
+        let entry = &market[0x14 + 203 * 0x108..0x14 + 204 * 0x108];
+        let price = 0x435b7333u32.to_le_bytes();
+        let mut expected = vec![0u8; 0x108];
+        expected[..17].copy_from_slice(b"1.FC Union Berlin");
+        for (at, bytes) in [
+            (0x1c, &14i16.to_le_bytes()[..]),
+            (0x1e, &84i16.to_le_bytes()),
+            (0x20, &645_000i32.to_le_bytes()),
+            (0x24, &50i16.to_le_bytes()),
+            (0x26, &1i16.to_le_bytes()),
+            (0x28, &1610i32.to_le_bytes()),
+            (0x30, &price),
+            (0x34, &price),
+            (0x38 + 50 * 4, &price),
+        ] {
+            expected[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        assert_eq!(entry, &expected[..]);
+        let team = &records.teams[usize::from(records.managers[0].team())];
+        assert_eq!(team.legal_form() & 1, 1);
+        assert_eq!(team.get::<u32>(0x308) & 0x8000, 0x8000);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_deposit_is_made_and_dissolved() {
@@ -2672,11 +2766,12 @@ mod tests {
         let text = runner.host.view().text(control(notice, 4730).unwrap()).to_owned();
         assert_eq!(text, game.text(1804));
         // The yes to its alert ends the turn as EndDialog(-3) does: the
-        // board is closed, and the next manager's turn opens.
+        // board is closed, and with Anna Alpha, who has no club, playing
+        // no turn the week goes on.
         let over =
-            on_save(&game, "board-resigned", &format!("{ask}\nnow press 4731\nuntil dialog 302"))
+            on_save(&game, "board-resigned", &format!("{ask}\nnow press 4731\nuntil dialog 2"))
                 .unwrap();
-        assert_eq!(over.host.view().id, 302);
+        assert!(a3_core::cycle::dialogs::WEEKS.contains(&over.host.view().id));
         assert_eq!(seen(&over, 380), 1);
     }
 
@@ -3219,6 +3314,712 @@ mod tests {
         assert_eq!(text, game.text(2921));
     }
 
+    /// The booked professional contract's talk speaks up on its day: the
+    /// original's day run walks the talks list the planner booking wrote
+    /// and, while he is still with the club, posts its message (text 5048,
+    /// `FUN_0076cb3e`, `FUN_0076bb38`, `FUN_0076c613`). Wilson's talk from
+    /// `a_professional_contract_talk_is_booked` is booked for Monday, and
+    /// the week plays on to Tuesday: the week message then carries it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_contract_talk_is_announced_on_its_day() {
+        let game = game();
+        let wilson = "now click at 80 91\nuntil dialog 11";
+        let book = format!(
+            "now click bar 10\nuntil dialog 218\nnow choose 5042 3\nuntil dialog 427\n\
+             {wilson}\nnow choose 1254 1\nuntil dialog 412\nnow choose 5034 1\nuntil dialog 427"
+        );
+        // The week on: the planner's yes, the line-up and the office
+        // whistled off, the no-training question answered, and over the
+        // days the week reports and waits for.
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 2 days";
+        let Some(runner) = on_save(&game, "Probe1", &format!("{book}\n{play}")) else { return };
+        let state = runner.host.state();
+        let season = state.season.as_ref().expect("the season is playing");
+        let records = state.records.as_ref().unwrap();
+        // Two days on: the Monday the talk stands in the planner for.
+        let talk = records.planners[0].day(usize::try_from(season.day).unwrap() - 1);
+        assert_eq!((talk.kind, talk.flag), (0x10, 1), "no talk booked on Monday");
+        let name = records.name(records.player(talk.player).unwrap().last_name()).to_owned();
+        assert_eq!(season.planner_message, Some((5048, name)), "the talk is not announced");
+    }
+
+    /// The league's matchdays play on as the days pass: the save's first
+    /// league has played three matchdays, and ten days carry at least one
+    /// more — every game with a result, half time within full time, the
+    /// clubs' records agreeing with the table the results reckon, the
+    /// gates: a crowd to every matchday, money booked and a gate held for
+    /// every home game, the attendance rows keeping step, the away games
+    /// counted and the human club's extra rows filled — visiting fans,
+    /// gate incomes, travelling gates matching the home club's own — and
+    /// the players': new appearances and goals over the save, the league's
+    /// top-scorers list grown by exactly the new goals, and the rows of
+    /// the matchdays in the players' forty-six — the starters, the
+    /// substitutions, the grades, the cards and the goal nibbles all
+    /// answering to the counters — and the human's year calendar filling
+    /// its booked fixture days with the new scores and the standing
+    /// result flags. Played on
+    /// a copy: ten days cross week ends, and their autosaves roll into the
+    /// game's own `saves` — which would shuffle the list the other tests
+    /// pick their save from.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_league_matchdays_play_on_as_the_days_pass() {
+        use a3_core::{opponent, statistics};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "league-days", |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+        // The save as copied, to reckon the players' figures against.
+        let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
+        let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
+            .expect("the save's records");
+        let home_nation = u16::try_from(before.globals.main_country()).unwrap();
+        let league0 = opponent::League::of(&before, home_nation, 0).expect("the first league");
+        let squad: Vec<u16> = (0..league0.teams())
+            .flat_map(|place| {
+                before
+                    .team(home_nation, league0.team(place) as u16)
+                    .map(|t| t.players())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let apps = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_matches())))
+                .sum::<usize>()
+        };
+        let goals = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.goals()[0])))
+                .sum::<usize>()
+        };
+        let lesss = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_less()[0])))
+                .sum::<usize>()
+        };
+        let carded = |recs: &a3_core::records::Records| {
+            squad
+                .iter()
+                .map(|&id| {
+                    recs.player(id).map_or(0, |p| {
+                        usize::from(p.league_cards()[0])
+                            + usize::from(p.league_cards()[1])
+                            + usize::from(p.league_cards()[2])
+                    })
+                })
+                .sum::<usize>()
+        };
+        let (apps_before, goals_before, less_before, carded_before) =
+            (apps(&before), goals(&before), lesss(&before), carded(&before));
+        let tor_before: usize = statistics::torjaeger(&before, home_nation, 0)
+            .iter()
+            .map(|r| usize::from(r.values[0]))
+            .sum();
+        let Some(runner) = on_save(&game, "league-days", play) else { return };
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let league = opponent::League::of(records, nation, 0).expect("the first league");
+        // The save opened on three played matchdays, and the days since
+        // each pair meet once a week at least.
+        assert!(league.played() > 3, "still only {} matchdays played", league.played());
+        for md in 3..league.played() {
+            for (home, away, result) in league.games(md) {
+                let [full, away_full, half, away_half] =
+                    result.unwrap_or_else(|| panic!("md {md}: {home}-{away} unwritten"));
+                assert!(
+                    half <= full && away_half <= away_full,
+                    "md {md}: {home}-{away} {full}:{away_full} ht {half}:{away_half}"
+                );
+            }
+        }
+        // The clubs carry what the reckoned table shows them.
+        let rows = statistics::table(records, &league, statistics::ALL);
+        for (rank, row) in rows.iter().enumerate() {
+            let team = records.team(nation, row.team as u16).expect("a league club");
+            assert_eq!(team.table_place(), rank as u8 + 1, "team {}", row.team);
+            assert_eq!(
+                team.record(),
+                [
+                    u8::try_from(row.won).unwrap(),
+                    u8::try_from(row.drawn).unwrap(),
+                    u8::try_from(row.lost).unwrap(),
+                ],
+                "team {}",
+                row.team
+            );
+            assert_eq!(
+                team.goals(),
+                [
+                    u8::try_from(row.goals_for).unwrap(),
+                    u8::try_from(row.goals_against).unwrap(),
+                ],
+                "team {}",
+                row.team
+            );
+        }
+        // The gates come in with the games: every matchday the days played
+        // has its crowd, every club booked money, holds a gate per home
+        // game, and its attendance row keeps step with them.
+        for md in 3..league.played() {
+            assert!(league.matchday_crowds()[md] > 0, "md {md}: no crowd");
+        }
+        let att_slot = statistics::attendance_slot(records, nation, 0).expect("the league's row");
+        let att_rows = statistics::league_attendance(records, att_slot).expect("the attendance rows");
+        for place in 0..league.teams() {
+            let number = league.team(place) as u16;
+            let team = records.team(nation, number).expect("a league club");
+            let booked = team.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM);
+            assert!(booked > 0, "team {number}: no gate money booked");
+            let homes = (0..league.played())
+                .flat_map(|md| league.games(md))
+                .filter(|&(home, _, _)| home == place)
+                .count();
+            let held = usize::from(team.home_games());
+            assert_eq!(held, homes, "team {number}: {} gates for {homes} home games", held);
+            for idx in 0..held {
+                assert!(team.gates()[idx] > 0, "team {number}: gate {idx} nought");
+            }
+            let row = att_rows[place];
+            assert_eq!(usize::try_from(row.games).unwrap(), held, "team {number}: row out of step");
+            assert!(row.total > 0 && row.percent > 0 && row.percent <= 100, "team {number}: {row:?}");
+            // The away games stand counted too: home games plus away games
+            // is what the league has played against the club.
+            let aways = (0..league.played())
+                .flat_map(|md| league.games(md))
+                .filter(|&(_, away, _)| away == place)
+                .count();
+            assert_eq!(
+                usize::from(team.away_games()),
+                aways,
+                "team {number}: {} away games counted for {aways}",
+                team.away_games()
+            );
+            // The human club's extra block keeps its rows: visiting fans
+            // within the gate and incomes at every home game, and every
+            // travelling gate equal to the home club's own gate of that
+            // very game.
+            if team.human() > 0
+                && let Some(x) = records.extras.get(usize::from(team.human()) - 1)
+            {
+                for k in 0..held {
+                    let fans = x.fan_gates()[k];
+                    assert!(
+                        fans > 0 && fans <= team.gates()[k],
+                        "team {number}: {fans} visiting fans of a {}",
+                        team.gates()[k]
+                    );
+                    assert!(x.home_incomes()[k] > 0, "team {number}: income {k} nought");
+                }
+                let mut host_homes = vec![0usize; league.teams()];
+                let mut j = 0usize;
+                for md in 0..league.played() {
+                    for (home, away, _) in league.games(md) {
+                        if away == place {
+                            if md >= 3 {
+                                let host = records
+                                    .team(nation, league.team(usize::from(home)) as u16)
+                                    .expect("a league club");
+                                assert_eq!(
+                                    x.away_gates()[j],
+                                    host.gates()[host_homes[usize::from(home)]],
+                                    "team {number}: travelling gate {j}"
+                                );
+                            }
+                            j += 1;
+                        }
+                        host_homes[usize::from(home)] += 1;
+                    }
+                }
+            }
+        }
+        // The matches left their mark on the players: at least twenty of
+        // the twenty-two stand per game even with injuries and suspensions,
+        // the goals of their season's league column grew by just the new
+        // ones, and the top-scorers list took each of them once.
+        let new_games: usize = (3..league.played()).map(|md| league.games(md).len()).sum();
+        let new_goals: usize = (3..league.played())
+            .flat_map(|md| league.games(md))
+            .map(|(_, _, r)| {
+                let r = r.expect("written by the days");
+                usize::from(r[0]) + usize::from(r[1])
+            })
+            .sum();
+        assert!(
+            apps(records) >= apps_before + 20 * new_games,
+            "apps {apps_before} → {}, {new_games} games",
+            apps(records)
+        );
+        assert_eq!(goals(records), goals_before + new_goals, "scorers' goals");
+        let tor_after: usize = statistics::torjaeger(records, nation, 0)
+            .iter()
+            .map(|r| usize::from(r.values[0]))
+            .sum();
+        assert_eq!(tor_after, tor_before + new_goals, "the top-scorers list");
+        // And the matchday rows in the players' forty-six: twenty to
+        // twenty-two starters to every game, one to three men changed per
+        // side, grades within the half steps the saves read, and every row
+        // in agreement with the counters — appearances, coming-ons, cards
+        // and the goal nibbles all adding up to what the games gave.
+        for md in 3..league.played() {
+            for (home, away, _) in league.games(md) {
+                let men: Vec<u16> = [home, away]
+                    .into_iter()
+                    .flat_map(|place| {
+                        records
+                            .team(nation, league.team(place) as u16)
+                            .map(|t| t.players())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let started = men
+                    .iter()
+                    .filter(|&&id| records.player(id).is_some_and(|p| p.matchdays()[md] & 0x40 != 0))
+                    .count();
+                let touched = men
+                    .iter()
+                    .filter(|&&id| records.player(id).is_some_and(|p| p.matchdays()[md] & 0x80 != 0))
+                    .count();
+                assert!(
+                    (20..=22).contains(&started) && (4..=12).contains(&touched),
+                    "md {md}: {started} starters, {touched} changes of men"
+                );
+            }
+        }
+        let mut row_apps = 0usize;
+        let mut came_ons = 0usize;
+        let mut row_cards = 0usize;
+        let mut nibbled = 0usize;
+        for &id in &squad {
+            let Some(p) = records.player(id) else { continue };
+            let bytes = p.matchdays();
+            let nibbles = p.matchday_goals();
+            for md in 3..league.played() {
+                let b = bytes[md];
+                if b & 0xc0 != 0 {
+                    row_apps += 1;
+                    let grade = (b >> 2) & 0xf;
+                    assert!((5..=11).contains(&grade), "p{id} md {md}: grade {grade}");
+                }
+                if b & 0xc0 == 0x80 {
+                    came_ons += 1;
+                }
+                if b & 3 != 0 {
+                    row_cards += 1;
+                }
+                nibbled += usize::from(nibbles[md] >> 4);
+            }
+        }
+        assert_eq!(apps(records), apps_before + row_apps, "the rows and the appearance counts");
+        assert_eq!(lesss(records), less_before + came_ons, "the coming-ons at +0x254");
+        assert_eq!(carded(records), carded_before + row_cards, "the rows' cards and the counters");
+        assert_eq!(nibbled, new_goals, "the matchday goal nibbles");
+        // The grade of the last match stands at +0x273 as the row shows it.
+        let last = league.played() - 1;
+        for &id in &squad {
+            if let Some(p) = records.player(id) {
+                let b = p.matchdays()[last];
+                if b & 0xc0 != 0 {
+                    assert_eq!(
+                        usize::from(p.grade()),
+                        usize::from((b >> 2) & 0xf),
+                        "p{id}: the grade of matchday {last}"
+                    );
+                }
+            }
+        }
+        // The year calendar had the whole season booked: each of the
+        // human's fixtures stands on its day — kind 6, the matchday
+        // plain as its code, both clubs named — with no score and no
+        // flag. The played matchdays fill their day's entry: the new
+        // score, and the flag saying the result stands (0x20).
+        let human = (0..league.teams())
+            .map(|place| league.team(place) as u16)
+            .find(|&number| records.team(nation, number).is_some_and(|t| t.human() > 0))
+            .expect("the human club");
+        let hum = usize::from(records.team(nation, human).unwrap().human()) - 1;
+        let cal = &records.calendars[hum];
+        for md in 3..league.played() {
+            let code = u32::try_from(md + 1).unwrap();
+            let day = (0..a3_core::records::PLANNER_DAYS)
+                .find(|&d| {
+                    let e = cal.entry(d);
+                    e[0] == 6 && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) == code
+                })
+                .expect("the calendar's day of the matchday");
+            let (home, away, result) = league
+                .games(md)
+                .into_iter()
+                .find(|&(h, a, _)| {
+                    [league.team(h) as u16, league.team(a) as u16].contains(&human)
+                })
+                .expect("the human's fixture");
+            let [hg, ag, _, _] = result.expect("the fixture's score");
+            let e = cal.entry(day);
+            assert_eq!(e[8], nation as u8, "md {md} day {day}: the entry's country");
+            assert_eq!(
+                u16::from_le_bytes([e[10], e[11]]),
+                league.team(home) as u16,
+                "md {md}: the entry's home club"
+            );
+            assert_eq!(
+                u16::from_le_bytes([e[0xe], e[0xf]]),
+                league.team(away) as u16,
+                "md {md}: the entry's away club"
+            );
+            assert_eq!(
+                &e[0x10..0x12],
+                &[hg, ag],
+                "md {md} day {day}: the calendar's score"
+            );
+            assert_eq!(e[0x14] & 0x20, 0x20, "md {md}: the result flag");
+        }
+        assert!(season.day > 63);
+    }
+
+    /// The country's cup round plays on when its day comes. The cup's days
+    /// stand coded on the country's first league row — for Germany round 1
+    /// at day 59 — and on save A, at day 63, the first round stands played
+    /// and the second already drawn; the patch sets the day back before
+    /// the round's, wipes the first round's scores, empties the second's
+    /// rows and sends the block back to round 1. Ten days cross the day:
+    /// every first-round pairing holds a result with its flags answering
+    /// to the score — a shootout's score staying even — the second round's
+    /// rows hold the winners, each once and unplayed, the block names
+    /// round 2 as drawn, and the human club's tie played with the rest —
+    /// its home tie booking its gate on the club's cup takings and its
+    /// men carrying the tie's marks: appearances in the career's cup
+    /// bytes, goals in the season's and the career's; its year calendar
+    /// fills the round's day with the new score and names the next
+    /// round's tie on its day — or drops it once the club is out.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_cup_round_plays_on_when_its_day_comes() {
+        use a3_core::opponent::{CUPS_AT, PAIRING, PAIRINGS};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut cup_gate = (0u16, 0i32);
+        let mut cup_marks: Vec<(u16, (i64, i64, i64))> = Vec::new();
+        // The visitor of the human's home tie, and the box and visitor's
+        // cup takings as the patch leaves them, to measure the split.
+        let mut cup_away = (0u8, 0u16);
+        let mut cup_box: Option<(usize, i32, i32)> = None;
+        let root = patched(&dir, "A", "cup-days", |records| {
+            records.globals.set_day(56);
+            // The save's planner still holds the talks and visits booked in
+            // the days it lived through; rewound, they open their dialogs
+            // again — the talk's kind 0x19 and the visit's 0x0b — so the
+            // patch clears them for the days ahead.
+            if let Some(slot) = records.human_slot(0) {
+                if let Some(planner) = records.planners.get_mut(slot) {
+                    for day in 56..=66 {
+                        if matches!(planner.entry(day)[0], 0x19 | 0x0b) {
+                            planner.set_entry(day, [0; a3_core::records::PLANNER_ENTRY]);
+                        }
+                    }
+                }
+            }
+            let nation = usize::try_from(records.globals.main_country()).unwrap();
+            let cup = format!("{CUPS_AT:#x}[{}]", records.countries.slot(nation));
+            // The human club plays its first-round tie at home on this
+            // save; keep its number and the cup takings the save holds
+            // from the round it lived through, to see the gate come on,
+            // and the men's cup marks — season goals, career goals and
+            // the career's five appearance bytes — to see the tie leave
+            // its marks on them.
+            let totals = |records: &a3_core::records::Records, num: u16| -> (i64, i64, i64) {
+                let mut marks = (0i64, 0i64, 0i64);
+                if let Some(t) = records.team(nation as u16, num) {
+                    for id in t.players() {
+                        if let Some(p) = records.player(id) {
+                            marks.0 += i64::from(p.goals()[1]);
+                            marks.1 += i64::from(p.career_cup_goals());
+                            marks.2 += p
+                                .career_cup_appearances()
+                                .iter()
+                                .map(|&a| i64::from(a))
+                                .sum::<i64>();
+                        }
+                    }
+                }
+                marks
+            };
+            if let Some(b) = records.block(&cup) {
+                for q in 0..32 {
+                    let p = &b[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+                    let num = u16::from_le_bytes([p[2], p[3]]);
+                    if usize::from(p[0]) == nation
+                        && records
+                            .team(nation as u16, num)
+                            .is_some_and(|t| t.human() > 0)
+                    {
+                        if let Some(t) = records.team(nation as u16, num) {
+                            cup_gate = (
+                                num,
+                                t.get::<i32>(
+                                    0x234 + a3_core::finances::CLUB_TO_TEAM,
+                                ),
+                            );
+                        }
+                        let away = u16::from_le_bytes([p[6], p[7]]);
+                        cup_away = (p[4], away);
+                        for &n in &[num, away] {
+                            cup_marks.push((n, totals(records, n)));
+                        }
+                    }
+                }
+            }
+            // The manager keeps his cup share of the visitor's half of
+            // the gate in the black cash box: with the share at 0.3, and
+            // the league's share at nought so the league games of these
+            // days leave the box alone, the run's black cash gain is the
+            // cup's share alone. Note the box and the visitor's cup
+            // takings as the patch leaves them.
+            if cup_away.1 != 0
+                && let Some(h) = records
+                    .team(nation as u16, cup_gate.0)
+                    .filter(|t| usize::from(t.human()) > 0)
+                    .map(|t| usize::from(t.human()) - 1)
+                && records
+                    .team(u16::from(cup_away.0), cup_away.1)
+                    .is_some_and(|t| usize::from(t.human()) == 0)
+            {
+                records.managers[h].set_cup_share_kept(0.3);
+                records.managers[h].set_gate_kept(0.0);
+                cup_box = Some((
+                    h,
+                    records.managers[h].black_cash(),
+                    records
+                        .team(u16::from(cup_away.0), cup_away.1)
+                        .unwrap()
+                        .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM),
+                ));
+            }
+            let Some(block) = records.block_mut(&cup) else {
+                panic!("the save's cup block");
+            };
+            for q in 0..32 {
+                block[PAIRINGS + q * PAIRING + 8..PAIRINGS + q * PAIRING + 14].fill(0);
+            }
+            for q in 32..48 {
+                block[PAIRINGS + q * PAIRING] = 0;
+            }
+            block[0x28 - 0x20] = 1;
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+        let Some(runner) = on_save(&game, "cup-days", play) else { return };
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        assert!(season.day > 63, "the days did not play on");
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let cup = records
+            .block(&format!("{CUPS_AT:#x}[{}]", records.countries.slot(usize::from(nation))))
+            .expect("the cup block");
+        let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
+        let pairing = |q: usize| &cup[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+        // The first round played out, the flags answering to the score.
+        let mut winners: Vec<(u8, u16)> = Vec::new();
+        let mut ties = 0;
+        for q in 0..32 {
+            let p = pairing(q);
+            assert_ne!(p[0], 0, "pairing {q} lost its clubs");
+            let (hg, ag, flags, winner) = (p[8], p[9], p[0xc], p[0xd]);
+            assert_eq!(flags & 0x28, 0x28, "pairing {q}: flags {flags:#02x}");
+            assert!(winner < 2, "pairing {q}: winner {winner}");
+            if hg == ag {
+                assert_eq!(flags & 0xc0, 0xc0, "pairing {q}: {hg}:{ag} flags {flags:#02x}");
+            } else {
+                assert_eq!(
+                    usize::from(winner),
+                    usize::from(hg < ag),
+                    "pairing {q}: {hg}:{ag} winner {winner}"
+                );
+            }
+            let at = usize::from(winner != 0) * 4;
+            winners.push((p[at], u16_at(p, at + 2)));
+            ties += usize::from(flags & 0xc0 != 0);
+        }
+        assert!(ties > 0, "not one of the thirty-two ties went past ninety minutes");
+        // The second round: the first's winners, drawn anew, none played.
+        let mut drawn: Vec<(u8, u16)> = Vec::new();
+        for q in 32..48 {
+            let p = pairing(q);
+            assert_ne!(p[0], 0, "pairing {q} stayed empty");
+            assert_eq!(p[0xc] & 0x20, 0, "pairing {q} played before its day");
+            drawn.push((p[0], u16_at(p, 2)));
+            drawn.push((p[4], u16_at(p, 6)));
+        }
+        winners.sort();
+        drawn.sort();
+        assert_eq!(drawn, winners, "the second round is not the first's winners");
+        assert_eq!(cup[0x28 - 0x20], 2, "the block's last drawn round");
+        // The human club's tie played with the rest.
+        let human = (0..32)
+            .filter(|&q| {
+                let p = pairing(q);
+                [p[0], p[4]].iter().zip([2, 6]).any(|(&c, at)| {
+                    records
+                        .team(u16::from(c), u16_at(p, at))
+                        .is_some_and(|t| t.human() > 0)
+                })
+            })
+            .count();
+        assert_eq!(human, 1, "the human club in the first round's pairings");
+        // The home tie booked its gate on the club's cup takings (+0x234);
+        // the save lived through this round once, so the run books once
+        // more atop what it held.
+        assert_ne!(cup_gate.0, 0, "the human club played away in round one");
+        let booked = records
+            .team(nation, cup_gate.0)
+            .unwrap()
+            .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM);
+        assert!(
+            booked > cup_gate.1,
+            "the cup tie booked no gate: {} -> {booked}",
+            cup_gate.1
+        );
+        // The gate split between the clubs: the home club booked half of
+        // it, the visitor the other half less the manager's cup share,
+        // and the black cash box gained that share — ftol of the home
+        // club's half times the 0.3 the patch set.
+        let Some((h, box0, away0)) = cup_box else {
+            panic!("no human home tie against a computer's to measure");
+        };
+        let away_booked = records
+            .team(nation, cup_away.1)
+            .unwrap()
+            .get::<i32>(0x234 + a3_core::finances::CLUB_TO_TEAM);
+        let (home, away, kept) = (
+            i64::from(booked - cup_gate.1),
+            i64::from(away_booked - away0),
+            i64::from(records.managers[h].black_cash() - box0),
+        );
+        assert_eq!(
+            away + kept,
+            home,
+            "the visitor booked {away} and the box kept {kept}, against the home club's half {home}"
+        );
+        assert_eq!(
+            kept,
+            i64::from((f64::from(home as i32) * f64::from(0.3f32)) as i32),
+            "the manager kept {kept} of the half {home}, not his three tenths"
+        );
+        // And the tie marked its men: the eleven each side sent out stand
+        // in the career's cup appearances (+0x25f), and its goals — all
+        // of the tie's, drawn over the eleven — in the season's cup
+        // goals (+0x23d) and the career's (+0x23f).
+        let q = (0..32)
+            .find(|&q| {
+                let p = pairing(q);
+                usize::from(p[0]) == usize::from(nation) && u16_at(p, 2) == cup_gate.0
+            })
+            .expect("the human club's home tie");
+        let (hg, ag) = (pairing(q)[8], pairing(q)[9]);
+        for (num, before) in cup_marks {
+            let mut after = (0i64, 0i64, 0i64);
+            for id in records.team(nation, num).unwrap().players() {
+                if let Some(p) = records.player(id) {
+                    after.0 += i64::from(p.goals()[1]);
+                    after.1 += i64::from(p.career_cup_goals());
+                    after.2 += p
+                        .career_cup_appearances()
+                        .iter()
+                        .map(|&a| i64::from(a))
+                        .sum::<i64>();
+                }
+            }
+            let score = i64::from(if num == cup_gate.0 { hg } else { ag });
+            assert_eq!(
+                after.0 - before.0,
+                score,
+                "club {num}'s season cup goals: {} -> {}, tie {hg}:{ag}",
+                before.0,
+                after.0
+            );
+            assert_eq!(
+                after.1 - before.1,
+                score,
+                "club {num}'s career cup goals: {} -> {}, tie {hg}:{ag}",
+                before.1,
+                after.1
+            );
+            assert!(
+                after.2 - before.2 >= 11,
+                "club {num}'s cup appearances: {} -> {}",
+                before.2,
+                after.2
+            );
+        }
+        // The human's year calendar kept the cup's days booked from the
+        // season's start; the played round fills its day (59) with the
+        // new score, its flags saying the result stands (0x20) and the
+        // tie a cup one (0x08), and the drawing names the human's next
+        // tie on the second round's day (115) — or drops the entry when
+        // he lost, as the original zeroes it for a club out of the cup.
+        let hum = usize::from(records.team(nation, cup_gate.0).unwrap().human()) - 1;
+        let cal = &records.calendars[hum];
+        let e = cal.entry(59);
+        assert_eq!(e[0], 6, "the round's day left the calendar");
+        assert_eq!(
+            u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+            0x4008_0001,
+            "the round's day lost its cup code"
+        );
+        let p = pairing(q);
+        assert_eq!(e[8], p[0], "the entry's home country");
+        assert_eq!(&e[10..12], &p[2..4], "the entry's home club");
+        assert_eq!(e[12], p[4], "the entry's away country");
+        assert_eq!(&e[14..16], &p[6..8], "the entry's away club");
+        assert_eq!(&e[0x10..0x12], &[hg, ag], "the entry's score");
+        assert_eq!(e[0x14] & 0x28, 0x28, "the entry's flags {:#02x}", e[0x14]);
+        assert_eq!(
+            &e[0x16..0x1a],
+            &[p[0], 0, p[2], p[3]],
+            "the entry's venue"
+        );
+        let won = p[0xd] == 0;
+        let e2 = cal.entry(115);
+        match (32..48).find(|&r| {
+            let p = pairing(r);
+            u16_at(p, 2) == cup_gate.0 || u16_at(p, 6) == cup_gate.0
+        }) {
+            Some(r) => {
+                let p = pairing(r);
+                assert!(won, "club {} plays round two without having won", cup_gate.0);
+                assert_eq!(e2[0], 6, "the second round's day left the calendar");
+                assert_eq!(
+                    u32::from_le_bytes([e2[4], e2[5], e2[6], e2[7]]),
+                    0x4008_0002,
+                    "the second round's day lost its cup code"
+                );
+                assert_eq!(e2[8], p[0], "the entry's home country");
+                assert_eq!(&e2[10..12], &p[2..4], "the entry's home club");
+                assert_eq!(e2[12], p[4], "the entry's away country");
+                assert_eq!(&e2[14..16], &p[6..8], "the entry's away club");
+                assert_eq!(&e2[0x10..0x14], &[0, 0, 0, 0], "the entry already holds a result");
+                assert_eq!(
+                    &e2[0x16..0x1a],
+                    &[p[0], 0, p[2], p[3]],
+                    "the entry's venue"
+                );
+            }
+            None => {
+                assert!(!won, "club {} won and vanished from round two", cup_gate.0);
+                assert_eq!(e2[0], 0, "the out club kept its cup day");
+            }
+        }
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn spiel_beenden_ends_the_game() {
@@ -3706,6 +4507,70 @@ mod tests {
         let no = format!("{ask}\nnow press 4739\nuntil dialog 302");
         let Some(runner) = on_save(&game, "Probe1", &no) else { return };
         assert_eq!(lit(&runner), crate::controls::options::NONE);
+    }
+
+    /// "Spielstand speichern" (dialog 489): the saved games stand in its
+    /// list with their extension, a row names itself in the field, a fresh
+    /// name writes at once (".an3" completed), and a taken one asks —
+    /// text 4593 — before yes writes it, "Abbruch" leaving the old file
+    /// and the dialog standing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_save_dialog_writes_what_ok_names() {
+        let game = game();
+        // A copy of the installation with a save of its own, so the
+        // dialog may write without touching the original's saves.
+        let root = patched(&game.dir, "Probe1", "Nachtprobe", |_| {});
+        let mut copy = Game::load(&root).unwrap();
+        compose(&mut copy);
+        let dialog = &copy.dialogs[&489];
+        let field = control(dialog, 1866).unwrap();
+        let open = "now click bar 17\nuntil dialog 302\nnow choose 4035 2\nuntil dialog 489";
+        // It opens with no row chosen and the field empty, focused for a
+        // new name; the rows carry their extension.
+        let Some(runner) = on_save(&copy, "Nachtprobe", open) else { return };
+        let view = runner.host.view();
+        let list = view.list(control(dialog, 5248).unwrap()).unwrap();
+        assert_eq!(list.rows.len(), 1);
+        assert!(list.rows[0].starts_with("Nachtprobe.an3\t"), "{:?}", list.rows);
+        assert_eq!(list.tabs, [0.0, 270.0, 325.0]);
+        assert_eq!(list.selected, None);
+        assert_eq!(view.focus, Some(field));
+        assert_eq!(view.text(field), "");
+        // A click on the row puts its name, extension and all, into the
+        // field. (Before the write runs below, while it is still the only
+        // save and the first row.)
+        let named = format!("{open}\nnow row 5248 0\nuntil dialog 489");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &named) else { return };
+        assert_eq!(runner.host.view().text(field), "Nachtprobe.an3");
+        // OK saves it under a fresh name — the ".an3" completed — and
+        // lands back on 302.
+        let fresh = format!("{open}\nnow type 1866 Nachtzwei\nnow ok\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &fresh) else { return };
+        let _ = runner;
+        assert!(std::fs::metadata(root.join("saves/Nachtzwei.an3")).is_ok());
+        // A taken name asks first; "Abbruch" answers the question and
+        // leaves 489 standing, the old file untouched, and cancel then
+        // gives the save up.
+        let old = root.join("saves/Nachtprobe.an3");
+        let kept = std::fs::metadata(&old).unwrap().modified().unwrap();
+        let asked = format!("{open}\nnow type 1866 Nachtprobe\nnow ok\nuntil dialog 384");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &asked) else { return };
+        let question = &copy.dialogs[&384];
+        assert_eq!(
+            runner.host.view().text(control(question, 4738).unwrap()),
+            copy.text(4593)
+        );
+        let dropped = format!("{asked}\nnow press 4739\nnow cancel\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &dropped) else { return };
+        assert_eq!(runner.host.view().id, 302);
+        assert_eq!(std::fs::metadata(&old).unwrap().modified().unwrap(), kept);
+        // Yes takes the name over and writes.
+        let taken = format!("{asked}\nnow press 4741\nuntil dialog 302");
+        let Some(runner) = on_save(&copy, "Nachtprobe", &taken) else { return };
+        assert_eq!(runner.host.view().id, 302);
+        assert!(std::fs::metadata(&old).unwrap().modified().unwrap() > kept);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -4890,6 +5755,75 @@ mod tests {
         assert_eq!(table.rows[4].text, "5.\tDiogo Leite\t0\t0\t0\t0\t0\t0\t0\t0.0");
     }
 
+    /// Once the squad has a joker goal and an own goal, the Mannschaft
+    /// category lists its Joker and its Eigentore pages (texts 2083 and
+    /// 2041) and both name the players by their counts: the Joker by the
+    /// joker goals, the fewer came-ons first on a tie, and the goals per
+    /// came-on as "%3.1f" (`FUN_0046bd01`), the Eigentore by the own
+    /// goals (`FUN_00468c74`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_archive_names_the_jokers_and_the_own_goals() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut ids = [0; 2];
+        let root = patched(&dir, "A", "squad-goals", |records| {
+            let index = records.human_slot(0).unwrap();
+            let (country, number) =
+                (records.managers[index].country(), records.managers[index].team());
+            let players = records.team(country, number).unwrap().players();
+            ids = [players[0], players[1]];
+            // Two joker goals each: the one came on less often stands
+            // first. The second also put one past his own keeper.
+            let joker = &mut records.players[usize::from(players[0])];
+            joker.set_joker_goals(2);
+            joker.set_league_less([3, 0]);
+            let own = &mut records.players[usize::from(players[1])];
+            own.set_joker_goals(2);
+            own.set_league_less([5, 0]);
+            own.set_own_goals(1);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 14\nuntil dialog 18\nnow row 1283 1";
+        let Some(mut runner) = on_save(&game, "squad-goals", open) else { return };
+        let dialog = &game.dialogs[&18];
+        let list = control(dialog, 1284).unwrap();
+        let entries = runner.host.view().list(list).unwrap().keys.clone();
+        // The list's keys name the pages by their place in the category,
+        // so the two codes find theirs there first.
+        let pages = &game.rules.statistics.categories[1];
+        let at = |code: i16| pages.iter().position(|p| p.code == code).unwrap();
+        let joker = entries.iter().position(|&e| e == at(3)).unwrap();
+        let own = entries.iter().position(|&e| e == at(0xd)).unwrap();
+        runner.run(&Script::parse(&format!("now row 1284 {joker}")).unwrap()).unwrap();
+        let names = runner
+            .host
+            .state()
+            .records
+            .as_ref()
+            .map(|records| [ids[0], ids[1]].map(|id| records.known_as(id).unwrap_or_default()))
+            .unwrap_or_default();
+        let name = |k: usize| names[k].clone();
+        {
+            let view = runner.host.view();
+            assert_eq!(view.text(control(dialog, 1292).unwrap()), game.text(3038));
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            assert_eq!(
+                table.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+                [
+                    format!("1.\t{}\t2\t3\t0.7", name(0)).as_str(),
+                    format!("2.\t{}\t2\t5\t0.4", name(1)).as_str()
+                ]
+            );
+        }
+        runner.run(&Script::parse(&format!("now row 1284 {own}")).unwrap()).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), game.text(2409));
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].text, format!("1.\t{}\t1", name(1)));
+    }
+
     /// With the department raised the Mannschaft category's Notenschnitt
     /// Mannschaft draws the club's mean grade and its opponents' by
     /// matchday.
@@ -5792,6 +6726,71 @@ mod tests {
         );
     }
 
+    // The same two pages on the kept second-season save, shot at the original
+    // there (S2late3, day 300 of Union's second season, the department raised
+    // to three): the comparison counts the archived games of the season
+    // before as well, the away rows over both seasons — two games against FC
+    // Bayern München away, none of them won. Both pages show their first two
+    // sections on the original; its third one (Alle Ligaspiele) is not shot
+    // there yet. The original's category is again the second one, and its
+    // list holds the two pages at its rows 24 and 25.
+    #[test]
+    #[ignore = "needs the kept save S2late3"]
+    fn the_second_season_names_the_foes_of_the_seasons_before() {
+        let Some((root, game)) = kept_game("S2late3", "foes") else { return };
+        let dialog = &game.dialogs[&18];
+        let red = [170, 0, 0];
+        let foe = [
+            ("Angstgegner", 24, [
+                "Borussia Dortmund\t2\t0\t-4\t1\t:\t5",
+                "Borussia M'gladbach\t1\t0\t-2\t0\t:\t2",
+                "SC Freiburg\t1\t0\t-1\t0\t:\t1",
+                "FC Bayern München\t2\t1\t-3\t3\t:\t6",
+                "Eintracht Frankfurt\t2\t1\t-1\t0\t:\t1",
+            ], [
+                "VfL Wolfsburg\t2\t0\t-4\t0\t:\t4",
+                "FC Bayern München\t2\t0\t-3\t2\t:\t5",
+                "SC Freiburg\t1\t0\t-2\t0\t:\t2",
+                "Hannover 96\t1\t0\t-1\t0\t:\t1",
+            ]),
+            ("Lieblingsgegner", 25, [
+                "VfB Stuttgart\t2\t6\t3\t4\t:\t1",
+                "TSG 1899 Hoffenheim\t2\t6\t2\t5\t:\t3",
+                "SV Werder Bremen\t2\t4\t2\t4\t:\t2",
+                "FC St. Pauli\t2\t4\t1\t1\t:\t0",
+                "1.FC Köln\t1\t3\t1\t2\t:\t1",
+            ], [
+                "RB Leipzig\t2\t6\t2\t3\t:\t1",
+                "SV Werder Bremen\t1\t3\t2\t2\t:\t0",
+                "1.FC Köln\t1\t3\t1\t2\t:\t1",
+                "FC St. Pauli\t1\t3\t1\t2\t:\t1",
+            ]),
+        ];
+        for (page, row, heim, auswaerts) in foe {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 1\nnow row 1284 {row}");
+            let Some(runner) = on_save(&game, "foes", &then) else { return };
+            let view = runner.host.view();
+            let head = format!("{page}\\tSpiele\\tPkt\\tDiff\\tTore");
+            assert_eq!(view.text(control(dialog, 1292).unwrap()), head);
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            let lines = |name: &str, rows: &[&str]| {
+                assert!(
+                    table.rows.iter().any(|r| r.text == name && r.ink == red),
+                    "{page}: no {name} head"
+                );
+                for line in rows {
+                    assert!(
+                        table.rows.iter().any(|r| r.text == *line && r.ink == [0, 0, 0]),
+                        "{page}: no {line}"
+                    );
+                }
+            };
+            lines("Heimbegegnungen", &heim);
+            lines("Auswärtsbegegnungen", &auswaerts);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The Mannschaft category's Spielertrends groups the squad by its
     /// chances of a downgrade or an upgrade, the goals still needed beside.
     #[test]
@@ -6615,6 +7614,246 @@ mod tests {
         assert_eq!(graph.unit, "Dauerkarten/1000");
     }
 
+    /// In his second season the manager's Finanzen list the Werbeeinnahmen
+    /// as their eighth page (condition 0x11): S2c, a day of Union's second
+    /// season the original played on to from A, shows last season's
+    /// sponsor money from the human's extra record and the running
+    /// season's, newest first, as the original does on the same save.
+    /// S2c, a day of Union's second season the original played on to
+    /// from A, as the only save of a game of its own; `None` where it is
+    /// not kept.
+    fn second_season(out: &str) -> Option<(PathBuf, Game)> {
+        kept_game("S2c", out)
+    }
+
+    /// A kept save as the only save of a game of its own; `None` where it
+    /// is not kept.
+    fn kept_game(save: &str, out: &str) -> Option<(PathBuf, Game)> {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.parent().unwrap().join(format!("saves-kept/{save}.an3")).exists() {
+            eprintln!("no {save} among the kept saves");
+            return None;
+        }
+        let root = patched(&dir, save, out, |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        Some((root, game))
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_second_season_lists_the_sponsor_money() {
+        let Some((root, game)) = second_season("second-season") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 6\nnow row 1284 7";
+        let Some(runner) = on_save(&game, "second-season", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.list(control(dialog, 1284).unwrap()).unwrap().rows.len(), 8);
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(
+            table.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["2026 (1.31 Mio €)", "2025 (8.87 Mio €)"]
+        );
+        let graph = table.graph.as_ref().unwrap();
+        assert_eq!(graph.bars.len(), 2);
+        assert!(graph.bars[1].0 > graph.bars[0].0, "last season's bar is the longer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches' Endtabelle of the season gone by: the Bundesliga
+    /// 2025/26 as the archive keeps it on S2c, reckoned from the stored
+    /// results — St. Pauli champions with 54 points, Union third in red —,
+    /// the places' boxes cyan, teal and green above and lavender for the
+    /// three going down, as the original draws them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_endtabelle_shows_the_season_gone_by() {
+        let Some((root, game)) = second_season("endtabelle") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 0";
+        let Some(runner) = on_save(&game, "endtabelle", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), r"Nr.\tVerein\tPkt\tDiff\tTore");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.rows.len(), 18);
+        assert_eq!(table.rows[0].text, "1.\tFC St. Pauli\t54\t14\t41\t:\t27");
+        assert_eq!(table.rows[2].text, "3.\t1.FC Union Berlin\t53\t8\t41\t:\t33");
+        assert_eq!(table.rows[2].ink, [255, 0, 0]);
+        assert_eq!(table.rows[17].text, "18.\t1.FC Heidenheim\t33\t-18\t32\t:\t50");
+        assert_eq!(table.rows[0].mark, Some([0, 255, 255]));
+        assert_eq!(table.rows[1].mark, Some([0, 128, 128]));
+        assert_eq!(table.rows[15].mark, Some([160, 160, 255]));
+        assert_eq!(table.rows[6].mark, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches' Resultate of the season gone by: the archive's
+    /// Bundesliga 2025/26 on S2c laid crosswise in its own order under
+    /// "Resultate letzte Saison", each cell the row's home game, the own
+    /// club's name red but its cells black, as the original paints them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_resultate_show_the_season_gone_by_crosswise() {
+        let Some((root, game)) = second_season("resultate") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 1";
+        let Some(runner) = on_save(&game, "resultate", then) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), "Resultate letzte Saison");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        assert_eq!(table.cross, Some(0));
+        assert_eq!(table.rows.len(), 18);
+        assert!(table.rows[0].text.starts_with("1 FC Bayern München\t\t1:2\t2:0\t1:1"), "{}", table.rows[0].text);
+        assert!(table.rows[1].text.starts_with("2 Bayer 04 Leverkusen\t0:1\t\t3:0"), "{}", table.rows[1].text);
+        assert_eq!(table.rows[12].ink, [255, 0, 0], "{}", table.rows[12].text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches' kept lists on S2c, as the original shows them:
+    /// the Champions League's final of 2025/26 (Int. Wettbewerbe, the
+    /// newest at the top), the UEFA cup's decided on penalties, the
+    /// Bundesliga's top scorers of the season gone by, its best tallies and
+    /// Germany's most capped players.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_historisches_show_the_kept_lists() {
+        let Some((root, game)) = second_season("kept-lists") else { return };
+        let dialog = &game.dialogs[&18];
+        let rows = |page: usize, steps: usize| {
+            let then = format!(
+                "now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}{}",
+                "\nnow click at 546 436".repeat(steps)
+            );
+            let runner = on_save(&game, "kept-lists", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(rows(2, 0), ["2025/26\tJuventus Turin\t-\tFC Arsenal\t1\t:\t0\t "]);
+        assert_eq!(rows(2, 1), ["2025/26\tReal Betis Sevilla\t-\tFeyenoord Rotterdam\t3\t:\t4\tn.E."]);
+        assert_eq!(rows(7, 0), ["2025/26\tTim Kleindienst\tBorussia M'gladbach\t17"]);
+        assert_eq!(
+            rows(8, 0)[..2],
+            ["2025/26\tTim Kleindienst\tBorussia M'gladbach\t17", "2025/26\tMarvin Pieringer\t1.FC Heidenheim\t16"]
+        );
+        assert_eq!(rows(9, 0)[..2], ["1.\tNico Schlotterbeck\t18\t*", "2.\tLeroy Sané\t17\t*"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches' honours on S2c, as the original shows them: the
+    /// Bundesliga's champions and the cup's winners, the world cup with
+    /// its top scorer, the trainer and the player of the year, Europe's
+    /// footballer, the most successful trainers and the season's best
+    /// squad, each page's first row.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_historisches_show_the_honours() {
+        let Some((root, game)) = second_season("honours") else { return };
+        let dialog = &game.dialogs[&18];
+        let first = |page: usize| {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}");
+            let runner = on_save(&game, "honours", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.first().map(|r| r.text.clone()).unwrap_or_default()
+        };
+        assert_eq!(
+            [11, 12, 17, 18, 19, 20, 21, 22, 24].map(first),
+            [
+                "2025/26\tFC St. Pauli\t54\t14\t41\t:\t27",
+                "2025\tFC Viktoria Köln\t-\t1.FSV Mainz 05\t0\t:\t2\t ",
+                "2026\tBelgien\tFrankreich\t-\tMexiko\t2\t:1\t ",
+                "2026\tBelgien\tMaeda (Japan)\t3",
+                "2025\tAlexander Blessin\tFC St. Pauli",
+                "2025\tSilvan Widmer\t1.FSV Mainz 05",
+                "2025\tKylian Mbappé\tReal Madrid",
+                "1.\tBlessin, A.\t1\t0\t0\t1\t0",
+                "2025/26\tFC Chelsea\tEngland\t314\t31\t10.1",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Historisches a statistics department of level 3 adds, on S2c
+    /// with Union's department raised (S2c3), each page's first row as the
+    /// original shows it: the eternal home and away tables, the
+    /// Herbstmeister, the Rekordmeister, the clubs most often promoted and
+    /// relegated, and the players.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_third_department_shows_more_history() {
+        let Some((root, game)) = kept_game("S2c3", "third-department") else { return };
+        let dialog = &game.dialogs[&18];
+        let first = |page: usize| {
+            let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 4\nnow row 1284 {page}");
+            let runner = on_save(&game, "third-department", &then).unwrap();
+            let view = runner.host.view();
+            let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+            table.rows.first().map(|r| r.text.clone()).unwrap_or_default()
+        };
+        assert_eq!(
+            [17, 18, 19, 20, 31, 32, 35, 36].map(first),
+            [
+                "1.\tBorussia Dortmund\t26\t52\t24\t54\t:\t30",
+                "1.\t1.FSV Mainz 05\t26\t41\t4\t35\t:\t31",
+                "2026/27\tBorussia Dortmund\t33\t5\t32\t:\t27",
+                "1.\tFC Bayern München\t34\t20\t8",
+                "1\tFC Hansa Rostock\t2\t0\t1\t1",
+                "1.\tSC Freiburg\t1\t1\t0\t0\t0",
+                "1\tBenjamin Uphoff\t2\tFC Hansa Rostock",
+                "1\tDiant Ramaj\t1\t1.FC Heidenheim",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Mannschaft's Restprogramm in the last matchdays (S2late3: day
+    /// 300 of Union's second season, the original played on from S2c, the
+    /// department raised to 3): the six clubs from three above Union to two
+    /// below, each with its fixtures to come and an empty row; Union red,
+    /// and Werder's home game against it, as the original shows them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_restprogramm_shows_the_last_fixtures() {
+        let Some((root, game)) = kept_game("S2late3", "restprogramm") else { return };
+        let dialog = &game.dialogs[&18];
+        let then = "now click bar 14\nuntil dialog 18\nnow row 1283 1\nnow row 1284 26";
+        let runner = on_save(&game, "restprogramm", then).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 1292).unwrap()), r"Verein\tPlatz\tPunkte\tTore");
+        let table = view.table(control(dialog, 29999).unwrap()).unwrap();
+        let texts: Vec<&str> = table.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts[..7], ["FC Augsburg\t10\t39\t38\t:\t45", "A: Eintracht Frankfurt", "H: VfL Wolfsburg",
+            "A: TSG 1899 Hoffenheim", "H: FC Bayern München", "A: Bayer 04 Leverkusen", ""]);
+        assert_eq!(texts.len(), 6 * 7);
+        assert_eq!(texts[14], "SV Werder Bremen\t12\t36\t45\t:\t47");
+        assert_eq!((texts[15], table.rows[15].ink), ("H: 1.FC Union Berlin", [255, 0, 0]));
+        assert_eq!((texts[21], table.rows[21].ink), ("1.FC Union Berlin\t13\t35\t28\t:\t37", [255, 0, 0]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The ticket office's advance sales, as the original makes them on A
+    /// with its generator set to 12345/67890 and played to the next day:
+    /// the week's end opens a record for Union's away match at club 10 on
+    /// day 90 and sells 188 at once (one percent of a demand of 18.8
+    /// thousand, drawn), and the day sells on Union's home match on day
+    /// 69 from 3,588 to 4,605 (six percent of 16,955) — the records, the
+    /// prices and the draws as the original's, watched by the probe
+    /// (`FUN_0077ca2b`, `FUN_0077c8b5`, `FUN_0078ab55`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_ticket_office_sells_ahead_as_the_original() {
+        let game = game();
+        let then = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\non 375 click at 617 182; press 4715\nuntil day 64";
+        let Some(runner) = on_save(&game, "A", then) else { return };
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let home = a3_core::tickets::sale(records, (14, 84), (14, 2), 69).unwrap();
+        let away = a3_core::tickets::sale(records, (14, 10), (14, 84), 90).unwrap();
+        assert_eq!((home.sold, home.prices), (4605, [17, 23, 43, 150]));
+        assert_eq!((away.sold, away.prices), (188, [15, 20, 40, 150]));
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {
@@ -6786,5 +8025,1430 @@ mod tests {
             return;
         };
         assert!(theirs.is_empty());
+    }
+
+    /// The long-term training's 4418 opens the training statistics: on
+    /// A twenty players train well for their super condition, none badly;
+    /// the units list all but the eleventh, the season's and last week's;
+    /// the graph draws nine weeks in three curves. Patched, a tired
+    /// keeper trains badly, one with morale too low and tired as well
+    /// names only the last reason, and one with reasons both ways shows
+    /// in neither list.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_training_statistics_list_who_trains_well_and_badly() {
+        let open = "now click bar 3\nuntil dialog 345\nnow press 4418\nuntil dialog 406";
+        let rows = |game: &Game, save: &str| -> Option<[Vec<String>; 3]> {
+            let runner = on_save(game, save, open)?;
+            let dialog = &game.dialogs[&406];
+            let list = |id: u16| runner.host.view().list(control(dialog, id).unwrap()).unwrap().rows.clone();
+            Some([list(4821), list(4822), list(4823)])
+        };
+        let game = game();
+        let Some([good, bad, units]) = rows(&game, "A") else { return };
+        assert_eq!(good.len(), 20);
+        assert_eq!(good[0], "Rönnow, F.\tTO\t9\tSuper Kondition");
+        assert!(bad.is_empty());
+        assert_eq!(units.len(), 38);
+        assert_eq!(units[6], "brutale Kondition\t36\t0");
+        assert_eq!(units[7], "Ecken\t6\t2");
+        let runner = on_save(&game, "A", open).unwrap();
+        let graph = control(&game.dialogs[&406], 5526).unwrap();
+        assert_eq!(runner.host.view().paint(graph).unwrap().lines.len(), 27);
+
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "training-moods", |records| {
+            let (fit, fresh) = (records.players[3257].condition(), records.players[3257].freshness());
+            let mut set = |id: usize, morale: u8, condition: i16, freshness: [i16; 3]| {
+                let p = &mut records.players[id];
+                p.set_morale(morale);
+                p.set_condition(condition);
+                p.set_freshness(freshness);
+            };
+            set(3257, 100, fit, [1000; 3]);
+            set(3258, 120, 3000, fresh);
+            set(3259, 80, fit, [1000; 3]);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let [good, bad, _] = rows(&game, "training-moods").unwrap();
+        assert_eq!(good.len(), 17);
+        assert_eq!(bad, ["Rönnow, F.\tTO\t9\tmüde", "Klaus, C.\tTO\t6\tmüde"]);
+    }
+
+    /// The camp's rooms seat the squad as their records keep them, a pair
+    /// of best friends blue. A name dragged onto a free bed moves there;
+    /// one dragged onto Bianca's picture swaps with her, and she shows in
+    /// his room. OK keeps the rooms, Bianca's place aside: opened again,
+    /// the one who stood there is back in his room and Bianca at hers.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_camp_rooms_swap_names_and_bianca() {
+        use crate::controls::ControlState;
+        let game = game();
+        let dialog = &game.dialogs[&407];
+        let open = "now click bar 3\nuntil dialog 345\nnow press 4890\nuntil dialog 407";
+        let names = |runner: &Runner, ids: &[u16]| -> Vec<String> {
+            ids.iter().map(|&id| runner.host.view().text(control(dialog, id).unwrap()).to_owned()).collect()
+        };
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(names(&runner, &[4810, 4811, 4893]), ["Leite, D.", "Moore, M.", "Frei"]);
+        let nsoki = control(dialog, 4812).unwrap();
+        let ink = match &runner.host.view().controls[nsoki].state {
+            ControlState::Static(s) => s.ink,
+            _ => None,
+        };
+        assert_eq!(ink, Some([0, 0, 255]));
+        let then = format!("{open}\nnow drag 4810 4893\nnow drag 4811 4824");
+        let runner = on_save(&game, "A", &then).unwrap();
+        assert_eq!(names(&runner, &[4810, 4811, 4893]), ["Frei", "Bianca", "Leite, D."]);
+        let again = format!("{then}\nnow press 1\nuntil dialog 345\nnow press 4890\nuntil dialog 407");
+        let runner = on_save(&game, "A", &again).unwrap();
+        assert_eq!(names(&runner, &[4810, 4811, 4893]), ["Moore, M.", "Frei", "Leite, D."]);
+    }
+
+    /// The year calendar's camp, dragged onto the 17th of September, asks
+    /// for its place on the world map; the Dutch sports school confirmed,
+    /// it starts there that day and ends the next. Cape Canaveral's point
+    /// offers its group's three places, the Mars base not yet. Atlantis
+    /// shows only in the lottery's lucky season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_calendar_books_a_training_camp_from_the_world_map() {
+        let game = game();
+        let map = "now click bar 6\nuntil dialog 348\nnow drag at 480 210 to 180 260\nuntil dialog 488";
+        let booked = format!("{map}\nnow click at 297 150\nuntil dialog 285\nnow press 1\nuntil dialog 348");
+        let Some(runner) = on_save(&game, "A", &booked) else { return };
+        let state = runner.host.state();
+        let calendar = &state.records.as_ref().unwrap().calendars[0];
+        let (start, end) = (a3_core::year::day(calendar, 72), a3_core::year::day(calendar, 73));
+        assert!(start.camp_start() && start.place() == 2);
+        assert!(end.kind() == a3_core::year::CAMP && !end.camp_start());
+
+        let group = format!("{map}\nnow click at 132 200\nuntil dialog 50");
+        let runner = on_save(&game, "A", &group).unwrap();
+        let rows = control(&game.dialogs[&50], 1447).unwrap();
+        let labels = &runner.host.view().options(rows).unwrap().labels;
+        assert_eq!(labels[..3], ["Raumstation", "Mondbasis Alpha", "Marsbasis 51"]);
+        let mars = format!("{group}\nnow click at 320 366\nuntil dialog 380");
+        let runner = on_save(&game, "A", &mars).unwrap();
+        assert_eq!(runner.host.view().id, 380);
+
+        let atlantis = |runner: &Runner| {
+            let dialog = &game.dialogs[&488];
+            let shown = |id: u16| !runner.host.view().controls[control(dialog, id).unwrap()].hidden;
+            (shown(6156), shown(100 + 20))
+        };
+        let runner = on_save(&game, "A", map).unwrap();
+        assert_eq!(atlantis(&runner), (false, false));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "lucky-season", |records| records.globals.set_lottery(0));
+        let mut lucky = Game::load(&root).unwrap();
+        compose(&mut lucky);
+        let runner = on_save(&lucky, "lucky-season", map).unwrap();
+        assert_eq!(atlantis(&runner), (true, true));
+    }
+
+    /// The Finanzen screen's donations offer what the bank holds up to
+    /// 100.000, in hundreds on the slider's steps; on A only good causes,
+    /// no other human. Given, the amount joins the club's costs, the
+    /// manager's popularity with the public and in the media rises by one,
+    /// the board's confidence falls by one, the club's image rises by one.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_finanzen_screen_gives_donations() {
+        let game = game();
+        let dialog = &game.dialogs[&63];
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!([text(&runner, 1628), text(&runner, 1629), text(&runner, 1630)], [
+            "100.000 €",
+            "5.92 Mio €",
+            "17.42 Mio €"
+        ]);
+        let rows = runner.host.view().options(control(dialog, 6022).unwrap()).unwrap().labels.clone();
+        assert_eq!(rows[1..], ["---", "---", "---"]);
+        let figures = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = &records.managers[0];
+            let team = &records.teams[usize::from(manager.team())];
+            let costs = team.get::<i32>(0x2c0 + a3_core::finances::CLUB_TO_TEAM);
+            (manager.popularity(), manager.confidence(), team.public_image(), costs)
+        };
+        let before = figures(&runner);
+        let slid = format!("{open}\nnow slide 1631 60");
+        let runner = on_save(&game, "A", &slid).unwrap();
+        assert_eq!(text(&runner, 1628), "10.000 €");
+        let given = format!("{open}\nnow press 1\nuntil dialog 417");
+        let runner = on_save(&game, "A", &given).unwrap();
+        let ([public, fans, media], confidence, image, costs) = before;
+        assert_eq!(
+            figures(&runner),
+            ([public + 1, fans, media + 1], confidence - 1, image + 1, costs + 100_000)
+        );
+    }
+
+    /// The association's conditions: none on A. Patched with a debt limit,
+    /// no building and no camps, they stand a line each and the outlook
+    /// grants the licence; with 31 Mio more costs booked the chance is gone
+    /// and the Finanzen screen refuses (text 3108) — not so for a club
+    /// whose cash itself is in the red by more than 10 Mio in the first
+    /// season, which gets it after all.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_finanzen_screen_shows_the_licence_conditions() {
+        let open = "now click bar 9\nuntil dialog 417\nnow press 1619\nuntil dialog 64";
+        let texts = |game: &Game, save: &str| -> Option<(String, String)> {
+            let runner = on_save(game, save, open)?;
+            let dialog = &game.dialogs[&64];
+            let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+            Some((text(1637), text(1636)))
+        };
+        let game = game();
+        let Some((conditions, outlook)) = texts(&game, "A") else { return };
+        assert_eq!(conditions, format!("{}\n", game.text(2444)));
+        assert!(outlook.is_empty());
+
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        fn own(records: &mut a3_core::records::Records) -> &mut a3_core::records::Team {
+            let team = usize::from(records.managers[0].team());
+            &mut records.teams[team]
+        }
+        let root = patched(&dir, "A", "licence-conditions", |records| {
+            let team = own(records);
+            team.put(0x12b, 0x08u8 | 0x01 | 0x02);
+            team.put(0x5d8 + a3_core::finances::CLUB_TO_TEAM, 5u8);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let (conditions, outlook) = texts(&patched_game, "licence-conditions").unwrap();
+        let debt = game.text(2811).replacen("%s", "5.00 Mio €", 1);
+        assert_eq!(conditions, format!("{debt}\n{}\n{}\n", game.text(2441), game.text(2442)));
+        assert!(outlook.starts_with(game.text(2819)), "{outlook}");
+
+        let root = patched(&dir, "A", "licence-gone", |records| {
+            let at = 0x2c0 + a3_core::finances::CLUB_TO_TEAM;
+            let team = own(records);
+            team.put(at, team.get::<i32>(at) + 31_000_000);
+        });
+        let mut broke = Game::load(&root).unwrap();
+        compose(&mut broke);
+        let refused = "now click bar 9\nuntil dialog 417\nnow press 1619\nuntil dialog 380";
+        let runner = on_save(&broke, "licence-gone", refused).unwrap();
+        assert_eq!(runner.host.view().id, 380);
+    }
+
+    /// A second human: A patched with his slot, without a club and one of
+    /// the next team. The Finanzen screen offers him among the recipients;
+    /// the offered 100.000 given to him, the screen refuses another
+    /// donation this week (text 4602). Both managers whistle their turn
+    /// off, and the week's end (`FUN_006eeda7`) books the amount with the
+    /// recipient's other income (club +0x2c4) and empties the store.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_donation_to_another_human_is_booked_at_the_weeks_end() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "second-human", |records| {
+            records.globals.set_slots([1, 1, 0, 0]);
+            let team = records.managers[0].team();
+            records.managers[1].set_team(team + 1);
+            records.managers[1].set_status(0);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let received = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let team = usize::from(records.managers[1].team());
+            records.teams[team].get::<i32>(0x2c4 + a3_core::finances::CLUB_TO_TEAM)
+        };
+        let Some(before) = on_save(&game, "second-human", "") else { return };
+        let before = received(&before);
+        // Give the second human's club the 100.000 offered at first; the
+        // refusal; then the manager ends his turn with the whistle — the
+        // second, not under contract, plays none. The week runs on past
+        // the whistles now that the season does not stop at a match, so
+        // its waiting screens are swept; the script ends a day into the
+        // new week, the store long since booked.
+        let then = "on 384 press 4741\non 380 press 4731\non 218 click bar 0\n\
+                    on 147 click bar 18\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63\n\
+                    now choose 6022 1\nnow press 1\nuntil dialog 417\nnow press 2222\n\
+                    until dialog 380\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 2\nrepeat 1 day";
+        let runner = on_save(&game, "second-human", then).unwrap();
+        assert_eq!(received(&runner), before + 100_000, "{}", runner.log.join("\n"));
+        assert!(runner.host.state().season.as_ref().unwrap().donations.is_empty());
+    }
+
+    /// The world map's points name their place: the pointer resting on the
+    /// Dutch sports school's point, as long as one waits at a menu bar's
+    /// symbol, shows its name as a tooltip (the points' tooltip
+    /// "= its name").
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_world_map_names_the_place_under_the_pointer() {
+        let game = game();
+        let map = "now click bar 6\nuntil dialog 348\nnow drag at 480 210 to 180 260\nuntil dialog 488";
+        let Some(mut runner) = on_save(&game, "A", map) else { return };
+        let point = control(&game.dialogs[&488], 100 + 2).unwrap();
+        let name = game.text(game.rules.year.places[2].name).to_owned();
+        assert!(!name.is_empty());
+        runner.host.view_mut().hovered = Some(Target::Button(point));
+        // The rest only counts from the hover, not from the map's opening.
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, None, "{}", runner.log.join("\n"));
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, None);
+        runner.host.tick(&game, 0.5);
+        assert_eq!(runner.host.view().tip, Some((point, 0)));
+        let tip = runner.host.view().controls[point].state.as_button().unwrap().tip.clone();
+        assert_eq!(tip.as_deref(), Some(name.as_str()));
+    }
+
+    /// "Karriereende" (the dressing room's sixth game option,
+    /// `FUN_005b13da`) asks with text 2691. Yes ends the turn, and the
+    /// week's end the career (`FUN_006c5190`): Bert Beta, the first of
+    /// Probe1's two humans, goes into the career list of the game's mode
+    /// (`FUN_00656e9b`) at the first place with fewer points — the place
+    /// it takes lost, the one under it standing twice, as the game's shift
+    /// stops a place short —, the highscores show him, and he leaves the
+    /// game to Anna Alpha. "Spiel beenden" enters his career the same, at
+    /// once, and ends the game before the highscores show.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_career_ends_into_the_highscore_list() {
+        use chrono::Datelike;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Probe1", "Karriereende", |_| {});
+        // A list of the copy's own: the installation's is only linked.
+        let scores = root.join("Highscore");
+        std::fs::remove_file(&scores).unwrap();
+        std::fs::create_dir(&scores).unwrap();
+        let list: Vec<u8> = [100, 30, 20, 10, 5]
+            .iter()
+            .flat_map(|&points: &i32| {
+                let mut entry = [0; 0x30];
+                entry[..4].copy_from_slice(b"Old\0");
+                entry[0x20..0x24].copy_from_slice(&points.to_le_bytes());
+                entry
+            })
+            .collect();
+        std::fs::write(scores.join("high09"), &list).unwrap();
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let today = || {
+            let d = chrono::Utc::now().date_naive();
+            [d.day() as u8, d.month() as u8, d.year() as u8, (d.year() >> 8) as u8]
+        };
+        let entered = |runner: &Runner| {
+            let state = runner.host.state();
+            let (_, list) = state.settings_files.iter().find(|(f, _)| *f == "Highscore/high09")?;
+            Some(list.clone())
+        };
+        let ask = "now click bar 17\nuntil dialog 302\nnow choose 4035 5\nuntil dialog 384";
+        let Some(runner) = on_save(&game, "Karriereende", ask) else { return };
+        let question = &game.dialogs[&384];
+        assert_eq!(runner.host.view().text(control(question, 4738).unwrap()), game.text(2691));
+        // No: the dressing room stands, his career whole.
+        let no = format!("{ask}\nnow press 4739\nuntil dialog 302");
+        let runner = on_save(&game, "Karriereende", &no).unwrap();
+        assert_eq!(runner.host.view().id, 302);
+        assert!(runner.host.state().leaving.is_empty());
+        // Yes: Anna, without a club, plays no turn, so the turns are over
+        // and the highscores show him at once (event 0xb0), as on the
+        // original — from the list kept for the end.
+        let before = today();
+        let yes = format!("{ask}\nnow press 4741\nuntil dialog 95");
+        let runner = on_save(&game, "Karriereende", &yes).unwrap();
+        let rows = &runner.host.view().list(control(&game.dialogs[&95], 2010).unwrap()).unwrap().rows;
+        assert!(rows[1].starts_with("2.\tBert Beta\t55\t40\t40\t2\t0\t"), "{rows:?}");
+        let list = entered(&runner).expect("the career list kept for the end");
+        let points: Vec<i32> = list
+            .chunks(0x30)
+            .map(|e| i32::from_le_bytes(e[0x20..0x24].try_into().unwrap()))
+            .collect();
+        assert_eq!(points, [100, 40, 20, 20, 10]);
+        let bert = &list[0x30..0x60];
+        assert_eq!(&bert[..5], b"Bert\0");
+        assert_eq!(&bert[0xa..0xf], b"Beta\0");
+        // 55 years old, a year a trainer, 40 points, level 2 twice, no
+        // titles, today.
+        assert_eq!(&bert[0x1a..0x2a], [55, 0, 1, 0, 0, 0, 40, 0, 0, 0, 2, 2, 0, 0, 0, 0]);
+        assert!([before, today()].contains(&bert[0x2a..0x2e].try_into().unwrap()));
+        // Its OK, and the week played: Anna alone is left, in the slots,
+        // the order and the count — and with no one else to play, the next
+        // week's turn is hers, in the dressing room (`FUN_0064e40f`).
+        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\nuntil dialog 302");
+        let runner = on_save(&game, "Karriereende", &week).unwrap();
+        let screens: Vec<&str> =
+            runner.log.iter().filter_map(|l| l.strip_prefix("screen ")).collect();
+        let shown = screens.iter().position(|&s| s == "95").unwrap();
+        assert_eq!(screens[shown + 1], "2", "the week after the highscores");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        let names: Vec<_> = season.managers.iter().map(|m| m.first_name.as_str()).collect();
+        assert_eq!(names, ["Anna"]);
+        assert_eq!(records.globals.humans(), 1);
+        assert_eq!(records.globals.slots(), [0, 1, 0, 0]);
+        assert_eq!(records.globals.order(), [2, -1, -1, -1]);
+        assert_eq!(season.day % 7, 0, "a week's first day");
+        drop(state);
+        let caption = control(&game.dialogs[&302], 9920).unwrap();
+        assert!(runner.host.view().text(caption).contains("Anna Alpha"));
+        // "Spiel beenden" enters him at once, as the program ends — the
+        // original's extro follows, not the highscores.
+        let quit = "now click bar 17\nuntil dialog 302\nnow choose 4035 4\nuntil dialog 384\n\
+                    now press 4741\nuntil end";
+        let runner = on_save(&game, "Karriereende", quit).unwrap();
+        assert_eq!(entered(&runner).as_ref().map(|l| &l[0x30..0x35]), Some(&b"Bert\0"[..]));
+        assert_eq!(seen(&runner, 95), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The individual training's "Spieler-karriere" (dialog 403,
+    /// `CDiSpielerkarriere`), as the original shows it on A: titled with
+    /// the player-manager and his club, the sliders at his 4, 4 and 1, both
+    /// lists opening on "Bitte auswählen" and then the squad in its order
+    /// but for himself — the friends' only with players who have no best
+    /// friend or have him. OK keeps the sliders, the rival and a friend;
+    /// the first row clears the rival (−1); "Abbruch" keeps nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_player_manager_sets_his_own_career() {
+        let game = game();
+        let dialog = &game.dialogs[&403];
+        let open = "now click bar 5\nuntil dialog 347\nnow press 6151\nuntil dialog 403";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let view = runner.host.view();
+        assert_eq!(
+            view.text(control(dialog, 9929).unwrap()),
+            "ANSTOSS 3 - Spielerkarriere Toni Lubiniecki (1.FC Union Berlin)"
+        );
+        let sliders = [6133, 6134, 6135].map(|id| {
+            let value = view.value(control(dialog, id).unwrap()).unwrap();
+            (value.value, value.range)
+        });
+        assert_eq!(sliders, [(4, (0, 4)), (4, (0, 4)), (1, (0, 2))]);
+        let rival = view.combo(control(dialog, 6137).unwrap()).unwrap();
+        let friend = view.combo(control(dialog, 6138).unwrap()).unwrap();
+        assert_eq!((rival.selected, friend.selected), (Some(0), Some(0)));
+        assert_eq!(rival.items[..5], [game.text(4945), "Rönnow, F.", "Raab, M.", "Klaus, C.", "Doekhi, D."]);
+        assert!(!rival.items.iter().any(|i| i.starts_with("Lubiniecki")));
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let season = state.season.as_ref().unwrap();
+            let club = &season.clubs[&season.managers[0].club.unwrap()];
+            let free = club
+                .status
+                .iter()
+                .filter(|s| s.id < 17001)
+                .filter(|s| {
+                    let best = records.player(s.id).unwrap().best_friend();
+                    (best as i16) < 1 || best == 17001
+                })
+                .count();
+            assert_eq!(friend.items.len(), free + 1);
+        }
+        // The button stands crossed out no more.
+        let training = on_save(&game, "A", "now click bar 5\nuntil dialog 347").unwrap();
+        let career = control(&game.dialogs[&347], 6151).unwrap();
+        assert!(!training.host.view().inert.contains(&Target::Button(career)));
+        // OK with the sliders moved and a rival and a friend chosen.
+        let kept = format!("{open}\nnow slide 6133 2; slide 6135 0; row 6137 3; row 6138 2; ok\nuntil dialog 347");
+        let runner = on_save(&game, "A", &kept).unwrap();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = &records.managers[0];
+            assert_eq!(manager.own_play(), [2, 4, 0]);
+            let last = |id: i16| {
+                let player = records.player(id as u16).unwrap();
+                records.name(player.last_name()).to_owned()
+            };
+            assert_eq!(last(manager.rival()), "Klaus");
+            assert_eq!(last(manager.friend()), "Raab");
+        }
+        // The first row clears the rival; the friend stays as it was.
+        let cleared = format!("{open}\nnow row 6137 0; row 6138 0; ok\nuntil dialog 347");
+        let runner = on_save(&game, "A", &cleared).unwrap();
+        let state = runner.host.state();
+        let manager = &state.records.as_ref().unwrap().managers[0];
+        assert_eq!((manager.rival(), manager.friend()), (-1, 0));
+        drop(state);
+        // "Abbruch" keeps nothing.
+        let dropped = format!("{open}\nnow slide 6133 0; row 6137 3; cancel\nuntil dialog 347");
+        let runner = on_save(&game, "A", &dropped).unwrap();
+        let state = runner.host.state();
+        let manager = &state.records.as_ref().unwrap().managers[0];
+        assert_eq!((manager.own_play(), manager.rival()), ([4, 4, 1], 0));
+    }
+
+    /// The honours page's "Vertrauen Vorstand" (dialog 320,
+    /// `CVertrauenVorstand`), as the original draws it: on A the confidence
+    /// of the last periods from the second on, 85 with an 88, then today's
+    /// 82 — a red curve from (218,172) to (344,176) over the 50 % line, each
+    /// with its last pixel — and text 2472; on Probe1 a flat 82 from the
+    /// sixth period. OK leaves the page's button unpressed.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_board_confidence_shows_its_curve() {
+        let game = game();
+        let dialog = &game.dialogs[&320];
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5571 0\nuntil dialog 320";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let view = runner.host.view();
+        assert_eq!(view.text(control(dialog, 4157).unwrap()), game.text(2472));
+        let red = [255, 0, 0];
+        let ends: Vec<[i32; 4]> = view.lines.iter().map(|&(l, ink)| {
+            assert_eq!(ink, red);
+            l
+        }).collect();
+        assert_eq!(ends[..2], [[213, 222, 366, 222], [366, 222, 366, 222]]);
+        let points: Vec<(i32, i32)> = ends[2..].iter().map(|l| (l[2], l[3])).collect();
+        assert_eq!(
+            points,
+            [(218, 172), (232, 172), (246, 172), (260, 172), (274, 172), (288, 172), (302, 172),
+             (316, 168), (330, 172), (344, 176), (344, 176)]
+        );
+        let runner = on_save(&game, "Probe1", open).unwrap();
+        let view = runner.host.view();
+        let points: Vec<(i32, i32)> = view.lines[2..].iter().map(|&(l, _)| (l[2], l[3])).collect();
+        assert_eq!(points, [(218, 176), (232, 176), (246, 176), (260, 176), (274, 176), (288, 176), (288, 176)]);
+        let back = on_save(&game, "A", &format!("{open}\nnow ok\nuntil dialog 175")).unwrap();
+        let button = control(&game.dialogs[&175], 5571).unwrap();
+        assert_eq!(back.host.view().chosen(button), crate::controls::options::NONE);
+    }
+
+    /// The share market (dialog 431, `CDiAktienmarkt`) behind the honours
+    /// page's "A", as the original trades on A: the nine clubs' shares by
+    /// name, AFC Sunderland chosen and six bought for 907 € and a fee of
+    /// 5, three sold back for 453 € less 3 — the offer down and up again,
+    /// the holding kept in the last place at the price paid —; back on the
+    /// honours page the holding in its list, a click voting to sack its
+    /// club's manager.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_share_market_buys_and_sells() {
+        let game = game();
+        let dialog = &game.dialogs[&431];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 0\nuntil dialog 431";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Aktienmarkt Toni Lubiniecki");
+        assert_eq!(
+            [5282, 5139, 5286, 5326, 5334, 5327].map(|id| text(&runner, id)),
+            ["99.300 €", "6958.92", "0.50%", "---", " 0 €", " 0 €"]
+        );
+        let shares = runner.host.view().list(control(dialog, 5278).unwrap()).unwrap().clone();
+        assert_eq!(shares.rows.len(), 9);
+        assert_eq!(shares.rows[0], "AFC Sunderland\t151,31\t168,81\t-10.37%\t2.150\t168,81\t138,88");
+        assert_eq!(shares.inks[0], Some([255, 0, 0]));
+        assert!(shares.rows[8].starts_with("Tottenham Hotspur\t"));
+        assert!(runner.host.view().controls[control(dialog, 5280).unwrap()].hidden);
+        // Six of the first.
+        let six = format!("{open}\nnow row 5278 0\n{}", "now spin 5280 up\n".repeat(5));
+        let runner = on_save(&game, "A", &six).unwrap();
+        assert_eq!([5294, 5295, 5281, 5287].map(|id| text(&runner, id)), ["169,81", "138,08", "6", " 907 €"]);
+        let bought = format!("{six}now choose 5654 1");
+        let runner = on_save(&game, "A", &bought).unwrap();
+        assert_eq!([5282, 5326, 5327].map(|id| text(&runner, id)), ["98.388 €", "0.00", " 907 €"]);
+        let held = runner.host.view().list(control(dialog, 5276).unwrap()).unwrap().rows.clone();
+        assert_eq!(held, ["AFC Sunderland\t151,31\t151,31\t0.00%\t6\t907,91"]);
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let holdings = a3_core::market::holdings(records, 0);
+            assert!(holdings[..49].iter().all(Option::is_none), "the last place first");
+            let h = holdings[49].unwrap();
+            assert_eq!((h.count, h.sack), (6, false));
+            let market = a3_core::market::market(records).unwrap();
+            assert_eq!(market.shares[h.share].offer, 2144);
+        }
+        // Three sold back.
+        let sold = format!("{bought}\nnow row 5276 0\nnow spin 5284 up\nnow spin 5284 up\nnow choose 5655 1");
+        let runner = on_save(&game, "A", &sold).unwrap();
+        assert_eq!([5282, 5327].map(|id| text(&runner, id)), ["98.838 €", " 453 €"]);
+        let row = &runner.host.view().list(control(dialog, 5278).unwrap()).unwrap().rows[0];
+        assert!(row.contains("\t2.147\t"), "{row}");
+        // Back on the honours page: the holding, and a click on it.
+        let back = format!("{bought}\nnow ok\nuntil dialog 175");
+        let runner = on_save(&game, "A", &back).unwrap();
+        let list = control(&game.dialogs[&175], 5261).unwrap();
+        let rows = runner.host.view().list(list).unwrap().rows.clone();
+        assert_eq!(rows, ["AFC Sunderland\t6\t0.0\t151,31\t151,31\t907,91\t"]);
+        let runner = on_save(&game, "A", &format!("{back}\nnow row 5261 0")).unwrap();
+        let rows = runner.host.view().list(list).unwrap().rows.clone();
+        assert_eq!(rows, [format!("AFC Sunderland\t6\t0.0\t151,31\t151,31\t907,91\t{}", game.text(3163))]);
+    }
+
+    /// The market's big chart (432) and the week's winners and losers
+    /// (433), as the original shows them on A: AFC Sunderland's year in 52
+    /// bars on a scale from 137,88 to 169,81, its figures above, the
+    /// offer without points; from a holding the same with the black line
+    /// at the price paid. The winners: AS Rom first at 4.94 %; the losers:
+    /// SpVgg Unterhaching first at −22.65 %, the prices rounded with a dot.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_share_market_shows_its_chart_and_the_weeks_winners() {
+        let game = game();
+        let text = |runner: &Runner, dialog: u16, id: u16| {
+            runner.host.view().text(control(&game.dialogs[&dialog], id).unwrap()).to_owned()
+        };
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 0\nuntil dialog 431\nnow row 5278 0";
+        let chart = format!("{open}\nnow choose 5654 0\nuntil dialog 432");
+        let Some(runner) = on_save(&game, "A", &chart) else { return };
+        assert_eq!(
+            [9947, 1866, 5301, 5300, 5304, 5303, 5302, 5305, 5328].map(|id| text(&runner, 432, id)),
+            ["ANSTOSS 3 - Chart", "AFC Sunderland", "151,31", "168,81", "2150", "168,81", "138,88", "169,81", "137,88"]
+        );
+        let paint = control(&game.dialogs[&432], 5299).unwrap();
+        let shown = runner.host.view().paint(paint).unwrap().clone();
+        assert_eq!(shown.bars.len(), 52);
+        assert!(shown.lines.iter().all(|l| l.1 != image::Rgba([0, 0, 0, 255])), "no line at a price paid");
+        let held = format!("{open}\nnow choose 5654 1\nnow row 5276 0\nnow choose 5655 0\nuntil dialog 432");
+        let runner = on_save(&game, "A", &held).unwrap();
+        let shown = runner.host.view().paint(paint).unwrap().clone();
+        assert!(shown.lines.iter().any(|l| l.1 == image::Rgba([0, 0, 0, 255])), "the price paid");
+        let winners = format!("{open}\nnow press 5292\nuntil dialog 433");
+        let runner = on_save(&game, "A", &winners).unwrap();
+        let rows = |id| runner.host.view().list(control(&game.dialogs[&433], id).unwrap()).unwrap().rows.clone();
+        let (up, down) = (rows(5308), rows(5307));
+        assert_eq!((up.len(), down.len()), (8, 8));
+        assert_eq!(up[0], "AS Rom\t271.67\t258.88\t4.94%\t2.400\t12.79");
+        assert_eq!(down[0], "SpVgg Unterhaching\t64.07\t82.83\t-22.65%\t1.620\t-18.76");
+        assert!(down[2].starts_with("AFC Sunderland\t151.32\t"), "{}", down[2]);
+    }
+
+    /// The betting office's matchday bets (dialog 411) behind the honours
+    /// page's "W", as the original takes them on A: the German matchday's
+    /// eleven matches; the full tip twice with match one's three outcomes
+    /// (six euros), a highest win on one match only at 30 € each; Harry
+    /// Kane first in the scorers' list at 3.1; England's page with a German
+    /// match in its eleventh row; everything kept to the next opening.
+    /// Probe1, in its fifth week, finds the office closed (text 4592).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_betting_office_takes_matchday_bets() {
+        let game = game();
+        let dialog = &game.dialogs[&411];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 411";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Wettbüro Spieltag Toni Lubiniecki");
+        assert_eq!(
+            [5282, 5233, 5172, 5249, 5182].map(|id| text(&runner, id)),
+            ["99.300 €", "0 x", "Eintracht Frankfurt - 1.FC Heidenheim", "7", "SV Darmstadt 98 - Karlsruher SC"]
+        );
+        let scorers = runner.host.view().combo(control(dialog, 5187).unwrap()).unwrap().items.clone();
+        assert_eq!(scorers[..3], [game.text(4488), "Harry Kane\t(3.1)", "Serhou Guirassy\t(10)"]);
+        let ticks = [5189, 5190, 5232, 5191, 5192, 5193, 5194, 5195, 5196, 5197, 5198, 5199, 5210]
+            .map(|id| format!("now click {id}"))
+            .join("\n");
+        let tips = format!(
+            "{open}\nnow spin 5170 up\n{ticks}\nnow spin 5170 up\nnow click 5223\n\
+             now spin 5171 up\nnow spin 5171 up\nnow spin 5171 up\nnow click 5224\nnow row 5187 1"
+        );
+        let runner = on_save(&game, "A", &tips).unwrap();
+        assert_eq!([5233, 5168, 5235, 5169].map(|id| text(&runner, id)), ["2 x", " 6 €", " 30 €", " 30 €"]);
+        {
+            let state = runner.host.state();
+            let bet = a3_core::betting::matchday_bet(state.records.as_ref().unwrap(), 0, 0);
+            assert_eq!((bet.full, bet.ticks[0], bet.ticks[2], bet.ticks[3], bet.ticks[4]), (2, 7, 4, 12, 4));
+            assert_eq!((bet.high_stake, bet.scorer), (30, 0));
+        }
+        let england = format!("{open}\nnow click 5152");
+        let runner = on_save(&game, "A", &england).unwrap();
+        assert_eq!(text(&runner, 5172), "AFC Bournemouth - Manchester City");
+        assert_eq!(text(&runner, 5182), "Eintracht Frankfurt - 1.FC Heidenheim");
+        let again = format!("{tips}\nnow ok\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 411");
+        let runner = on_save(&game, "A", &again).unwrap();
+        assert_eq!(text(&runner, 5233), "2 x");
+        let closed = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 380";
+        let runner = on_save(&game, "Probe1", closed).unwrap();
+        let notice = control(&game.dialogs[&380], 4730).unwrap();
+        assert_eq!(runner.host.view().text(notice), game.text(4592));
+    }
+
+    /// The betting office's season bets (dialog 410), in a game's first
+    /// eight half weeks — here A with its counter set to 5, as the
+    /// original was poked —: the first league's table with the
+    /// champions' odds by place ("FC Bayern München 3.0"), the cups'
+    /// names as the new game set them, the European championship left out
+    /// in 2025 and the world's shown; the trainer chosen takes the odds of
+    /// the row below his, as the game does; the stakes stop where the
+    /// season's leave no room: with 150 € and four bets of 10 €, the
+    /// champion's at 100 €.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_betting_office_takes_season_bets() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-bets", |records| records.globals.set_half_weeks(5));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&410];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let items = |runner: &Runner, id: u16| runner.host.view().combo(control(dialog, id).unwrap()).unwrap().items.clone();
+        let open = "now click bar 16\nuntil dialog 175\nnow choose 5572 1\nuntil dialog 410";
+        let Some(runner) = on_save(&game, "season-bets", open) else { return };
+        assert_eq!(text(&runner, 9947), "ANSTOSS 3 - Wettbüro Saison Toni Lubiniecki");
+        assert_eq!([6284, 6285, 5282].map(|id| text(&runner, id)), ["Champions League", "Europa League", "99.300 €"]);
+        assert_eq!(items(&runner, 5149)[..3], [game.text(4945), "FC Bayern München\t3.0", "Bayer 04 Leverkusen\t5.4"]);
+        assert_eq!(items(&runner, 5167)[..3], [game.text(4945), " 1\t2.1", " 2\t1.5"]);
+        assert_eq!(items(&runner, 5246)[1], "Brasilien\t1.7");
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[control(dialog, id).unwrap()].hidden;
+        assert!(hidden(&runner, 5243) && hidden(&runner, 5242) && !hidden(&runner, 5246));
+        let chosen = format!(
+            "{open}\nnow spin 5148 up\nnow spin 5148 up\nnow spin 5148 up\nnow row 5149 1\nnow row 5164 1\n\
+             now row 5167 1\nnow row 5246 1"
+        );
+        let runner = on_save(&game, "season-bets", &chosen).unwrap();
+        assert_eq!(text(&runner, 5150), " 30 €");
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let bets = a3_core::betting::season_bets(records, 0);
+            let bayern = records.teams.iter().find(|t| t.name() == "FC Bayern München").unwrap().number();
+            assert_eq!(bets.pages[0].champion, bayern as i16);
+            assert_eq!(bets.pages[0].stakes[0], 30);
+            let offer = a3_core::betting::season_offer(records, 0).unwrap();
+            assert_eq!((bets.pages[0].trainer, bets.pages[0].trainer_odds), (offer.trainers[0].id, offer.trainers[1].odds));
+            let manager = &records.managers[0];
+            assert_eq!((bets.place, bets.place_club), (1, (manager.team() as i16, manager.country() as i16)));
+            assert_eq!(bets.cups[3], 0);
+        }
+        let root = patched(&dir, "A", "season-cap", |records| {
+            records.globals.set_half_weeks(5);
+            records.managers[0].set_cash(150);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let capped = format!(
+            "{open}\nnow spin 5165 up\nnow spin 5237 up\nnow spin 5239 up\nnow spin 5245 up\n{}",
+            "now spin 5148 up\n".repeat(12)
+        );
+        let runner = on_save(&game, "season-cap", &capped).unwrap();
+        assert_eq!(text(&runner, 5150), " 100 €");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The help (dialog 423) behind the honours page's question mark, as
+    /// the original shows it on A: the window's topic, "Persönliche
+    /// Erfolge", fifteen steps of the bar long; thirteen steps down the
+    /// button before "Siehe auch" leads to "Rechtsformen der Vereine",
+    /// the black text beside it nowhere; "Historie" returns to where the
+    /// bar stood; the contents and the index hold no history.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_help_shows_a_windows_topic_and_follows_its_links() {
+        let game = game();
+        let dialog = &game.dialogs[&423];
+        let title = |runner: &Runner| runner.host.view().text(control(dialog, 6476).unwrap()).to_owned();
+        let bar = |runner: &Runner| {
+            let value = runner.host.view().value(control(dialog, 5142).unwrap()).copied().unwrap();
+            (value.value, value.range)
+        };
+        let open = "now click bar 16\nuntil dialog 175\nnow click at 623 11\nuntil dialog 423";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        assert_eq!(runner.host.view().text(control(dialog, 9947).unwrap()), "ANSTOSS 3 - Hilfe Version 1.40/1.30");
+        assert_eq!((title(&runner).as_str(), bar(&runner)), ("Persönliche Erfolge", (0, (0, 15))));
+        let down = format!("{open}\n{}", "now click at 469 454\n".repeat(13));
+        let runner = on_save(&game, "A", &format!("{down}now click at 100 349")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).0), ("Persönliche Erfolge", 13));
+        let button = format!("{down}now click at 29 349");
+        let runner = on_save(&game, "A", &button).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner)), ("Rechtsformen der Vereine", (0, (0, 0))));
+        let runner = on_save(&game, "A", &format!("{button}\nnow choose 6164 0")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).0), ("Persönliche Erfolge", 13));
+        let pages = format!("{button}\nnow press 5143\nnow press 5139\nnow choose 6164 0");
+        let runner = on_save(&game, "A", &pages).unwrap();
+        assert_eq!(title(&runner), "Persönliche Erfolge");
+        let runner = on_save(&game, "A", &format!("{open}\nnow press 5139")).unwrap();
+        assert_eq!((title(&runner).as_str(), bar(&runner).1), ("Index", (0, 126)));
+    }
+
+    /// A loaded manager keeps the national team the save names: his
+    /// record's +0x1f72 (the manager object's +0x17e6, whose name the
+    /// honours page writes with text 5566, `FUN_006a426b`) turns into the
+    /// season's `national_team`; a save naming none leaves him without
+    /// one. No kept save names a team, so the test pokes Germany (14)
+    /// into a copy of Toni.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_loaded_manager_keeps_his_national_team() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let game = game();
+        let Some(runner) = on_save(&game, "Toni", "") else { return };
+        assert_eq!(
+            runner.host.state().season.as_ref().unwrap().managers[0].national_team,
+            None,
+            "Toni names no national team"
+        );
+        let root = patched(&dir, "Toni", "national", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let runner = on_save(&game, "national", "").unwrap();
+        let state = runner.host.state();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.managers[0].national_team, Some(14), "the season's national team");
+        assert!(season.managers[0].club.is_some(), "he still stands at his club");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The season's end: A set one day before its top league's last
+    /// matchday. Past the last matchday every club settles its season
+    /// (`FUN_006219d2`) — Union's result taxed at the save's 29 %, the rest
+    /// its newest past result — and the game brings its managers with a
+    /// club the yearly statement — the event 0x12d (`FUN_006742e0`, opened
+    /// by `FUN_004a141c`): dialog 417 without the bar, with its OK instead,
+    /// hiding the Spenden and black cash box buttons, keeping the
+    /// Ermittlung combo on "Aktuell", and below the rows the tax booked,
+    /// in words and figures.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_statements_the_tax() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-statement", |records| {
+            records.globals.set_day(320);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // The week's finances, the whistle, the week run out past the
+        // last matchday, and the statement comes before the new week.
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417";
+        let Some(runner) = on_save(&game, "season-statement", then) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, 417, "{log}");
+        let dialog = &game.dialogs[&417];
+        let view = runner.host.view();
+        // The statement mode: OK up, bar and picture buttons off, the
+        // finding combo disabled, and the tax told below the rows.
+        let shown = |id: u16| !view.controls[control(dialog, id).unwrap()].hidden;
+        assert!(shown(1), "the statement keeps its OK");
+        assert!(!shown(9930), "the statement comes without the bar");
+        assert!(!shown(2222), "the statement hides the Spenden button");
+        assert!(!shown(2224), "the statement hides the black cash box button");
+        assert!(view.combo(control(dialog, 2226).unwrap()).unwrap().disabled, "{log}");
+        // The settlement's tax: 29 % of the result before it, which is
+        // what is left of it plus the tax.
+        let (tax, left, rate) = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let team = &records.teams[usize::from(records.managers[0].team())];
+            (a3_core::finances::tax_paid(team), team.get::<i64>(0x908), records.globals.get::<u8>(0xb5dfa9))
+        };
+        assert_eq!(rate, 29);
+        assert!(tax > 0, "Union's season is taxed");
+        assert_eq!(i64::from(tax), (f64::from(rate) * (left + i64::from(tax)) as f64 / 100.0) as i64);
+        let line = view.text(control(dialog, 1621).unwrap());
+        let amount = crate::screens::finances::money32(&game, tax);
+        assert!(line.contains(&amount), "the tax line reads {line}, not {amount}");
+        // The statement has shown itself once in this game.
+        assert!(runner.host.state().season.as_ref().unwrap().statement, "{log}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// OK past the statement opens the new season: the game walks on from
+    /// day 0 of the year that follows, the statement stands free to come
+    /// again at the next season's end, and the top league of the country
+    /// played stands with no matchday played. The statement itself the
+    /// test above shows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_statement_opens_the_new_season() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-open", |records| {
+            records.globals.set_day(320);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // As in the tax test up to the statement, then OK.
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1";
+        let Some(mut runner) = on_save(&game, "season-open", then) else { return };
+        // The cycle opens the new season behind the press: wait for its
+        // next screen before reading the state.
+        let _ = runner.settle();
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        assert_eq!(season.year, 2026, "{log}");
+        assert!(!season.statement, "the statement stands free again");
+        assert!(season.day < 7, "the game walks on from day {}", season.day);
+        assert_eq!(records.globals.start_year(), 2026);
+        let day = usize::try_from(records.globals.day()).ok();
+        assert_eq!(day, Some(season.day), "the day counted from the new season's 0");
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        let top = a3_core::opponent::League::of(records, nation, 0).unwrap();
+        assert_eq!(top.played(), 0, "the league opens with none played");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The first player of the first club abroad the game keeps without
+    /// its league (a country of the second kind), by id.
+    fn kept_player(records: &a3_core::records::Records) -> Option<u16> {
+        let country = (1..0x75usize).find(|&c| records.countries.kind(c) == 2 && records.countries.team_count(c) > 0)?;
+        records.team(country as u16, 0)?.players().first().copied()
+    }
+
+    /// Past the season's statement a kept country's player has closed his
+    /// season and opened the next: his season's goals and cards at
+    /// nought, his form of the season one week of 10, his contract in its
+    /// last year run on by three or four, the count of his seasons up by
+    /// two (the close and the development) and his strength at most a
+    /// point from where it stood. The closed season stays in the
+    /// all-time table of the first league and is the archive's newest; the
+    /// leagues have taken their promoted and relegated clubs, and the cup
+    /// its first round.
+    /// The game plays on season after season: from A's turn (its day set
+    /// to 320) the replica plays five more seasons to the end, each turn's
+    /// steps on its own state, and stands in the sixth with its counters
+    /// rolled — the year on, the half weeks counted, the league open, the
+    /// European cups entered, every played club's squad within its bounds,
+    /// the squads of both kinds of countries as full as they were, and the
+    /// human club's squad in the season as in its records.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_game_plays_on_season_after_season() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "seasons-on", |records| records.globals.set_day(320));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
+                        on 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\n\
+                        on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
+                        on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
+                        on 381 wait\n";
+        let turns = "until dialog 417\nnow press 1\n".repeat(5);
+        let then = format!(
+            "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
+             now press 1\n{turns}until day 30"
+        );
+        let Some(mut runner) = on_save(&game, "seasons-on", &then) else { return };
+        let _ = runner.settle();
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(records.globals.seasons(), 7, "{log}");
+        assert_eq!(records.globals.start_year(), 2031);
+        assert_eq!(season.day, 30);
+        assert_eq!(records.globals.half_weeks(), 8);
+        let league = a3_core::opponent::League::of(records, 14, 0).unwrap();
+        assert_eq!(league.teams(), 18);
+        let entrants = records.block("0x8e7c88").unwrap();
+        let count = |at: usize| i16::from_le_bytes([entrants[at], entrants[at + 1]]);
+        assert_eq!((count(0), count(2), count(6)), (16, 32, 82), "the European cups entered");
+        for c in [14u16, 16, 20, 28, 63] {
+            for t in 0..records.countries.team_count(usize::from(c)).max(0) as u16 {
+                let n = records.team(c, t).unwrap().players().len();
+                assert!(n <= 40, "club {c}/{t} with {n} players");
+            }
+        }
+        // The squads hold their size: the thin ones take new players.
+        let mut sizes = [(0usize, 0usize); 3];
+        for c in 1..0x75u16 {
+            let kind = usize::from(records.countries.kind(usize::from(c)) as u8).min(2);
+            for t in 0..records.countries.team_count(usize::from(c)).max(0) as u16 {
+                if let Some(team) = records.team(c, t) {
+                    sizes[kind].0 += 1;
+                    sizes[kind].1 += team.players().len();
+                }
+            }
+        }
+        let average = |(n, sum): (usize, usize)| sum as f64 / n.max(1) as f64;
+        assert!(average(sizes[1]) > 20.0 && average(sizes[2]) > 15.0, "squads of {sizes:?}");
+        // Each human club stands as its records have it after the turns.
+        for (&(slot, index), club) in &season.clubs {
+            let nation = game.data.world.country(slot).unwrap().nation;
+            let team = records.team(nation, index as u16).unwrap();
+            let names: Vec<String> =
+                team.players().iter().map(|&id| records.name(records.player(id).unwrap().last_name()).to_owned()).collect();
+            let state: Vec<String> = club.players.iter().map(|p| p.last_name.clone()).collect();
+            assert_eq!(state, names, "club {slot}/{index}'s squad");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_rolls_the_kept_countries_players_over() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut before = None;
+        let (mut eternal, mut running, mut closed) = (Vec::new(), 0, Vec::new());
+        let mut moved: (Vec<i16>, Vec<i16>) = (Vec::new(), Vec::new());
+        let root = patched(&dir, "A", "season-kept", |records| {
+            records.globals.set_day(320);
+            let nation = u16::try_from(records.globals.main_country()).unwrap();
+            eternal = a3_core::statistics::eternal(records, nation);
+            let league = a3_core::opponent::League::of(records, nation, 0).unwrap();
+            let table = a3_core::statistics::table(records, &league, a3_core::statistics::ALL);
+            running = table.iter().map(|row| row.games).sum::<i32>();
+            closed = table
+                .iter()
+                .map(|r| (r.team as u8, r.games as i16, r.points as i16, r.goals_for as i16, r.goals_against as i16))
+                .collect();
+            closed.sort();
+            let level1 = a3_core::opponent::League::of(records, nation, 1).unwrap();
+            let second = a3_core::statistics::table(records, &level1, a3_core::statistics::ALL);
+            moved = (
+                table.iter().rev().take(3).map(|r| r.team).collect(),
+                second.iter().take(3).map(|r| r.team).collect(),
+            );
+            let id = kept_player(records).expect("a kept country's player");
+            let year = records.globals.start_year();
+            let p = records.player_mut(id).unwrap();
+            p.set_goals([5, 1, 2]);
+            p.set_league_cards([3, 1, 0]);
+            p.set_season_form(130);
+            p.set_season_form_weeks(12);
+            p.set_contract(year + 1);
+            p.put::<u8>(0x161, 2);
+            before = Some((id, p.strength(), year));
+        });
+        let (id, strength, year) = before.unwrap();
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1";
+        let Some(mut runner) = on_save(&game, "season-kept", then) else { return };
+        let _ = runner.settle();
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.globals.start_year(), year + 1, "{log}");
+        let p = records.player(id).unwrap();
+        assert_eq!((p.goals(), p.league_cards()), ([0; 3], [0; 3]), "player {id}");
+        assert_eq!((p.season_form(), p.season_form_weeks()), (10, 1));
+        let left = i32::from(p.contract() & 0xfff) - i32::from(year + 1);
+        assert!((3..=3 + i32::from(strength) / 3).contains(&left), "{left} years left");
+        assert_eq!(p.get::<u8>(0x161), 4);
+        assert!(p.strength().abs_diff(strength) <= 1, "{} from {strength}", p.strength());
+        // The closed season stays in the all-time table, which stands as
+        // it stood before the turn (the patched day skips the matchdays
+        // between): its season's games now kept, none running.
+        let nation = u16::try_from(records.globals.main_country()).unwrap();
+        assert_eq!(a3_core::statistics::eternal(records, nation), eternal);
+        assert!(running > 0, "the closed season had games to keep");
+        // The Historisches' newest season is the one just closed.
+        let archived = a3_core::statistics::final_table(records, nation, 0, 9).unwrap();
+        let mut rows: Vec<_> =
+            archived.rows.iter().map(|r| (r.team, r.games, r.points, r.goals_for, r.goals_against)).collect();
+        rows.sort();
+        assert_eq!(rows, closed, "the closed season archived");
+        // The Bundesliga's bottom three play the 2. Bundesliga now, its
+        // top three the Bundesliga, and every club stands at its list's
+        // level and place.
+        let level = |team: i16| records.team(nation, team as u16).unwrap().level();
+        assert!(moved.0.iter().all(|&t| level(t) == 1), "relegated {:?}", moved.0);
+        assert!(moved.1.iter().all(|&t| level(t) == 0), "promoted {:?}", moved.1);
+        for l in 0..records.countries.leagues(usize::from(nation)) as u8 {
+            let league = a3_core::opponent::League::of(records, nation, l).unwrap();
+            for place in 0..league.teams() {
+                let team = records.team(nation, league.team(place) as u16).unwrap();
+                assert_eq!((team.level(), usize::from(team.league_place())), (l, place));
+            }
+        }
+        // The cup's first round stands drawn: 32 ties of the 64 entrants.
+        let slot = records.countries.slot(usize::from(nation));
+        let cup = records.block(&format!("{:#x}[{slot}]", a3_core::opponent::CUPS_AT)).unwrap();
+        let ties = (0..32)
+            .filter(|q| {
+                let at = a3_core::opponent::PAIRINGS + q * a3_core::opponent::PAIRING;
+                cup[at] != 0 && cup[at + 4] != 0
+            })
+            .count();
+        assert_eq!(ties, 32, "the cup's first round drawn");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The merchandise calculation's "Details" opens the club's own range
+    /// (56): one article bought at the order size, then every one at the
+    /// next size with its rebate, each booked as merchandise bought at once;
+    /// OK writes the orders back into the human slot's range, in the weeks
+    /// each kind takes.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_merchandise_range_orders_its_articles() {
+        use a3_core::merchandise::{Range, delivery_weeks};
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56";
+        let Some(before) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&56];
+        let view = before.host.view();
+        // Both men hired on A: ticked and locked.
+        for id in [1496, 1497] {
+            let check = view.check(control(dialog, id).unwrap()).unwrap();
+            assert!(check.checked && check.disabled, "{id}");
+        }
+        let rows = &view.list(control(dialog, 1495).unwrap()).unwrap().rows;
+        assert_eq!(rows.len(), 13);
+        assert_eq!(rows[0], "Trikots\t40,--\t72,--\t8437\t0\t270\t19440\t2");
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = records.humans().next().unwrap();
+            let team = records.team(manager.country(), manager.team()).unwrap();
+            let bought = team.get::<i32>(0x308 + a3_core::finances::CLUB_TO_TEAM);
+            (bought, Range::of(records, team).unwrap(), delivery_weeks(records))
+        };
+        let (bought, range, weeks) = state(&before);
+        // Trikots: 500 at 40 € with no rebate, due in two weeks.
+        let one = format!("{open}\nnow row 1495 0\nnow press 1505\nnow press 1\nuntil dialog 115");
+        let (after, ordered, _) = state(&on_save(&game, "A", &one).unwrap());
+        assert_eq!(after - bought, 20_000);
+        assert_eq!(weeks[0], 2);
+        assert_eq!(ordered.article(0).unwrap().ordered, 500);
+        // All at 1.000 pieces, 10% off each.
+        let all = format!("{open}\nnow spin 1499 up\nnow press 1504\nnow press 1\nuntil dialog 115");
+        let (after, ordered, _) = state(&on_save(&game, "A", &all).unwrap());
+        let tables = &game.rules.merchandise;
+        let cost: i32 = range
+            .articles()
+            .iter()
+            .map(|a| (f64::from(tables.kinds[a.kind].bought_at) * 1000.0 / 100.0 * 0.9) as i32)
+            .sum();
+        assert_eq!(after - bought, cost);
+        for a in range.articles() {
+            assert_eq!(ordered.article(a.place).unwrap().ordered, a.ordered + 1000, "{}", a.place);
+        }
+    }
+
+    /// A double click on an article of the range opens it (57): its price
+    /// stepped up twice and the box ticked, OK keeps the markup and leaves
+    /// it out of buying all; given up, after the question, it leaves the
+    /// range, and 56's OK writes both back.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn an_article_takes_its_price_or_leaves_the_range() {
+        use a3_core::merchandise::Range;
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56\n\
+                    now dbl row 1495 6\nuntil dialog 57";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&57];
+        let text = |id| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(1509), "Schlafanzug");
+        let figures = [1511, 1512, 1513, 1514].map(text);
+        assert_eq!(figures, ["60,--", "60,--", "25,--", "886"]);
+        assert_eq!(text(1519), "Max. Verkauf: 92");
+        let range = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let manager = records.humans().next().unwrap();
+            Range::of(records, records.team(manager.country(), manager.team()).unwrap()).unwrap()
+        };
+        let place = range(&runner).articles()[6].place;
+        let kept = format!(
+            "{open}\nnow spin 1516 up\nnow spin 1516 up\nnow click 1515\nnow ok\nuntil dialog 56\n\
+             now press 1\nuntil dialog 115"
+        );
+        let after = range(&on_save(&game, "A", &kept).unwrap());
+        let a = after.article(place).unwrap();
+        // 60 € is the kind's price; a euro a step, 61 € first at +2%,
+        // 62 € at +4%.
+        assert_eq!((a.markup, a.excluded), (4, true));
+        let gone = format!(
+            "{open}\nnow press 1517\nuntil dialog 384\nnow ok\nuntil dialog 56\n\
+             now press 1\nuntil dialog 115"
+        );
+        let after = range(&on_save(&game, "A", &gone).unwrap());
+        assert!(after.article(place).is_none());
+        assert_eq!(after.articles().len(), 12);
+    }
+
+    /// 56's "Details" tells the range's season (372): takings, costs and
+    /// the profit, a loss with its sign, after 500 scarves were bought.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_merchandise_info_tells_the_season() {
+        let game = game();
+        let then = "now click bar 9\nuntil dialog 417\nnow click at 88 133\nuntil dialog 125\n\
+                    now click at 479 439\nuntil dialog 115\nnow press 2204\nuntil dialog 56\n\
+                    now row 1495 2\nnow press 1505\nnow press 1506\nuntil dialog 372";
+        let Some(runner) = on_save(&game, "A", then) else { return };
+        let dialog = &game.dialogs[&372];
+        let text = |id| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let figures = [4675, 4676, 4677, 4678, 4679].map(text);
+        assert_eq!(figures, ["314.572 €", " 0 €", "986.535 €", "- 671.963 €", " 0 €"]);
+        // Back on 56 its list keeps going as it was.
+        let back = format!("{then}\nnow ok\nuntil dialog 56");
+        on_save(&game, "A", &back).unwrap();
+    }
+
+    /// The Finanzen screen's black cash box (442): the next match's
+    /// referee and opponent named, the day's teams of the country to
+    /// incite, what the box holds; a slider's step sets its amount and
+    /// shows its OK, and the two shares reach the manager at once — the
+    /// cup opponents' the other way round.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_cash_box_shows_its_uses() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let Some(runner) = on_save(&game, "A", open) else { return };
+        let dialog = &game.dialogs[&442];
+        let view = runner.host.view();
+        let text = |id| view.text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(5546), "Schiedsrichter Robert Kempter bestechen");
+        assert_eq!(text(5547), "Gegner RB Leipzig bestechen");
+        assert_eq!(text(5528), "220.757 €");
+        assert_eq!((text(5529), text(5530)), ("3.0%".to_owned(), "45.0%".to_owned()));
+        let teams = &view.combo(control(dialog, 5542).unwrap()).unwrap().items;
+        assert_eq!(&teams[..3], ["Bitte auswählen", "Eintracht Frankfurt", "1.FC Heidenheim"]);
+        let then = format!("{open}\nnow slide 5539 1\nnow spin 5545 up\nnow spin 5544 down");
+        let runner = on_save(&game, "A", &then).unwrap();
+        let view = runner.host.view();
+        let text = |id| view.text(control(dialog, id).unwrap()).to_owned();
+        assert_eq!(text(5540), " 100 €");
+        assert!(!view.controls[control(dialog, 5551).unwrap()].hidden);
+        // One step down shows 2.8% as the original does: 29 thousandths
+        // as a float times a hundred, chopped.
+        assert_eq!((text(5529), text(5530)), ("2.8%".to_owned(), "45.1%".to_owned()));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let m = records.humans().next().unwrap();
+        assert_eq!(((m.gate_kept() * 1000.0) as i32, (m.cup_share_kept() * 1000.0) as i32), (29, 49));
+    }
+
+    /// The black cash box's money into the books — the gates' takings as
+    /// booked — and into the manager's own pocket.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_cash_goes_into_the_books_or_the_pocket() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let figures = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            (m.black_cash(), m.cash(), team.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM))
+        };
+        let Some(before) = on_save(&game, "A", open) else { return };
+        let (cash, own, gates) = figures(&before);
+        let then = format!("{open}\nnow slide 5533 3\nnow press 5555\nnow slide 5534 12\nnow press 5556");
+        let after = figures(&on_save(&game, "A", &then).unwrap());
+        // Three steps of a hundred to the books, twelve to the pocket.
+        assert_eq!(after, (cash - 300 - 1200, own + 1200, gates + 300));
+    }
+
+    /// The referee asked: A's does not take money, and only says so —
+    /// his section closed for the season, the box untouched. One the news
+    /// made corruptible (his +8) takes 300.000 in a first league for sure:
+    /// the box pays and he promises a favour.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_referee_takes_the_black_money_or_not() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let ask = format!("{open}\nnow slide 5539 1\nnow press 5551\nuntil dialog 380");
+        let Some(refused) = on_save(&game, "A", &ask) else { return };
+        assert_eq!(state(&refused), (220_757, 0x80));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "corrupt-referee", |records| {
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            let referee = team.referee();
+            records.block_mut(&format!("0x19f4ed8[{referee}]")).unwrap()[8] = 0x80;
+            records.managers[0].set_black_cash(400_000);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        // 300.000: a hundred steps of hundreds, ninety of thousands, twenty
+        // of ten thousands: step 210.
+        let ask = format!("{open}\nnow slide 5539 210\nnow press 5551\nuntil dialog 380");
+        let Some(taken) = on_save(&patched_game, "corrupt-referee", &ask) else { return };
+        let (cash, closed) = state(&taken);
+        assert_eq!(cash, 100_000);
+        assert_eq!(closed & 0xc0, 0xc0);
+        assert_eq!((closed & 0x1c00_0000).count_ones(), 1, "{closed:#x}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The next opponent's captain asks 500.000 on A's day: a hundred is
+    /// refused and costs nothing; 600.000 from a fuller box is taken.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_opponent_takes_the_black_money_above_his_price() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let ask = format!("{open}\nnow slide 5532 1\nnow press 5553\nuntil dialog 380");
+        let Some(refused) = on_save(&game, "A", &ask) else { return };
+        assert_eq!(state(&refused), (220_757, 0x20));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "rich-box", |records| {
+            records.managers[0].set_black_cash(700_000);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        // 600.000: step 100 + 90 + 50.
+        let ask = format!("{open}\nnow slide 5532 240\nnow press 5553\nuntil dialog 380");
+        let Some(taken) = on_save(&patched_game, "rich-box", &ask) else { return };
+        assert_eq!(state(&taken), (100_000, 0x30));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A player of the next opponent: Gulácsi refuses a hundred on A —
+    /// his scruples hold, and a hundred is less than his price — and,
+    /// his scruples patched away, takes it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_player_of_the_opponent_takes_the_black_money_or_not() {
+        let game = game();
+        let ask = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442\n\
+                   now row 5541 1\nnow slide 5538 1\nnow press 5554\nuntil dialog 380";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed(), m.bribe_target())
+        };
+        let Some(refused) = on_save(&game, "A", ask) else { return };
+        let (cash, closed, target) = state(&refused);
+        assert_eq!((cash, closed), (220_757, 0x8));
+        let name = refused.host.state().records.as_ref().unwrap().known_as(target);
+        assert_eq!(name.as_deref(), Some("Péter Gulácsi"));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "no-scruples", |records| {
+            records.player_mut(target).unwrap().set_scruples(0);
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(taken) = on_save(&patched_game, "no-scruples", ask) else { return };
+        assert_eq!(state(&taken), (220_657, 0xc, target));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Another team's opponents incited: nothing before a team is chosen;
+    /// a hundred falls short of a hundred times the next opponent's average
+    /// salary on A, and is enough once their salaries are patched to one.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_money_incites_another_teams_opponents_or_not() {
+        let game = game();
+        let open = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let m = state.records.as_ref().unwrap().humans().next().unwrap().clone();
+            (m.black_cash(), m.illegal_closed())
+        };
+        let unchosen = format!("{open}\nnow slide 5531 1\nnow press 5552");
+        let Some(runner) = on_save(&game, "A", &unchosen) else { return };
+        assert_eq!(state(&runner), (220_757, 0));
+        let ask = format!("{open}\nnow row 5542 1\nnow slide 5531 1\nnow press 5552\nuntil dialog 380");
+        assert_eq!(state(&on_save(&game, "A", &ask).unwrap()), (220_757, 0x2));
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "cheap-opponents", |records| {
+            let m = records.humans().next().unwrap();
+            let team = records.team(m.country(), m.team()).unwrap();
+            let next = records.team(team.next_country().into(), team.next_number() as u16).unwrap();
+            for id in next.players() {
+                records.player_mut(id).unwrap().set_salary(1);
+            }
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(taken) = on_save(&patched_game, "cheap-opponents", &ask) else { return };
+        assert_eq!(state(&taken), (220_657, 0x3));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An attack on another human (Probe1, two managers): Anna Alpha
+    /// chosen, a player put out for 400.000 — too dear for an empty box,
+    /// ordered from a patched one, and closed for the season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_black_money_orders_an_attack_on_another_human() {
+        let game = game();
+        let ask = "now click bar 9\nuntil dialog 417\nnow press 2224\nuntil dialog 442\n\
+                   now choose 5558 0\nnow choose 5550 0\nnow press 5557\nuntil dialog 380";
+        let state = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let current = state.season.as_ref().unwrap().current;
+            let m = records.managers[records.human_slot(current).unwrap()].clone();
+            (m.black_cash(), m.illegal_closed(), m.attacked())
+        };
+        let Some(dear) = on_save(&game, "Probe1", ask) else { return };
+        let dialog = &game.dialogs[&380];
+        let text = dear.host.view().text(control(dialog, 4730).unwrap()).to_owned();
+        assert_eq!(text, "Für diesen Anschlag brauchen Sie mehr Geld!");
+        let (cash, closed, anna) = state(&dear);
+        assert_eq!((cash, closed), (0, 0));
+        assert!(anna > 0, "the human chosen is kept at once");
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Probe1", "rich-attack", |records| {
+            for m in &mut records.managers {
+                m.set_black_cash(500_000);
+            }
+        });
+        let mut patched_game = Game::load(&root).unwrap();
+        compose(&mut patched_game);
+        let Some(ordered) = on_save(&patched_game, "rich-attack", ask) else { return };
+        assert_eq!(state(&ordered), (100_000, 0x8000_0000, anna));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The black cash box fills from the human's home league gates: with
+    /// all of the gate kept back, the takings stay where they were and the
+    /// box gains it all; with A's 3% the box gains three hundredths of the
+    /// gates, the rest booked. Played on copies, a fortnight on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn home_gates_fill_the_black_cash_box() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 14 days";
+        let figures = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let m = records.humans().next().unwrap();
+            let t = records.team(m.country(), m.team()).unwrap();
+            (m.black_cash(), t.get::<i32>(0x230 + a3_core::finances::CLUB_TO_TEAM), t.home_games())
+        };
+        for (name, share) in [("gate-all", 1.0f32), ("gate-some", 0.03)] {
+            let root = patched(&dir, "A", name, |records| records.managers[0].set_gate_kept(share));
+            let mut game = Game::load(&root).unwrap();
+            compose(&mut game);
+            let Some(before) = on_save(&game, name, "") else { return };
+            let (box0, booked0, home0) = figures(&before);
+            let after = on_save(&game, name, play).unwrap();
+            let (box1, booked1, home1) = figures(&after);
+            assert!(home1 > home0, "a home game in a fortnight");
+            let (kept, rest) = (i64::from(box1 - box0), i64::from(booked1 - booked0));
+            if share == 1.0 {
+                assert!(kept > 0 && rest == 0, "{kept} {rest}");
+            } else {
+                let gates = kept + rest;
+                assert!((kept - gates * 3 / 100).abs() <= i64::from(home1 - home0), "{kept} of {gates}");
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

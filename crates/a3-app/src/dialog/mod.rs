@@ -573,13 +573,25 @@ fn press(
                 return;
             };
             let Some(&shown) = view.value(control) else { return };
-            // The hit is relative to the track, from -0.5 to 0.5. The handle
-            // jumps under the pointer and stays held there.
+            // The hit is relative to the track, from -0.5 to 0.5. Beside
+            // the handle it pages the slider; on it, it takes hold.
             let along = press.hit.position.map_or(0.5, |p| p.x + 0.5);
+            let r = c.rect;
+            let x = r.min.x + slider::SLIDER_ARROW + along * (r.width() - 2.0 * slider::SLIDER_ARROW);
+            if let Some(value) = slider::paged(c, &shown, x) {
+                pending.0.push((Target::SliderAt { control, value }, 1));
+                return;
+            }
             let left = slider::handle_under(c, along);
             let value = slider::value_at(c, &shown, left);
             pending.0.push((Target::SliderAt { control, value }, 1));
             held.drag = Some((control, left, zoom));
+        }
+        // A drawn picture is told where on it the pointer pressed.
+        Target::Point { control, .. } => {
+            let hit = press.hit.position.map_or(Vec2::splat(0.5), |p| Vec2::new(p.x, p.y) + 0.5);
+            let at = hit * classic.size();
+            pending.0.push((Target::Point { control, x: at.x as i16, y: at.y as i16 }, press.count));
         }
         Target::Option { control, item } if is_bar(&game, view.id, control) => {
             if view.bar(control).is_some_and(|b| b.item_on(item)) && SoundEffects::on(effects) {

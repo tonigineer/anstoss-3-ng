@@ -37,7 +37,10 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
                 first_name: m.first_name(),
                 last_name: m.last_name(),
                 club,
-                national_team: None,
+                // The save names the national team he took (the manager
+                // record's +0x1f72); only a country number above nought
+                // means one.
+                national_team: u16::try_from(m.national_team()).ok().filter(|&n| n > 0),
                 level: m.level().into(),
                 difficulty: DIFFICULTY,
                 negotiating: 0,
@@ -74,6 +77,11 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         // before its matches.
         before_match: records.globals.resume() == MATCHES_RESUMED,
         random,
+        donations: Vec::new(),
+        statement: false,
+        // The game stands freshly loaded: its load's hold (`CDiLoad`)
+        // keeps the first week end from rolling the market.
+        week_hold: true,
     }
 }
 
@@ -86,7 +94,12 @@ pub fn club(records: &Records, data: &Data, (slot, index): (usize, usize)) -> Op
     Some(club_state(records, team, data))
 }
 
-fn club_state(records: &Records, team: &Team, data: &Data) -> ClubState {
+/// Any club's state as the line-up's code works on it.
+pub fn club_state_of(records: &Records, team: &Team, data: &Data) -> ClubState {
+    club_state(records, team, data)
+}
+
+pub(crate) fn club_state(records: &Records, team: &Team, data: &Data) -> ClubState {
     let squad: Vec<(u16, &records::Player)> =
         team.players().into_iter().filter_map(|id| Some((id, records.player(id)?))).collect();
     let players = squad.iter().map(|(_, record)| player(records, record)).collect();
@@ -304,7 +317,7 @@ pub fn any_player(records: &Records, data: &Data, id: u16) -> Option<(Player, Fi
 /// Days from today to a year and a day of the year, as `FUN_00636638`
 /// reckons them: none for a day gone by. (The original takes the days of
 /// the years in between from a table, `DAT_00b1f85e`; here they have 365.)
-fn days_to(globals: &Globals, [year, day]: [u16; 2]) -> i32 {
+pub(crate) fn days_to(globals: &Globals, [year, day]: [u16; 2]) -> i32 {
     let [_, _, this_year] = globals.date();
     let today = i32::from(globals.day_of_year());
     let days = match year.cmp(&this_year) {

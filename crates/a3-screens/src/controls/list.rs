@@ -10,7 +10,7 @@ use a3_files::rch::{Align, Control, Kind};
 
 use super::combo;
 use super::player_box::{self, PlayerBox};
-use crate::classic::{Paint, SCROLL_DOWN, SCROLL_UP, TEXT, TEXT_HOVER, columns, fill, paste};
+use crate::classic::{LIST_GAP, Paint, SCROLL_DOWN, SCROLL_UP, TEXT, TEXT_HOVER, columns, fill, paste};
 use crate::pointer::{Geometry, Target};
 
 /// Rows are as high as the dialog file says; this high where it says
@@ -54,8 +54,10 @@ pub const WHEEL_ROWS: i32 = 3;
 /// first scheme's red shows blue, the fifth's cyan yellow.
 const SELECTION: [[u8; 3]; 6] =
     [[0, 0, 255], [255, 0, 0], [200, 200, 200], [0, 255, 0], [255, 255, 0], [200, 200, 200]];
-const TALL_ROW: f32 = 36.0;
-const TALL_ROW_INDENT: i32 = 12;
+/// Rows taller than this have their text and selection this far down
+/// (`FUN_007a7d9c`, `FUN_004b17b0(0, 0xc)`); their icons stay at the top.
+const TALL_ROW: f32 = 35.0;
+const TALL_ROW_DROP: i32 = 12;
 
 #[derive(Clone, Debug)]
 pub struct ListState {
@@ -255,6 +257,7 @@ impl ListState {
         for (row, line) in shown.enumerate() {
             let frame = &mut area;
             let (x, top) = (left, 1 + (row as f32 * row_height(control)) as i32);
+            let drop = if row_height(control) > TALL_ROW { TALL_ROW_DROP } else { 0 };
             let selected = self.selected == Some(self.scroll + row)
                 || self.marked.get(self.scroll + row).copied().unwrap_or(false);
             let ink = self.inks.get(self.scroll + row).copied().flatten();
@@ -267,8 +270,7 @@ impl ListState {
             let color = if selected {
                 let [r, g, b] =
                     self.selection.unwrap_or(SELECTION[scheme(control).min(SELECTION.len() - 1)]);
-                let indent = if row_height(control) >= TALL_ROW { TALL_ROW_INDENT } else { 0 };
-                let (x0, y0) = (x + indent, top - 1);
+                let (x0, y0) = (x, top - 1 + drop);
                 for py in y0.max(0)..(y0 + font.height() as i32).min(frame.height() as i32) {
                     for px in x0.max(0)..right.min(frame.width() as i32) {
                         let p = frame.get_pixel_mut(px as u32, py as u32);
@@ -286,18 +288,18 @@ impl ListState {
             };
             let cells = line.split('\t');
             // The text sits at the list's left edge, a pixel above the row.
-            let at = (x, top - 1);
+            let at = (x, top - 1 + drop);
             if self.spans.get(self.scroll + row).copied().unwrap_or(false) {
                 // A row of one column of its own, from the left edge across
                 // the row, another pixel up (`FUN_007a7d9c`'s other branch).
                 font.draw_clipped(frame, x, top - 2, line, color, false, right);
             } else {
-                columns(font, frame, at, cells, &self.tabs, &self.aligns, color, right);
+                columns(font, frame, at, cells, &self.tabs, &self.aligns, color, right, LIST_GAP);
             }
             // So do the icons, the keyed ones without their pure black.
             for &(left, id) in self.row_icons.get(self.scroll + row).into_iter().flatten() {
                 if let Some(icon) = paint.image(id) {
-                    let at = Vec2::new(x as f32 + left, at.1 as f32);
+                    let at = Vec2::new(x as f32 + left, (at.1 - drop) as f32);
                     if self.keyed.contains(&id) {
                         paste(frame, &crate::game::transparent_black(icon.clone()), at);
                     } else {

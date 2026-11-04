@@ -216,10 +216,18 @@ impl Classic {
                 combo.draw_list(&mut frame, &paint);
             }
         }
-        if let (Some((control, item)), Some(font)) = (view.tip, self.fonts.get(PLAIN_FONT)) {
-            let text = view.controls.get(control).and_then(|c| c.state.as_bar()?.tips.get(item));
-            if let (Some(text), Some(c)) = (text, dialog.controls.get(control)) {
-                bar::draw_tip(&mut frame, font, bar::symbol(c, item), text);
+        if let (Some((control, item)), Some(font)) = (view.tip, self.fonts.get(PLAIN_FONT))
+            && let Some(c) = dialog.controls.get(control)
+        {
+            // A bar item's tip sits over its symbol, a button's - the world
+            // map's points name their place - over its rectangle.
+            let shown = &view.controls[control];
+            let (text, at) = match shown.state.as_bar() {
+                Some(b) => (b.tips.get(item).map(String::as_str), bar::symbol(c, item)),
+                None => (shown.state.as_button().and_then(|b| b.tip.as_deref()), c.rect),
+            };
+            if let Some(text) = text {
+                bar::draw_tip(&mut frame, font, at, text);
             }
         }
         frame
@@ -400,6 +408,9 @@ pub(crate) fn fill(frame: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, color:
 /// column — or to the left, centred or to the right in a width of their
 /// own.
 #[allow(clippy::too_many_arguments)]
+/// How far short of the next column a list's left-set column is cut.
+pub(crate) const LIST_GAP: i32 = 4;
+
 pub(crate) fn columns<'a>(
     font: &BitmapFont,
     frame: &mut RgbaImage,
@@ -409,6 +420,7 @@ pub(crate) fn columns<'a>(
     aligns: &[Option<(Align, f32)>],
     color: Rgba<u8>,
     right: i32,
+    gap: i32,
 ) {
     for (i, cell) in cells.enumerate() {
         let Some(&tab) = tabs.get(i) else { break };
@@ -434,8 +446,10 @@ pub(crate) fn columns<'a>(
                 let clip = (left + width as i32).min(right);
                 font.draw_clipped(frame, left, y, cell, color, false, clip);
             }
+            // Short of the next column by the gap: four pixels in a list,
+            // none in a combo box's (410's champions run up to the odds).
             _ => {
-                let clip = tabs.get(i + 1).map_or(right, |&next| x + next as i32 - 4);
+                let clip = tabs.get(i + 1).map_or(right, |&next| x + next as i32 - gap);
                 font.draw_clipped(frame, left, y, cell, color, false, clip.min(right));
             }
         }

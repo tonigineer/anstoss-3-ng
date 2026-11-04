@@ -38,6 +38,7 @@ const SCRIPT_FLAG: &str = "--script";
 const ORIGINAL_FLAG: &str = "--original";
 const EXPLORE_FLAG: &str = "--explore";
 const SHOT_FLAG: &str = "--shot";
+const DRAWS_FLAG: &str = "--draws";
 const DEFAULT_PROBE_PORT: u16 = 47300;
 const SCREENS_FLAG: &str = "--screens";
 /// Where GOG's installer puts the game: in the home's Bottles prefix on
@@ -107,10 +108,10 @@ fn main() -> AppExit {
     // menu bar of its main screens, which the dialog file leaves out.
     dialog::compose(&mut game);
     if let Some(script) = &args.original {
-        return play(&game, script, Some(args.explore), None);
+        return play(&game, script, Some(args.explore), None, None);
     }
     if let Some(script) = &args.script {
-        return play(&game, script, None, args.shot.as_deref());
+        return play(&game, script, None, args.shot.as_deref(), args.draws.as_deref());
     }
     if args.export {
         return match dialog::export_backgrounds(&game) {
@@ -155,6 +156,9 @@ struct Args {
     explore: bool,
     /// Where `--script` saves the screen it ends on.
     shot: Option<PathBuf>,
+    /// Where `--script` writes the random draws it made, from the last
+    /// `random` action on ([`a3_core::random::draws_text`]).
+    draws: Option<PathBuf>,
     screens: bool,
 }
 
@@ -175,6 +179,8 @@ impl Args {
                 args.explore = true;
             } else if word == SHOT_FLAG {
                 args.shot = words.next().map(PathBuf::from);
+            } else if word == DRAWS_FLAG {
+                args.draws = words.next().map(PathBuf::from);
             } else if args.dir.is_none() {
                 args.dir = Some(PathBuf::from(word));
             }
@@ -204,8 +210,14 @@ impl Args {
 /// Plays a script without a window, on the replica or — with whether to
 /// explore — the original, and prints every screen that came up and every
 /// action. On the replica, `shot` saves the screen it ends on, drawn in the
-/// classic look.
-fn play(game: &Game, path: &Path, original: Option<bool>, shot: Option<&Path>) -> AppExit {
+/// classic look, and `draws` the random draws it made.
+fn play(
+    game: &Game,
+    path: &Path,
+    original: Option<bool>,
+    shot: Option<&Path>,
+    draws: Option<&Path>,
+) -> AppExit {
     let script = match std::fs::read_to_string(path) {
         Ok(text) => a3_screens::script::Script::parse(&text),
         Err(err) => {
@@ -231,7 +243,15 @@ fn play(game: &Game, path: &Path, original: Option<bool>, shot: Option<&Path>) -
             Err(err) => (Vec::new(), Err(err)),
         }
     } else {
+        a3_core::random::record(draws.is_some());
         let (runner, result) = a3_screens::script::Runner::play(game, &script);
+        if let Some(path) = draws {
+            let text = a3_core::random::draws_text(&a3_core::random::recorded());
+            if let Err(err) = std::fs::write(path, text) {
+                eprintln!("{}: {err}", path.display());
+                return AppExit::error();
+            }
+        }
         if let Some(shot) = shot {
             // The screen, and every popup over it on what is under it.
             let mut frame: Option<image::RgbaImage> = None;

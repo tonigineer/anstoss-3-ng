@@ -130,6 +130,10 @@ impl Screen for Notice {
         let text = match args {
             Args::Text(text) => cx.game.text(text).to_owned(),
             Args::Message(at) => cx.game.rules.messages.get(&at).cloned().unwrap_or_default(),
+            Args::Texts(first, second) => match first {
+                0 => cx.game.text(second).to_owned(),
+                _ => format!("{} {}", cx.game.text(first), cx.game.text(second)),
+            },
             Args::TextFor(text, player) => {
                 let name = cx.state.records.as_ref().and_then(|r| r.known_as(player));
                 cx.game.text(text).replacen("%s", &name.unwrap_or_default(), 1)
@@ -434,6 +438,7 @@ fn printed(cx: &Cx, text: u16, fills: [Fill; 2]) -> String {
         .filter_map(|&fill| match fill {
             Fill::None => None,
             Fill::Number(n) => Some(n.to_string()),
+            Fill::Count(n) => Some(super::finances::count(n)),
             Fill::Money64(v) => Some(super::finances::money64(cx.game, v)),
             Fill::Money(v) => Some(super::playerinfo::money(cx.game, v)),
         })

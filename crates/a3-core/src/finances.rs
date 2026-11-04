@@ -5,6 +5,7 @@
 //! info and weighs it in offers and the board's verdict.
 
 use crate::records::{Agreed, Extra, Manager, Records, Team};
+use crate::season::Donation;
 
 /// The club object's fields sit this far before the team record's.
 pub const CLUB_TO_TEAM: usize = 0x278;
@@ -96,6 +97,13 @@ pub fn figure(team: &Team, fund_prices: [i32; 5]) -> i64 {
         .wrapping_add(deposits(team, fund_prices))
 }
 
+/// The club's money as the black cash box tells it ("Vereinsvermögen",
+/// `FUN_004c75b0`): the cash, the shares sold and the season's result so
+/// far, without loans or deposits.
+pub fn cash_and_result(team: &Team) -> i64 {
+    i64_(team, 0x210).wrapping_add(i64::from(team.get::<i32>(at(0x2d0)))).wrapping_add(result(team))
+}
+
 /// The season's result so far as the balance sheet has it, the transfers
 /// as sales less purchases (`FUN_0061fc81`).
 pub fn result(team: &Team) -> i64 {
@@ -130,6 +138,98 @@ pub fn deposits(team: &Team, fund_prices: [i32; 5]) -> i64 {
 
 fn at(c: usize) -> usize {
     c + CLUB_TO_TEAM
+}
+
+/// The price a fund stands at when the season opens, and every deposit
+/// is reckoned as bought at.
+pub const FUND_START: i32 = 1000;
+
+/// The funds' deposits settled at the new season (`FUN_00648c97` over
+/// the countries played, `FUN_00648d1a` per club, `FUN_00648d8f`): every
+/// deposit takes what it is worth at the closing prices as its amount
+/// (`FUN_00647d30`: the amount times the fund's price over the price it
+/// was bought at), counts as bought at 1000 with its +0x14 word at
+/// nought, and the funds' prices all start again from 1000.
+pub fn settle_funds(records: &mut Records) {
+    let prices = records.globals.fund_prices();
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let countries: Vec<i16> =
+        std::iter::once(globals.main_country()).chain(globals.more_countries()[..more].iter().copied()).collect();
+    for country in countries {
+        let Ok(country) = u16::try_from(country) else { continue };
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if let Some(team) = records.team_mut(country, number) {
+                settle_deposits(team, prices);
+            }
+        }
+    }
+    records.globals.set_fund_prices([FUND_START; 5]);
+}
+
+/// A club's deposits at their worth, bought at 1000 (`FUN_00648d8f`).
+fn settle_deposits(team: &mut Team, prices: [i32; 5]) {
+    for k in 0..DEPOSITS {
+        let deposit = 0x3d8 + ENTRY * k;
+        if team.get::<u8>(at(deposit + 0x13)) & 1 == 0 {
+            continue;
+        }
+        let fund = usize::from(team.get::<u8>(at(deposit + 0x12)));
+        let price = i64::from(prices.get(fund).copied().unwrap_or(0));
+        let bought = i64::from(team.get::<i16>(at(deposit + 0x10)));
+        if bought != 0 {
+            let worth = i64_(team, deposit + 8).wrapping_mul(price) / bought;
+            team.put::<i64>(at(deposit + 8), worth);
+        }
+        team.put::<i16>(at(deposit + 0x10), FUND_START as i16);
+        team.put::<i16>(at(deposit + 0x14), 0);
+    }
+}
+
+/// The bank's rates for the new season (`FUN_00648a99`), in 1/100 %:
+/// the loans' rate rides a wave of seven years from 1994 — 800 and 250
+/// for each year towards its crest, three years on — less fifty for each
+/// step of a draw below 7; in its band (below 9 %, below 13 %, above)
+/// the rest follow: the money in the account earns 0.5, 0.75 or 1 %, the
+/// overdraft costs 1.5, 2 or 2.5 % less than a loan, a year's credit
+/// a draw of fifties (below 2, 2, 4) less again, and call money pays
+/// what is left after a fixed cut and a draw — 3 % at least in the lowest
+/// band.
+pub fn new_rates(globals: &mut crate::records::Globals, random: &mut crate::random::Random) {
+    let mut wave = ((i32::from(globals.start_year()) - 1994) % 7) as i16;
+    if wave > 3 {
+        wave = 7 - wave;
+    }
+    let fifties = |random: &mut crate::random::Random, n: u32| random.below(n) as i16 * 50;
+    let loan = wave * 250 + 800 - fifties(random, 7);
+    let (balance, overdraft, credit, below, deposit) = if loan < 900 {
+        let overdraft = loan - 150;
+        let credit = overdraft - fifties(random, 2);
+        let below = credit - 100;
+        (50, overdraft, credit, below, if below < 450 { 300 } else { credit - 150 })
+    } else if loan < 1300 {
+        let overdraft = loan - 200;
+        let credit = overdraft - fifties(random, 2);
+        (75, overdraft, credit, credit - 150, credit - 400 - fifties(random, 2))
+    } else {
+        let overdraft = loan - 250;
+        let credit = overdraft - fifties(random, 4);
+        (100, overdraft, credit, credit - 200, credit - 450 - fifties(random, 4))
+    };
+    globals.set_loan_rate(loan);
+    globals.set_balance_rate(balance);
+    globals.set_overdraft_rate(overdraft);
+    globals.set_credit_rate(credit);
+    globals.set_rate_below_credit(below);
+    globals.set_deposit_rate(deposit);
+}
+
+/// The club's tax bill of the season (`FUN_006219d2`): the season end's
+/// settlement takes a share of the booked result and books it at the
+/// team's +0x310, where the year calendar's statement and the Sonstiges
+/// dialog's "Steueraufwand" read it; the settlement itself is not built.
+pub fn tax_paid(team: &Team) -> u32 {
+    team.get::<u32>(at(0x310))
 }
 
 fn i64_(team: &Team, c: usize) -> i64 {
@@ -199,10 +299,11 @@ impl Balance {
     }
 }
 
-/// Why a club may not go to the stock market, as far as the game's checks
-/// are known (`OnClicked_IDC_BIL_NEU_BUT_AG_00481c8d`): below the second
-/// league, the amateurs of another club, a fortune below the least, more
-/// loans than deposits, a loss in one of the last three seasons.
+/// Why a club may not go to the stock market
+/// (`OnClicked_IDC_BIL_NEU_BUT_AG_00481c8d`): below the second league, the
+/// amateurs of another club, a fortune below the least, more loans than
+/// deposits, a loss in one of the last three seasons, a stadium and
+/// grounds worth less than the least together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Refusal {
     League,
@@ -210,6 +311,53 @@ pub enum Refusal {
     Fortune(i64),
     Loans,
     Losses,
+    Worth(i64),
+}
+
+/// What the stadium and the grounds must be worth together to go public
+/// (`DAT_00a3b2d0`).
+pub const LEAST_WORTH: i64 = 10_000_000;
+/// What a share brings the club (`DAT_00a3b40c`), and what the club's
+/// worth is counted in shares by (`DAT_00a3b408`): in hundreds, at most
+/// five millions.
+pub const SHARE_PRICE: i32 = 40;
+const SHARE_WORTH: i64 = 50;
+const SHARES_ROUND: i32 = 100;
+const MOST_SHARES: i32 = 5_000_000;
+/// The club object's flags at +0xdf8 (team +0x308), with the bit going
+/// public sets.
+const CLUB_FLAGS: usize = 0x308;
+const PUBLIC: u32 = 0x8000;
+const SHARES_SOLD: usize = 0x2d0;
+
+/// The shares a club going public issues (asm 0x48229b–0x482370): a fifth
+/// of what its stadium, its grounds and its squad at half the players'
+/// market values are worth, with its fortune and the merchandise in stock,
+/// a share for every 50 €, in hundreds; none when that comes to nothing.
+pub fn shares_offered(
+    stadium: i64,
+    grounds: i64,
+    fortune: i64,
+    merchandise: i32,
+    squad: i64,
+) -> Option<i32> {
+    let worth = (stadium / 5)
+        .wrapping_add(grounds / 5)
+        .wrapping_add(fortune)
+        .wrapping_add(merchandise.into())
+        .wrapping_add(squad / 5);
+    let shares = (worth / SHARE_WORTH) as i32 / SHARES_ROUND * SHARES_ROUND;
+    (shares > 0).then(|| shares.min(MOST_SHARES))
+}
+
+/// The club made a company once its shares are on the market: the AG's
+/// bit (`FUN_0069d75e`), the club's flag, the shares' proceeds.
+pub fn go_public(team: &mut Team, shares: i32) {
+    team.set_legal_form(team.legal_form() | 1);
+    let flags: u32 = team.get(CLUB_FLAGS);
+    team.put(CLUB_FLAGS, flags | PUBLIC);
+    let sold: i32 = team.get(SHARES_SOLD + CLUB_TO_TEAM);
+    team.put(SHARES_SOLD + CLUB_TO_TEAM, sold.wrapping_add(shares.wrapping_mul(SHARE_PRICE)));
 }
 
 /// The least fortune a club on the stock market has.
@@ -218,8 +366,9 @@ const LEAST_FORTUNE: i64 = 2_000_000;
 const PAST_RESULTS: [usize; 3] = [0x908, 0x910, 0x918];
 
 impl Balance {
-    /// The first check a club fails of those for the stock market, if it
-    /// fails one; the stadium's and the grounds' value are not checked.
+    /// The first check a club fails of those for the stock market that go
+    /// by its accounts, if it fails one; then the stadium's and the
+    /// grounds' worth are checked ([`LEAST_WORTH`]).
     pub fn refusal(&self, team: &Team) -> Option<Refusal> {
         if team.level() >= 2 {
             return Some(Refusal::League);
@@ -432,6 +581,46 @@ pub fn this_week(team: &Team, manager: &Manager) -> [i64; SLOTS] {
         OTHER_INCOME_FIRST_SLOT => 0,
         _ => widen(slot, now.sum32(slot, d).wrapping_sub(then.sum32(slot, d))),
     })
+}
+
+/// The club's season block the new season keeps as last season's
+/// (`FUN_006720d8`): its club offsets +0x210 to +0x5f8 — the cash and
+/// accounts, the transfers and the rest — into the extra data from +0x4b0
+/// (the club object's +0x5f8).
+const SEASON_BLOCK: usize = 0x210;
+const SEASON_BLOCK_LEN: usize = 0x3e8;
+const LAST_SEASON_BLOCK: usize = 0x4b0;
+/// The kept accounts' field the copy overwrites with the season plan's
+/// other costs and the departments (club +0x6a8, `FUN_006743db` on the
+/// plan).
+const LAST_OTHER_COSTS: usize = LAST_SEASON + 0x98;
+const PLAN_OTHER_COSTS: [usize; 5] = [0x90, 0x98, 0xa0, 0xe8, 0x8c];
+
+/// The new season keeps each human club's closing season as its last
+/// (the season start's event 0x82, `FUN_00671d57` → `FUN_006720d8`): the
+/// club's season block copied into its extra data, the kept accounts'
+/// other costs set to the plan's with the departments, and from the
+/// second season on the mark that a last season stands. The season start's
+/// negotiations it then opens (`CSaisonstartVerhandlungen`, the European
+/// TV talks) are not built.
+pub fn keep_last_season(records: &mut Records) {
+    let second = records.globals.seasons() > 1;
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(slot) = records.human_slot(n) else { continue };
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        let Some(team) = records.team(country, number) else { continue };
+        let block = team.bytes()[at(SEASON_BLOCK) - TEAM_BASE..at(SEASON_BLOCK) - TEAM_BASE + SEASON_BLOCK_LEN].to_vec();
+        let plan = Accounts::plan(team);
+        let other = PLAN_OTHER_COSTS.iter().fold(0i32, |s, &f| s.wrapping_add(plan.i32_(f))).wrapping_add(departments(team));
+        let Some(extra) = records.extras.get_mut(slot) else { continue };
+        for (k, &b) in block.iter().enumerate() {
+            extra.put::<u8>(LAST_SEASON_BLOCK + k, b);
+        }
+        extra.put::<i32>(LAST_OTHER_COSTS, other);
+        if second {
+            extra.put::<i16>(HAS_LAST_SEASON, 1);
+        }
+    }
 }
 
 /// The slots of last season's figures (the screen's "Vergleich mit
@@ -940,7 +1129,7 @@ pub fn compulsory_insurance(records: &Records, team: &Team) -> i32 {
 /// (`FUN_004ea44a`): the first table whose limit lies above it, each
 /// (up to, step) — the last step from there on (0x883920 … 0x883ba0).
 const STEP_LIMITS: [i64; 8] = [100, 200, 500, 1000, 10_000, 100_000, 1_000_000, 10_000_000];
-const ON: i64 = i64::MAX;
+pub(crate) const ON: i64 = i64::MAX;
 const STEP_TABLES: [&[(i64, i64)]; 9] = [
     &[(50, 1), (ON, 2)],
     &[(50, 1), (100, 2), (150, 5), (ON, 10)],
@@ -952,6 +1141,80 @@ const STEP_TABLES: [&[(i64, i64)]; 9] = [
     &[(10_000, 2000), (100_000, 5000), (500_000, 10_000), (ON, 20_000)],
     &[(100_000, 10_000), (500_000, 20_000), (1_000_000, 50_000), (ON, 100_000)],
 ];
+
+/// Donations (`CSpenden`, dialog 63; FINANZUEBERSICHT.md §4.3): money in
+/// hundreds, the slider's steps over them (the table at 0x887cf8);
+/// offered at first all the bank holds up to 100.000, at most 10 Mio
+/// (`DAT_00a3b3fc`, `DAT_00a3b37c`, `DAT_00a3b2d0`).
+pub const DONATION_UNIT: i64 = 100;
+pub const DONATION_OFFER: i64 = 100_000;
+pub const DONATION_MOST: i64 = 10_000_000;
+pub const DONATION_STEPS: [(i64, i64); 7] =
+    [(50, 1), (100, 5), (400, 10), (1000, 50), (5000, 100), (10_000, 500), (ON, 1000)];
+/// A donation weighs its hundred thousands, ten at most; it is booked
+/// with the other costs at club +0x2c0.
+const DONATION_WEIGHT: i64 = 100_000;
+const DONATION_WEIGHT_MOST: i64 = 10;
+const DONATIONS: usize = 0x2c0;
+/// The club's public image stays between these (`FUN_00698d01`).
+const IMAGE_LEAST: i32 = 10;
+const IMAGE_MOST: i32 = 50;
+
+/// What a donation does (`FUN_005419e5`): nothing if it is nothing;
+/// otherwise the amount joins the club's other costs, and by its weight
+/// the manager's popularity with the public rises by it and in the media
+/// by half of it rounded up (`FUN_00418394` into his record's three
+/// bytes, each kept to 0..100), the board's confidence falls by that half
+/// (`FUN_00418597`, 0..100), and the club's public image rises by the
+/// weight, kept to 10..50 (`FUN_00698d01`).
+pub fn donate(team: &mut Team, manager: &mut Manager, amount: i64) {
+    if amount == 0 {
+        return;
+    }
+    let booked = team.get::<i32>(at(DONATIONS)).wrapping_add(amount as i32);
+    team.put(at(DONATIONS), booked);
+    let weight = (amount / DONATION_WEIGHT).min(DONATION_WEIGHT_MOST) as i32;
+    let half = (weight + 1) / 2;
+    let [public, fans, media] = manager.popularity();
+    let up = |v: u8, by: i32| (i32::from(v) + by).clamp(0, 100) as u8;
+    manager.set_popularity([up(public, weight), fans, up(media, half)]);
+    manager.set_confidence((i32::from(manager.confidence()) - half).clamp(0, 100) as i16);
+    let image = (i32::from(team.public_image()) + weight).clamp(IMAGE_LEAST, IMAGE_MOST);
+    team.set_public_image(image as u8);
+}
+
+/// What a club books donations it receives as its other income, club
+/// +0x2c4 (the finance overview's column "Sonst. Einn. E",
+/// FINANZUEBERSICHT.md s15; the money events `FUN_005e6153` book
+/// donations there).
+const RECEIVED: usize = 0x2c4;
+
+/// What the week's end does with the donations to other humans' clubs
+/// (`FUN_006eeda7`, which the turn machine runs): every recipient,
+/// fetched by country and number (`FUN_0063dd1c`) and written back
+/// (`FUN_0063df96`), takes the amount with its other income; then the
+/// week's store stands empty and its givers may give again. The
+/// original's store holds four slots and books what the Kalkulation
+/// raised for the club's amateur team as well; the replica's
+/// Kalkulation books that at once (KALKULATION.md §7.2).
+pub fn book_donations(records: &mut Records, donations: &mut Vec<Donation>) {
+    for donation in donations.iter() {
+        if donation.amount <= 0 {
+            continue;
+        }
+        let club = donation.club;
+        let Some(index) = records
+            .teams
+            .iter()
+            .position(|team| (team.country(), i16::from(team.number())) == club)
+        else {
+            continue;
+        };
+        let received = records.teams[index].get::<i32>(at(RECEIVED)).wrapping_add(donation.amount);
+        records.teams[index].put(at(RECEIVED), received);
+    }
+    donations.clear();
+}
 
 /// The steps of a slider running to `max`.
 pub fn steps(max: i64) -> &'static [(i64, i64)] {
@@ -1002,5 +1265,134 @@ mod step_tests {
         // Off the grid, rounded down.
         assert_eq!(step_of(steps(10_000_000), 7_834_898), 108);
         assert_eq!(amount_at(steps(10_000_000), 109), 7_900_000);
+    }
+}
+
+#[cfg(test)]
+mod season_tests {
+    use super::*;
+    use crate::random::Random;
+    use crate::records::Globals;
+
+    /// The human club's last season over the original's pair: SeasonEnd364
+    /// settled and its new season's copy made by the replica, the human
+    /// club's extra data holds last season's block as NewSeason000 keeps it
+    /// but for seven bytes — the cash word the season start moves on, one
+    /// field set later, and the main sponsor's and two more contracts'
+    /// flags the original ends with the season (not built) — the other
+    /// costs and the mark of a last season among the same.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_keeps_the_human_clubs_last_season_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = crate::league::LeagueTables::load(&exe).unwrap();
+        crate::settlement::settle_season(&mut ours, &tables);
+        ours.globals.set_seasons(2);
+        keep_last_season(&mut ours);
+        let slot = ours.human_slot(0).unwrap();
+        let (x, y) = (&ours.extras[slot], &theirs.extras[slot]);
+        let differ: Vec<usize> = (LAST_SEASON_BLOCK..LAST_SEASON_BLOCK + SEASON_BLOCK_LEN)
+            .filter(|&at| x.get::<u8>(at) != y.get::<u8>(at))
+            .collect();
+        assert!(differ.len() <= 7, "{} bytes differ: {differ:x?}", differ.len());
+        assert_eq!(x.get::<i32>(LAST_OTHER_COSTS), y.get::<i32>(LAST_OTHER_COSTS));
+        assert_eq!(x.get::<i16>(HAS_LAST_SEASON), 1);
+        assert_eq!(y.get::<i16>(HAS_LAST_SEASON), 1);
+    }
+
+    /// Whether a season's rates keep `FUN_00648a99`'s bands: the loans'
+    /// rate on the year's wave less fifties, the rest by its band.
+    fn rates_fit(g: &Globals) -> bool {
+        let mut wave = ((i32::from(g.start_year()) - 1994) % 7) as i16;
+        if wave > 3 {
+            wave = 7 - wave;
+        }
+        let (loan, credit) = (g.loan_rate(), g.credit_rate());
+        let steps = wave * 250 + 800 - loan;
+        let fifties = |v: i16, most: i16| v >= 0 && v % 50 == 0 && v / 50 < most;
+        let band = if loan < 900 {
+            let below = credit - 100;
+            g.balance_rate() == 50
+                && g.overdraft_rate() == loan - 150
+                && fifties(g.overdraft_rate() - credit, 2)
+                && g.deposit_rate() == if below < 450 { 300 } else { credit - 150 }
+                && g.rate_below_credit() == below
+        } else if loan < 1300 {
+            g.balance_rate() == 75
+                && g.overdraft_rate() == loan - 200
+                && fifties(g.overdraft_rate() - credit, 2)
+                && g.rate_below_credit() == credit - 150
+                && fifties(credit - 400 - g.deposit_rate(), 2)
+        } else {
+            g.balance_rate() == 100
+                && g.overdraft_rate() == loan - 250
+                && fifties(g.overdraft_rate() - credit, 4)
+                && g.rate_below_credit() == credit - 200
+                && fifties(credit - 450 - g.deposit_rate(), 4)
+        };
+        fifties(steps, 7) && band
+    }
+
+    #[test]
+    fn the_new_rates_keep_their_bands() {
+        let mut g = Globals::new(&vec![0u8; Globals::SIZE]).unwrap();
+        let mut random = Random::new(11);
+        let mut bands = [false; 3];
+        for year in 2000..2040u16 {
+            for _ in 0..20 {
+                g.set_start_year(year);
+                new_rates(&mut g, &mut random);
+                assert!(rates_fit(&g), "{year}: {} {} {} {} {}", g.loan_rate(), g.balance_rate(),
+                    g.overdraft_rate(), g.credit_rate(), g.deposit_rate());
+                bands[(g.balance_rate() / 25 - 2) as usize] = true;
+            }
+        }
+        assert_eq!(bands, [true; 3], "every band met");
+    }
+
+    /// A deposit takes its worth at the closing price as its amount and
+    /// counts as bought at 1000 (`FUN_00648d8f`); the funds start again
+    /// from 1000.
+    #[test]
+    fn the_new_season_settles_the_deposits() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        let deposit = 0x3d8 + ENTRY;
+        team.put::<u8>(at(deposit + 0x13), 1);
+        team.put::<u8>(at(deposit + 0x12), 2);
+        team.put::<i64>(at(deposit + 8), 300_000);
+        team.put::<i16>(at(deposit + 0x10), 800);
+        team.put::<i16>(at(deposit + 0x14), 7);
+        let prices = [1000, 1000, 1180, 1000, 1000];
+        assert_eq!(deposits(&team, prices), 442_500);
+        settle_deposits(&mut team, prices);
+        assert_eq!(team.get::<i64>(at(deposit + 8)), 442_500);
+        assert_eq!((team.get::<i16>(at(deposit + 0x10)), team.get::<i16>(at(deposit + 0x14))), (1000, 0));
+        assert_eq!(deposits(&team, [FUND_START; 5]), 442_500, "worth the same at the new prices");
+    }
+
+    /// Over the original's pair (SeasonEnd364 → NewSeason000): its new
+    /// rates keep the bands and its funds stand at 1000, as the replica's
+    /// do after it settles them. (No club of the pair holds a deposit.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_sets_rates_and_funds_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        assert!(rates_fit(&theirs.globals), "the original's rates of {}", theirs.globals.start_year());
+        assert!(!rates_fit(&ours.globals), "the closed season's rates have moved off their bands");
+        crate::settlement::open_season(&mut ours, &mut Random::new(5));
+        assert!(rates_fit(&ours.globals));
+        assert_eq!(theirs.globals.fund_prices(), [FUND_START; 5]);
+        assert_eq!(ours.globals.fund_prices(), [FUND_START; 5]);
     }
 }

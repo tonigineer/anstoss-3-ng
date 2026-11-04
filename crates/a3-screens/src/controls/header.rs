@@ -4,7 +4,7 @@ use image::RgbaImage;
 
 use a3_files::rch::Align;
 
-use crate::classic::{Paint, TEXT, columns};
+use crate::classic::{LIST_GAP, Paint, TEXT, columns};
 
 const TOP: i32 = 2;
 
@@ -31,6 +31,6 @@ impl HeaderState {
         let titles = self.text.split("\\t");
         // Two pixels below the top (`CMyTabStatic::FUN_007afa80`).
         let (at, right) = ((r.min.x as i32, r.min.y as i32 + TOP), r.max.x as i32);
-        columns(font, frame, at, titles, &self.tabs, &self.aligns, TEXT, right);
+        columns(font, frame, at, titles, &self.tabs, &self.aligns, TEXT, right, LIST_GAP);
     }
 }

@@ -32,6 +32,9 @@ pub struct GameState {
     /// The stadium the expansion plans, and whether it is played in; the
     /// plan comes back in its place when it is OKed.
     pub expansion: Option<(crate::stadium::Sub, bool)>,
+    /// The merchandise range the club's dialog (56) works on, for the
+    /// article's dialog (57) it opens; written back by 56's OK.
+    pub merchandise: Option<crate::merchandise::Range>,
     /// The stadium the views (249, 510) show.
     pub viewed: Option<crate::stadium::Sub>,
     /// What the stadium screen hands the grounds (466).
@@ -48,6 +51,11 @@ pub struct GameState {
     /// game writes `musik.cfg` and `Konfig3D.cfg` on its way out
     /// (`FUN_00431e01`).
     pub settings_files: Vec<(&'static str, Vec<u8>)>,
+    /// The managers whose careers end, by their places among the season's
+    /// managers, and the day each ended it on by the computer's clock
+    /// (`DAT_01ba4c7c`, which `FUN_006c511b` marks): the week's end takes
+    /// them out of the game.
+    pub leaving: Vec<(usize, (u8, u8, u16))>,
     /// How long and how often the game is played (`zeit.saq`).
     pub play: crate::playtime::PlayTime,
 }

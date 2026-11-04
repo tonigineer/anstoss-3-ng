@@ -24,6 +24,9 @@ use crate::view::View;
 
 pub mod abilities;
 pub mod beliebtheit;
+pub mod betting;
+pub mod confidence;
+pub mod market;
 pub mod pay;
 pub mod privates;
 pub mod scores;
@@ -68,6 +71,18 @@ const TO_TILL: (u16, u16, u16) = (5574, 5575, 5588);
 const PAGES: u16 = 5643;
 const CONFIDENCE_PAGE: u16 = 5571;
 const MARKETS: u16 = 5572;
+const SHARE_MARKET: usize = 0;
+/// The betting office opens by the half weeks: the season's bets until
+/// the eighth, the matchday's from the eleventh to the 92nd.
+const SEASON_BETS_UNTIL: u16 = 8;
+const MATCHDAY_BETS: std::ops::RangeInclusive<u16> = 11..=92;
+const BETTING_CLOSED: u16 = 4592;
+/// The holdings' column: no club to sack a manager of, or the vote cast.
+const NO_CLUB: &str = "---";
+const SACKED: u16 = 3163;
+const NO_DISMISSALS: u16 = 3165;
+/// The game option "with dismissals" (`DAT_00b5d158`).
+const DISMISSALS: usize = 0x1c;
 /// Item 3 of the pages, whose label changes for a player-manager.
 const PLAYER_MANAGER: usize = 3;
 /// The dialog each page button opens, by the item (ERFOLGE.md §5): the
@@ -290,8 +305,8 @@ impl Screen for Honours {
                 view.controls[i].hidden = true;
             }
         }
+        fill_shares(cx, view);
         if let Some(list) = control(dialog, SHARES).and_then(|c| view.list_mut(c)) {
-            list.rows = Vec::new();
             list.selected = None;
         }
         if manager.get::<i16>(PLAYS_AT) != 0
@@ -310,11 +325,7 @@ impl Screen for Honours {
             Target::Option { control: c, item } if dialog.controls[c].id == Some(PAGES) => {
                 item == PLAYER_MANAGER || PAGE_DIALOGS.get(item).is_some_and(Option::is_some)
             }
-            Target::Option { control: c, .. }
-                if matches!(dialog.controls[c].id, Some(CONFIDENCE_PAGE | MARKETS)) =>
-            {
-                false
-            }
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(MARKETS) => true,
             _ => hub::on_bar(dialog, t).is_none_or(hub::bar_works),
         };
         mark_inert(view, dialog, works);
@@ -355,6 +366,36 @@ impl Screen for Honours {
                     }
                 }
             }
+            Target::Option { control: c, item: SHARE_MARKET }
+                if dialog.controls[c].id == Some(MARKETS) =>
+            {
+                Outcome::Popup(a3_core::cycle::Request::new(market::MARKET_DIALOG))
+            }
+            // The betting office (`0x53ecc7`): the season's bets in its
+            // first four weeks, the matchday's from the sixth week as long
+            // as the game offers a matchday, else closed (text 4592).
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(MARKETS) => {
+                let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
+                let weeks = records.globals.half_weeks();
+                if weeks <= SEASON_BETS_UNTIL {
+                    return Outcome::Popup(a3_core::cycle::Request::new(betting::SEASON_DIALOG));
+                }
+                if MATCHDAY_BETS.contains(&weeks) && a3_core::betting::matchday_open(records) {
+                    return Outcome::Popup(a3_core::cycle::Request::new(betting::MATCHDAY_DIALOG));
+                }
+                Outcome::Popup(a3_core::cycle::Request::with(NOTICE, Args::Text(BETTING_CLOSED)))
+            }
+            // A holding of a club's shares votes to sack its manager, or
+            // no more; without dismissals the game says so (`0x53e9a9`).
+            Target::Row { control: c, .. } if dialog.controls[c].id == Some(SHARES) => {
+                let place = view.list(c).and_then(|l| l.keys.get(l.selected?).copied());
+                self.toggle_sack(cx, view, place)
+            }
+            // The board's confidence (`0x53eba3`); the button stays
+            // pressed while it is open.
+            Target::Option { control: c, .. } if dialog.controls[c].id == Some(CONFIDENCE_PAGE) => {
+                Outcome::Popup(a3_core::cycle::Request::new(confidence::CONFIDENCE_DIALOG))
+            }
             Target::Option { control: c, .. } => {
                 view.set_chosen(c, NONE);
                 Outcome::Stay
@@ -387,9 +428,12 @@ impl Screen for Honours {
                 *label = cx.game.text(if playing { STEP_DOWN } else { BECOME }).to_owned();
             }
         }
-        if let Some(c) = control(cx.dialog, PAGES) {
-            view.set_chosen(c, NONE);
+        for id in [PAGES, CONFIDENCE_PAGE, MARKETS] {
+            if let Some(c) = control(cx.dialog, id) {
+                view.set_chosen(c, NONE);
+            }
         }
+        fill_shares(cx, view);
         if let Some(manager) = super::kalkulation::own_manager(cx) {
             set(view, cx.dialog, WEALTH, money(cx.game, manager.get::<i32>(WEALTH_AT).into()));
             let confidence = if manager.get::<u16>(CLUB_AT) != 0 {
@@ -403,7 +447,79 @@ impl Screen for Honours {
     }
 }
 
+/// The manager's holdings in their places' order (`FUN_0053e18a`): the
+/// share, how many, their part of all its shares, the price paid and
+/// today's, their worth, and whether they vote to sack the club's manager.
+fn fill_shares(cx: &Cx, view: &mut View) {
+    let (game, dialog) = (cx.game, cx.dialog);
+    let mut rows = Vec::new();
+    let mut keys = Vec::new();
+    let records = cx.state.records.as_ref();
+    let human = records.zip(cx.state.season.as_ref()).and_then(|(r, s)| r.human_slot(s.current));
+    if let (Some(records), Some(human)) = (records, human)
+        && let Some(shares) = a3_core::market::market(records)
+    {
+        for (j, h) in a3_core::market::holdings(records, human).iter().enumerate() {
+            let Some(h) = h else { continue };
+            let Some(share) = shares.shares.get(h.share) else { continue };
+            let p0 = share.price(0);
+            let part = if share.issued == 0 {
+                0.0
+            } else {
+                f64::from(h.count) * 100.0 / f64::from(share.issued)
+            };
+            let worth = f64::from(h.count) * f64::from(p0);
+            let worth = if worth > 1000.0 {
+                market::value(game, worth as i64)
+            } else {
+                market::cents((100.0 * f64::from(p0) * f64::from(h.count)) as i32)
+            };
+            let vote = if share.country < 0 {
+                NO_CLUB.to_owned()
+            } else if h.sack {
+                game.text(SACKED).to_owned()
+            } else {
+                String::new()
+            };
+            rows.push(format!(
+                "{}\t{}\t{part:2.1}\t{}\t{}\t{worth}\t{vote}",
+                share.name,
+                h.count,
+                market::price(h.bought_at),
+                market::price(p0)
+            ));
+            keys.push(j);
+        }
+    }
+    if let Some(list) = control(dialog, SHARES).and_then(|c| view.list_mut(c)) {
+        list.rows = rows;
+        list.keys = keys;
+    }
+}
+
 impl Honours {
+    fn toggle_sack(&mut self, cx: &mut Cx, view: &mut View, place: Option<usize>) -> Outcome {
+        let Some(place) = place else { return Outcome::Stay };
+        let Some(records) = cx.state.records.as_mut() else { return Outcome::Stay };
+        if records.globals.game_options()[DISMISSALS] == 0 {
+            return Outcome::Popup(a3_core::cycle::Request::with(NOTICE, Args::Text(NO_DISMISSALS)));
+        }
+        let Some(human) = cx.state.season.as_ref().and_then(|s| records.human_slot(s.current)) else {
+            return Outcome::Stay;
+        };
+        let Some(h) = a3_core::market::holdings(records, human)[place] else { return Outcome::Stay };
+        let club = a3_core::market::market(records).and_then(|m| m.shares.get(h.share).map(|s| s.country > 0));
+        if club != Some(true) {
+            return Outcome::Stay;
+        }
+        a3_core::market::set_sack(records, human, place, !h.sack);
+        fill_shares(cx, view);
+        if let Some(list) = control(cx.dialog, SHARES).and_then(|c| view.list_mut(c)) {
+            list.selected = None;
+        }
+        Outcome::Stay
+    }
+
     /// The third page: become a player-manager or step down as one
     /// (`FUN_0053f3be`, ERFOLGE.md §5.1). Under 18 he's too young, a
     /// squad of 35 stops him and past 42 the board won't have it; else

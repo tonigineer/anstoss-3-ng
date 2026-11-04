@@ -78,7 +78,7 @@ const MARKED_MATCHDAYS: i32 = 46;
 /// object's +0x11e0, a byte of the team).
 const CLASS: usize = 0x875;
 /// The prices each class is reckoned against (statics set at start-up).
-const REFERENCE_PRICES: [i32; 4] = [150, 40, 20, 15];
+pub(crate) const REFERENCE_PRICES: [i32; 4] = [150, 40, 20, 15];
 /// A league's record: its teams, matchdays, matchdays played, and the
 /// pairings of every matchday, home and away slots.
 const LEAGUE_AT: u32 = 0x1a09d48;
@@ -123,6 +123,9 @@ const SECOND_LEG: usize = 14;
 /// What the gates come to per match: a part of it, and percent.
 const GATE_SHARE: f64 = 0.86;
 const PERCENT: f64 = 100.0;
+/// What each matchday's mark makes of a gate (`DAT_008a7b30`): nought,
+/// a quarter more, a half more, or halved.
+pub const MARK_MULTIPLIERS: [f32; 4] = [1.0, 1.25, 1.5, 0.5];
 /// Below these weights the demand of a class stays (`FUN_0078aa63`).
 const LEAST_WEIGHT: f32 = 0.125;
 
@@ -178,13 +181,13 @@ fn long(block: &[u8], at: usize) -> i32 {
 }
 
 /// `_ftol`: towards zero, the low 32 bits.
-fn ftol(v: f64) -> i32 {
+pub(crate) fn ftol(v: f64) -> i32 {
     v as i64 as i32
 }
 
 /// How much a class's demand changes by its price against the reference
 /// one (`FUN_0078aa63`): less when dearer, more when cheaper.
-fn weight(price: i16, reference: i32) -> f32 {
+pub(crate) fn weight(price: i16, reference: i32) -> f32 {
     let d = ((i32::from(price) - reference) * 100 / reference) as i16;
     let d = d.clamp(-50, 100);
     let e = 2.71f64.powf(-(f64::from(i32::from(d) * i32::from(d)) / 4900.0)) as f32;
@@ -237,12 +240,15 @@ fn spill(b: &mut [[i32; 2]; 4], caps: &[i32; 4], i: usize, j: usize) {
     }
 }
 
-/// The gates from `start`, of the club's home league matches from the
-/// matchday after `played` on, at an attendance (`FUN_007195a6`).
-fn gates(club: &Club, tables: &TicketTables, start: i32, attendance: i32, played: i16) -> i32 {
-    let Some(stadium) = club.stadium() else { return 0 };
+/// What the tickets of one home match bring at an attendance, before the
+/// day's mark, the dues and the share (`FUN_007193b2`): the attendance
+/// split over the four classes at their prices, the season tickets at
+/// their discount, what does not fit spilling on, and nought when the
+/// stadium holds no places.
+fn paid_at(club: &Club, attendance: i32) -> Option<i32> {
+    let stadium = club.stadium()?;
     if long(stadium, CAPACITY) <= 0 {
-        return 0;
+        return None;
     }
     let mut b = split(club, attendance, club.i32_(PLAN_SEASON_TICKETS));
     let caps: [i32; 4] = CLASS_PLACES
@@ -282,7 +288,25 @@ fn gates(club: &Club, tables: &TicketTables, start: i32, attendance: i32, played
     let discount = f64::from(100 - i32::from(club.i16_(DISCOUNT)));
     let season = ftol(f64::from(paid(0)) * discount / PERCENT).max(0);
     let day = paid(1).max(0);
-    let x = season.wrapping_add(day);
+    Some(season.wrapping_add(day))
+}
+
+/// What one home match of the club brings at an attendance, as the
+/// played match's gate is booked (`FUN_0078b26c`): the paid seats at the
+/// day's mark, the dues off and the gate's share — the same reckoning
+/// the plan's league gates follow.
+pub fn booked_gate(records: &Records, team: &Team, attendance: i32, matchday: i32) -> i32 {
+    let club = Club { records, team, country: team.country(), number: team.number() };
+    let Some(x) = paid_at(&club, attendance) else { return 0 };
+    let d = f64::from(100 - i32::from(club.i16_(DEDUCTION)));
+    ftol(f64::from(x) * f64::from(MARK_MULTIPLIERS[matchday_mark(team, matchday)]) * d / PERCENT
+        * GATE_SHARE)
+}
+
+/// The gates from `start`, of the club's home league matches from the
+/// matchday after `played` on, at an attendance (`FUN_007195a6`).
+fn gates(club: &Club, tables: &TicketTables, start: i32, attendance: i32, played: i16) -> i32 {
+    let Some(x) = paid_at(club, attendance) else { return 0 };
     let Some(league) = club.league() else { return start };
     let (teams, matchdays) = (word(league, LEAGUE_TEAMS), word(league, LEAGUE_MATCHDAYS));
     let slot = club.team.league_place();
@@ -307,8 +331,8 @@ fn mark(club: &Club, matchday: i32) -> usize {
     matchday_mark(club.team, matchday)
 }
 
-/// A matchday's mark, 0 to 3 (`FUN_00671b5a`): normal, +50%, +25%,
-/// halved.
+/// A matchday's mark, 0 to 3 (`FUN_00671b5a`): as it stands, a quarter
+/// more, a half more, or halved.
 pub fn matchday_mark(team: &Team, matchday: i32) -> usize {
     if !(1..=MARKED_MATCHDAYS).contains(&matchday) {
         return 0;
@@ -499,8 +523,19 @@ pub fn cup_winner(records: &Records, country: u8, tables: &TicketTables) -> Opti
     if cup.get(FINAL_FLAGS + at)? & played != played {
         return None;
     }
-    let winner = if *cup.get(FINAL_WINNER + at)? == 0 { 0xe } else { 0x12 };
-    Some(word(cup, winner + at) as u16)
+    cup_final(records, country, tables).map(|(winner, _)| winner)
+}
+
+/// The two clubs of a country's cup final as its winner and its loser go,
+/// asked without regard to whether it is played (`FUN_006d144b`,
+/// `FUN_006d14ae`: the side the final's winner byte names, and the other).
+pub fn cup_final(records: &Records, country: u8, tables: &TicketTables) -> Option<(u16, u16)> {
+    let slot = records.countries.slot(usize::from(country));
+    let cup = records.block(&format!("{CUP_AT:#x}[{slot}]"))?;
+    let cup_type = usize::try_from(word(cup, CUP_TYPE_AT)).ok()?;
+    let at = usize::try_from(tables.final_pairing(cup_type)).ok()? * PAIRING;
+    let (home, away) = (word(cup, 0xe + at) as u16, word(cup, 0x12 + at) as u16);
+    Some(if *cup.get(FINAL_WINNER + at)? == 0 { (home, away) } else { (away, home) })
 }
 
 /// The matchdays of a club's league, and those played: none for a low or

@@ -38,6 +38,7 @@ const CLUB_GOALS_AT: u32 = 0x8ac860;
 const GOAL_RANKS: usize = 24;
 const LEAGUE_SIZES: usize = 8;
 const HARDER_AT: u32 = 0x8ac9e0;
+const PLACE_CLASSES_AT: u32 = 0x8ac920;
 const EASIER_AT: u32 = 0x8ac9ec;
 const OFFER_GOALS_AT: u32 = 0x8ac9f8;
 pub const GOALS: usize = 12;
@@ -83,6 +84,9 @@ pub const CHAMPION: i64 = 1;
 /// The game's rules that live in tables of the executable.
 pub struct Rules {
     club_goals: Vec<Vec<u8>>,
+    /// The class a place reaches, by league size as the goals' table
+    /// (`DAT_008ac920`).
+    place_classes: Vec<Vec<u8>>,
     pub harder: Vec<u8>,
     pub easier: Vec<u8>,
     /// For a top league and below.
@@ -108,6 +112,10 @@ pub struct Rules {
     pub words: crate::words::Words,
     /// Bonuses and fines.
     pub discipline: crate::discipline::DisciplineTables,
+    /// The share market's slider scale and the colours of its rows.
+    pub market: crate::market::MarketTables,
+    /// The betting office's stake scale.
+    pub betting: crate::betting::BettingTables,
     /// Injuries: which allow an injection.
     pub medical: crate::medical::MedicalTables,
     /// The tactics screen's states and its special win bonus.
@@ -133,6 +141,8 @@ pub struct Rules {
     pub noracsa: crate::noracsa::NoracsaTables,
     /// The dream stadiums.
     pub stadium: crate::stadium::StadiumTables,
+    /// The kinds of merchandise a club may sell.
+    pub merchandise: crate::merchandise::MerchandiseTables,
 }
 
 impl Rules {
@@ -142,8 +152,10 @@ impl Rules {
         let amounts = AMOUNTS_AT
             .map(|at| exe.u16s(at, 12).map(|v| v.chunks(3).map(|c| [c[0], c[1], c[2]]).collect()));
         let [a, b, c, d] = amounts;
+        let places = exe.bytes(PLACE_CLASSES_AT, GOAL_RANKS * LEAGUE_SIZES)?;
         Ok(Self {
             club_goals: goals.chunks(GOAL_RANKS).map(<[u8]>::to_vec).collect(),
+            place_classes: places.chunks(GOAL_RANKS).map(<[u8]>::to_vec).collect(),
             harder: exe.bytes(HARDER_AT, GOALS)?.to_vec(),
             easier: exe.bytes(EASIER_AT, GOALS)?.to_vec(),
             offer_goals: [offer_goals[..GOALS].to_vec(), offer_goals[GOALS..].to_vec()],
@@ -167,6 +179,8 @@ impl Rules {
             value: crate::value::ValueTables::load(exe)?,
             words: crate::words::Words::load(exe)?,
             discipline: crate::discipline::DisciplineTables::load(exe)?,
+            market: crate::market::MarketTables::load(exe)?,
+            betting: crate::betting::BettingTables::load(exe)?,
             medical: crate::medical::MedicalTables::load(exe)?,
             tactics: crate::tactics::TacticsTables::load(exe)?,
             training: crate::training::TrainingTables::load(exe)?,
@@ -178,6 +192,7 @@ impl Rules {
             statistics: crate::statistics::Pages::load(exe)?,
             noracsa: crate::noracsa::NoracsaTables::load(exe)?,
             stadium: crate::stadium::StadiumTables::load(exe)?,
+            merchandise: crate::merchandise::MerchandiseTables::load(exe)?,
             messages: crate::youth::MESSAGES
                 .into_iter()
                 .map(|at| (at, exe.text_at(at).unwrap_or_default()))
@@ -210,6 +225,66 @@ impl Rules {
         self.ticket_bases.get(start + league).map_or(100, |&b| i64::from(b))
     }
 
+    /// What the board expects of a club for a new season and what it asks
+    /// (`FUN_00772bee`, team +0x135 and +0x136): by its league's size and
+    /// its squad's rank there the goal of the table, through the goals of
+    /// its league's kind (`FUN_00775cb7`: a top league's or a lower one's,
+    /// 4 for 2 at a club with amateurs), a club just promoted 10; the board
+    /// asks one step harder by chance, the more the less it is content —
+    /// (6 − its byte) × 17 in 102.
+    pub fn season_goals(&self, size: usize, rank: usize, promoted: bool, board: i32, top: bool, linked: bool, random: &mut Random) -> (u8, u8) {
+        let goal = |g: i32| -> u8 {
+            if g > (GOALS - 1) as i32 {
+                return (GOALS - 1) as u8;
+            }
+            let g = g.max(0) as usize;
+            let v = self.offer_goals[usize::from(!top)].get(g).copied().unwrap_or(0);
+            (if linked && v == 2 { 4 } else { v }) as u8
+        };
+        let row = (size / 2).saturating_sub(5).min(self.club_goals.len() - 1);
+        let expected = if promoted {
+            PROMOTED_GOAL as u8
+        } else {
+            goal(i32::from(self.club_goals[row][rank.min(GOAL_RANKS - 1)]))
+        };
+        let mut asked = expected;
+        if (random.below(AMBITION_DIE) as i32) < (6 - board) * AMBITION as i32 {
+            asked = goal(i32::from(self.harder.get(usize::from(expected)).map_or(0, |&h| h as i8)));
+        }
+        (expected, asked)
+    }
+
+    /// How far a club's final place went past its goal, in places
+    /// (`FUN_00775fd7`): beyond it the places it could have lost and still
+    /// reached it (`FUN_00775e0a`), short of it the places it lacked,
+    /// negated (`FUN_00775d3c`), by the class each place reaches in a
+    /// league of its size.
+    pub fn goal_verdict(&self, size: i32, place: i32, goal: i32) -> i32 {
+        if place < 1 || size < place {
+            return 0;
+        }
+        let row = ((size - 10) / 2).clamp(0, 7) as usize;
+        let class = |k: i32| i32::from(self.place_classes[row].get(k as usize).copied().unwrap_or(0));
+        if class(place - 1) < goal {
+            let mut k = place;
+            while k < size && class(k) < goal {
+                k += 1;
+            }
+            let beat = k - place;
+            if beat >= 1 {
+                return beat;
+            }
+        }
+        if goal < class(place - 1) {
+            let mut k = place - 2;
+            while k >= 0 && goal < class(k) {
+                k -= 1;
+            }
+            return -(place - k - 1);
+        }
+        0
+    }
+
     /// A club's own goal for the season, from how big its league is and
     /// where its squad ranks in it.
     fn club_goal(
@@ -230,6 +305,68 @@ impl Rules {
             goal = usize::from(self.harder[goal.min(GOALS - 1)]);
         }
         goal
+    }
+}
+
+/// Every played club's verdict on its season at the season's end (team
+/// +0x137, `FUN_006b44cb`'s `FUN_00775fd7`): its final place (+0x132)
+/// against the goal its board asked (+0x136) in a league of its size — a
+/// club below the sixth level counted as of 18.
+pub fn close_goals(records: &mut crate::records::Records, rules: &Rules) {
+    const PLACE_AT: usize = 0x132;
+    const GOAL_AT: usize = 0x136;
+    const VERDICT_AT: usize = 0x137;
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let level = team.level();
+            let size = if level < 6 {
+                crate::opponent::League::of(records, country, level).map_or(0, |l| l.teams() as i32)
+            } else {
+                18
+            };
+            let verdict = rules.goal_verdict(size, i32::from(team.get::<u8>(PLACE_AT)), i32::from(team.get::<i8>(GOAL_AT)));
+            if let Some(team) = records.team_mut(country, number) {
+                team.put::<i8>(VERDICT_AT, verdict as i8);
+            }
+        }
+    }
+}
+
+/// The board's goals of every played club for the new season, by its
+/// squad's rank ([`Rules::season_goals`]; a club in no league 1 and 1),
+/// a human trainer's goal class taking the club's (manager +0x170).
+pub fn open_goals(records: &mut crate::records::Records, rules: &Rules, random: &mut Random) {
+    const RANK_AT: usize = 0x130;
+    const GOALS_AT: [usize; 2] = [0x135, 0x136];
+    const FLAGS_AT: usize = 0x110;
+    const PROMOTED_FLAG: u16 = 4;
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let level = team.level();
+            let goals = if level >= 10 {
+                (1, 1)
+            } else {
+                let size = crate::opponent::League::of(records, country, level).map_or(24, |l| l.teams());
+                rules.season_goals(
+                    size,
+                    usize::from(team.get::<u8>(RANK_AT)),
+                    team.get::<u16>(FLAGS_AT) & PROMOTED_FLAG != 0,
+                    i32::from(team.board()),
+                    level == 0,
+                    team.linked()[0] >= 0,
+                    random,
+                )
+            };
+            let human = team.humans()[0];
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.put::<u8>(GOALS_AT[0], goals.0);
+            team.put::<u8>(GOALS_AT[1], goals.1);
+            if let Some(m) = usize::from(human).checked_sub(1).and_then(|k| records.managers.get_mut(k)) {
+                m.set_goal_class(i16::from(goals.1 as i8));
+            }
+        }
     }
 }
 
@@ -281,6 +418,28 @@ pub struct Season {
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
     pub random: Random,
+    /// The week's donations to other humans' clubs (`CSpenden`, the table
+    /// at 0x1bac688, which no save keeps).
+    pub donations: Vec<Donation>,
+    /// Whether the season's statement — dialog 417 as the season end
+    /// posts it — has come up in this game.
+    pub statement: bool,
+    /// Whether the week's end stands held: the original's load (`CDiLoad`,
+    /// `DAT_00b5cc04`) holds the market roll and the week-end steps about
+    /// it back, and the week's advance sales clear it (`FUN_0064e40f`) —
+    /// so the first week end after a load rolls no market.
+    pub week_hold: bool,
+}
+
+/// A donation to another human's club: by the giving manager, to the club
+/// (country and number), the amount. The week's end books it with the
+/// club's other income (`FUN_006eeda7`); until then the giver may give no
+/// more (`FUN_006eecd7`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Donation {
+    pub manager: usize,
+    pub club: (u8, i16),
+    pub amount: i32,
 }
 
 /// What the game follows of a club with a human manager.
@@ -351,6 +510,29 @@ pub struct Fitness {
     /// He smokes: his condition counts five less in his form
     /// (`FUN_00457e00`).
     pub smoker: bool,
+}
+
+/// The week's end keeps each human club player's form of the day as the
+/// form his trend is reckoned against (`FUN_0064e40f`'s `FUN_007863d0`:
+/// object +0x0a, R+0x34d), in his record and in the club's state.
+pub fn keep_forms(
+    records: &mut crate::records::Records,
+    clubs: &mut BTreeMap<(usize, usize), ClubState>,
+    world: &crate::world::World,
+) {
+    for (&(slot, index), club) in clubs.iter_mut() {
+        let Some(nation) = world.country(slot).map(|c| c.nation) else { continue };
+        let squad = records.team(nation, index as u16).map(|t| t.players()).unwrap_or_default();
+        for (i, &fitness) in club.fitness.iter().enumerate() {
+            let form = crate::lineup::form(fitness);
+            if let Some(status) = club.status.get_mut(i) {
+                status.last_form = Some(form);
+            }
+            if let Some(p) = squad.get(i).and_then(|&id| records.player_mut(id)) {
+                p.set_last_form(form.clamp(0, i32::from(u8::MAX)) as u8);
+            }
+        }
+    }
 }
 
 /// What the line-up's list tells of a player besides his fitness, as the
@@ -639,6 +821,9 @@ impl Season {
             planner_message: None,
             before_match: false,
             random,
+            donations: Vec::new(),
+            statement: false,
+            week_hold: false,
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {
@@ -917,6 +1102,95 @@ fn rating(players: &[Player]) -> i32 {
         values.extend(fitting.into_iter().take(wanted));
     }
     if values.is_empty() { 0 } else { values.iter().sum::<i32>() * 10 / values.len() as i32 }
+}
+
+#[cfg(test)]
+mod form_tests {
+    /// From the original's SeasonEnd364 every played club's verdict on its
+    /// season comes out as NewSeason000 has it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_seasons_verdicts_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| crate::records::Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut b, n) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        close_goals(&mut b, &data.rules);
+        let (mut clubs, mut moved) = (0, 0);
+        for country in crate::opponent::played_nations(&n) {
+            for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (b.team(country, t).unwrap(), n.team(country, t).unwrap());
+                assert_eq!(x.get::<i8>(0x137), y.get::<i8>(0x137), "{country}/{t}");
+                clubs += 1;
+                moved += i32::from(y.get::<i8>(0x137) != 0);
+            }
+        }
+        assert!(clubs > 200 && moved > 100, "{moved} of {clubs}");
+    }
+
+    /// On the original's NewSeason000, by its own squad ranks, every played
+    /// club's expected goal comes out as the original's, and the goal the
+    /// board asks is that one or one step harder.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_boards_season_goals_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let n = crate::records::Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut b = crate::records::Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        open_goals(&mut b, &data.rules, &mut Random::new(7));
+        let mut clubs = 0;
+        for country in crate::opponent::played_nations(&n) {
+            for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (b.team(country, t).unwrap(), n.team(country, t).unwrap());
+                assert_eq!(x.get::<u8>(0x135), y.get::<u8>(0x135), "{country}/{t}");
+                let expected = x.get::<u8>(0x135);
+                let harder = if x.level() >= 10 { expected } else {
+                    let top = x.level() == 0;
+                    let h = data.rules.harder.get(usize::from(expected)).map_or(0, |&h| h as i8);
+                    let v = if h > 11 { 11 } else { data.rules.offer_goals[usize::from(!top)][h.max(0) as usize] as u8 };
+                    if x.linked()[0] >= 0 && v == 2 { 4 } else { v }
+                };
+                assert!(y.get::<u8>(0x136) == expected || y.get::<u8>(0x136) == harder, "{country}/{t}: {} of {expected} {harder}", y.get::<u8>(0x136));
+                clubs += 1;
+            }
+        }
+        assert!(clubs > 200);
+    }
+
+    use super::*;
+
+    /// The week's end over the original's save A: every player of the
+    /// human club keeps the form of the day, the record's and the club
+    /// state's trend form alike, as the line-up shows it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_keeps_the_forms_for_the_trend() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = crate::records::Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let slot = (0..crate::world::SLOTS).find(|&s| data.world.country(s).is_some_and(|c| c.nation == 14)).unwrap();
+        let key = (slot, 84);
+        let mut clubs = BTreeMap::new();
+        clubs.insert(key, crate::load::club(&records, &data, key).unwrap());
+        let squad = records.team(14, 84).unwrap().players();
+        let changed = squad.iter().enumerate().any(|(i, &id)| {
+            i32::from(records.player(id).unwrap().last_form()) != crate::lineup::form(clubs[&key].fitness[i])
+        });
+        assert!(changed, "the save's trend forms are a week old");
+        keep_forms(&mut records, &mut clubs, &data.world);
+        for (i, &id) in squad.iter().enumerate() {
+            let form = crate::lineup::form(clubs[&key].fitness[i]);
+            assert_eq!(i32::from(records.player(id).unwrap().last_form()), form, "player {id}");
+            assert_eq!(clubs[&key].status[i].last_form, Some(form));
+        }
+    }
 }
 
 #[cfg(test)]

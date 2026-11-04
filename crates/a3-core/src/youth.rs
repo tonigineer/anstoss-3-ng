@@ -222,7 +222,7 @@ pub fn sign(records: &mut Records, id: u16, (country, number): (u8, u16), salary
 }
 
 /// Out of a club's youth team, his youth goals gone (`FUN_0066aea3`).
-fn leave_youth(records: &mut Records, (country, number): (u8, u16), id: u16) {
+pub(crate) fn leave_youth(records: &mut Records, (country, number): (u8, u16), id: u16) {
     let (mut ids, _) = youths(records, country, number);
     ids.retain(|&y| y != id);
     store(records, country, number, &ids);
@@ -234,6 +234,15 @@ fn leave_youth(records: &mut Records, (country, number): (u8, u16), id: u16) {
 /// His goals as a youth or an amateur of the pool.
 pub fn goals(r: &Player) -> u8 {
     r.get(YOUTH_GOALS)
+}
+
+/// Out of a club's amateur pool, both its lists (`FUN_0070e31e`).
+pub(crate) fn leave_pool(records: &mut Records, (country, number): (u8, u16), id: u16) {
+    let mut lists = pool(records, country, number);
+    for list in &mut lists {
+        list.retain(|&q| q != id);
+    }
+    store_pool(records, country, number, &lists);
 }
 
 /// "Förd." for a youth: off if he has it, else his age group's moves to
@@ -433,6 +442,98 @@ pub fn move_up(
     }
 }
 
+/// R+0x271's top two bits at 1: an amateur in the squad (`FUN_00706a7e`).
+const SQUAD_AMATEUR: u8 = 1;
+/// The trial's bits of R+0x26f, both kinds.
+const TRIAL_BITS: u8 = YOUTH_TRIAL | AMATEUR_TRIAL;
+
+/// The week's trials at the human clubs (`FUN_0064e25b`'s `FUN_0074d2b5`
+/// → `FUN_0074ceb1`; at the season's end all at once, `FUN_0074d52b`):
+/// a youth on trial or an amateur in the squad has his weeks halved —
+/// eight, four, two — and at the last goes back, his trial over (his
+/// weeks and trial bits cleared, `FUN_00706a45`): out of the squad, the
+/// youth into the club's youth team while it has room (`FUN_0066ae46`),
+/// its count of those moved up one less, the amateur back among the
+/// pool's amateurs out of those moved up (`FUN_00407c58`). After each the
+/// original looks through the squad again from its second man, so those
+/// before him have their weeks halved once more. (The message the club
+/// gets, texts 4155 and 4156 through `FUN_005f1eaf`, is not built.)
+pub fn end_trials(
+    records: &mut Records,
+    clubs: &mut std::collections::BTreeMap<(usize, usize), ClubState>,
+    world: &crate::world::World,
+    all: bool,
+) {
+    for (country, number) in crate::statistics::human_clubs(records) {
+        let Ok(number) = u16::try_from(number) else { continue };
+        let key = clubs.keys().copied().find(|&(slot, index)| {
+            index == usize::from(number) && world.country(slot).is_some_and(|c| c.nation == u16::from(country))
+        });
+        let mut k = 0;
+        loop {
+            let Some(squad) = records.team(u16::from(country), number).map(|t| t.players()) else { break };
+            let Some(&id) = squad.get(k) else { break };
+            let Some(p) = records.player(id) else {
+                k += 1;
+                continue;
+            };
+            let amateur = p.picks() >> 6 == SQUAD_AMATEUR;
+            if !amateur && p.retiring() & YOUTH_TRIAL == 0 {
+                k += 1;
+                continue;
+            }
+            let (high, weeks) = (p.picks() & !TRIAL_MASK, p.picks() & TRIAL_MASK);
+            if weeks != 1 && !all {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_picks(high | weeks >> 1);
+                }
+                k += 1;
+                continue;
+            }
+            if let Some(p) = records.player_mut(id) {
+                p.set_picks(high);
+                p.set_retiring(p.retiring() & !TRIAL_BITS);
+            }
+            if let Some(team) = records.team_mut(u16::from(country), number) {
+                let rest: Vec<u16> = squad.iter().copied().filter(|&q| q != id).collect();
+                team.set_players(&rest);
+                let mut lineup = team.lineup();
+                lineup.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+                team.set_lineup(lineup);
+                let mut bench = team.bench();
+                bench.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+                team.set_bench(bench);
+            }
+            if amateur {
+                let [mut up, mut amateurs] = pool(records, country, number);
+                up.retain(|&a| a != id);
+                if !amateurs.contains(&id) && amateurs.len() < POOL {
+                    amateurs.push(id);
+                }
+                store_pool(records, country, number, &[up, amateurs]);
+            } else {
+                let (mut ids, _) = youths(records, country, number);
+                if ids.len() < MOST {
+                    ids.push(id);
+                    store(records, country, number, &ids);
+                }
+                if let Some(block) = team_block(country, number, records).and_then(|name| records.block_mut(&name)) {
+                    let moved = word(block, MOVED_UP);
+                    if moved > 0 {
+                        block[MOVED_UP..MOVED_UP + 2].copy_from_slice(&(moved - 1).to_le_bytes());
+                    }
+                }
+            }
+            if let Some(club) = key.and_then(|key| clubs.get_mut(&key))
+                && k < club.players.len()
+            {
+                club.leave(key.unwrap(), k);
+            }
+            k = 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -440,6 +541,56 @@ mod tests {
     use a3_files::an3::Save;
 
     use super::*;
+
+    /// A youth and an amateur of the original's save A's human club, up on
+    /// trial: the weeks halve them to the last, and the fourth sends both
+    /// back — the youth into the youth team, its count of those moved up
+    /// as before, the amateur among the pool's amateurs —, out of the
+    /// squad and the club's state, their trial bits gone.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_trials_end_after_four_weeks() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let data = Data::load(&dir).unwrap();
+        let (country, number) = (14u8, 84u16);
+        let slot = (0..crate::world::SLOTS).find(|&s| data.world.country(s).is_some_and(|c| c.nation == 14)).unwrap();
+        let key = (slot, usize::from(number));
+        let mut clubs = std::collections::BTreeMap::new();
+        clubs.insert(key, crate::load::club(&records, &data, key).unwrap());
+        let squad_before = records.team(14, number).unwrap().players().len();
+        let (youths_before, moved_before) = youths(&records, country, number);
+        let youth = youths_before[0];
+        let amateur = pool(&records, country, number)[1].first().copied();
+        move_up(&mut records, &data, clubs.get_mut(&key).unwrap(), (key, (country, number)), youth, Trial::Youth);
+        if let Some(a) = amateur {
+            move_up(&mut records, &data, clubs.get_mut(&key).unwrap(), (key, (country, number)), a, Trial::Amateur);
+        }
+        let up = 1 + usize::from(amateur.is_some());
+        assert_eq!(records.team(14, number).unwrap().players().len(), squad_before + up);
+        for weeks in [4, 2, 1] {
+            end_trials(&mut records, &mut clubs, &data.world, false);
+            assert_eq!(records.player(youth).unwrap().picks() & TRIAL_MASK, weeks);
+            assert!(records.team(14, number).unwrap().players().contains(&youth));
+        }
+        end_trials(&mut records, &mut clubs, &data.world, false);
+        let squad = records.team(14, number).unwrap().players();
+        assert_eq!(squad.len(), squad_before);
+        assert_eq!(clubs[&key].players.len(), squad_before);
+        assert!(!squad.contains(&youth));
+        let (youths_after, moved_after) = youths(&records, country, number);
+        assert!(youths_after.contains(&youth));
+        assert_eq!(moved_after, moved_before);
+        let p = records.player(youth).unwrap();
+        assert_eq!((p.picks() & TRIAL_MASK, p.retiring() & TRIAL_BITS), (0, 0));
+        if let Some(a) = amateur {
+            assert!(!squad.contains(&a));
+            let [up, amateurs] = pool(&records, country, number);
+            assert!(amateurs.contains(&a) && !up.contains(&a));
+            assert_eq!(records.player(a).unwrap().retiring() & TRIAL_BITS, 0);
+        }
+    }
 
     #[test]
     fn parents_ask_less_the_higher_the_league() {

@@ -631,3 +631,88 @@ pub fn before_match(tables: &Tables, club: &mut ClubState) {
         }
     }
 }
+
+/// What a squad of fewer than eleven counts for by its league
+/// (`FUN_006a18c2`'s defaults at 0x8a52a8): the first league, the next five,
+/// the rest.
+const SHORT_STRENGTHS: [[i16; 4]; 3] = [[140, 500, 450, 450], [80, 200, 200, 250], [20, 50, 100, 80]];
+
+/// The computer clubs of the countries played line up (`FUN_0042a76e` for
+/// each club without a human trainer): the co-trainer's line-up in a system
+/// of his choosing, three foreigners at most where the league counts them
+/// (`FUN_0042c802` with 6), the bench ("Auto.", `FUN_0042a828`), and what
+/// the eleven count for in goal, defence, midfield and attack into the
+/// team's record (`FUN_006a18c2`), which the matches are scored by. The
+/// original does it every week and before the match days.
+pub fn computer_lineups(records: &mut crate::records::Records, data: &crate::data::Data) {
+    let tables = &data.rules.pitch;
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            if team.humans()[0] != 0 {
+                continue;
+            }
+            let squad = team.players();
+            let level = team.level();
+            let mut club = crate::load::club_state_of(records, team, data);
+            co_trainer(tables, &mut club, FOREIGNERS | FREE);
+            bench(tables, &mut club);
+            let strengths = if squad.len() < FIELD {
+                SHORT_STRENGTHS[match level {
+                    0 => 0,
+                    1..6 => 1,
+                    _ => 2,
+                }]
+            } else {
+                tables.parts(&club.lineup, &club.players, &club.fitness).map(|p| p as i16)
+            };
+            let id = |k: Option<usize>| -> u16 { k.and_then(|k| squad.get(k).copied()).unwrap_or(0) };
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.set_lineup(club.lineup.field.map(id));
+            team.set_bench(club.lineup.bench.map(id));
+            team.set_spots(club.lineup.spots.map(|(x, y)| [x, y]));
+            team.set_formation(club.formation as u8);
+            team.set_strengths(strengths);
+        }
+    }
+}
+
+#[cfg(test)]
+mod computer_tests {
+    use super::*;
+
+    /// The computer clubs' line-ups over the original's save A: lined up
+    /// anew by the replica from the same squads, more than half of them
+    /// field the eleven the original's last weekly line-up left in the
+    /// save, and a quarter count for the very same strengths (the rest
+    /// apart by the fitness the save has moved on since).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_computer_clubs_line_up_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| crate::records::Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("A.an3"), load("A.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        computer_lineups(&mut ours, &data);
+        let (mut clubs, mut elevens, mut strengths) = (0, 0, 0);
+        for country in crate::opponent::played_nations(&theirs) {
+            for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (ours.team(country, number).unwrap(), theirs.team(country, number).unwrap());
+                if y.humans()[0] != 0 || y.players().len() < FIELD {
+                    continue;
+                }
+                clubs += 1;
+                let sorted = |t: &crate::records::Team| {
+                    let mut v = t.lineup().to_vec();
+                    v.sort();
+                    v
+                };
+                elevens += i32::from(sorted(x) == sorted(y));
+                strengths += i32::from(x.strengths() == y.strengths());
+            }
+        }
+        assert!(clubs > 200 && elevens * 2 > clubs && strengths * 4 > clubs, "{elevens} elevens, {strengths} strengths of {clubs}");
+    }
+}

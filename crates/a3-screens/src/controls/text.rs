@@ -44,9 +44,9 @@ impl StaticState {
     }
 }
 
-/// Aligned within its rectangle, wrapped if it has room for more than one
-/// line, each line aligned on its own (`DrawText` with `DT_WORDBREAK`, as
-/// `CMyStatic` paints, `FUN_007ae930`).
+/// Aligned within its rectangle, wrapped, each line aligned on its own,
+/// and only what falls within the rectangle shown (`DrawText` with
+/// `DT_WORDBREAK`, as `CMyStatic` paints, `FUN_007ae930`).
 fn draw_static(
     font: &BitmapFont,
     frame: &mut RgbaImage,
@@ -56,29 +56,55 @@ fn draw_static(
 ) {
     let r = control.rect;
     let (x, y) = (r.min.x as i32, r.min.y as i32);
-    let lines = if r.height() >= 2.0 * font.height() as f32 {
-        font.wrap(text, r.width() as u32, false)
-    } else {
-        vec![text.to_owned()]
-    };
-    // A static is a window of its own: nothing it draws shows below it.
-    let (x0, x1) = (r.min.x.max(0.0) as u32, (r.max.x.max(0.0) as u32).min(frame.width()));
-    let top = (r.max.y.max(0.0) as u32).min(frame.height());
-    let bottom = top.saturating_add(2 * font.height()).min(frame.height());
-    let below: Vec<(u32, u32, Rgba<u8>)> = (top..bottom)
-        .flat_map(|py| (x0..x1).map(move |px| (px, py)))
-        .map(|(px, py)| (px, py, *frame.get_pixel(px, py)))
+    // Wrapped always: what does not fit on the lines its height has room
+    // for falls below and does not show ("Ersten Torschützen tippen" in
+    // 411's 120 pixels).
+    let lines = font.wrap(text, r.width() as u32, false);
+    let placed: Vec<(i32, &String)> = lines
+        .iter()
+        .map(|line| {
+            let width = font.width(line, false) as i32;
+            let left = match control.align {
+                Align::Left => x,
+                Align::Centre => centred(x, r.width() as i32, width),
+                Align::Right => r.max.x as i32 - width,
+            };
+            (left, line)
+        })
         .collect();
-    for (i, line) in lines.iter().enumerate() {
-        let width = font.width(line, false) as i32;
-        let left = match control.align {
-            Align::Left => x,
-            Align::Centre => centred(x, r.width() as i32, width),
-            Align::Right => r.max.x as i32 - width,
-        };
-        font.draw(frame, left, y + i as i32 * font.height() as i32, line, color, false);
-    }
-    for (px, py, pixel) in below {
+    // A static is a window of its own: what it draws shows only within it.
+    let left = placed.iter().map(|&(l, _)| l).min().unwrap_or(x);
+    let right = placed.iter().map(|&(l, line)| l + font.width(line, false) as i32 + 1).max().unwrap_or(x);
+    let bottom = y + (lines.len() as i32 + 1) * font.height() as i32;
+    within(frame, r, (left, y, right, bottom), |frame| {
+        for (i, (left, line)) in placed.iter().enumerate() {
+            font.draw(frame, *left, y + i as i32 * font.height() as i32, line, color, false);
+        }
+    });
+}
+
+/// Draws, keeping what lands outside `rect` from showing: the pixels
+/// `reach` covers outside it are put back as they were — a control's
+/// window clips what it draws.
+pub(crate) fn within(
+    frame: &mut RgbaImage,
+    rect: Rect,
+    reach: (i32, i32, i32, i32),
+    draw: impl FnOnce(&mut RgbaImage),
+) {
+    let (w, h) = (frame.width() as i32, frame.height() as i32);
+    let (x0, y0) = (reach.0.min(rect.min.x as i32).clamp(0, w), reach.1.min(rect.min.y as i32).clamp(0, h));
+    let (x1, y1) = (reach.2.clamp(0, w), reach.3.clamp(0, h));
+    let inside = |px: i32, py: i32| {
+        (rect.min.x as i32..rect.max.x as i32).contains(&px) && (rect.min.y as i32..rect.max.y as i32).contains(&py)
+    };
+    let outside: Vec<(u32, u32, Rgba<u8>)> = (y0..y1)
+        .flat_map(|py| (x0..x1).map(move |px| (px, py)))
+        .filter(|&(px, py)| !inside(px, py))
+        .map(|(px, py)| (px as u32, py as u32, *frame.get_pixel(px as u32, py as u32)))
+        .collect();
+    draw(frame);
+    for (px, py, pixel) in outside {
         frame.put_pixel(px, py, pixel);
     }
 }

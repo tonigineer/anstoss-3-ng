@@ -220,6 +220,14 @@ pub struct Row {
     flags: u16,
 }
 
+impl Row {
+    /// Whether the club is sent to the bottom of its table (its flags'
+    /// 0x80): it goes down whatever its place.
+    pub fn sent_down(&self) -> bool {
+        self.flags & LAST != 0
+    }
+}
+
 const PENALTY: u16 = 3;
 const PENALTY_POINTS: i32 = 3;
 const LAST: u16 = 0x80;
@@ -339,13 +347,22 @@ pub const SQUAD_LINES_FORM_PAGE: i16 = 0x18;
 pub const SQUAD_ALL_TIME_PAGE: i16 = 1;
 pub const SQUAD_ALL_TIME_MATCHES_PAGE: i16 = 5;
 pub const SQUAD_POINTS_PAGE: i16 = 2;
+/// The Joker under 3038 (`FUN_0046bd01`), once the squad has a joker
+/// goal.
+pub const SQUAD_JOKER_PAGE: i16 = 3;
 /// The Einsätze under 2406 (`FUN_004681ce`).
 pub const SQUAD_MATCHES_PAGE: i16 = 4;
 pub const SQUAD_FAIRNESS_PAGE: i16 = 6;
 pub const SQUAD_ASSISTS_PAGE: i16 = 0xc;
+/// The Mannschaft's Eigentore under 2409 (`FUN_00468c74`), once the
+/// squad has an own goal.
+pub const SQUAD_OWN_GOALS_PAGE: i16 = 0xd;
 pub const SQUAD_YELLOW_PAGE: i16 = 0xe;
 /// The Spielereigenschaften under 4739 (`FUN_00471109`).
 pub const SQUAD_TRAITS_PAGE: i16 = 0x1d;
+/// The Mannschaft's Restprogramm (`FUN_0046d3d6`), for the last five
+/// matchdays of the own club's league.
+pub const REST_PROGRAM_PAGE: i16 = 0x1a;
 /// The Vereinsresultate under 3041 (`FUN_0046ce89`).
 pub const SQUAD_FIXTURES_PAGE: i16 = 0x19;
 /// The Notenschnitt Spieler under 3043 (`FUN_0046e649`).
@@ -1058,6 +1075,12 @@ pub const RELATIVE_PAGE: i16 = 0x24;
 pub const SACKED_PAGE: i16 = 0x33;
 pub const SCORES_PAGE: i16 = 0x39;
 pub const FINALS_PAGE: i16 = 0x28;
+/// The Historisches' Endtabelle of the seasons gone by (`FUN_0045ebbf`),
+/// the last one at code 0, the archive's slot nine less the code.
+pub const FINAL_TABLE_PAGES: std::ops::RangeInclusive<i16> = 0..=9;
+/// The Historisches' Resultate of the seasons gone by (`FUN_00463e8d`),
+/// the last one at 0xa, the archive's slot 0x13 less the code.
+pub const ARCHIVED_RESULTS_PAGES: std::ops::RangeInclusive<i16> = 0xa..=0x13;
 /// The Historisches' Rekorde (`FUN_0045f7a5`) and Für die Ewigkeit
 /// (`FUN_0045f8e5`).
 pub const RECORDS_PAGE: i16 = 0x1d;
@@ -1571,6 +1594,54 @@ pub fn five_years(records: &Records) -> Vec<(u16, [f32; 7])> {
         .collect()
 }
 
+/// The ranking's row: the country, its total, seven seasons from +8.
+const RANKING_ROW: usize = 0x24;
+const RANKING_TOTAL: usize = 4;
+const RANKING_SEASONS: usize = 8;
+
+/// The season's end moves the European ranking on a season
+/// (`FUN_00423cad`): every country's seasons shift down by one, the oldest
+/// dropping out and the new one at naught, its total the last five summed
+/// anew (an empty row's at naught); then the rows by their totals, the
+/// highest first, by an exchange sort (`FUN_00423bd5`). (The human's notice,
+/// event 0xcf, is not built.)
+pub fn roll_ranking(records: &mut Records) {
+    let g = &mut records.globals;
+    let float = |g: &crate::records::Globals, at: usize| f32::from_bits(g.get::<u32>(at));
+    for k in 0..RANKING_COUNTRIES {
+        let at = RANKING_AT + k * RANKING_ROW;
+        if g.get::<i16>(at) == 0 {
+            g.put::<u32>(at + RANKING_TOTAL, 0);
+            continue;
+        }
+        for s in 0..6 {
+            let next = g.get::<u32>(at + RANKING_SEASONS + 4 * (s + 1));
+            g.put::<u32>(at + RANKING_SEASONS + 4 * s, next);
+        }
+        let total = (1..6).fold(0.0f32, |t, s| t + float(g, at + RANKING_SEASONS + 4 * s));
+        g.put::<u32>(at + RANKING_TOTAL, total.to_bits());
+        g.put::<u32>(at + RANKING_SEASONS + 4 * 6, 0);
+    }
+    let row = |g: &crate::records::Globals, k: usize| -> Vec<u8> {
+        (0..RANKING_ROW).map(|b| g.get::<u8>(RANKING_AT + k * RANKING_ROW + b)).collect()
+    };
+    let put_row = |g: &mut crate::records::Globals, k: usize, bytes: &[u8]| {
+        for (b, &v) in bytes.iter().enumerate() {
+            g.put::<u8>(RANKING_AT + k * RANKING_ROW + b, v);
+        }
+    };
+    for i in 0..RANKING_COUNTRIES {
+        for j in i + 1..RANKING_COUNTRIES {
+            let total = |g: &crate::records::Globals, k: usize| float(g, RANKING_AT + k * RANKING_ROW + RANKING_TOTAL);
+            if total(g, i) < total(g, j) {
+                let (a, b) = (row(g, i), row(g, j));
+                put_row(g, i, &b);
+                put_row(g, j, &a);
+            }
+        }
+    }
+}
+
 /// A transfer of the Supertransfers (`FUN_0046217a`: fifty of 0x1c bytes
 /// at `DAT_00b1b2e8` in the lists block, the dearest first, as
 /// `FUN_0070eccd` keeps them): the player's names, his fee in ten
@@ -1665,7 +1736,60 @@ pub struct Eternal {
 
 const ETERNAL: (usize, usize) = (0x7b0c, 0xa20);
 
+/// Up to which season the all-time tables hold their seasons
+/// (`DAT_00b5df80`): the season's end sets it one past the closing season.
+const ETERNAL_SEASON: usize = 0xb5df80;
+
+/// The season's end folds each played country's first-league season into
+/// its all-time tables (`FUN_006b3111` for the first league, from
+/// `FUN_006b2e88` per country played): every club's games, points and
+/// goals for and against of all its matches, of its home and of its away
+/// matches (`FUN_007293ea` in its three modes) join its twelve words, and
+/// the tables count the season as held.
+pub fn fold_eternal(records: &mut Records) {
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let countries: Vec<i16> =
+        std::iter::once(globals.main_country()).chain(globals.more_countries()[..more].iter().copied()).collect();
+    let mut adds: Vec<(usize, u8, Vec<Row>)> = Vec::new();
+    for country in countries {
+        let Ok(country) = u16::try_from(country) else { continue };
+        let Some(league) = League::of(records, country, 0) else { continue };
+        let slot = usize::from(records.countries.slot(country.into()));
+        for kind in [ALL, HOME, AWAY] {
+            adds.push((slot, kind, table(records, &league, kind)));
+        }
+    }
+    let seasons = records.globals.seasons();
+    let Some(block) = records.block_mut(LISTS) else { return };
+    let (at, per_slot) = ETERNAL;
+    for (slot, kind, rows) in adds {
+        for row in rows {
+            let Ok(team) = usize::try_from(row.team) else { continue };
+            let from = at + slot * per_slot + 24 * team + 8 * usize::from(kind);
+            for (k, add) in [row.games, row.points, row.goals_for, row.goals_against].into_iter().enumerate() {
+                if let Some(w) = block.get_mut(from + 2 * k..from + 2 * k + 2) {
+                    let old = i16::from_le_bytes([w[0], w[1]]);
+                    w.copy_from_slice(&old.wrapping_add(add as i16).to_le_bytes());
+                }
+            }
+        }
+    }
+    records.globals.put::<u16>(ETERNAL_SEASON, seasons.wrapping_add(1));
+}
+
 pub fn eternal(records: &Records, country: u16) -> Vec<Eternal> {
+    eternal_of(records, country, ALL)
+}
+
+/// The same of the home games or the away games only (`FUN_0072b25b`
+/// modes 1 and 2: the club's next four words, or the four after), with
+/// this season's home or away table: the ewige Heim- and
+/// Auswärtstabelle (`FUN_004613db`, `FUN_00461751`).
+pub const ETERNAL_HOME_PAGE: i16 = 0x36;
+pub const ETERNAL_AWAY_PAGE: i16 = 0x37;
+
+pub fn eternal_of(records: &Records, country: u16, kind: u8) -> Vec<Eternal> {
     if !records.globals.played(country as i16) {
         return Vec::new();
     }
@@ -1679,7 +1803,7 @@ pub fn eternal(records: &Records, country: u16) -> Vec<Eternal> {
     let teams = records.countries.team_count(country.into()).max(0);
     let mut rows: Vec<Eternal> = (0..teams)
         .map(|t| {
-            let at = 24 * t as usize;
+            let at = 24 * t as usize + 8 * usize::from(kind);
             Eternal {
                 team: t,
                 games: word(at),
@@ -1690,7 +1814,7 @@ pub fn eternal(records: &Records, country: u16) -> Vec<Eternal> {
         })
         .collect();
     if let Some(league) = League::of(records, country, 0) {
-        for row in table(records, &league, ALL) {
+        for row in table(records, &league, kind) {
             if let Some(e) = usize::try_from(row.team).ok().and_then(|t| rows.get_mut(t)) {
                 e.games += row.games;
                 e.points += row.points;
@@ -1849,6 +1973,458 @@ pub fn league_cup_finals(records: &Records, country: u16) -> Vec<(i16, CupPairin
     (count.saturating_sub(FINALS_KEPT)..count)
         .map(|k| entry(FINALS_KEPT - 1 - k))
         .map(|e| (i16::from_le_bytes([e[0], e[1]]), pairing(&e[2..])))
+        .collect()
+}
+
+/// The Historisches' Int. Wettbewerbe (`FUN_0045feac`), Torschützenkönige
+/// (`FUN_004608ce`), Torrekorde (`FUN_00460c7a`) and Rekordnationalspieler
+/// (`FUN_00461e6a`), and the international competitions' strip (kind 12).
+pub const INTERNATIONAL_PAGE: i16 = 0x14;
+pub const KINGS_PAGE: i16 = 0x19;
+pub const TALLIES_PAGE: i16 = 0x1a;
+pub const CAPS_PAGE: i16 = 0x1c;
+pub const INTERNATIONAL_STRIP: i16 = 12;
+
+/// The finals of the Champions League, the UEFA cup, the European
+/// Supercup and the club world cup in the lists block (`DAT_00b1a348`,
+/// `DAT_00b1a5c8`, `DAT_00b1a708`, `DAT_00b1a848`): twenty entries each,
+/// the year and the final's pairing, the newest last (`FUN_00424207`).
+const INTERNATIONAL_FINALS: [usize; 4] = [0xec90, 0xef10, 0xf050, 0xf190];
+
+/// An international final: the year, both clubs by country and number,
+/// the goals (the pairing's first leg, +0xa and +0xb) and how it was
+/// decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InternationalFinal {
+    pub year: i16,
+    pub a: (u8, i16),
+    pub b: (u8, i16),
+    pub goals: (u8, u8),
+    pub penalties: bool,
+    pub extra_time: bool,
+}
+
+/// The finals of the competition at `list` (0 to 3) kept so far, the
+/// newest first, as the page adds them at its head.
+pub fn international_finals(records: &Records, list: usize) -> Vec<InternationalFinal> {
+    let Some(&at) = INTERNATIONAL_FINALS.get(list) else { return Vec::new() };
+    let Some(b) = records.block(LISTS).and_then(|b| b.get(at..at + FINALS_KEPT * 0x10)) else {
+        return Vec::new();
+    };
+    let word = |e: &[u8], k: usize| i16::from_le_bytes([e[k], e[k + 1]]);
+    (0..FINALS_KEPT)
+        .rev()
+        .map(|k| &b[k * 0x10..(k + 1) * 0x10])
+        .filter(|e| word(e, 0) != 0)
+        .map(|e| InternationalFinal {
+            year: word(e, 0),
+            a: (e[2], word(e, 4)),
+            b: (e[6], word(e, 8)),
+            goals: (e[0xa], e[0xb]),
+            penalties: e[0xe] & 0x40 != 0,
+            extra_time: e[0xe] & 0x80 != 0,
+        })
+        .collect()
+}
+
+/// A season's top scorer or a best tally: his names in the pool, his
+/// club's number in the country, his goals and the season's year.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tally {
+    pub names: [u16; 2],
+    pub team: i16,
+    pub goals: i16,
+    pub year: i16,
+}
+
+/// The lists block's ten-byte tallies of a country (`DAT_00b19790`, 600
+/// bytes a country by its slot: twenty seasons of up to three top scorers,
+/// written at the season's end by `FUN_0071cd6f`; `DAT_00b1797c`, 100
+/// bytes a slot: the ten best tallies of a season).
+pub(crate) const KINGS: (usize, usize) = (0xe0d8, 600);
+pub(crate) const TALLIES: (usize, usize) = (0xc2c4, 100);
+const KING_SEASON: usize = 0x1e;
+const KINGS_PER_SEASON: usize = 3;
+
+fn tally(e: &[u8]) -> Tally {
+    let word = |k: usize| i16::from_le_bytes([e[k], e[k + 1]]);
+    Tally { names: [word(0) as u16, word(2) as u16], team: word(4), goals: word(6), year: word(8) }
+}
+
+fn country_list(records: &Records, country: u16, (at, per_slot): (usize, usize)) -> Option<&[u8]> {
+    let from = at + usize::from(records.countries.slot(country.into())) * per_slot;
+    records.block(LISTS).and_then(|b| b.get(from..from + per_slot))
+}
+
+/// The Torschützenkönige: the seasons from the newest down to the second
+/// kept — the oldest is never shown —, up to three tied top scorers each.
+pub fn top_scorers(records: &Records, country: u16) -> Vec<Tally> {
+    let Some(b) = country_list(records, country, KINGS) else { return Vec::new() };
+    (1..b.len() / KING_SEASON)
+        .rev()
+        .flat_map(|s| (0..KINGS_PER_SEASON).map(move |k| s * KING_SEASON + k * 10))
+        .map(|at| tally(&b[at..at + 10]))
+        .filter(|t| t.year != 0)
+        .collect()
+}
+
+/// The Torrekorde: the ten best tallies, best first.
+pub fn best_tallies(records: &Records, country: u16) -> Vec<Tally> {
+    let Some(b) = country_list(records, country, TALLIES) else { return Vec::new() };
+    (0..10).map(|k| tally(&b[k * 10..k * 10 + 10])).filter(|t| t.year != 0).collect()
+}
+
+/// The Rekordnationalspieler of a country (`DAT_00b1af00`, 200 bytes a
+/// slot): twenty entries of a player's id, his names, his caps and
+/// whether he still plays; those with an id.
+const CAPS: (usize, usize) = (0xf848, 200);
+
+pub fn most_capped(records: &Records, country: u16) -> Vec<([u16; 2], u8, bool)> {
+    let Some(b) = country_list(records, country, CAPS) else { return Vec::new() };
+    let word = |k: usize| u16::from_le_bytes([b[k], b[k + 1]]);
+    (0..20)
+        .map(|k| k * 10)
+        .filter(|&at| word(at) != 0)
+        .map(|at| ([word(at + 2), word(at + 4)], b[at + 8], b[at + 9] != 0))
+        .collect()
+}
+
+/// The Historisches' Nat. Meister (`FUN_004629fe`) and Nat. Pokalsieger
+/// (`FUN_00463213`), Europameister and Weltmeister (`FUN_0046445e`,
+/// `FUN_004647b4`), their top scorers (`FUN_00464b0a`, `FUN_00464d01`),
+/// Trainer des Jahres, Spieler des Jahres and Fußballer Europas
+/// (`FUN_00464ef8`, `FUN_00465122`, `FUN_0046534c`) and the Erfolgreichste
+/// Trainer (`FUN_00465abb`).
+pub const CHAMPIONS_PAGE: i16 = 0x1f;
+pub const CUP_WINNERS_PAGE: i16 = 0x20;
+pub const EUROS_PAGE: i16 = 0x29;
+pub const WORLD_CUPS_PAGE: i16 = 0x2a;
+pub const EURO_SCORERS_PAGE: i16 = 0x2b;
+pub const WORLD_CUP_SCORERS_PAGE: i16 = 0x2c;
+pub const TRAINER_AWARD_PAGE: i16 = 0x2d;
+pub const PLAYER_AWARD_PAGE: i16 = 0x2e;
+pub const EUROPE_AWARD_PAGE: i16 = 0x2f;
+pub const SUCCESSFUL_TRAINERS_PAGE: i16 = 0x32;
+
+/// A country's champions (`DAT_00b181b0`, 0xf0 bytes a slot; written by
+/// `FUN_0071d54b`): twenty entries of 0xc bytes — the year, the club's
+/// country and number, its points and goals —, the newest last.
+pub(crate) const CHAMPIONS: (usize, usize) = (0xcaf8, 0xf0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Champion {
+    pub year: i16,
+    pub club: (u8, i16),
+    pub points: i16,
+    pub goals_for: i16,
+    pub goals_against: i16,
+}
+
+/// The kept champions, the newest first: as many as name a club, counted
+/// back from the last entry.
+pub fn champions(records: &Records, country: u16) -> Vec<Champion> {
+    let Some(b) = country_list(records, country, CHAMPIONS) else { return Vec::new() };
+    let entry = |k: usize| &b[k * 0xc..(k + 1) * 0xc];
+    let word = |e: &[u8], at: usize| i16::from_le_bytes([e[at], e[at + 1]]);
+    let count = (0..20).filter(|&k| entry(k)[2] != 0).count();
+    (20 - count..20)
+        .rev()
+        .map(entry)
+        .map(|e| Champion {
+            year: word(e, 0),
+            club: (e[2], word(e, 4)),
+            points: word(e, 6),
+            goals_for: word(e, 8),
+            goals_against: word(e, 0xa),
+        })
+        .collect()
+}
+
+/// A country's cup winners (`DAT_00b18b10`, 0x140 bytes a slot; written
+/// by `FUN_006ced69`): twenty finals of the year and the pairing, the
+/// newest first, as many as name a club counted back from the last.
+pub(crate) const CUP_WINNERS: (usize, usize) = (0xd458, 0x140);
+
+pub fn cup_winners(records: &Records, country: u16) -> Vec<(i16, CupPairing)> {
+    let Some(b) = country_list(records, country, CUP_WINNERS) else { return Vec::new() };
+    let entry = |k: usize| &b[k * 0x10..(k + 1) * 0x10];
+    let count = (0..20).filter(|&k| entry(k)[2] != 0).count();
+    (20 - count..20)
+        .rev()
+        .map(entry)
+        .map(|e| (i16::from_le_bytes([e[0], e[1]]), pairing(&e[2..])))
+        .collect()
+}
+
+/// The European championships' and the world cups' records (`DAT_00b1e832`
+/// and `DAT_00b1e650` in the lists block; written by `FUN_0067d229`): a
+/// count, then twenty of 0x18 bytes — the year, the host, the final's
+/// pairing and the top scorer's names, nation and goals.
+const EUROS: usize = 0x1317a;
+const WORLD_CUPS: usize = 0x12f98;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tournament {
+    pub year: i16,
+    pub host: i16,
+    pub final_: CupPairing,
+    pub scorer: [u16; 2],
+    pub scorer_nation: u8,
+    pub scorer_goals: u8,
+}
+
+/// The tournaments kept, the newest first.
+pub fn tournaments(records: &Records, world: bool) -> Vec<Tournament> {
+    let at = if world { WORLD_CUPS } else { EUROS };
+    let Some(b) = records.block(LISTS).and_then(|b| b.get(at..at + 2 + 20 * 0x18)) else {
+        return Vec::new();
+    };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    let count = usize::try_from(word(0)).unwrap_or(0).min(20);
+    (0..count)
+        .rev()
+        .map(|k| 2 + k * 0x18)
+        .map(|e| Tournament {
+            year: word(e),
+            host: word(e + 2),
+            final_: pairing(&b[e + 4..e + 0x12]),
+            scorer: [word(e + 0x12) as u16, word(e + 0x14) as u16],
+            scorer_nation: b[e + 0x16],
+            scorer_goals: b[e + 0x17],
+        })
+        .collect()
+}
+
+/// An award of a season: the year, the name as stored, the club by
+/// country and number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Award {
+    pub year: i16,
+    pub name: String,
+    pub club: (u8, i16),
+}
+
+/// The awards kept (`FUN_00748880`, `FUN_007488d4` a country by its slot
+/// at 0x2d2 bytes in the blocks `0x1c45838` and `0x1c449f8`;
+/// `FUN_00748928` one list in `0x1c44700`): a count, then twenty of 0x24
+/// bytes, the newest first. `kind` 0 the trainer, 1 the player of the
+/// year, 2 Europe's footballer; a country not played has none.
+pub fn awards(records: &Records, kind: usize, country: u16) -> Vec<Award> {
+    let (block, at) = match kind {
+        0 | 1 => {
+            let globals = &records.globals;
+            let more = usize::try_from(globals.more_count()).unwrap_or(0);
+            let played = globals.main_country() == country as i16
+                || globals.more_countries().iter().take(more).any(|&c| c == country as i16);
+            if !played {
+                return Vec::new();
+            }
+            let slot = usize::from(records.countries.slot(country.into()));
+            (if kind == 0 { "0x1c45838" } else { "0x1c449f8" }, slot * 0x2d2)
+        }
+        _ => ("0x1c44700", 0),
+    };
+    let Some(b) = records.block(block).and_then(|b| b.get(at..at + 2 + 20 * 0x24)) else {
+        return Vec::new();
+    };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    let count = usize::try_from(word(0)).unwrap_or(0).min(20);
+    (0..count)
+        .rev()
+        .map(|k| 2 + k * 0x24)
+        .map(|e| Award {
+            year: word(e),
+            name: crate::records::text(&b[e + 2..], 30),
+            club: (b[e + 0x20], word(e + 0x22)),
+        })
+        .collect()
+}
+
+/// The most successful trainers of a country (`FUN_0072134f`: the block
+/// `0xaf7450[slot]`), twenty of 0x2a bytes: a person's id or a manager's
+/// number negated, the name, the titles, cups, European cups, promotions
+/// and the others; those with an id, in the kept order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuccessfulTrainer {
+    pub name: String,
+    pub titles: i16,
+    pub cups: i16,
+    pub european: i16,
+    pub promotions: i16,
+    pub others: i16,
+}
+
+pub fn successful_trainers(records: &Records, country: u16) -> Vec<SuccessfulTrainer> {
+    let slot = records.countries.slot(country.into());
+    let Some(b) = records.block(&format!("0xaf7450[{slot}]")) else { return Vec::new() };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    (0..20)
+        .map(|k| k * 0x2a)
+        .filter(|&e| e + 0x2a <= b.len() && word(e) != 0)
+        .map(|e| SuccessfulTrainer {
+            name: crate::records::text(&b[e + 2..], 30),
+            titles: word(e + 0x20),
+            cups: word(e + 0x22),
+            european: word(e + 0x24),
+            promotions: word(e + 0x26),
+            others: word(e + 0x28),
+        })
+        .collect()
+}
+
+/// The Historisches' Beste Mannschaft (`FUN_004665dd`).
+pub const BEST_TEAMS_PAGE: i16 = 0x38;
+
+/// Each completed season's strongest squad (`FUN_007215e7`: the object
+/// `0xb07ff0`'s data, twenty of ten bytes — the season's year, the
+/// club by country and number, its squad's strength summed and how many;
+/// `FUN_00726660` at the season's end), the oldest first: as many as
+/// seasons have ended since the game began, nineteen at most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BestTeam {
+    pub year: i16,
+    pub club: (u8, i16),
+    pub strength: i16,
+    pub squad: i16,
+}
+
+pub fn best_teams(records: &Records) -> Vec<BestTeam> {
+    let Some(b) = records.block("0xb07ff0").and_then(|b| b.get(..200)) else {
+        return Vec::new();
+    };
+    let globals = &records.globals;
+    let ended = (i32::from(globals.start_year()) - i32::from(globals.year())).clamp(0, 19) as usize;
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    (0..ended)
+        .map(|k| k * 10)
+        .map(|e| BestTeam { year: word(e), club: (b[e + 2], word(e + 4)), strength: word(e + 6), squad: word(e + 8) })
+        .collect()
+}
+
+/// The Historisches at the statistics department's higher levels:
+/// Herbstmeister (`FUN_00462d17`), Rekordmeister (`FUN_004624fc`),
+/// Rekordaufsteiger and Rekordabsteiger (`FUN_00465f1a`, `FUN_00466266`),
+/// Meiste Aufstiege and Meiste Abstiege (`FUN_00466c6f`, `FUN_00466e72`).
+pub const AUTUMN_CHAMPIONS_PAGE: i16 = 0x25;
+pub const RECORD_CHAMPIONS_PAGE: i16 = 0x26;
+pub const RECORD_PROMOTED_PAGE: i16 = 0x34;
+pub const RECORD_RELEGATED_PAGE: i16 = 0x35;
+pub const MOST_PROMOTIONS_PAGE: i16 = 0x3a;
+pub const MOST_RELEGATIONS_PAGE: i16 = 0x3b;
+
+/// The half-season leaders (`DAT_00b18660`, 0xf0 a slot; `FUN_0071d686`
+/// at the half-season's turn) laid like the champions.
+pub(crate) const AUTUMN: (usize, usize) = (0xcfa8, 0xf0);
+
+fn champion_entries(records: &Records, country: u16, list: (usize, usize)) -> Vec<Champion> {
+    let Some(b) = country_list(records, country, list) else { return Vec::new() };
+    let word = |e: &[u8], at: usize| i16::from_le_bytes([e[at], e[at + 1]]);
+    (0..20)
+        .map(|k| &b[k * 0xc..(k + 1) * 0xc])
+        .map(|e| Champion {
+            year: word(e, 0),
+            club: (e[2], word(e, 4)),
+            points: word(e, 6),
+            goals_for: word(e, 8),
+            goals_against: word(e, 0xa),
+        })
+        .collect()
+}
+
+/// The Herbstmeister, the newest first, and the share of them that went
+/// on to be champions: an entry counts where the champions' list holds
+/// the same club for its year at the same place or the next.
+pub fn autumn_champions(records: &Records, country: u16) -> (Vec<Champion>, Option<f64>) {
+    let h = champion_entries(records, country, AUTUMN);
+    let m = champion_entries(records, country, CHAMPIONS);
+    if h.is_empty() || m.is_empty() {
+        return (Vec::new(), None);
+    }
+    let (mut n, mut hits) = (0, 0);
+    for i in (0..20).filter(|&i| h[i].club.0 != 0) {
+        n += 1;
+        if h[i].year == m[i].year {
+            hits += i32::from(h[i].club == m[i].club);
+        } else if i < 19 && h[i].year == m[i + 1].year {
+            hits += i32::from(h[i].club == m[i + 1].club);
+        }
+    }
+    let rows = h.into_iter().rev().filter(|c| c.club.0 != 0).collect();
+    (rows, (n > 0).then(|| f64::from(hits) * 100.0 / f64::from(n)))
+}
+
+/// The record champions (three i16 arrays by team number, 0xd8 bytes a
+/// slot: titles `DAT_00b1b860`, cups `DAT_00b1bc98`, European cups
+/// `DAT_00b1c0d0`): the country's clubs sorted as the page's exchange
+/// sort leaves them — more titles, then cups, then European cups first,
+/// full ties never swapped, the loop not stable —, those with a title,
+/// a hundred at most.
+pub(crate) const TITLES: [usize; 3] = [0x101a8, 0x105e0, 0x10a18];
+pub(crate) const TITLES_SLOT: usize = 0xd8;
+
+pub fn record_champions(records: &Records, country: u16) -> Vec<(i16, [i16; 3])> {
+    let n = usize::try_from(records.countries.team_count(country.into())).unwrap_or(0).min(TITLES_SLOT / 2);
+    let lists: Vec<&[u8]> =
+        TITLES.iter().filter_map(|&at| country_list(records, country, (at, TITLES_SLOT))).collect();
+    if lists.len() < 3 {
+        return Vec::new();
+    }
+    let value = |t: usize| -> [i16; 3] {
+        std::array::from_fn(|k| i16::from_le_bytes([lists[k][2 * t], lists[k][2 * t + 1]]))
+    };
+    let mut p: Vec<usize> = (0..n).collect();
+    for i in 0..n {
+        for j in 0..i {
+            let (a, b) = (value(p[i]), value(p[j]));
+            if a > b {
+                p.swap(i, j);
+            }
+        }
+    }
+    let count = (0..n).filter(|&t| value(t)[0] > 0).count().min(100);
+    p.into_iter().take(count).map(|t| (t as i16, value(t))).collect()
+}
+
+/// The promotions and relegations each club had (`FUN_0072144b`: the
+/// object `0xb06cd8`, four i16 a team — the total and by the league
+/// left —; `FUN_00721518`: `0xb07558`, five), the main country's 108
+/// entries from the start, sorted by the total as the page's exchange
+/// sort leaves them, those with any.
+pub fn record_moves(records: &Records, relegations: bool) -> Vec<(i16, Vec<i16>)> {
+    let (block, width) = if relegations { ("0xb07558", 5) } else { ("0xb06cd8", 4) };
+    let Some(b) = records.block(block) else { return Vec::new() };
+    let entry = |t: usize| -> Vec<i16> {
+        (0..width)
+            .map(|k| {
+                let at = (t * width + k) * 2;
+                b.get(at..at + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]))
+            })
+            .collect()
+    };
+    const TEAMS: usize = 108;
+    let mut p: Vec<usize> = (0..TEAMS).collect();
+    for i in 0..TEAMS - 1 {
+        for j in i + 1..TEAMS {
+            if entry(p[i])[0] < entry(p[j])[0] {
+                p.swap(i, j);
+            }
+        }
+    }
+    p.into_iter().map(|t| (t as i16, entry(t))).filter(|(_, e)| e[0] != 0).collect()
+}
+
+/// The players promoted or relegated most often with the main country's
+/// clubs (`FUN_00721647`: the object `0xb06bb4`; `FUN_007216a7`:
+/// `0xb06a90`): twenty of 0xc bytes — the player's id, his names, his
+/// club by country and number, how often —, those with an id.
+pub fn most_moves(records: &Records, relegations: bool) -> Vec<([u16; 2], (u8, i16), i16)> {
+    let block = if relegations { "0xb06a90" } else { "0xb06bb4" };
+    let Some(b) = records.block(block).and_then(|b| b.get(..20 * 0xc)) else { return Vec::new() };
+    let word = |k: usize| i16::from_le_bytes([b[k], b[k + 1]]);
+    (0..20)
+        .map(|k| k * 0xc)
+        .filter(|&e| word(e) != 0)
+        .map(|e| ([word(e + 2) as u16, word(e + 4) as u16], (b[e + 6], word(e + 8)), word(e + 0xa)))
         .collect()
 }
 
@@ -2127,11 +2703,82 @@ pub struct LigaRow {
 /// club's number and the columns' point, goals, matchdays he scored and
 /// assisted on and his assists. A row is drawn once its first column
 /// stands above 0.
-const LISTS: &str = "0xb0b6b8";
-const TOR_LIST: usize = 0x3c;
-const TOR_LEAGUE: usize = 0x640;
+pub(crate) const LISTS: &str = "0xb0b6b8";
+pub(crate) const TOR_LIST: usize = 0x3c;
+pub(crate) const TOR_LEAGUE: usize = 0x640;
 const SCORER_LIST: usize = 0x468e;
 const SCORER_LEAGUE: usize = 0xf0;
+
+/// The lists the new season's first init clears (`FUN_0065e659`), by
+/// address and length: the top scorers and the other player lists, the
+/// scorers' points, the fair-play tables, the Elf des Tages and the
+/// referees' favourites — every table of the block from `DAT_00b0b6f4` up
+/// to the all-time tables at `DAT_00b131c4`, and the referees' at
+/// `DAT_00b1e290`.
+const SEASON_CLEARS: [(usize, usize); 11] = [
+    (0xb0b6f4, 16000),
+    (0xb0f574, 2000),
+    (0xb106a4, 0x640),
+    (0xb10ce4, 2000),
+    (0xb114b4, 2000),
+    (0xb11c84, 2000),
+    (0xb0fd44, 0x960),
+    (0xb12454, 1000),
+    (0xb1283c, 2000),
+    (0xb1300c, 0x1b8),
+    (0xb1e290, 0x3c0),
+];
+const LISTS_AT: usize = 0xb0b6b8;
+
+/// The new season's lists (`FUN_0065e659`): every table of the season
+/// cleared, then the fair-play and the referees' tables seeded with each
+/// league's clubs in table order (`FUN_0065ebe9`) — the main country's
+/// leagues by level, a more country's first league behind them — a club
+/// by the low byte of its number, its counts at nought. Beside it the
+/// thirty numbers of the season's luck are drawn anew, each below 30.
+pub fn open_lists(records: &mut Records, random: &mut Random) {
+    let globals = &records.globals;
+    let main = globals.main_country();
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let mut seeds: Vec<(usize, Vec<i16>)> = Vec::new();
+    if let Ok(country) = u16::try_from(main) {
+        for level in 0..records.countries.leagues(usize::from(country)).max(0) {
+            let Some(league) = League::of(records, country, level as u8) else { continue };
+            seeds.push((level as usize, (0..league.teams()).map(|i| league.team(i)).collect()));
+        }
+    }
+    for &country in &globals.more_countries()[..more] {
+        let Ok(country) = u16::try_from(country) else { continue };
+        let (Some(slot), Some(league)) = (league_of(records, country, 0), League::of(records, country, 0)) else {
+            continue;
+        };
+        seeds.push((slot, (0..league.teams()).map(|i| league.team(i)).collect()));
+    }
+    if let Some(block) = records.block_mut(LISTS) {
+        for (at, len) in SEASON_CLEARS {
+            if let Some(s) = block.get_mut(at - LISTS_AT..at - LISTS_AT + len) {
+                s.fill(0);
+            }
+        }
+        for (slot, teams) in seeds {
+            for (k, team) in teams.into_iter().enumerate() {
+                let fair = FAIR_LIST + slot * FAIR_LEAGUE + 4 * k;
+                let referee = REFEREE_LIST + slot * REFEREE_LEAGUE + 4 * k;
+                if let Some(b) = block.get_mut(fair) {
+                    *b = team as u8;
+                }
+                if let Some(s) = block.get_mut(referee..referee + 2) {
+                    s.copy_from_slice(&u16::from(team as u8).to_le_bytes());
+                }
+            }
+        }
+    }
+    let values = std::array::from_fn(|_| random.below(LUCK_BELOW) as i16);
+    records.luck.set_values(values);
+}
+
+/// The season's luck draws below this.
+const LUCK_BELOW: u32 = 30;
 
 /// Which league's list a page reads (`FUN_00677b07`): the main country's
 /// by its level, and the more countries' first leagues, behind the main
@@ -2146,6 +2793,352 @@ fn league_of(records: &Records, country: u16, level: u8) -> Option<usize> {
     (0..more)
         .find(|&k| globals.more_countries()[k] == country)
         .map(|k| k + 6)
+}
+
+/// The ten seasons gone by of each kept league (`0xb21adc` in the block
+/// from `0xb1f860`, GEGNERINFO §9): a slot of 0x972 bytes a season, ten
+/// slots a league, the oldest first. A slot holds its country, how many
+/// teams, whether they met four times, its sort rule, the teams' numbers,
+/// a penalty byte each, a mark per place and the results, a row of 0x60
+/// bytes per home side, four bytes a game.
+const ARCHIVE_BLOCK: &str = "0xb1f860";
+const ARCHIVE_AT: usize = 0xb21adc - 0xb1f860;
+const ARCHIVE_LEAGUE: usize = 0x5e74;
+const ARCHIVE_SEASON: usize = 0x972;
+pub const ARCHIVE_SEASONS: usize = 10;
+const ARCHIVE_ROW: usize = 0x60;
+/// The final places of a country's leagues in its country block
+/// (`0x19f7fd0[slot]`, the object's +0x46 — the block holds it from its
+/// +0x20 —, a row of 0x18 a level): the clubs' numbers by place.
+const PLACES_AT: usize = 0x46 - 0x20;
+const PLACES_ROW: usize = 0x18;
+
+/// Every club's squad strength by season (`0xaf9660[slot]`, from +0x20):
+/// 108 clubs of five entries of four bytes — the league's level, a naught,
+/// the sum of the squad's strengths —, the newest last; and its table
+/// place by season (`0xafc130[slot]`): twenty entries of four bytes — the
+/// level, a naught, the place —, the newest last.
+const STRENGTHS_AT: u32 = 0xaf9660;
+const PLACES_BY_SEASON_AT: u32 = 0xafc130;
+const HISTORY_CLUBS: usize = 0x6c;
+const STRENGTH_ENTRY: usize = 0x14;
+const PLACE_ENTRY: usize = 0x50;
+/// The strongest squad of each season of the game (`0xb07ff0`, from +0x20):
+/// twenty entries of ten bytes — the year, the country, the club, the sum
+/// of strengths, the squad's size —; the year it last moved on at +0xbe.
+const STRONGEST_AT: &str = "0xb07ff0";
+const STRONGEST: usize = 10;
+const STRONGEST_SEASONS: i32 = 20;
+const STRONGEST_MOVED: usize = 0xbe;
+/// The year the game began (`DAT_00b5cbcc`).
+const FIRST_YEAR: usize = 0xb5cbcc;
+/// A player's goals season by season (R+0x2a9): bit 7 that the season
+/// counts, at most 63 goals; twenty seasons, then moving on.
+const SEASON_GOALS: usize = 0x2a9;
+const SEASON_GOALS_LEN: usize = 20;
+
+/// The season's goals into his history (`FUN_007042ec` → `FUN_0070518c`):
+/// his goals of every kind, at most 63, with the season's bit. A full
+/// history moves on by a byte first — and the original then writes one
+/// byte behind it, into the first of the strengths', as the replica does.
+fn note_season_goals(p: &mut Player) {
+    if p.career_count() <= 0 {
+        return;
+    }
+    let goals = p.goal_kinds().iter().map(|&g| u16::from(g)).sum::<u16>().min(0x3f) as u8;
+    let byte = |p: &Player, k: usize| p.get::<u8>(SEASON_GOALS + k);
+    let mut k = (0..SEASON_GOALS_LEN).find(|&k| byte(p, k) == 0).unwrap_or(SEASON_GOALS_LEN);
+    if k == SEASON_GOALS_LEN {
+        for i in 0..SEASON_GOALS_LEN - 1 {
+            let next = byte(p, i + 1);
+            p.put::<u8>(SEASON_GOALS + i, next);
+        }
+        k = SEASON_GOALS_LEN;
+    }
+    p.put::<u8>(SEASON_GOALS + k, goals.wrapping_add(0x80));
+}
+
+/// The season's end keeps each played club's strength and place
+/// (`FUN_007255a1`, per country `FUN_00725460`): both histories move on by
+/// a season for all 108 clubs; then each club's squad strength (the sum of
+/// its players' — every one with a career noting his season's goals) and
+/// its table place go into the newest entries with its level, and the
+/// strongest squad of the season so far into its record list.
+pub fn archive_strengths(records: &mut Records) {
+    let year = records.globals.start_year() as i16;
+    let season = i32::from(year) - i32::from(records.globals.get::<i16>(FIRST_YEAR));
+    for country in crate::opponent::played_nations(records) {
+        let slot = records.countries.slot(usize::from(country));
+        let strengths = format!("{STRENGTHS_AT:#x}[{slot}]");
+        let places = format!("{PLACES_BY_SEASON_AT:#x}[{slot}]");
+        if let Some(b) = records.block_mut(&strengths).filter(|b| b.len() >= HISTORY_CLUBS * STRENGTH_ENTRY) {
+            for club in 0..HISTORY_CLUBS {
+                let at = club * STRENGTH_ENTRY;
+                b.copy_within(at + 4..at + STRENGTH_ENTRY, at);
+            }
+        }
+        if let Some(b) = records.block_mut(&places).filter(|b| b.len() >= HISTORY_CLUBS * PLACE_ENTRY) {
+            for club in 0..HISTORY_CLUBS {
+                let at = club * PLACE_ENTRY;
+                b.copy_within(at + 4..at + PLACE_ENTRY, at);
+            }
+        }
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let (level, place, squad) = (team.level(), team.table_place(), team.players());
+            let mut sum: i16 = 0;
+            for &id in &squad {
+                if let Some(p) = records.player_mut(id) {
+                    sum = sum.wrapping_add(i16::from(p.strength()));
+                    note_season_goals(p);
+                }
+            }
+            let club = usize::from(number);
+            if let Some(b) = records.block_mut(&strengths).filter(|b| club < HISTORY_CLUBS && b.len() >= HISTORY_CLUBS * STRENGTH_ENTRY) {
+                let at = club * STRENGTH_ENTRY + 0x10;
+                b[at] = level;
+                b[at + 1] = 0;
+                b[at + 2..at + 4].copy_from_slice(&sum.to_le_bytes());
+            }
+            if sum > 0 {
+                note_strongest(records, season, year, (country as u8, number), sum, squad.len() as i16);
+            }
+            if let Some(b) = records.block_mut(&places).filter(|b| club < HISTORY_CLUBS && b.len() >= HISTORY_CLUBS * PLACE_ENTRY) {
+                let at = club * PLACE_ENTRY + 0x4c;
+                b[at] = level;
+                b[at + 1] = 0;
+                b[at + 2..at + 4].copy_from_slice(&u16::from(place).to_le_bytes());
+            }
+        }
+    }
+}
+
+/// A squad into the season's strongest if it beats the one standing
+/// (`FUN_00726660`); past twenty seasons the list moves on once a year.
+fn note_strongest(records: &mut Records, season: i32, year: i16, club: (u8, u16), sum: i16, size: i16) {
+    let Some(b) = records.block_mut(STRONGEST_AT).filter(|b| b.len() >= STRONGEST_MOVED + 2) else { return };
+    let word = |b: &[u8], at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
+    let mut k = season;
+    if k >= STRONGEST_SEASONS {
+        if word(b, STRONGEST_MOVED) != year {
+            let n = STRONGEST_SEASONS as usize;
+            b.copy_within(STRONGEST..n * STRONGEST, 0);
+            // The original clears the sum one entry past the list.
+            let past = n * STRONGEST + 6;
+            if past + 2 <= b.len() {
+                b[past..past + 2].fill(0);
+            }
+        }
+        k = STRONGEST_SEASONS - 1;
+    }
+    let Ok(k) = usize::try_from(k) else { return };
+    let at = k * STRONGEST;
+    if word(b, at + 6) < sum {
+        b[at..at + 2].copy_from_slice(&year.to_le_bytes());
+        b[at + 2] = club.0;
+        b[at + 4..at + 6].copy_from_slice(&club.1.to_le_bytes());
+        b[at + 6..at + 8].copy_from_slice(&sum.to_le_bytes());
+        b[at + 8..at + 10].copy_from_slice(&size.to_le_bytes());
+    }
+}
+
+/// The first 268 teams the season's end walks (`FUN_006b2eed`).
+const CLOSED_TEAMS: usize = 0x10c;
+/// What it keeps of each: its table place as the last season's (+0x132
+/// into +0x134); for a club in a league the sum of its home gates (+0x340,
+/// the club object's +0xd84) and its count of home games (+0x260 into
+/// +0x92e) — the new season's attendance plan divides them —, for one in
+/// no league 500 and a hundred for each credit class below eight.
+const LAST_PLACE: usize = 0x134;
+pub(crate) const GATES_SUM: usize = 0x340;
+pub(crate) const HOME_GAMES_KEPT: usize = 0x92e;
+
+pub(crate) fn close_tables(records: &mut Records) {
+    for team in records.teams.iter_mut().take(CLOSED_TEAMS) {
+        team.put::<u8>(LAST_PLACE, team.table_place());
+        if team.level() < 10 {
+            let sum = team.gates().iter().fold(0i32, |s, &g| s.wrapping_add(g));
+            team.put::<i32>(GATES_SUM, sum);
+            team.put::<u16>(HOME_GAMES_KEPT, u16::from(team.home_games()));
+        } else {
+            team.put::<i32>(GATES_SUM, (8 - i32::from(team.credit_class())) * 100 + 500);
+        }
+    }
+}
+
+/// The season's end archives the played leagues' seasons (`FUN_006b3111`
+/// from `FUN_006b2eed`: the main country's every league, a more
+/// country's first): a league's ten kept seasons move on by one, the
+/// oldest falling away, and the newest slot takes the closed season — its
+/// country, its fields (how many clubs, whether they met four times, the
+/// sort rule and the others the block keeps at +2, +8, +0xa, +0x14,
+/// +0x1e and +0x20), each club's number and penalty byte, the marks of
+/// its places and every result. The club bytes past the league's count
+/// stay as the slot held them, as in the original. Beside it the
+/// country's block keeps the season's final places, a club's number per
+/// place (`FUN_007293ea`).
+pub fn archive_leagues(records: &mut Records) {
+    use crate::opponent::{LEAGUE_FIELDS, MARKS, RESULTS};
+    close_tables(records);
+    let globals = &records.globals;
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let mut leagues: Vec<(u16, u8)> = Vec::new();
+    if let Ok(main) = u16::try_from(globals.main_country()) {
+        leagues.extend((0..records.countries.leagues(usize::from(main)).max(0)).map(|l| (main, l as u8)));
+    }
+    leagues.extend(globals.more_countries()[..more].iter().filter_map(|&c| u16::try_from(c).ok()).map(|c| (c, 0)));
+    for (country, level) in leagues {
+        let (Some(index), Some(league)) = (league_of(records, country, level), League::of(records, country, level))
+        else {
+            continue;
+        };
+        let Some(source) = League::block_name(records, country, level)
+            .and_then(|name| records.block(&name))
+            .and_then(|b| b.get(LEAGUE_FIELDS..))
+            .map(<[u8]>::to_vec)
+        else {
+            continue;
+        };
+        let word = |at: usize| source.get(at..at + 2).map_or([0; 2], |w| [w[0], w[1]]);
+        let teams = usize::try_from(i16::from_le_bytes(word(0))).unwrap_or(0).min(24);
+        let numbers: Vec<i16> = (0..teams).map(|k| i16::from_le_bytes(word(0x22 + 2 * k))).collect();
+        // Each club's penalty byte (`FUN_0063e470`, team +0x12a).
+        let penalties: Vec<u8> = numbers
+            .iter()
+            .map(|&n| {
+                u16::try_from(n).ok().and_then(|n| records.team(country, n)).map_or(0, |t| t.get::<u8>(TEAM_FLAGS))
+            })
+            .collect();
+        let places: Vec<u8> = table(records, &league, ALL).iter().map(|row| row.team as u8).collect();
+        let slot = records.countries.slot(country.into());
+        if let Some(block) = records.block_mut(&format!("0x19f7fd0[{slot}]")) {
+            for (place, &team) in places.iter().enumerate() {
+                if let Some(b) = block.get_mut(PLACES_AT + usize::from(level) * PLACES_ROW + place) {
+                    *b = team;
+                }
+            }
+        }
+        let Some(archive) = records.block_mut(ARCHIVE_BLOCK) else { continue };
+        let at = ARCHIVE_AT + index * ARCHIVE_LEAGUE;
+        let newest = at + (ARCHIVE_SEASONS - 1) * ARCHIVE_SEASON;
+        if archive.len() < newest + ARCHIVE_SEASON {
+            continue;
+        }
+        archive.copy_within(at + ARCHIVE_SEASON..newest + ARCHIVE_SEASON, at);
+        let s = &mut archive[newest..newest + ARCHIVE_SEASON];
+        s[0..2].copy_from_slice(&(country as i16).to_le_bytes());
+        for (to, from) in [(2, 0), (4, 0x1a), (6, 8), (8, 0xa), (0xa, 0x1e), (0xc, 0x20), (0xe, 2), (0x10, 0x14)] {
+            s[to..to + 2].copy_from_slice(&word(from));
+        }
+        for k in 0..teams {
+            s[0x12 + k] = numbers[k] as u8;
+            s[0x2a + k] = penalties[k];
+        }
+        if let Some(marks) = source.get(MARKS..MARKS + 0x30) {
+            s[0x42..0x72].copy_from_slice(marks);
+        }
+        if let Some(results) = source.get(RESULTS..RESULTS + 24 * ARCHIVE_ROW) {
+            s[0x72..0x72 + 24 * ARCHIVE_ROW].copy_from_slice(results);
+        }
+    }
+}
+
+/// A game never played keeps its home goals at 0xff.
+const UNPLAYED: u8 = 0xff;
+/// A penalty byte's points docked, three each, and its bit for the
+/// bottom of the table.
+const DOCKED: u8 = 3;
+const BOTTOM: u8 = 0x80;
+
+/// A row of a season gone by (`FUN_0072af32`'s 0x14 bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalRow {
+    pub team: u8,
+    pub penalty: u8,
+    pub games: i16,
+    pub points: i16,
+    pub goals_for: i16,
+    pub goals_against: i16,
+}
+
+/// A league's table of a season gone by, as the Historisches' Endtabelle
+/// shows it (`FUN_0072b18a`, `FUN_0072af32`, `FUN_0072b9b9`): its country,
+/// its rows in their order and the mark of each place. `slot` counts from
+/// the oldest kept season; 9 is the last one played.
+pub struct FinalTable {
+    pub country: u16,
+    pub rows: Vec<FinalRow>,
+    pub marks: Vec<i16>,
+    /// The teams in the archive's order, and each one's home games
+    /// against every other in that order, the first meeting; none where
+    /// it was never played.
+    pub teams: Vec<u8>,
+    pub games: Vec<Vec<Option<(u8, u8)>>>,
+}
+
+pub fn final_table(records: &Records, country: u16, level: u8, slot: usize) -> Option<FinalTable> {
+    let league = league_of(records, country, level)?;
+    if slot >= ARCHIVE_SEASONS {
+        return None;
+    }
+    let at = ARCHIVE_AT + league * ARCHIVE_LEAGUE + slot * ARCHIVE_SEASON;
+    let s = records.block(ARCHIVE_BLOCK)?.get(at..at + ARCHIVE_SEASON)?;
+    let short = |at: usize| i16::from_le_bytes([s[at], s[at + 1]]);
+    let n = usize::try_from(short(2)).ok().filter(|&n| n > 0 && n <= 24)?;
+    let rounds = if s[4] != 0 { 2 } else { 1 };
+    let mut rows: Vec<FinalRow> =
+        (0..n).map(|i| FinalRow { team: s[0x12 + i], penalty: s[0x2a + i], ..FinalRow::default() }).collect();
+    for i in 0..n {
+        for j in (0..n).filter(|&j| j != i) {
+            for round in 0..rounds {
+                let at = 0x72 + i * ARCHIVE_ROW + (j + round * n) * 4;
+                let (home, away) = (s[at], s[at + 1]);
+                if home == UNPLAYED {
+                    continue;
+                }
+                let (h, a) = (i16::from(home), i16::from(away));
+                let (hp, ap) = match h.cmp(&a) {
+                    std::cmp::Ordering::Greater => (3, 0),
+                    std::cmp::Ordering::Equal => (1, 1),
+                    std::cmp::Ordering::Less => (0, 3),
+                };
+                for (k, gf, ga, p) in [(i, h, a, hp), (j, a, h, ap)] {
+                    let row = &mut rows[k];
+                    row.games += 1;
+                    row.goals_for += gf;
+                    row.goals_against += ga;
+                    row.points += p;
+                }
+            }
+        }
+    }
+    for row in &mut rows {
+        row.points -= 3 * i16::from(row.penalty & DOCKED);
+    }
+    // The bubble sort keeps equal rows in their order: the docked to the
+    // bottom, then by points, then by the league's rule — goals scored
+    // before the difference for rule 1, else the difference first —, the
+    // more games first.
+    let rule = short(0x10);
+    let key = |r: &FinalRow| {
+        let diff = r.goals_for - r.goals_against;
+        let (first, second) = if rule == 1 { (r.goals_for, diff) } else { (diff, r.goals_for) };
+        (r.penalty & BOTTOM == 0, r.points, first, second, r.games)
+    };
+    rows.sort_by(|a, b| key(b).cmp(&key(a)));
+    let marks = (0..n).map(|i| short(0x42 + 2 * i)).collect();
+    let teams = (0..n).map(|i| s[0x12 + i]).collect();
+    let games = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    let at = 0x72 + i * ARCHIVE_ROW + j * 4;
+                    (i != j && s[at] != UNPLAYED).then_some((s[at], s[at + 1]))
+                })
+                .collect()
+        })
+        .collect();
+    Some(FinalTable { country: u16::try_from(short(0)).unwrap_or(country), rows, marks, teams, games })
 }
 
 /// A league's list in the block: its base, row and entry widths.
@@ -2181,6 +3174,53 @@ pub fn torjaeger(records: &Records, country: u16, level: u8) -> Vec<LigaRow> {
             })
         })
         .collect()
+}
+
+/// Book one goal into the league's season list (`FUN_00449bd6`): the
+/// scorer's entry — his id, his names' pool ids, his club's number and
+/// his goal count — opens at the list's first free slot when he has
+/// none, and the entries are held in descending goals, as the live game
+/// keeps the list match by match.
+pub fn book_goal(
+    records: &mut Records,
+    country: u16,
+    level: u8,
+    id: u16,
+    first: u16,
+    last: u16,
+    team: u8,
+) {
+    let Some(league) = league_of(records, country, level) else {
+        return;
+    };
+    let from = TOR_LIST + league * TOR_LEAGUE;
+    let Some(block) = records.block_mut(LISTS) else {
+        return;
+    };
+    let Some(entries) = block.get_mut(from..from + 100 * 0x10) else {
+        return;
+    };
+    let at = |k: usize| k * 0x10;
+    let mut k = (0..100).find(|&k| {
+        u16::from_le_bytes([entries[at(k)], entries[at(k) + 1]]) == id
+    });
+    if k.is_none() {
+        k = (0..100).find(|&k| u16::from_le_bytes([entries[at(k)], entries[at(k) + 1]]) == 0);
+        if let Some(k) = k {
+            entries[at(k)..at(k) + 2].copy_from_slice(&id.to_le_bytes());
+            entries[at(k) + 2..at(k) + 4].copy_from_slice(&first.to_le_bytes());
+            entries[at(k) + 4..at(k) + 6].copy_from_slice(&last.to_le_bytes());
+            entries[at(k) + 7] = team;
+        }
+    }
+    let Some(mut k) = k else { return };
+    entries[at(k) + 8] = entries[at(k) + 8].saturating_add(1);
+    while k > 0 && entries[at(k) + 8] > entries[at(k - 1) + 8] {
+        for j in 0..0x10 {
+            entries.swap(at(k - 1) + j, at(k) + j);
+        }
+        k -= 1;
+    }
 }
 
 /// The three saved lists that share one shape (`DAT_00b0f576`,
@@ -2382,6 +3422,33 @@ const NATIONS: usize = 0x75;
 const FIELDED: &str = "0xa75968";
 const FIELDED_AT: usize = 2;
 const FIELDED_MOST: usize = 50;
+const FIELDED_STAMP: usize = 0;
+const FIELDED_ENTRY: usize = FIELDED_MOST * 2;
+
+/// The new season empties every played club's list of the players it
+/// fielded and stamps the lists with the day (`FUN_00774088` per club,
+/// `FUN_00772bee` → `FUN_006402d5`).
+pub fn open_fielded(records: &mut Records) {
+    let day = records.globals.day() as i16;
+    let mut entries = Vec::new();
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if let Some(index) = records.team_index(country, number) {
+                entries.push(index);
+            }
+        }
+    }
+    let Some(b) = records.block_mut(FIELDED) else { return };
+    if let Some(stamp) = b.get_mut(FIELDED_STAMP..FIELDED_STAMP + 2) {
+        stamp.copy_from_slice(&day.to_le_bytes());
+    }
+    for index in entries {
+        let at = FIELDED_AT + index * FIELDED_ENTRY;
+        if let Some(list) = b.get_mut(at..at + FIELDED_ENTRY) {
+            list.fill(0);
+        }
+    }
+}
 
 /// The league's clubs in the order of its table (`FUN_00642cd4`): for
 /// each its squad as the club lists it, every player's age on `today`
@@ -2671,13 +3738,14 @@ pub fn player_substitutions(
 /// count, seeded at the season's start in table order; `FUN_007466b2`
 /// adds to a club's count after each match, and it can fall below 0.
 const REFEREE_LIST: usize = 0x12bd8;
+const REFEREE_LEAGUE: usize = 0x60;
 
 /// The Schirilieblinge (`FUN_0044c57e`): as many of the pairs as the
 /// league has clubs, by the page's exchange sort — the most favoured
 /// first, every place swapping with the first of the rest that beats it.
 pub fn referees_favourites(records: &Records, country: u16, level: u8) -> Vec<ClubCount> {
     let teams = League::of(records, country, level).map_or(0, |l| l.teams()).min(24);
-    let Some(b) = list_bytes(records, country, level, REFEREE_LIST, 0x60, 4, 24) else {
+    let Some(b) = list_bytes(records, country, level, REFEREE_LIST, REFEREE_LEAGUE, 4, 24) else {
         return Vec::new();
     };
     let word = |at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
@@ -3653,6 +4721,39 @@ pub fn league_attendance(records: &Records, slot: usize) -> Option<[Attendance; 
     }))
 }
 
+/// Book one played home match of a league's club into its slot: the gate
+/// added to the club's total, its home games raised, and the utilisation
+/// re-reckoned — the total against the stadium's places over the games
+/// (`FUN_00677b07`).
+pub fn book_attendance(records: &mut Records, slot: usize, place: usize, gate: i32, capacity: i32) {
+    let Some(base) = slot.checked_mul(ATTENDANCE_SLOT) else { return };
+    let Some(block) = records.block_mut(ATTENDANCE_BLOCK) else { return };
+    let Some(at) = base.checked_add(4 * place) else { return };
+    let Some(games_at) = base.checked_add(ATTENDANCE_GAMES + 2 * place) else { return };
+    let Some(percent_at) = base.checked_add(ATTENDANCE_PERCENT + 2 * place) else { return };
+    let total = block
+        .get(at..at + 4)
+        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .wrapping_add(gate);
+    let games =
+        block.get(games_at..games_at + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]])) + 1;
+    let percent = if capacity > 0 {
+        i32::try_from(i64::from(total) * 100 / (i64::from(capacity) * i64::from(games)))
+            .unwrap_or(i32::MAX)
+    } else {
+        0
+    };
+    if let Some(b) = block.get_mut(at..at + 4) {
+        b.copy_from_slice(&total.to_le_bytes());
+    }
+    if let Some(b) = block.get_mut(games_at..games_at + 2) {
+        b.copy_from_slice(&games.to_le_bytes());
+    }
+    if let Some(b) = block.get_mut(percent_at..percent_at + 2) {
+        b.copy_from_slice(&i16::try_from(percent).unwrap_or(i16::MAX).to_le_bytes());
+    }
+}
+
 /// One entry of the biggest-stadium lists (`CArchivTabControl`'s block at
 /// `0xa3b640`, six lists of 0x4b0: `FUN_00638db7` copies one out): its
 /// club and the capacity kept there, the strings behind it unused — the
@@ -3789,5 +4890,211 @@ mod tests {
             row(0x03),
             Opponent { team: 0x03, games: 3, points: 1, given: 7, goals: 2, against: 6, diff: -4 }
         );
+    }
+
+    /// The new season's lists over the original's pair (SeasonEnd364 →
+    /// NewSeason000): every table the init clears stands at nought as the
+    /// original's, but for the clubs seeded into the fair-play and the
+    /// referees' tables — the original's are its new leagues' clubs in
+    /// table order, the replica's its own leagues', which keep last
+    /// season's clubs until promotions are built. The luck is drawn anew,
+    /// each number below 30, in both.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_clears_its_lists_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let luck = ours.luck.values();
+        open_lists(&mut ours, &mut Random::new(9));
+        assert_ne!(ours.luck.values(), luck);
+        assert_ne!(theirs.luck.values(), luck);
+        assert!(ours.luck.values().iter().chain(&theirs.luck.values()).all(|&v| (0..30).contains(&v)));
+        // Where each table seeds its clubs, by the records' own leagues.
+        let seeded = |records: &Records| {
+            let mut at = std::collections::BTreeMap::new();
+            let main = u16::try_from(records.globals.main_country()).unwrap();
+            let mut leagues: Vec<(u16, u8)> =
+                (0..records.countries.leagues(usize::from(main))).map(|l| (main, l as u8)).collect();
+            let more = usize::try_from(records.globals.more_count()).unwrap();
+            leagues.extend(records.globals.more_countries()[..more].iter().map(|&c| (c as u16, 0)));
+            for (country, level) in leagues {
+                let (slot, league) =
+                    (league_of(records, country, level).unwrap(), League::of(records, country, level).unwrap());
+                for k in 0..league.teams() {
+                    let team = league.team(k) as u8;
+                    at.insert(FAIR_LIST + slot * FAIR_LEAGUE + 4 * k, team);
+                    at.insert(REFEREE_LIST + slot * REFEREE_LEAGUE + 4 * k, team);
+                }
+            }
+            at
+        };
+        let (ours_at, theirs_at) = (seeded(&ours), seeded(&theirs));
+        let (x, y) = (ours.block(LISTS).unwrap(), theirs.block(LISTS).unwrap());
+        for (at, len) in SEASON_CLEARS {
+            for i in at - LISTS_AT..at - LISTS_AT + len {
+                assert_eq!(x[i], ours_at.get(&i).copied().unwrap_or(0), "the replica's byte {:#x}", LISTS_AT + i);
+                assert_eq!(y[i], theirs_at.get(&i).copied().unwrap_or(0), "the original's byte {:#x}", LISTS_AT + i);
+            }
+        }
+    }
+
+    /// The season's end over the original's pair: the replica folds
+    /// SeasonEnd364's first-league seasons into the all-time tables and
+    /// every played country's twelve words a club stand as NewSeason000
+    /// keeps them, the season counted as held.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_folds_the_all_time_tables_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        fold_eternal(&mut ours);
+        assert_eq!(ours.globals.get::<u16>(ETERNAL_SEASON), theirs.globals.get::<u16>(ETERNAL_SEASON));
+        let (at, per_slot) = ETERNAL;
+        let mut moved = 0;
+        for country in crate::opponent::played_nations(&before) {
+            let slot = usize::from(before.countries.slot(country.into()));
+            let range = at + slot * per_slot..at + (slot + 1) * per_slot;
+            let (o, x, y) = (&before.block(LISTS).unwrap()[range.clone()], &ours.block(LISTS).unwrap()[range.clone()],
+                &theirs.block(LISTS).unwrap()[range]);
+            moved += o.iter().zip(y).filter(|(a, b)| a != b).count();
+            assert_eq!(x, y, "country {country}'s all-time tables");
+        }
+        assert!(moved > 0, "the season moved the tables");
+    }
+
+    /// The fielded lists over the original's pair: emptied for the new
+    /// season by the replica, they stand byte for byte as NewSeason000
+    /// keeps them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_empties_the_fielded_lists_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        ours.globals.set_day(0);
+        assert!(ours.block(FIELDED).unwrap().iter().any(|&b| b != 0));
+        open_fielded(&mut ours);
+        assert_eq!(ours.block(FIELDED), theirs.block(FIELDED));
+    }
+
+    /// The European ranking over the original's pair: SeasonEnd364's rolled
+    /// on by the replica stands byte for byte as NewSeason000 keeps it —
+    /// every row's seasons moved on, its total anew, the rows in order.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_rolls_the_european_ranking_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        roll_ranking(&mut ours);
+        let rows = |r: &Records| (0..RANKING_COUNTRIES * RANKING_ROW).map(|k| r.globals.get::<u8>(RANKING_AT + k)).collect::<Vec<_>>();
+        assert_eq!(rows(&ours), rows(&theirs));
+        assert_eq!(five_years(&ours)[0].0, 16);
+        assert_eq!(five_years(&ours)[1].0, 28, "Italy past Spain on the new totals");
+    }
+
+    /// The season's end over the original's pair: the played clubs'
+    /// strengths and places archived by the replica stand in SeasonEnd364
+    /// byte for byte as NewSeason000 keeps them, so does the season's
+    /// strongest squad, and every player's goals by season but one's (whom
+    /// a step before, `FUN_0074d52b`, not built, takes from his club).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_keeps_the_clubs_strengths_and_places_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        archive_strengths(&mut ours);
+        for country in crate::opponent::played_nations(&before) {
+            let slot = before.countries.slot(usize::from(country));
+            for at in [STRENGTHS_AT, PLACES_BY_SEASON_AT] {
+                let name = format!("{at:#x}[{slot}]");
+                assert_eq!(ours.block(&name), theirs.block(&name), "{name}");
+            }
+        }
+        assert_eq!(ours.block(STRONGEST_AT), theirs.block(STRONGEST_AT), "the strongest squads");
+        let (mut same, mut differ) = (0, 0);
+        for id in 1..crate::records::PLAYERS as u16 {
+            let (Some(o), Some(x), Some(y)) = (before.player(id), ours.player(id), theirs.player(id)) else { continue };
+            if o.first_name() != y.first_name() {
+                continue;
+            }
+            let goals = |p: &Player| (0..SEASON_GOALS_LEN).map(|k| p.get::<u8>(SEASON_GOALS + k)).collect::<Vec<_>>();
+            if goals(x) == goals(y) { same += 1 } else { differ += 1 }
+        }
+        assert!(same > 16000 && differ <= 1, "{same} players' goals as the original's, {differ} not");
+    }
+
+    /// The season's end over the original's pair: archived by the replica,
+    /// every played league's ten seasons in SeasonEnd364 stand byte for
+    /// byte as NewSeason000 keeps them — the oldest gone, the closed season
+    /// the newest — and so do the countries' final places.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_archives_its_leagues_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        archive_leagues(&mut ours);
+        let mut leagues = 0;
+        for country in crate::opponent::played_nations(&before) {
+            let levels = if i16::try_from(country).ok() == Some(before.globals.main_country()) {
+                before.countries.leagues(usize::from(country)) as u8
+            } else {
+                1
+            };
+            for level in 0..levels {
+                let index = league_of(&before, country, level).unwrap();
+                let at = ARCHIVE_AT + index * ARCHIVE_LEAGUE;
+                let range = at..at + ARCHIVE_SEASONS * ARCHIVE_SEASON;
+                let (o, x, y) = (
+                    &before.block(ARCHIVE_BLOCK).unwrap()[range.clone()],
+                    &ours.block(ARCHIVE_BLOCK).unwrap()[range.clone()],
+                    &theirs.block(ARCHIVE_BLOCK).unwrap()[range],
+                );
+                assert_ne!(o, y, "country {country} league {level} moved on");
+                for season in 0..ARCHIVE_SEASONS {
+                    let r = season * ARCHIVE_SEASON..(season + 1) * ARCHIVE_SEASON;
+                    if let Some(i) = (r.start..r.end).find(|&i| x[i] != y[i]) {
+                        panic!("country {country} league {level} season {season} +{:#x}: {:#x} for {:#x}", i - r.start, x[i], y[i]);
+                    }
+                }
+                leagues += 1;
+            }
+            let slot = before.countries.slot(country.into());
+            let name = format!("0x19f7fd0[{slot}]");
+            let rows = PLACES_AT..PLACES_AT + usize::from(levels) * PLACES_ROW;
+            assert_eq!(ours.block(&name).unwrap()[rows.clone()], theirs.block(&name).unwrap()[rows], "{country}'s places");
+        }
+        assert!(leagues > 5, "{leagues} leagues archived");
     }
 }

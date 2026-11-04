@@ -112,7 +112,8 @@ AREAS = {
     "short": [(*bar(5, 346), 346), (*bar(5, 346, "now choose 5035 4"), 346),
               (*bar(5, 346, "now choose 5035 4", "now click 4427", "now row 4427 3"), 346),
               (*bar(5, 346, "now rclick 5035 item 0", "until dialog 350", "now click 35003"), 350)],
-    "individual": [(*bar(6, 347), 347), (*bar(6, 347, "now cell 3298 1 8"), 347)],
+    "individual": [(*bar(6, 347), 347), (*bar(6, 347, "now cell 3298 1 8"), 347),
+                   (*bar(6, 347, "now press 6151", "until dialog 403"), 403)],
     "calendar": [(*bar(7, 348), 348), (*bar(7, 348, "now drag at 544 355 to 244 180"), 348)],
     "planner": [(*bar(8, 413), 413), (*bar(8, 413, "now press 6215", "until dialog 358"), 358),
                 (*bar(8, 413, "now press 5036", "until dialog 397"), 397),
@@ -121,7 +122,9 @@ AREAS = {
                       "now press 5036", "until dialog 397"), 397)],
     "balance": [(*bar(9, 349), 349), (*bar(9, 349, "now press 4461", "until dialog 16"), 16),
                 (*bar(9, 349, "now press 4462", "until dialog 335"), 335)],
-    "finances": [(*bar(10, 417), 417)],
+    "finances": [(*bar(10, 417), 417),
+                 (*bar(10, 417, "now click at 88 133", "until dialog 125", "now click at 479 439",
+                       "until dialog 115", "now press 2204", "until dialog 56"), 56)],
     "squad": [(*bar(11, 218), 218),
               *[(*menu(11, 218, 5042, i, d), d) for i, d in
                 [(0, 216), (1, 219), (2, 428), (3, 427), (4, 92), (5, 300), (6, 217)]],
@@ -143,12 +146,24 @@ AREAS = {
                 (*bar(17, 175), 175),
                 *[(*menu(17, 175, 5643, i, d), d)
                   for i, d in [(0, 405), (1, 443), (3, 384), (4, 84), (5, 26), (6, 211),
-                               (7, 174), (8, 95)]]],
+                               (7, 174), (8, 95)]],
+                (*menu(17, 175, 5571, 0, 320), 320),
+                (*menu(17, 175, 5572, 0, 431), 431),
+                (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now row 5278 0",
+                      "now spin 5280 up", "now choose 5654 1", "now row 5276 0"), 431),
+                (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now row 5278 0",
+                      "now choose 5654 0", "until dialog 432"), 432),
+                (*bar(17, 175, "now choose 5572 0", "until dialog 431", "now press 5292",
+                      "until dialog 433"), 433),
+                (*bar(17, 175, "now choose 5572 1", "until dialog 411", "now spin 5170 up",
+                      "now click 5189", "now click 5221", "now click at 598 390"), 411)],
     # The archive's tables: the current one, at home, the 2. Bundesliga's
     # forecast one step along the strip, a cup's round, the Ligapokal's,
     # the Europa League's, the season's cross-table, and a goal graph on
     # A2.an3, where the board raised the statistics department so those
-    # pages join the list.
+    # pages join the list, and the two foes' pages — the clubs' fear and
+    # favourites over the archived seasons — on S2late3, the kept second
+    # season save.
     "statistics": [(*bar(15, 18), 18), (*bar(15, 18, "now row 1284 1"), 18),
                    (*bar(15, 18, "now click at 545 436", "now row 1284 6"), 18),
                    (*bar(15, 18, "now row 1284 7", "now click at 290 64"), 18),
@@ -184,11 +199,27 @@ AREAS = {
                    ("A2.an3", ["now click bar 14", "until dialog 18", "now row 1283 2",
                                "now row 1284 10"], 18),
                    ("A2.an3", ["now click bar 14", "until dialog 18", "now row 1283 2",
-                               "now row 1284 14"], 18)],
+                               "now row 1284 14"], 18),
+                   ("S2late3.an3", ["now click bar 14", "until dialog 18", "now row 1283 1",
+                                    "now row 1284 24"], 18),
+                   ("S2late3.an3", ["now click bar 14", "until dialog 18", "now row 1283 1",
+                                    "now row 1284 25"], 18)],
     "options": [(*bar(18, 302), 302), (*menu(18, 302, 4035, 3, 384), 384),
-                (*menu(18, 302, 4035, 4, 384), 384), (*menu(18, 302, 4035, 7, 511), 511),
+                (*menu(18, 302, 4035, 4, 384), 384), (*menu(18, 302, 4035, 5, 384), 384),
+                (*menu(18, 302, 4035, 7, 511), 511),
                 (*menu(18, 302, 4035, 1, 259), 259), (*menu(18, 302, 4035, 6, 503), 503),
+                # "Spielstand speichern" lists the saves, and a taken name asks (384).
+                (*bar(18, 302, "now choose 4035 2", "until dialog 489"), 489),
+                (*bar(18, 302, "now choose 4035 2", "until dialog 489", "now type 1866 A",
+                      "now ok", "until dialog 384"), 384),
                 (*menu(18, 302, 4035, 8, 158), 158)],
+    # The help behind the honours page's question mark: its topic, the
+    # table further down, the contents and the index.
+    "look": [(*bar(17, 175, *help_page), 423) for help_page in (
+        ["now click at 623 11", "until dialog 423"],
+        ["now click at 623 11", "until dialog 423", *["now click at 469 454"] * 3],
+        ["now click at 623 11", "until dialog 423", "now press 5143"],
+        ["now click at 623 11", "until dialog 423", "now press 5139"])],
 }
 
 

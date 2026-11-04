@@ -28,6 +28,14 @@ pub struct ButtonState {
     pub label: Option<Label>,
     /// Another text than the dialog file's, for a push button.
     pub text: Option<String>,
+    /// The tooltip shown when the pointer rests on the button, as the world
+    /// map's points name their place (`CDiWeltkarte`'s buttons, its tooltip
+    /// `= its name`).
+    pub tip: Option<String>,
+    /// Shown by its style without being painted: the dialog's picture
+    /// stays there until the pointer comes or the dialog repaints, as the
+    /// game's `ModifyStyle(0, WS_VISIBLE)` leaves a button (442's OKs).
+    pub unpainted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +75,9 @@ impl ButtonState {
         // The objects of a scene change only while they are held down.
         let pointed = pointed && (!paint.scene || paint.view.pressed == Some(target));
         let r = paint.control.rect;
+        if self.unpainted && !pointed {
+            return;
+        }
         // A push button is the dialog's picture; its own shows it held down.
         let held = paint.view.pressed == Some(target);
         if (!labelled || held)

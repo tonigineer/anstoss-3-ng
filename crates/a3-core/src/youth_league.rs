@@ -216,10 +216,489 @@ pub fn stage(records: &Records, country: u16, club: usize, age: usize) -> Option
 
 /// The stage byte of the youth's final round.
 pub const FINAL_ROUND: u8 = 3;
+/// The stage of a reserve team's youth, which no final round has.
+const RESERVE: u8 = 4;
+/// The clubs a country's stages hold, and the places of a final round.
+const STAGE_CLUBS: usize = 0x6c;
+const FINAL_PLACES: u8 = 5;
+/// The age groups, the leagues each may have, and the teams a season
+/// moves between two of them.
+const AGES: usize = 3;
+const LEAGUES: usize = 3;
+const MOVED: usize = 3;
+/// Main countries whose youth plays in three leagues, and in two.
+const THREE_LEAGUES: [i16; 2] = [14, 16];
+const TWO_LEAGUES: [i16; 3] = [20, 28, 63];
+
+fn league_at(age: usize, league: usize) -> usize {
+    LEAGUES_AT + age * AGE_GROUP + league * LEAGUE
+}
+
+/// The youth matchdays fall on the senior leagues' (`FUN_0062a959`): a
+/// calendar code below this is a matchday, counted from 1.
+const LAST_CODE: u32 = 0x3c;
+/// The schedule's rows.
+const ROWS: usize = (RESULTS - SCHEDULE) / ROW;
+/// What a youth match's sides start from (`FUN_0066fdb8`): the planned
+/// youth support (club +0x1a8, team +0x420) in hundred thousands, three
+/// hundred and fifty at home, three hundred away, five more for a club of
+/// team flag +0x95c's bit 2; then scaled so both together come to some 56
+/// chances in a thousand a minute.
+const SUPPORT_AT: usize = 0x420;
+const SUPPORT_UNIT: i32 = 100_000;
+const HOME_START: i32 = 350;
+const AWAY_START: i32 = 300;
+const FLAG_AT: usize = 0x95c;
+const FLAG: u8 = 2;
+const FLAG_BONUS: i32 = 5;
+const SCALE: i32 = 56;
+const MINUTES: usize = 90;
+const HALF_TIME: usize = 46;
+/// R+0x352: a youth's goals; a station's goals at +0xc.
+const YOUTH_GOALS: usize = 0x352;
+const STATIONS: usize = 0x20;
+const STATION: usize = 0x14;
+const STATION_GOALS: usize = 0xc;
+
+/// The day's youth matchdays (`FUN_0062a959`): the main country's three
+/// youth leagues on the days its first three senior leagues play, the
+/// more countries' first on their first league's.
+pub fn play_day(records: &mut Records, calendar: &crate::calendar::Calendar, day: usize, random: &mut crate::random::Random) {
+    let globals = &records.globals;
+    let Ok(main) = u16::try_from(globals.main_country()) else { return };
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let mut due = Vec::new();
+    for league in 0..LEAGUES {
+        due.push((main, league));
+    }
+    for &country in &globals.more_countries()[..more] {
+        if let Ok(country) = u16::try_from(country) {
+            due.push((country, 0));
+        }
+    }
+    for (country, league) in due {
+        let Some(row) = calendar.row(country, league) else { continue };
+        let code = calendar.entry(row, day);
+        if code != 0 && code < LAST_CODE {
+            play_matchday(records, country, league, code as usize - 1, random);
+        }
+    }
+}
+
+/// A youth league's matchday (from 0) for each age group in turn
+/// (`FUN_0066fdb8`), its first league's then moving the final round.
+fn play_matchday(records: &mut Records, country: u16, league: usize, matchday: usize, random: &mut crate::random::Random) {
+    let slot = records.countries.slot(country.into());
+    let name = format!("{OBJECT:#x}[{slot}]");
+    for age in 0..AGES {
+        let at = league_at(age, league);
+        let Some(block) = records.block(&name) else { return };
+        let Some(data) = block.get(at..at + AGE_GROUP) else { return };
+        let youth = YouthLeague { data };
+        let teams = youth.teams();
+        if matchday >= ROWS {
+            continue;
+        }
+        let row = SCHEDULE + matchday * ROW;
+        let pairs: Vec<(usize, usize)> =
+            (0..teams / 2).map(|k| (usize::from(data[row + 2 * k]), usize::from(data[row + 2 * k + 1]))).collect();
+        let numbers: Vec<i16> = (0..24).map(|k| youth.number(k)).collect();
+        let mut results = Vec::new();
+        for &(home, away) in &pairs {
+            let (Some(&h), Some(&a)) = (numbers.get(home), numbers.get(away)) else { continue };
+            let score = play_match(records, country, (h, a), age, random);
+            results.push((home, score));
+        }
+        let Some(block) = records.block_mut(&name) else { return };
+        let data = &mut block[at..at + AGE_GROUP];
+        data[PLAYED..PLAYED + 2].copy_from_slice(&((matchday + 1) as i16).to_le_bytes());
+        for (home, score) in results {
+            store(data, matchday + 1, home, score);
+        }
+    }
+    if league == 0 {
+        move_final_round(records, &name, random);
+    }
+}
+
+/// Where a result goes (`FUN_00670831`): beside its pair in the
+/// matchday's row, a four rounds' later two beside the first two's.
+fn store(data: &mut [u8], matchday: usize, slot: usize, score: [u8; 4]) {
+    let youth = YouthLeague { data };
+    let n = youth.teams();
+    let (mut row, mut offset) = (matchday, 0);
+    if youth.four_rounds() && matchday + 2 > 2 * n {
+        row -= 2 * n - 2;
+        offset = n;
+    }
+    let Some(row) = row.checked_sub(1) else { return };
+    let Some(&(home, away)) = youth.pairs(row).iter().find(|&&(h, a)| h == slot || a == slot) else {
+        return;
+    };
+    let at = RESULTS + home * RESULT_ROW + (away + offset) * 4;
+    if let Some(b) = data.get_mut(at..at + 4) {
+        b.copy_from_slice(&score);
+    }
+}
+
+/// One youth match of an age group (`FUN_0066fdb8`'s pair): the sides'
+/// strengths, then ninety minutes of a chance each a minute, each goal
+/// given to the first of the side's scorers whose draw comes under his
+/// weight. Goals, then the half-time's.
+fn play_match(records: &mut Records, country: u16, (home, away): (i16, i16), age: usize, random: &mut crate::random::Random) -> [u8; 4] {
+    let side = |number: i16, start: i32| -> (i32, Vec<(u16, u32)>) {
+        let Some(team) = u16::try_from(number).ok().and_then(|n| records.team(country, n)) else {
+            return (start, Vec::new());
+        };
+        let mut strength = team.get::<i32>(SUPPORT_AT) / SUPPORT_UNIT + start;
+        let (youths, _) = crate::youth::youths(records, country as u8, number as u16);
+        let group: Vec<u16> = youths.into_iter().filter(|&id| crate::youth::class(records, id) == age).collect();
+        strength += youth_strength(records, &group);
+        if team.get::<u8>(FLAG_AT) & FLAG != 0 {
+            strength += FLAG_BONUS;
+        }
+        (strength as i16 as i32, scorers(records, &group))
+    };
+    let (mut home_chance, home_scorers) = side(home, HOME_START);
+    let (mut away_chance, away_scorers) = side(away, AWAY_START);
+    let k = (home_chance + away_chance) / SCALE;
+    if k > 0 {
+        home_chance /= k;
+        away_chance /= k;
+    }
+    let (mut goals, mut half) = ([0u8; 2], [0u8; 2]);
+    for minute in 0..MINUTES {
+        if minute == HALF_TIME {
+            half = goals;
+        }
+        for (k, (chance, list)) in [(home_chance, &home_scorers), (away_chance, &away_scorers)].into_iter().enumerate() {
+            if random.below(1000) < chance as u32 {
+                goals[k] = goals[k].wrapping_add(1);
+                for &(id, weight) in list {
+                    if random.below(100) < weight {
+                        score(records, id);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    [goals[0], goals[1], half[0], half[1]]
+}
+
+/// What an age group's youths add to their side (`FUN_0066fb5b`): ten for
+/// each point of strength above three, twenty for a nought, ten for a one.
+fn youth_strength(records: &Records, group: &[u16]) -> i32 {
+    let points: i32 = group
+        .iter()
+        .filter_map(|&id| records.player(id))
+        .map(|p| match p.strength() {
+            0 => 2,
+            1 => 1,
+            s if s > 3 => i32::from(s) - 3,
+            _ => 0,
+        })
+        .sum();
+    points * 10
+}
+
+/// An age group's scorers (`FUN_0066fc32`): the fit youths of the attack
+/// (weight 20), the midfield (12) and the defence (4), the heavier first,
+/// the stronger first among the same; no keeper.
+fn scorers(records: &Records, group: &[u16]) -> Vec<(u16, u32)> {
+    let mut list: Vec<(u16, u32, u8)> = Vec::new();
+    for &id in group {
+        let Some(p) = records.player(id) else { continue };
+        if crate::load::days_to(&records.globals, p.injured_to()) >= 1 {
+            continue;
+        }
+        let weight = match p.positions()[0] {
+            10 => 20,
+            6..=9 => 12,
+            2..=5 => 4,
+            _ => continue,
+        };
+        let strength = p.strength();
+        let at = list
+            .iter()
+            .rposition(|&(_, w, s)| !(w < weight || w == weight && s < strength))
+            .map_or(0, |k| k + 1);
+        list.insert(at, (id, weight, strength));
+    }
+    list.into_iter().map(|(id, w, _)| (id, w)).collect()
+}
+
+/// A youth's goal (`FUN_00706c77`): into his youth goals and his last
+/// station's (`FUN_0070432d`).
+fn score(records: &mut Records, id: u16) {
+    let Some(p) = records.player_mut(id) else { return };
+    p.put::<u8>(YOUTH_GOALS, p.get::<u8>(YOUTH_GOALS).wrapping_add(1));
+    if let Ok(count) = usize::try_from(p.career_count())
+        && count > 0
+    {
+        let at = STATIONS + (count - 1) * STATION + STATION_GOALS;
+        p.put::<u16>(at, p.get::<u16>(at).wrapping_add(1));
+    }
+}
+
+/// The final round moves on with the first league's matchday
+/// (`FUN_0066fdb8`'s end): each club in it has played, its place drifts
+/// by its class — up or down by a draw of a hundred —, and of those come
+/// to the first two places three drawn keep a place 0 or 1, the rest 2.
+fn move_final_round(records: &mut Records, name: &str, random: &mut crate::random::Random) {
+    let Some(block) = records.block_mut(name) else { return };
+    let Some(stages) = block.get_mut(STAGES_AT..STAGES_AT + STAGES) else { return };
+    for age in 0..AGES {
+        let mut leaders = Vec::new();
+        for club in 0..STAGE_CLUBS {
+            let at = club * CLUB_STAGES + age;
+            if stages[at] != FINAL_ROUND {
+                continue;
+            }
+            stages[at + 9] = 1;
+            let roll = random.below(100);
+            let (down, up) = match stages[at + 6] {
+                1 => (10, 95),
+                2 => (8, 93),
+                3 => (7, 91),
+                _ => (0, 100),
+            };
+            let place = &mut stages[at + 3];
+            if roll < down {
+                *place = place.saturating_sub(1);
+            }
+            if roll > up {
+                *place = if *place < 4 { *place + 1 } else { 4 };
+            }
+            if *place < 2 {
+                leaders.push(club);
+                *place = 2;
+            }
+        }
+        if leaders.len() > 3 {
+            let order = crate::cup_draw::order(leaders.len(), random);
+            for k in 0..3 {
+                stages[leaders[order[k]] * CLUB_STAGES + age + 3] = random.below(2) as u8;
+            }
+        }
+    }
+}
+
+/// The youth leagues' promotions at the season's end (`FUN_00670ac5`,
+/// after the country's clubs closed, `FUN_006b44cb`): per age group the
+/// tables of the season decide, three teams going up and three down
+/// between two leagues; the lowest league's three last make room for the
+/// final round's best (stage 3, by their place there, then by club). A
+/// main country Germany or England plays in three leagues, France,
+/// Italy or Spain in two, any other country in one. Each league's
+/// teams then stand in the order they come: the stayers by the table.
+pub(crate) fn close_season(records: &mut Records, country: u16) {
+    let main = records.globals.main_country();
+    let code = country as i16;
+    let leagues = if code == main && THREE_LEAGUES.contains(&code) {
+        3
+    } else if code == main && TWO_LEAGUES.contains(&code) {
+        2
+    } else {
+        1
+    };
+    let slot = records.countries.slot(country.into());
+    let name = format!("{OBJECT:#x}[{slot}]");
+    for age in 0..AGES {
+        let mut tables = Vec::new();
+        for league in 0..leagues {
+            let Some(youth) = YouthLeague::of(records, country, league, age) else { return };
+            let rows: Vec<i16> = youth.table(Games::All).iter().map(|r| r.number).collect();
+            tables.push(rows);
+        }
+        let Some(block) = records.block(&name) else { return };
+        let Some(stages) = block.get(STAGES_AT..STAGES_AT + STAGES) else { return };
+        let mut finalists = Vec::new();
+        for place in 0..FINAL_PLACES {
+            for club in 0..STAGE_CLUBS {
+                let at = club * CLUB_STAGES + age;
+                if stages[at] == FINAL_ROUND && stages[at + 3] == place {
+                    finalists.push(club as i16);
+                }
+            }
+        }
+        let mut lists = Vec::new();
+        for league in 0..leagues {
+            let own = &tables[league];
+            let n = own.len();
+            if n < 2 * MOVED {
+                lists.push(own.clone());
+                continue;
+            }
+            let mut list = Vec::with_capacity(n);
+            let first = if league > 0 {
+                let above = &tables[league - 1];
+                list.extend_from_slice(&above[above.len().saturating_sub(MOVED)..]);
+                MOVED
+            } else {
+                0
+            };
+            list.extend_from_slice(&own[first..n - MOVED]);
+            if league + 1 < leagues {
+                list.extend(tables[league + 1].iter().take(MOVED));
+            } else {
+                list.extend(finalists.iter().take(n - list.len()));
+            }
+            // Short of finalists, the slots keep their old teams.
+            while list.len() < n {
+                list.push(own[list.len()]);
+            }
+            lists.push(list);
+        }
+        let Some(block) = records.block_mut(&name) else { return };
+        for (league, list) in lists.iter().enumerate() {
+            let at = league_at(age, league) + NUMBERS;
+            for (k, &number) in list.iter().enumerate() {
+                block[at + 2 * k..at + 2 * k + 2].copy_from_slice(&number.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// The youth leagues' new season (`FUN_00774088`'s last part, per played
+/// country): every age group's results unplayed again (`FUN_00670777`,
+/// the matchdays' count kept), and each club's stage anew — the youth
+/// league it plays in (the first only, in a country of a single senior
+/// league), else the final round, or none for a reserve team
+/// (`FUN_006707df`, `FUN_0063e793`).
+pub(crate) fn open_season(records: &mut Records, country: u16) {
+    let slot = records.countries.slot(country.into());
+    let name = format!("{OBJECT:#x}[{slot}]");
+    let checked = if records.countries.leagues(country.into()) == 1 { 1 } else { LEAGUES };
+    let clubs = records.countries.team_count(country.into()).max(0) as usize;
+    let linked: Vec<i8> = (0..clubs)
+        .map(|n| records.team(country, n as u16).map_or(-1, |t| t.linked()[0]))
+        .collect();
+    let Some(block) = records.block_mut(&name) else { return };
+    if block.len() < STAGES_AT + STAGES {
+        return;
+    }
+    for age in 0..AGES {
+        for league in 0..LEAGUES {
+            let at = league_at(age, league);
+            block[at + RESULTS..at + AGE_GROUP].fill(UNPLAYED);
+        }
+        for club in 0..clubs.min(STAGE_CLUBS) {
+            let plays = (0..checked).find(|&league| {
+                let at = league_at(age, league);
+                let teams = i16::from_le_bytes([block[at + TEAMS], block[at + TEAMS + 1]]).clamp(0, 24);
+                (0..teams as usize).any(|k| {
+                    let n = at + NUMBERS + 2 * k;
+                    i16::from_le_bytes([block[n], block[n + 1]]) == club as i16
+                })
+            });
+            let stage = match plays {
+                Some(league) => league as u8,
+                None if linked[club] < 0 => FINAL_ROUND,
+                None => RESERVE,
+            };
+            block[STAGES_AT + club * CLUB_STAGES + age] = stage;
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The youth matchdays from the original's save A (day 63) to the
+    /// season's end: every youth league of the five played countries has
+    /// played its matchdays as the original's own season end has them, all
+    /// results in, and the goals come as often as there — home, away, at
+    /// half-time — and the draws.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_youth_seasons_play_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("A.an3"), load("SeasonEnd364.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut random = crate::random::Random::new(11);
+        for day in usize::from(ours.globals.day()) + 1..=364 {
+            play_day(&mut ours, &data.calendar, day, &mut random);
+        }
+        let tally = |records: &Records| {
+            let (mut played, mut sums) = (Vec::new(), [0u32; 5]);
+            for country in crate::opponent::played_nations(records) {
+                for league in 0..LEAGUES {
+                    for age in 0..AGES {
+                        let youth = YouthLeague::of(records, country, league, age).unwrap();
+                        if youth.teams() == 0 {
+                            continue;
+                        }
+                        played.push(youth.played());
+                        for matchday in 1..=youth.played() {
+                            for slot in 0..youth.teams() {
+                                let Some(s) = youth.result(matchday, slot) else { continue };
+                                let draw = u32::from(s.home == s.away);
+                                let half = u32::from(s.half_home + s.half_away);
+                                for (k, v) in [1, s.home.into(), s.away.into(), half, draw].into_iter().enumerate() {
+                                    sums[k] += v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (played, sums)
+        };
+        let ((played, ours), (their_played, theirs)) = (tally(&ours), tally(&theirs));
+        assert_eq!(played, their_played);
+        assert_eq!(ours[0], theirs[0], "results");
+        for k in 1..5 {
+            let off = (f64::from(ours[k]) / f64::from(theirs[k]) - 1.0).abs();
+            assert!(off < 0.05, "{k}: {} against {}", ours[k], theirs[k]);
+        }
+    }
+
+    /// Over the original's pair of its season's last day and the new
+    /// season's first, the replica's youth season end and new season
+    /// leave every played country's youth leagues as the original's: the
+    /// teams of each league in their new order, the results unplayed, and
+    /// each club's stage per age group. (The final round's groups and
+    /// flags behind, which its matches write, are not built.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_youth_leagues_turn_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let before = load("SeasonEnd364.an3");
+        let countries = crate::opponent::played_nations(&ours);
+        assert_eq!(countries.len(), 5);
+        for &country in &countries {
+            close_season(&mut ours, country);
+        }
+        for &country in &countries {
+            open_season(&mut ours, country);
+        }
+        let mut moved = 0;
+        for &country in &countries {
+            let slot = ours.countries.slot(country.into());
+            let name = format!("{OBJECT:#x}[{slot}]");
+            let (x, y) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+            assert_eq!(x[..STAGES_AT], y[..STAGES_AT], "country {country}'s leagues");
+            for club in 0..STAGE_CLUBS {
+                let at = STAGES_AT + club * CLUB_STAGES;
+                assert_eq!(x[at..at + AGES], y[at..at + AGES], "country {country} club {club}");
+            }
+            for age in 0..AGES {
+                let (a, b) = (YouthLeague::of(&ours, country, 0, age).unwrap(), YouthLeague::of(&before, country, 0, age).unwrap());
+                moved += (0..a.teams()).filter(|&k| a.number(k) != b.number(k)).count();
+            }
+        }
+        // The season moved teams in every country and age group.
+        assert!(moved > 5 * AGES * MOVED, "{moved}");
+    }
 
     #[test]
     fn a_table_sorts_by_points_difference_goals_and_games() {

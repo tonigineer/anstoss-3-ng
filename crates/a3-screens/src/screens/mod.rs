@@ -8,21 +8,27 @@ pub mod announcement;
 pub mod bank;
 pub mod board;
 pub mod calendar;
+pub mod camp;
 pub mod comparison;
 pub mod contacts;
 pub mod discipline;
+pub mod donations;
 pub mod doping;
 pub mod duties;
 pub mod finances;
 pub mod formations;
 pub mod grounds;
+pub mod help;
 pub mod honours;
+pub mod illegal;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
+pub mod licence;
 pub mod konfig3d;
 pub mod market;
 pub mod medical;
+pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
 pub mod notepad;
@@ -33,6 +39,7 @@ pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
 pub mod popups;
+pub mod save;
 pub mod search;
 pub mod special;
 pub mod squad;
@@ -159,6 +166,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(announcement::Announcement),
         Box::new(announcement::MatchAnnouncement),
         Box::new(nutzung::Nutzung::default()),
+        Box::new(save::SaveGame::default()),
         Box::new(youth_tables::YouthTables::default()),
         Box::new(doping::Doping),
         Box::new(year::YearCalendar::default()),
@@ -176,6 +184,10 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(kalkulation::Tickets),
         Box::new(kalkulation::Sponsors),
         Box::new(kalkulation::Merchandise),
+        Box::new(merchandise::MerchandiseRange::default()),
+        Box::new(merchandise::Article::default()),
+        Box::new(merchandise::Info),
+        Box::new(illegal::Illegal::default()),
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
         Box::new(squad::SquadMenu::default()),
@@ -198,6 +210,13 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(statistics::Statistics::default()),
         Box::new(honours::Honours::default()),
         Box::new(honours::abilities::Abilities),
+        Box::new(honours::confidence::Confidence),
+        Box::new(honours::market::ShareMarket::default()),
+        Box::new(honours::market::ShareChart),
+        Box::new(honours::market::Winners),
+        Box::new(honours::betting::MatchdayBets::default()),
+        Box::new(honours::betting::SeasonBets::default()),
+        Box::new(help::HelpPage::default()),
         Box::new(honours::pay::Pay),
         Box::new(honours::season_records::SeasonRecords),
         Box::new(honours::scores::Scores),
@@ -249,6 +268,14 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(training::individual::IndividualTraining::default()),
         Box::new(training::individual::AbilityChoice::default()),
         Box::new(training::settings::CoTrainerSettings::default()),
+        Box::new(training::performance::TrainingStatistics::default()),
+        Box::new(training::rooms::Rooms::default()),
+        Box::new(training::career::PlayerCareer::default()),
+        Box::new(camp::WorldMap::default()),
+        Box::new(camp::CampConfirm),
+        Box::new(camp::CampGroup),
+        Box::new(donations::Donations::default()),
+        Box::new(licence::Licence),
     ]
 }
 
@@ -276,6 +303,12 @@ pub fn compose(game: &mut Game) {
     training::long::compose(&mut game.dialogs, &game.data.rules);
     training::individual::compose(&mut game.dialogs, &game.data.rules);
     training::settings::compose(&mut game.dialogs);
+    training::performance::compose(&mut game.dialogs);
+    training::rooms::compose(&mut game.dialogs);
+    training::career::compose(&mut game.dialogs);
+    camp::compose(&mut game.dialogs, &game.data.rules);
+    donations::compose(&mut game.dialogs);
+    licence::compose(&mut game.dialogs);
     popups::compose(&mut game.dialogs);
     planner::compose(&mut game.dialogs, &game.data.rules);
     notepad::compose(&mut game.dialogs);
@@ -284,12 +317,15 @@ pub fn compose(game: &mut Game) {
     optionen::compose(&mut game.dialogs);
     announcement::compose(&mut game.dialogs);
     nutzung::compose(&mut game.dialogs);
+    save::compose(&mut game.dialogs);
     youth_tables::compose(&mut game.dialogs);
     doping::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);
     kalkulation::compose(&mut game.dialogs);
+    merchandise::compose(&mut game.dialogs);
+    illegal::compose(&mut game.dialogs);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);
@@ -306,6 +342,9 @@ pub fn compose(game: &mut Game) {
     honours::trainer_erfolge::compose(&mut game.dialogs);
     honours::privates::compose(&mut game.dialogs);
     honours::beliebtheit::compose(&mut game.dialogs);
+    honours::confidence::compose(&mut game.dialogs);
+    honours::market::compose(&mut game.dialogs);
+    honours::betting::compose(&mut game.dialogs);
     market::compose(&mut game.dialogs);
     market::compose_best(&mut game.dialogs);
     market::compose_talks(&mut game.dialogs);
@@ -313,6 +352,7 @@ pub fn compose(game: &mut Game) {
     youth::compose(&mut game.dialogs);
     search::compose(&mut game.dialogs);
     start::compose(&mut game.dialogs);
+    help::compose(&mut game.dialogs);
     corner_buttons(&mut game.dialogs);
 }
 
@@ -349,17 +389,25 @@ fn corner_buttons(dialogs: &mut HashMap<u16, Dialog>) {
     }
 }
 
-/// Whether `target` is a corner button, which does nothing yet.
+/// Whether `target` is a corner button: the help's or the printer's.
 pub(crate) fn is_corner_button(dialog: &Dialog, target: Target) -> bool {
     let Target::Button(i) = target else { return false };
     dialog.controls.get(i).is_some_and(|c| matches!(c.id, Some(HELP | PRINTER)))
 }
 
-/// The corner buttons, crossed out on every screen.
-pub(crate) fn cross_corner_buttons(view: &mut View, dialog: &Dialog) {
+/// Whether `target` is the help's button.
+pub(crate) fn is_help_button(dialog: &Dialog, target: Target) -> bool {
+    let Target::Button(i) = target else { return false };
+    dialog.controls.get(i).is_some_and(|c| c.id == Some(HELP))
+}
+
+/// The corner buttons that do nothing, crossed out on every screen: the
+/// printer's, and the help's where the game has no help.
+pub(crate) fn cross_corner_buttons(view: &mut View, dialog: &Dialog, help: bool) {
     for i in 0..dialog.controls.len() {
         let target = Target::Button(i);
-        if is_corner_button(dialog, target) && !view.inert.contains(&target) {
+        let works = help && is_help_button(dialog, target);
+        if is_corner_button(dialog, target) && !works && !view.inert.contains(&target) {
             view.inert.push(target);
         }
     }
@@ -512,9 +560,11 @@ pub(crate) fn mark_inert(view: &mut View, dialog: &Dialog, works: impl Fn(Target
     view.inert = targets
         .into_iter()
         .map(|(target, _)| target)
-        .filter(|&t| matches!(t, Target::Button(_) | Target::Option { .. }) && !works(t))
+        .filter(|&t| {
+            matches!(t, Target::Button(_) | Target::Option { .. }) && !works(t) && !is_help_button(dialog, t)
+        })
         .collect();
-    cross_corner_buttons(view, dialog);
+    cross_corner_buttons(view, dialog, true);
 }
 
 /// Sets the text of the dialog's control with `id`.

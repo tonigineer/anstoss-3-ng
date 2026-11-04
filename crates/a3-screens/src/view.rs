@@ -306,9 +306,11 @@ impl View {
                 true
             }
             Target::SliderTrack(_) => false,
-            Target::Control(_) | Target::Drop { .. } | Target::Menu(_) | Target::Tile { .. } => {
-                true
-            }
+            Target::Control(_)
+            | Target::Drop { .. }
+            | Target::Menu(_)
+            | Target::Tile { .. }
+            | Target::Point { .. } => true,
             Target::Check(control) => match self.controls.get_mut(control) {
                 Some(ControlView { state: ControlState::Check(check), .. }) if !check.disabled => {
                     check.checked = !check.checked;

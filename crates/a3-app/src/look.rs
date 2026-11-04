@@ -100,7 +100,9 @@ pub struct SharpMaterial {
 
 impl UiMaterial for SharpMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://anstoss3_menu/sharp.wesl".into()
+        // `embedded_asset!` files the shader under the compiling crate's
+        // name; spelt out, the path broke when the program was renamed.
+        concat!("embedded://", env!("CARGO_CRATE_NAME"), "/sharp.wesl").into()
     }
 }
 

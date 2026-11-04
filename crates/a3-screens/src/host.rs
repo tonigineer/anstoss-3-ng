@@ -16,7 +16,7 @@ use a3_files::rch::{Dialog, Kind};
 
 use crate::game::Game;
 use crate::pointer::{Grip, Target};
-use crate::screens::{Cx, Outcome, Reply, Request, Screen, registry};
+use crate::screens::{Args, Cx, Outcome, Reply, Request, Screen, registry};
 use crate::view::View;
 
 /// What a request, an input or a tick changed for whoever shows the screens.
@@ -126,6 +126,11 @@ impl Host {
             return Change::Same;
         }
         let Some(dialog) = game.dialogs.get(&self.view().id) else { return Change::Same };
+        // The help, over the window it is asked from, on its topic.
+        if crate::screens::is_help_button(dialog, target) && game.help().is_some() {
+            let request = Request::with(crate::screens::help::HELP_PAGE, Args::Record(self.view().id));
+            return self.apply(game, Outcome::Popup(request));
+        }
         if crate::screens::is_corner_button(dialog, target) {
             return Change::Same;
         }
@@ -188,8 +193,13 @@ impl Host {
             Outcome::Close(reply) if self.open.len() > 1 => {
                 // A popup replies to the screen below it, the pointer
                 // where the popup left it — though the screen is not told
-                // it moved.
-                let pointer = self.open.pop().and_then(|(_, popup)| popup.pointer);
+                // it moved. The help, which the screen never asked for,
+                // goes without a word.
+                let popup = self.open.pop();
+                if popup.as_ref().is_some_and(|(_, v)| v.id == crate::screens::help::HELP_PAGE) {
+                    return Change::Screen;
+                }
+                let pointer = popup.and_then(|(_, popup)| popup.pointer);
                 if let Some((_, below)) = self.open.last_mut()
                     && pointer.is_some()
                 {
@@ -229,7 +239,7 @@ impl Host {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut cx = Cx { game, dialog, state: &mut state };
         self.screens[screen].open(&mut cx, &mut view, request.args);
-        crate::screens::cross_corner_buttons(&mut view, dialog);
+        crate::screens::cross_corner_buttons(&mut view, dialog, game.help().is_some());
         Some((screen, view))
     }
 
