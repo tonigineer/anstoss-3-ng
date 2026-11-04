@@ -105,9 +105,15 @@ pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
 ///   `FUN_00699fe1`) and every man of its squad counts it in his own
 ///   first honour (player +0x299, `FUN_007045c9` in `FUN_0071d2d0`);
 /// - and it takes the title ([`title`]).
-/// (The club's history, `FUN_0064089e`, the human's event 0x6a and
-/// country 0x3b's play-off, `FUN_006d8bb0`, are not built.)
+/// - its history (the object `0xa6d348`, 0x80 a club) counts one title
+///   more at +0 and keeps the calendar year among the last five after it
+///   (`FUN_0064089e`, `FUN_00640d8b`);
+/// (The human's event 0x6a and country 0x3b's play-off, `FUN_006d8bb0`,
+/// are not built.)
 const CHAMPION_MARK: u8 = 0x80;
+const HISTORY: &str = "0xa6d348";
+const HISTORY_CLUB: usize = 0x80;
+const HISTORY_YEARS_END: usize = 0xc;
 const TEAM_HONOURS: usize = 0x8ea;
 const CHAMPION_ENTRY: usize = 0xc;
 
@@ -141,6 +147,22 @@ pub fn champions_day(records: &mut Records) {
                 w.copy_from_slice(&v.to_le_bytes());
             }
         }
+        // The club's history: one title more and its year among the last
+        // five (`FUN_0064089e`, `FUN_00640d8b`).
+        let year = records.globals.date()[2] as i16;
+        if let (Some(index), Some(b)) = (records.team_index(country, number), records.block_mut(HISTORY)) {
+            if let Some(h) = b.get_mut(index * HISTORY_CLUB..index * HISTORY_CLUB + HISTORY_YEARS_END) {
+                let count = i16::from_le_bytes([h[0], h[1]]);
+                if count < 5 {
+                    let at = 2 + 2 * usize::try_from(count).unwrap_or(0);
+                    h[at..at + 2].copy_from_slice(&year.to_le_bytes());
+                } else {
+                    h.copy_within(4..12, 2);
+                    h[10..12].copy_from_slice(&year.to_le_bytes());
+                }
+                h[0..2].copy_from_slice(&count.wrapping_add(1).to_le_bytes());
+            }
+        }
         let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
         if let Some(t) = records.team_mut(country, number) {
             t.put::<u8>(TEAM_HONOURS, t.get::<u8>(TEAM_HONOURS) | CHAMPION_MARK);
@@ -166,8 +188,8 @@ mod tests {
     /// champions list) and cup winner (flag 0x1000) gains the title, as
     /// the replica's honour gives it; and the champions' day, run over the
     /// season's end with what it moves set back to the day-63 save's,
-    /// writes the champions lists, the titles counts, the honours byte and
-    /// the squads' honours as the original did.
+    /// writes the champions lists, the titles counts, the honours byte,
+    /// the clubs' histories and the squads' honours as the original did.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_titles_count_in_the_trainers_careers_as_the_original() {
@@ -233,6 +255,8 @@ mod tests {
             let v = a.teams[i].get::<u8>(TEAM_HONOURS);
             day.teams[i].put::<u8>(TEAM_HONOURS, v);
         }
+        let history = a.block(HISTORY).unwrap().to_vec();
+        day.block_mut(HISTORY).unwrap().copy_from_slice(&history);
         for id in 1..day.players.len().min(a.players.len()) {
             let h = a.players[id].honours();
             day.players[id].set_honours(h);
@@ -252,6 +276,10 @@ mod tests {
         }
         for i in 0..day.teams.len() {
             assert_eq!(day.teams[i].get::<u8>(TEAM_HONOURS) & CHAMPION_MARK, end.teams[i].get::<u8>(TEAM_HONOURS) & CHAMPION_MARK, "team {i}'s mark");
+            let r = i * HISTORY_CLUB..i * HISTORY_CLUB + HISTORY_YEARS_END;
+            if r.end <= day.block(HISTORY).unwrap().len() {
+                assert_eq!(day.block(HISTORY).unwrap()[r.clone()], end.block(HISTORY).unwrap()[r], "team {i}'s history");
+            }
         }
         let mut squads = 0;
         for country in crate::opponent::played_nations(&new) {
