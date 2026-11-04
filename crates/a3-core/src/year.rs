@@ -563,6 +563,22 @@ fn book_supercup(records: &Records, team: &crate::records::Team, d: usize, code:
     planner.set_entry(d, e);
 }
 
+/// A human's supercup days from `from` on booked again from the object as
+/// it now stands, his club's next ties named once drawn.
+pub(crate) fn rebook_supercup(records: &mut Records, calendar: &crate::calendar::Calendar, slot: usize, (country, number): (u16, u16), from: usize) {
+    let Some(team) = records.team(country, number).cloned() else { return };
+    let Some(mut planner) = records.calendars.get(slot).cloned() else { return };
+    for d in from..SEASON_DAYS {
+        let code = fixture(records, calendar, &team, d);
+        if code != 0 && code & COMPETITION == SUPERCUP {
+            book_supercup(records, &team, d, code, &mut planner);
+        }
+    }
+    if let Some(c) = records.calendars.get_mut(slot) {
+        *c = planner;
+    }
+}
+
 /// A side of a supercup tie is the club's (`FUN_006782aa`).
 fn supercup_side(side: &[u8], team: &crate::records::Team) -> bool {
     side[0] == team.country() && u16::from_le_bytes([side[2], side[3]]) == u16::from(team.number())

@@ -50,6 +50,7 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
             continue;
         }
         cup_day(records, nation, calendar, day, &mut season.random);
+        supercup_day(records, nation, calendar, day, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
             let level = level as u8;
             let Some(row) = calendar.row(nation, usize::from(level)) else {
@@ -382,6 +383,142 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
 }
 
 /// The calendar slot of a cup club's human manager, if it has one.
+/// A supercup's days sit on the country's first league row, coded 0x30
+/// with the round in the low bits: Germany's tournament plays its rounds
+/// 0 to 3 and its final (4) on days 33 to 45, the others one final, Italy
+/// and Spain over two legs — the second turned (the code's high bit) —,
+/// the code's 0x80000 deciding the tie in that game.
+const SUPERCUP_CODE: u32 = 0x3000_0000;
+const SUPERCUP_DECIDES: u32 = 0x0008_0000;
+const SUPERCUP_TURNED: u32 = 0x8000_0000;
+const SUPERCUP_FINAL: usize = 4;
+
+/// Play the country's supercup round when the day is one (the round's
+/// game scored as a cup tie is, `FUN_006cd4cf`): its tie's result stored
+/// as `FUN_006cc255` stores it — the first leg's score at +8, the second's
+/// at +0xa, the flags at +0xc (0x20 played, 0x08 decided, 0x80 extra time,
+/// 0x40 penalties), the winner's side at +0xd, two legs by their sum and
+/// the away goals —, and in a tournament the winner moved on: from the
+/// first two ties to the third and fourth against the first and second
+/// of the six, from those to the final's home and away side. The human's
+/// year calendar takes the score and his next tie. (The gates, the
+/// players' marks and the final's honours, `FUN_006ccc2a`, are not
+/// built.)
+fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
+    use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
+    let Some(row) = calendar.row(nation, 0) else { return };
+    let code = calendar.entry(row, day);
+    if code & 0x7f00_0000 != SUPERCUP_CODE {
+        return;
+    }
+    let round = (code & 0x3f) as usize;
+    let tournament = crate::supercup::is_tournament(records, nation);
+    let tie_at = if tournament && round < SUPERCUP_FINAL { TIES + round * TIE } else { FINAL_TIE };
+    if !tournament && round != SUPERCUP_FINAL {
+        return;
+    }
+    let slot = records.countries.slot(usize::from(nation));
+    let name = format!("{:#x}[{slot}]", crate::supercup::OBJECT);
+    let Some(tie) = records.block(&name).and_then(|b| b.get(tie_at..tie_at + TIE)).map(<[u8]>::to_vec) else { return };
+    let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
+    if tie[0] == 0 || tie[4] == 0 {
+        return;
+    }
+    let turned = code & SUPERCUP_TURNED != 0;
+    if turned && tie[0xc] & CUP_RESULT == 0 || !turned && tie[0xc] & CUP_RESULT != 0 {
+        return;
+    }
+    let held = |country: u8, number: u16| {
+        records.team(u16::from(country), number).map(|team| team.strengths()).filter(|s| *s != [0; 4]).unwrap_or(EVEN)
+    };
+    let (sides, home_first) = if turned { ([(tie[4], u16_at(&tie, 6)), (tie[0], u16_at(&tie, 2))], false) } else { ([(tie[0], u16_at(&tie, 2)), (tie[4], u16_at(&tie, 6))], true) };
+    let (home, away) = (held(sides[0].0, sides[0].1), held(sides[1].0, sides[1].1));
+    let (mut hg, _) = goals(home, away, HOME_EDGE, random);
+    let (mut ag, _) = goals(away, home, -HOME_EDGE, random);
+    // The tie's own sides' goals: the first leg's as played, the
+    // second's turned back.
+    let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
+    let (total_home, total_away) = if turned {
+        (u16::from(tie[8]) + u16::from(own_first), u16::from(tie[9]) + u16::from(own_second))
+    } else {
+        (u16::from(own_first), u16::from(own_second))
+    };
+    let mut flags = CUP_RESULT;
+    let mut winner = None;
+    if code & SUPERCUP_DECIDES != 0 || turned {
+        flags |= CUP_PLAYED;
+        let mut won = total_home.cmp(&total_away);
+        if won == std::cmp::Ordering::Equal && turned {
+            // Away goals (`FUN_00677ed4`): the tie's home side's in the
+            // second leg against its away side's in the first.
+            won = u16::from(own_first).cmp(&u16::from(tie[9]));
+        }
+        if won == std::cmp::Ordering::Equal {
+            flags |= CUP_EXTRA;
+            let (et, _) = goals(home, away, 0, random);
+            let (at, _) = goals(away, home, 0, random);
+            hg = hg.saturating_add(et / 2 + u8::from(et % 2 != 0));
+            ag = ag.saturating_add(at / 2 + u8::from(at % 2 != 0));
+            let (f, s2) = if home_first { (hg, ag) } else { (ag, hg) };
+            won = (u16::from(f) + if turned { u16::from(tie[8]) } else { 0 }).cmp(&(u16::from(s2) + if turned { u16::from(tie[9]) } else { 0 }));
+            if won == std::cmp::Ordering::Equal {
+                flags |= CUP_SHOOT;
+                let sum = |s: &[i16; 4]| s.iter().map(|&v| i32::from(v)).sum::<i32>().max(1);
+                let (hs, as_) = (sum(&home), sum(&away));
+                let home_wins = i32::try_from(random.below((hs + as_) as u32)).unwrap_or(0) < hs;
+                won = if home_wins == home_first { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+            }
+        }
+        winner = Some(u8::from(won == std::cmp::Ordering::Less));
+    }
+    let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
+    if let Some(b) = records.block_mut(&name) {
+        if let Some(t) = b.get_mut(tie_at..tie_at + TIE) {
+            if turned {
+                t[0xa] = own_first;
+                t[0xb] = own_second;
+                t[0xc] |= flags | 0x10;
+            } else {
+                t[8] = own_first;
+                t[9] = own_second;
+                t[0xc] = flags;
+            }
+            t[0xd] = winner.unwrap_or(0);
+        }
+        // The winner moves on in a tournament.
+        if let (true, Some(w)) = (tournament, winner) {
+            let won_side = [tie[w as usize * 4], tie[w as usize * 4 + 1], tie[w as usize * 4 + 2], tie[w as usize * 4 + 3]];
+            let country = b[0];
+            match round {
+                0 | 1 => {
+                    let next = TIES + (round + 2) * TIE;
+                    let seed = [b[SIX + 2 * round], b[SIX + 2 * round + 1]];
+                    b[next..next + 4].copy_from_slice(&won_side);
+                    b[next + 4] = country;
+                    b[next + 6..next + 8].copy_from_slice(&seed);
+                }
+                2 => b[FINAL_TIE..FINAL_TIE + 4].copy_from_slice(&won_side),
+                3 => b[FINAL_TIE + 4..FINAL_TIE + 8].copy_from_slice(&won_side),
+                _ => {}
+            }
+        }
+    }
+    // The human's calendar: the day's score, and his supercup days anew.
+    for (country, number) in [(tie[0], u16_at(&tie, 2)), (tie[4], u16_at(&tie, 6))] {
+        let Some(slot) = human_slot(records, country, number) else { continue };
+        if let Some(cal) = records.calendars.get_mut(slot) {
+            let mut e = cal.entry(day);
+            if e[0] == YEAR_MATCH && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) & 0x7f00_0000 == SUPERCUP_CODE {
+                e[YEAR_GOALS] = hg;
+                e[YEAR_GOALS + 1] = ag;
+                e[YEAR_FLAGS] |= YEAR_RESULT | YEAR_CUP;
+                cal.set_entry(day, e);
+            }
+        }
+        crate::year::rebook_supercup(records, calendar, slot, (u16::from(country), number), day + 1);
+    }
+}
+
 fn human_slot(records: &Records, country: u8, number: u16) -> Option<usize> {
     records
         .team(u16::from(country), number)
@@ -1056,4 +1193,77 @@ fn goals(att: [i16; 4], hold: [i16; 4], edge: i32, random: &mut Random) -> (u8, 
             .clamp(0, 6) as u8;
     let half = (u32::from(full) * (luck % 3) / 2) as u8;
     (full, half)
+}
+
+#[cfg(test)]
+mod supercup_tests {
+    use super::*;
+
+    /// The supercups played over their days from the original's new
+    /// season (NewSeason000, the supercups set up): Germany's tournament
+    /// moves each winner on to the waiting seed and into the final, every
+    /// tie decided; England's one final decided on its day; Italy's two
+    /// legs stand open after the first and decided after the second; the
+    /// human's calendar takes his club's scores.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_supercups_are_played_on_their_days() {
+        use a3_files::an3::Save;
+        use crate::supercup::{FINAL_TIE, OBJECT, SIX, TIE, TIES};
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        crate::year::open_season(&mut records, &data.calendar);
+        let mut random = Random::new(8);
+        let object = |r: &Records, country: u16| -> Vec<u8> {
+            let slot = r.countries.slot(usize::from(country));
+            r.block(&format!("{OBJECT:#x}[{slot}]")).unwrap().to_vec()
+        };
+        let six = object(&records, 14);
+        for day in [33, 34] {
+            for country in [14u16, 16, 28] {
+                supercup_day(&mut records, country, &data.calendar, day, &mut random);
+            }
+        }
+        let b = object(&records, 14);
+        for r in 0..2 {
+            let (tie, next) = (TIES + r * TIE, TIES + (r + 2) * TIE);
+            assert_eq!(b[tie + 0xc] & (CUP_RESULT | CUP_PLAYED), CUP_RESULT | CUP_PLAYED, "tie {r} decided");
+            let w = usize::from(b[tie + 0xd]) * 4;
+            assert_eq!(b[next..next + 4], b[tie + w..tie + w + 4], "tie {r}'s winner moves on");
+            assert_eq!(b[next + 6..next + 8], six[SIX + 2 * r..SIX + 2 * r + 2], "against the seed {r}");
+        }
+        for day in [40, 41, 45] {
+            for country in [14u16, 16, 28] {
+                supercup_day(&mut records, country, &data.calendar, day, &mut random);
+            }
+        }
+        let b = object(&records, 14);
+        for r in 2..4 {
+            let tie = TIES + r * TIE;
+            assert_ne!(b[tie + 0xc] & CUP_PLAYED, 0, "tie {r} decided");
+            let w = usize::from(b[tie + 0xd]) * 4;
+            let side = FINAL_TIE + (r - 2) * 4;
+            assert_eq!(b[side..side + 4], b[tie + w..tie + w + 4], "tie {r}'s winner in the final");
+        }
+        assert_ne!(b[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "Germany's final decided");
+        let england = object(&records, 16);
+        assert_ne!(england[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "England's final decided");
+        let italy = object(&records, 28);
+        assert_eq!(italy[FINAL_TIE + 0xc] & (CUP_RESULT | CUP_PLAYED), CUP_RESULT, "Italy's first leg open");
+        supercup_day(&mut records, 28, &data.calendar, 55, &mut random);
+        let italy = object(&records, 28);
+        assert_ne!(italy[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "Italy's second leg decides");
+        // Union's days: every supercup day it played holds a score.
+        let cal = &records.calendars[0];
+        let played: Vec<usize> = (0..60)
+            .filter(|&d| {
+                let e = cal.entry(d);
+                e[0] == YEAR_MATCH && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) & 0x7f00_0000 == SUPERCUP_CODE
+            })
+            .collect();
+        assert!(!played.is_empty());
+        assert!(played.iter().all(|&d| cal.entry(d)[YEAR_FLAGS] & YEAR_RESULT != 0), "{played:?}");
+    }
 }
