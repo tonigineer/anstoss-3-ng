@@ -8326,6 +8326,43 @@ mod tests {
         assert!(rows[0].starts_with("Arminia Bielefeld\t"), "{rows:?}");
     }
 
+    /// A friendly booked on A for the 9th of September — the first row at
+    /// random numbers poked into the original before the drop, club 14/24
+    /// at its own ground, no fee — and the days played on: the original
+    /// shared a gate of 132 072 in halves of 66 036, kept Union's half as
+    /// its manager's last share and counted the game with its season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_friendly_takes_the_originals_gate() {
+        let game = game();
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
+                    on 380 press 4731\non 270 press 3734\non 499 ok\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\n\
+                    on 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\n\
+                    on 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\n\
+                    on 1 click at 320 357\non 375 click at 617 182; press 4715";
+        let book = "now click bar 6\nuntil dialog 348\nnow random 12345 67890\nnow drag at 540 403 to 180 166\n\
+                    until dialog 72\nnow row 1666 0\nuntil dialog 348\nnow click bar 0\nuntil dialog 147";
+        let Some(runner) = on_save(&game, "A", book) else { return };
+        let gate = |runner: &Runner, club: (u8, u16)| {
+            let state = runner.host.state();
+            state.records.as_ref().unwrap().team(club.0.into(), club.1).unwrap().get::<i32>(0x4b4)
+        };
+        let booked = {
+            let state = runner.host.state();
+            a3_core::friendly::friendlies(state.records.as_ref().unwrap())
+        };
+        assert_eq!((booked[0].opponent, booked[0].away, booked[0].fee), ((14, 24), true, 0));
+        let before = (gate(&runner, (14, 84)), gate(&runner, (14, 24)));
+        let runner = on_save(&game, "A", &format!("{book}\n{ways}\nuntil day 65")).unwrap();
+        assert_eq!(gate(&runner, (14, 84)) - before.0, 66_036);
+        assert_eq!(gate(&runner, (14, 24)) - before.1, 66_036);
+        let state = runner.host.state();
+        let extra = &state.records.as_ref().unwrap().extras[0];
+        assert_eq!((extra.get::<i32>(0x2560), extra.together()), (66_036, 1));
+    }
+
     /// The friendly dragged onto the 17th of September offers, at random
     /// numbers poked into the original before the drop, the ten clubs the
     /// original offered (its trace drew the same thirty numbers): Sporting
