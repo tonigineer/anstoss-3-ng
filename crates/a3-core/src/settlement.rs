@@ -376,8 +376,67 @@ pub fn clear_bookings(records: &mut Records) {
         if country == 0 || !records.globals.played(country) {
             continue;
         }
+        let system = usize::from(records.countries.cup_system(usize::from(records.teams[i].country())));
         clear_club(&mut records.teams[i]);
+        plan_club(&mut records.teams[i], system);
     }
+}
+
+/// The plan's sums a season after the first sets up beside the clearing
+/// (`FUN_00672839`), as far as they stand on the club alone: its money
+/// band by league (+0x1f9: 2 the first, 1 the second, 0 lower; +0x1fa
+/// nought) and what that band costs (+0x170, `DAT_00883558` thousands);
+/// the first league's 200 000 at +0x12c and +0x134, 800 000 at +0x130
+/// with flag 0x4000, a lower league's 100 000 at +0x12c with flag 0x8000,
+/// 300 000 at +0x130 with 0x4000 and 50 000 at +0x134; +0x138 ten
+/// thousands by the cup system's row and the league (`DAT_0089dd50`,
+/// `DAT_008a0308`), +0x13c 600 000 more with flag 0x20, both standing in
+/// the season's block as well (+0x240, +0x244); and two millions at
+/// +0x5e8 and +0x5ec. (The plan's salaries, the stadium's and the
+/// youth's sums, its drawn parts and the prices are not built.)
+const BAND_COSTS: [i32; 3] = [12, 24, 72];
+const PLAN_ROWS_START: [usize; 8] = [0, 6, 10, 12, 14, 16, 17, 18];
+const PLAN_ROW: [i32; 23] = [800, 500, 90, 90, 90, 90, 600, 200, 50, 20, 400, 120, 1000, 120, 1000, 120, 200, 400, 100, 100, 100, 200, 500];
+const FLAGS_AT: usize = 0x110;
+
+fn plan_club(team: &mut Team, system: usize) {
+    const UNIT: i32 = 1000;
+    let level = team.level();
+    let flags = team.get::<u16>(FLAGS_AT);
+    let band: u8 = match level {
+        0 => 2,
+        1 => 1,
+        _ => 0,
+    };
+    put::<u8>(team, 0x1f9, band);
+    put::<u8>(team, 0x1fa, 0);
+    put::<i32>(team, 0x170, BAND_COSTS[usize::from(band)] * UNIT);
+    if level == 0 {
+        put::<i32>(team, 0x134, 200 * UNIT);
+        put::<i32>(team, 0x12c, 200 * UNIT);
+        if flags & 0x4000 != 0 {
+            put::<i32>(team, 0x130, 800 * UNIT);
+        }
+    } else {
+        put::<i32>(team, 0x12c, if flags & 0x8000 != 0 { 100 * UNIT } else { 0 });
+        if flags & 0x4000 != 0 {
+            put::<i32>(team, 0x130, 300 * UNIT);
+        }
+        put::<i32>(team, 0x134, 50 * UNIT);
+    }
+    if level < 10 {
+        let row = PLAN_ROWS_START.get(system).copied().unwrap_or(0) + usize::from(level);
+        put::<i32>(team, 0x138, 10 * UNIT * PLAN_ROW.get(row).copied().unwrap_or(0));
+    }
+    if flags & 0x20 != 0 {
+        let v = club::<i32>(team, 0x13c);
+        put::<i32>(team, 0x13c, v + 600 * UNIT);
+    }
+    put::<i32>(team, 0x5e8, 2000 * UNIT);
+    put::<i32>(team, 0x5ec, 2000 * UNIT);
+    let (a, b) = (club::<i32>(team, 0x138), club::<i32>(team, 0x13c));
+    put::<i32>(team, 0x240, a);
+    put::<i32>(team, 0x244, b);
 }
 
 /// The clearing of one club (`FUN_00672839`, reached through
@@ -1318,7 +1377,8 @@ mod tests {
     /// the main country and the more ones stand the prize money and the
     /// team bonuses at nought for every club of every league, the human
     /// club among them; the dwords behind the blocks, +0x498, +0x492 at
-    /// fifty, +0x9ec and the sales plan's rows agree as well, while the clubs of all other countries
+    /// fifty, +0x9ec, the sales plan's rows and the plan's band, its cost
+    /// and the sums standing on the club alone agree as well, while the clubs of all other countries
     /// keep their season's fields. The attendance plan agrees too: the
     /// home games of the season at +0x92e for every club, and the human
     /// club's plan computed back (22 000 at Union, 17 home games of
@@ -1350,6 +1410,13 @@ mod tests {
         // before the bookings, as the opening runs them.
         crate::statistics::close_tables(&mut closed);
         clear_club_seasons(&mut closed);
+        // The new season's leagues and the season's flags as the
+        // original's turn set them.
+        for &i in &played {
+            let (level, flags) = (opened.teams[i].level(), opened.teams[i].get::<u16>(FLAGS_AT));
+            closed.teams[i].set_level(level);
+            closed.teams[i].put::<u16>(FLAGS_AT, flags);
+        }
         clear_bookings(&mut closed);
         for (k, &i) in played.iter().enumerate() {
             let (a, b) = (&closed.teams[i], &opened.teams[i]);
@@ -1389,6 +1456,11 @@ mod tests {
                     let at = at + c * 2;
                     assert_eq!(club::<i16>(a, at), club::<i16>(b, at), "team {i} +{at:#x}");
                 }
+            }
+            // The plan's band, its cost and the sums standing on the club.
+            assert_eq!(club::<u16>(a, 0x1f9), club::<u16>(b, 0x1f9), "team {i} +0x1f9");
+            for at in [0x170, 0x138, 0x13c, 0x240, 0x244] {
+                assert_eq!(club::<i32>(a, at), club::<i32>(b, at), "team {i} +{at:#x}");
             }
         }
         for i in 0..closed.teams.len() {
