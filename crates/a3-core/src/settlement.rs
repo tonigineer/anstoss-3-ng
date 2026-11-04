@@ -769,7 +769,8 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
 /// `DAT_008a7aa8`; a drawn style takes three or six tenths of some of
 /// them (`DAT_008a7af0`); each rounded by its size (`FUN_007169f0`) and
 /// again, in hundredths times three for each of the manager's skill and
-/// 150 (`FUN_00716a87`). The plan's rest books the money at +0x2f4. (The
+/// 150 (`FUN_00716a87`). The plan's rest books the money at +0x2f4 and
+/// reckons the plan's sponsors at +0x1ec (`FUN_0061f483`). (The
 /// offer's bytes +0x50b to +0x50d the original leaves as its stack held
 /// them, so they are not written.) Measured on the original's first
 /// new-season day: every planned club's fields are among their draws.
@@ -868,6 +869,12 @@ fn sign_main_sponsor(team: &mut Team, system: usize, skill: i64, held: u8, capac
     put::<i32>(team, 0x52c, gate);
     let booked = club::<i32>(team, 0x510);
     put::<i32>(team, 0x2f4, booked);
+    // The plan's sponsors (`FUN_0061f483`): the contract's money, +0x1fc
+    // times the rate, and twelve months of perimeter advertising
+    // (`FUN_0061ffe4`) — nought here, a computer club having neither
+    // home games nor an attendance plan at this point.
+    let rate = i32::from(club::<u16>(team, 0x1fc) as i16).wrapping_mul(club::<i32>(team, 0x504));
+    put::<i32>(team, 0x1ec, if years != 0 { booked } else { 0 }.wrapping_add(rate));
 }
 
 /// The main sponsor the walk signs a planned club with (`FUN_00716a87`):
@@ -3411,7 +3418,7 @@ mod tests {
             .join("saves-kept");
         let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
         let holders = theirs.block(HOLDERS).unwrap().to_vec();
-        let words: Vec<usize> = (0..8).map(|k| 0x510 + k * 4).chain([0x2f4]).collect();
+        let words: Vec<usize> = (0..8).map(|k| 0x510 + k * 4).chain([0x2f4, 0x1ec]).collect();
         let mut count = 0;
         for i in 0..theirs.teams.len() {
             let country = i16::from(theirs.teams[i].country());
