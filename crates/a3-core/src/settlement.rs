@@ -1041,6 +1041,9 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
     }
 }
 
+/// The human clubs' shirt sales, by slot (`DAT_00a51ea8`).
+const SHIRT_SALES: &str = "0xa51ea8";
+
 fn clear_club_seasons(records: &mut Records) {
     let second_season = records.globals.seasons() > 1;
     for country in crate::opponent::played_nations(records) {
@@ -1089,6 +1092,12 @@ fn clear_club_seasons(records: &mut Records) {
             }
             // And its together count (`FUN_0069d684`).
             extra.set_together(0);
+            // The shirts its players sold start again from none
+            // (`FUN_00699351`, emptied, `FUN_006993e0`).
+            if let Some(b) = records.block_mut(&format!("{SHIRT_SALES}[{}]", human - 1)) {
+                b.fill(0);
+            }
+            let Some(extra) = records.extras.get_mut(human - 1) else { continue };
             // The fitness trainer's count starts anew (`FUN_00775219`'s
             // `FUN_00632ac1`).
             extra.set_fitness_count(0);
@@ -1264,6 +1273,11 @@ mod club_season_tests {
         let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
         ours.globals.set_seasons(2);
         clear_club_seasons(&mut ours);
+        // The human club's shirt sales stand emptied as the original's.
+        for slot in 0..4 {
+            let name = format!("{SHIRT_SALES}[{slot}]");
+            assert_eq!(ours.block(&name), theirs.block(&name), "{name}");
+        }
         let mut clubs = 0;
         for country in crate::opponent::played_nations(&theirs) {
             for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
