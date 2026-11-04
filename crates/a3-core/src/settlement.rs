@@ -432,6 +432,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         if planned(&records.teams[i]) {
             plan_drawn(&mut records.teams[i], skill, random);
             number_sponsor(&mut records.teams[i], system, random);
+            plan_price(&mut records.teams[i], system, random);
         }
     }
 }
@@ -642,6 +643,45 @@ const SPONSORS_PER_SYSTEM: u32 = 40;
 fn number_sponsor(team: &mut Team, system: usize, random: &mut Random) {
     let first = system as u32 * SPONSORS_PER_SYSTEM + 1;
     put::<u16>(team, 0x4ea, (first + random.below(SPONSORS_PER_SYSTEM)) as u16);
+}
+
+/// The plan's rest's figure at +0x4ec (`FUN_00673566`, read from its
+/// x87 code): the league's row of `DAT_008a0278` (from the cup system's
+/// start in `DAT_0089dd50`; two from the sixth level on) times eighteen
+/// less club +0x10b (team +0x134) held within 5 and 18, times eight less
+/// club +0xec (team +0x11c), in thousands, over the sponsor's rate
+/// (+0x504) and times one less the rate's distance from 25 000 in fifty
+/// thousands — cut to a whole short —, then drawn up to five more.
+/// Measured on the original's first new-season day: all 147 planned
+/// clubs lie within their five.
+const PRICE_ROWS: [i32; 23] = [6, 4, 3, 3, 3, 3, 6, 4, 3, 2, 6, 3, 8, 3, 8, 3, 4, 5, 4, 3, 3, 5, 5];
+const PRICE_ROWS_START: [usize; 8] = [0, 6, 10, 12, 14, 16, 17, 18];
+const PRICE_LOW_LEAGUES: i32 = 2;
+const PRICE_PLACE_AT: usize = 0x134;
+const PRICE_CLASS_AT: usize = 0x11c;
+
+fn price_base(team: &Team, system: usize) -> i32 {
+    let level = usize::from(team.level());
+    let row = if level >= 6 {
+        PRICE_LOW_LEAGUES
+    } else {
+        PRICE_ROWS_START.get(system).and_then(|&s| PRICE_ROWS.get(s + level)).copied().unwrap_or(0)
+    };
+    let figure = (18 - i32::from(team.get::<u8>(PRICE_PLACE_AT))).clamp(5, 18);
+    let class = 8 - i32::from(team.get::<u8>(PRICE_CLASS_AT));
+    let rate = club::<i32>(team, 0x504);
+    if rate == 0 {
+        return 0;
+    }
+    let d = f64::from(row) * f64::from(figure) * f64::from(class) * 1000.0 / f64::from(rate);
+    let off = f64::from(rate - PLAN_STEP) / f64::from(DRAWN_LEAST);
+    i32::from(((1.0 - off) * d) as i32 as i16)
+}
+
+fn plan_price(team: &mut Team, system: usize, random: &mut Random) {
+    let base = price_base(team, system);
+    let drawn = base - 5 + random.below(11) as i32;
+    put::<i32>(team, 0x4ec, drawn.max(base));
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2692,7 +2732,8 @@ mod tests {
 
     /// The main sponsor's number is one of the original's draws: on its
     /// first new-season day every planned club's +0x4ea is reproduced by a
-    /// draw among its cup system's forty.
+    /// draw among its cup system's forty, and its +0x4ec by a draw over
+    /// the plan's figure.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_sponsors_number_is_one_of_the_originals_draws() {
@@ -2716,6 +2757,13 @@ mod tests {
                 club::<u16>(&team, 0x4ea) == want
             });
             assert!(found, "{i}: {want} of system {system}");
+            let figure = club::<i32>(&theirs.teams[i], 0x4ec);
+            let found = (0..400).any(|seed| {
+                let mut team = theirs.teams[i].clone();
+                plan_price(&mut team, system, &mut Random::new(seed));
+                club::<i32>(&team, 0x4ec) == figure
+            });
+            assert!(found, "{i}: +0x4ec {figure}, base {}", price_base(&theirs.teams[i], system));
             count += 1;
         }
         assert!(count > 140, "{count}");
