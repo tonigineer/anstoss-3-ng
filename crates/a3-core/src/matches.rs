@@ -521,6 +521,10 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
     // oldest of twenty dropped (`FUN_006ccc2a`, `FUN_006cd999`), and the
     // day is noted.
     if round == SUPERCUP_FINAL && winner.is_some() {
+        // Its winner counts the supercup in its trainer's career
+        // (`FUN_006cc61b`: `FUN_006b50a4` with kind 5).
+        let w = usize::from(winner.unwrap_or(0) != 0) * 4;
+        crate::honours::honour(records, u16::from(tie[w]), u16_at(&tie, w + 2), crate::honours::SUPERCUP);
         let final_tie = records.block(&name).and_then(|b| b.get(FINAL_TIE..FINAL_TIE + FINAL_ENTRY - 2)).map(<[u8]>::to_vec);
         let year = records.globals.start_year();
         if let (Some(t), Some(b)) = (final_tie, records.block_mut(FINALS_BLOCK)) {
@@ -666,6 +670,11 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         .map(|v| v.into_iter().flatten().collect());
     let Some(mut sides) = decided else { return };
     if round >= 6 {
+        // The final's winner counts the league cup in its trainer's career
+        // (`FUN_0067e911`: `FUN_006b50a4` with kind 0xb or 0xc).
+        for side in sides {
+            crate::honours::honour(records, u16::from(side[0]), u16::from_le_bytes([side[2], side[3]]), crate::honours::LEAGUE_CUP);
+        }
         return;
     }
     let Some((next, pairs)) = cup_pairings(mode, round + 1) else { return };
@@ -1384,7 +1393,8 @@ mod supercup_tests {
     /// moves each winner on to the waiting seed and into the final, every
     /// tie decided; England's one final decided on its day; Italy's two
     /// legs stand open after the first and decided after the second; the
-    /// human's calendar takes his club's scores.
+    /// human's calendar takes his club's scores, and the final's winner's
+    /// trainer the title.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_supercups_are_played_on_their_days() {
@@ -1401,6 +1411,7 @@ mod supercup_tests {
             r.block(&format!("{OBJECT:#x}[{slot}]")).unwrap().to_vec()
         };
         let six = object(&records, 14);
+        let titles: Vec<i16> = records.persons.iter().map(|p| p.get::<i16>(0x42)).collect();
         for day in [33, 34] {
             for country in [14u16, 16, 28] {
                 supercup_day(&mut records, country, &data.calendar, day, &mut random);
@@ -1428,6 +1439,14 @@ mod supercup_tests {
             assert_eq!(b[side..side + 4], b[tie + w..tie + w + 4], "tie {r}'s winner in the final");
         }
         assert_ne!(b[FINAL_TIE + 0xc] & CUP_PLAYED, 0, "Germany's final decided");
+        // Its winner's trainer counts the title.
+        let w = FINAL_TIE + usize::from(b[FINAL_TIE + 0xd]) * 4;
+        let winner = records.team(u16::from(b[w]), u16::from_le_bytes([b[w + 2], b[w + 3]])).unwrap();
+        if winner.humans()[1] == 0 {
+            let [mt, tr, _] = winner.staff();
+            let id = usize::from(if tr != 0 { tr } else { mt });
+            assert_eq!(records.persons[id].get::<i16>(0x42), titles[id] + 1, "the winner's trainer {id}");
+        }
         // The final heads the list of finals, the year before it.
         let finals = statistics::league_cup_finals(&records, 14);
         assert_eq!(finals.first().map(|f| f.0), Some(records.globals.start_year() as i16));
@@ -1458,7 +1477,8 @@ mod supercup_tests {
     /// NewSeason000 (its first round drawn there): every round's ties
     /// decided, two legs where the calendar plays two, the 25 winners of
     /// the first round and the seven waiting met in the second's 16 ties,
-    /// on to one final with its winner, the last drawn round following.
+    /// on to one final with its winner, the last drawn round following,
+    /// the winner's trainer counting the title.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_league_cup_is_played_on_its_days() {
@@ -1469,6 +1489,7 @@ mod supercup_tests {
         let mut records = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
         let data = crate::data::Data::load(&dir).unwrap();
         let mut random = Random::new(9);
+        let titles: Vec<i16> = records.persons.iter().map(|p| p.get::<i16>(0x42)).collect();
         let row = data.calendar.row(ENGLAND, 0).unwrap();
         let days: Vec<usize> = (0..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE).collect();
         assert!(days.len() >= 8, "{days:?}");
@@ -1487,5 +1508,15 @@ mod supercup_tests {
         }
         assert_eq!(cup_pairings(mode, 2).map(|r| r.1), Some(16));
         assert_eq!(b[0x28 - 0x20], 6, "the final the last drawn round");
+        // The final's winner's trainer counts the title.
+        let (start, _) = cup_pairings(mode, 6).unwrap();
+        let p = &b[PAIRINGS + start * PAIRING..PAIRINGS + (start + 1) * PAIRING];
+        let w = usize::from(p[0xd] != 0) * 4;
+        let (c, n) = (u16::from(p[w]), u16::from_le_bytes([p[w + 2], p[w + 3]]));
+        let winner = records.team(c, n).unwrap();
+        assert_eq!(winner.humans()[1], 0, "a computer club wins");
+        let [mt, tr, _] = winner.staff();
+        let id = usize::from(if tr != 0 { tr } else { mt });
+        assert_eq!(records.persons[id].get::<i16>(0x42), titles[id] + 1, "the winner's trainer {id}");
     }
 }

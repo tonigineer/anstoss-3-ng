@@ -14,13 +14,17 @@
 //! (`FUN_006da3a9` → `FUN_0071d351`): every played country's first league
 //! honours its leader by the table then (`FUN_007293ea`), which in a
 //! league still playing is not yet its champion — England's in the kept
-//! season. The cup counts its final's winner (`FUN_006ce00e`).
+//! season. The cup counts its final's winner (`FUN_006ce00e`), as do the
+//! supercups' (`FUN_006cc61b`, kind 5) and England's league cup's
+//! (`FUN_0067e911`, kind 0xb or 0xc).
 
 use crate::records::Records;
 
 pub const CHAMPIONSHIP: u8 = 1;
 pub const PROMOTION: u8 = 2;
 pub const CUP: u8 = 4;
+pub const SUPERCUP: u8 = 5;
+pub const LEAGUE_CUP: u8 = 0xb;
 pub const CUP_FINALIST: u8 = 0xd;
 
 /// The half week of the champions' day (`DAT_00b5cbd2 == 0x5c`).
