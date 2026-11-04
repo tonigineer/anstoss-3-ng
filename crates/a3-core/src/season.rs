@@ -219,6 +219,35 @@ impl Rules {
         self.ticket_bases.get(start + league).map_or(100, |&b| i64::from(b))
     }
 
+    /// What the board expects of a club for a new season and what it asks
+    /// (`FUN_00772bee`, team +0x135 and +0x136): by its league's size and
+    /// its squad's rank there the goal of the table, through the goals of
+    /// its league's kind (`FUN_00775cb7`: a top league's or a lower one's,
+    /// 4 for 2 at a club with amateurs), a club just promoted 10; the board
+    /// asks one step harder by chance, the more the less it is content —
+    /// (6 − its byte) × 17 in 102.
+    pub fn season_goals(&self, size: usize, rank: usize, promoted: bool, board: i32, top: bool, linked: bool, random: &mut Random) -> (u8, u8) {
+        let goal = |g: i32| -> u8 {
+            if g > (GOALS - 1) as i32 {
+                return (GOALS - 1) as u8;
+            }
+            let g = g.max(0) as usize;
+            let v = self.offer_goals[usize::from(!top)].get(g).copied().unwrap_or(0);
+            (if linked && v == 2 { 4 } else { v }) as u8
+        };
+        let row = (size / 2).saturating_sub(5).min(self.club_goals.len() - 1);
+        let expected = if promoted {
+            PROMOTED_GOAL as u8
+        } else {
+            goal(i32::from(self.club_goals[row][rank.min(GOAL_RANKS - 1)]))
+        };
+        let mut asked = expected;
+        if (random.below(AMBITION_DIE) as i32) < (6 - board) * AMBITION as i32 {
+            asked = goal(i32::from(self.harder.get(usize::from(expected)).map_or(0, |&h| h as i8)));
+        }
+        (expected, asked)
+    }
+
     /// A club's own goal for the season, from how big its league is and
     /// where its squad ranks in it.
     fn club_goal(
@@ -239,6 +268,43 @@ impl Rules {
             goal = usize::from(self.harder[goal.min(GOALS - 1)]);
         }
         goal
+    }
+}
+
+/// The board's goals of every played club for the new season, by its
+/// squad's rank ([`Rules::season_goals`]; a club in no league 1 and 1),
+/// a human trainer's goal class taking the club's (manager +0x170).
+pub fn open_goals(records: &mut crate::records::Records, rules: &Rules, random: &mut Random) {
+    const RANK_AT: usize = 0x130;
+    const GOALS_AT: [usize; 2] = [0x135, 0x136];
+    const FLAGS_AT: usize = 0x110;
+    const PROMOTED_FLAG: u16 = 4;
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let level = team.level();
+            let goals = if level >= 10 {
+                (1, 1)
+            } else {
+                let size = crate::opponent::League::of(records, country, level).map_or(24, |l| l.teams());
+                rules.season_goals(
+                    size,
+                    usize::from(team.get::<u8>(RANK_AT)),
+                    team.get::<u16>(FLAGS_AT) & PROMOTED_FLAG != 0,
+                    i32::from(team.board()),
+                    level == 0,
+                    team.linked()[0] >= 0,
+                    random,
+                )
+            };
+            let human = team.humans()[0];
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.put::<u8>(GOALS_AT[0], goals.0);
+            team.put::<u8>(GOALS_AT[1], goals.1);
+            if let Some(m) = usize::from(human).checked_sub(1).and_then(|k| records.managers.get_mut(k)) {
+                m.set_goal_class(i16::from(goals.1 as i8));
+            }
+        }
     }
 }
 
@@ -978,6 +1044,38 @@ fn rating(players: &[Player]) -> i32 {
 
 #[cfg(test)]
 mod form_tests {
+    /// On the original's NewSeason000, by its own squad ranks, every played
+    /// club's expected goal comes out as the original's, and the goal the
+    /// board asks is that one or one step harder.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_boards_season_goals_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let n = crate::records::Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut b = crate::records::Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        open_goals(&mut b, &data.rules, &mut Random::new(7));
+        let mut clubs = 0;
+        for country in crate::opponent::played_nations(&n) {
+            for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (b.team(country, t).unwrap(), n.team(country, t).unwrap());
+                assert_eq!(x.get::<u8>(0x135), y.get::<u8>(0x135), "{country}/{t}");
+                let expected = x.get::<u8>(0x135);
+                let harder = if x.level() >= 10 { expected } else {
+                    let top = x.level() == 0;
+                    let h = data.rules.harder.get(usize::from(expected)).map_or(0, |&h| h as i8);
+                    let v = if h > 11 { 11 } else { data.rules.offer_goals[usize::from(!top)][h.max(0) as usize] as u8 };
+                    if x.linked()[0] >= 0 && v == 2 { 4 } else { v }
+                };
+                assert!(y.get::<u8>(0x136) == expected || y.get::<u8>(0x136) == harder, "{country}/{t}: {} of {expected} {harder}", y.get::<u8>(0x136));
+                clubs += 1;
+            }
+        }
+        assert!(clubs > 200);
+    }
+
     use super::*;
 
     /// The week's end over the original's save A: every player of the
