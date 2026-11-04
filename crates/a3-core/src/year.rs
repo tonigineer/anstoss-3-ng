@@ -563,6 +563,130 @@ fn book_supercup(records: &Records, team: &crate::records::Team, d: usize, code:
     planner.set_entry(d, e);
 }
 
+/// A club's next match as the club object keeps it (+0xb44 …, team
+/// +0x250 …): the day, the opponent, where (0 at home, 1 away), the kind
+/// (2 the league, 3 the cup, 4 the supercup) and the round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NextMatch {
+    pub day: i16,
+    pub opponent: (u8, i16),
+    pub venue: i16,
+    pub kind: u8,
+    pub round: u8,
+}
+
+const LOOK_AHEAD: usize = 63;
+const NEXT_LEAGUE: u8 = 2;
+const NEXT_CUP: u8 = 3;
+const NEXT_SUPERCUP: u8 = 4;
+const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
+
+/// A club's next match from the day after `today` on, within 63 days
+/// (`FUN_0062bfc9` with `FUN_0062d181`): the first day its league plays a
+/// matchday, its cup a round it is in, its supercup a round it plays —
+/// the opponent named once the tie stands, none before. (A European
+/// cup's, the world's and the relegation's days are not built: they are
+/// passed over.)
+pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, today: usize) -> Option<NextMatch> {
+    let country = team.country();
+    for d in today + 1..=(today + LOOK_AHEAD).min(SEASON_DAYS - 1) {
+        let code = fixture(records, calendar, team, d);
+        if code == 0 {
+            continue;
+        }
+        let at = |opponent: (u8, i16), venue: i16, kind: u8, round: u8| NextMatch { day: d as i16, opponent, venue, kind, round };
+        match code & COMPETITION {
+            c if c < LEAGUE_CODES => {
+                let Some(league) = crate::opponent::League::of(records, u16::from(country), team.level()) else { continue };
+                let place = usize::from(team.league_place());
+                let Some((home, away, _)) = league.result((code & MATCHDAY) as usize, place) else { continue };
+                let (other, venue) = if home == place { (away, 0) } else { (home, 1) };
+                return Some(at((country, league.team(other)), venue, NEXT_LEAGUE, 0));
+            }
+            CUP => {
+                let slot = records.countries.slot(usize::from(country));
+                let Some(cup) = records.block(&format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)) else { continue };
+                if !in_cup(cup, team, code) {
+                    continue;
+                }
+                let round = (code & MATCHDAY) as u8;
+                let mode = usize::from(cup.get(0x24 - 0x20).copied().unwrap_or(0));
+                let tie = crate::opponent::cup_pairings(mode, usize::from(round)).and_then(|(start, count)| {
+                    (start..start + count)
+                        .filter_map(|k| {
+                            let p = crate::opponent::PAIRINGS + k * crate::opponent::PAIRING;
+                            cup.get(p..p + 8)
+                        })
+                        .find(|p| supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team))
+                        .map(<[u8]>::to_vec)
+                });
+                // A round not drawn yet is passed over.
+                let Some(p) = tie else { continue };
+                let at_home = supercup_side(&p[0..4], team) != (code & TURNED != 0);
+                let o = if supercup_side(&p[0..4], team) { &p[4..8] } else { &p[0..4] };
+                return Some(at((o[0], i16::from_le_bytes([o[2], o[3]])), i16::from(!at_home), NEXT_CUP, round));
+            }
+            SUPERCUP => {
+                let slot = records.countries.slot(usize::from(country));
+                let Some(object) = records.block(&format!("{:#x}[{slot}]", crate::supercup::OBJECT)) else { continue };
+                let tournament = crate::supercup::is_tournament(records, u16::from(country));
+                if !in_supercup(object, team, code, tournament) {
+                    continue;
+                }
+                let round = (code & MATCHDAY) as usize;
+                let tie_at = if tournament && round < 4 { crate::supercup::TIES + round * crate::supercup::TIE } else { crate::supercup::FINAL_TIE };
+                let p = object.get(tie_at..tie_at + 8).map(<[u8]>::to_vec).unwrap_or_default();
+                let theirs = |side: &[u8]| (side[0], i16::from_le_bytes([side[2], side[3]]));
+                // A seed waiting for its opponent is passed over; the
+                // rounds count on from 5 — 5 the first two ties, 6 the
+                // next two, 7 the final (`FUN_006cd7fb`).
+                if p.len() != 8 || !(supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team)) {
+                    continue;
+                }
+                let first = supercup_side(&p[0..4], team);
+                let at_home = first != (code & TURNED != 0);
+                let stage = SUPERCUP_STAGES[round.min(SUPERCUP_STAGES.len() - 1)];
+                return Some(at(theirs(if first { &p[4..8] } else { &p[0..4] }), i16::from(!at_home), NEXT_SUPERCUP, stage));
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Every played club's next match noted anew (`FUN_0062bfc9`): its
+/// opponent, kind and referee cleared first, then the match found set; a
+/// human club keeps its referee, which the original draws anew (not
+/// built).
+pub fn note_next_matches(records: &mut Records, calendar: &crate::calendar::Calendar, today: usize) {
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            // A club in no league is not looked at; it keeps what it had.
+            if team.level() >= NO_LEAGUE {
+                continue;
+            }
+            let next = next_match(records, calendar, team, today);
+            let human = team.humans() != [0, 0];
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.set_next_country(0);
+            team.set_next_number(0);
+            team.set_next_kind(0);
+            if !human {
+                team.set_referee(0);
+            }
+            if let Some(m) = next {
+                team.set_next_day(m.day);
+                team.set_next_country(m.opponent.0);
+                team.set_next_number(m.opponent.1);
+                team.set_next_venue(m.venue);
+                team.set_next_kind(m.kind);
+                team.set_next_round(m.round);
+            }
+        }
+    }
+}
+
 /// A human's supercup days from `from` on booked again from the object as
 /// it now stands, his club's next ties named once drawn.
 pub(crate) fn rebook_supercup(records: &mut Records, calendar: &crate::calendar::Calendar, slot: usize, (country, number): (u16, u16), from: usize) {
@@ -692,6 +816,51 @@ mod tests {
             }
         }
         assert!(days > 36 * saves && supercup > 0, "{days} {supercup}");
+    }
+
+    /// On the original's saves — the new season's first day, mid-season,
+    /// late in the second — every played club's next match as the replica
+    /// finds it from the day before the save agrees with the one the
+    /// original noted: the league's, the cup's and the supercup's (those of
+    /// the European cups not built, the clubs in no league not looked at).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_clubs_next_matches_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut misses = Vec::new();
+        let mut all = 0;
+        for name in ["NewSeason000.an3", "A.an3", "S2late.an3"] {
+            let n = Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+            // The saves stand before their day's matches: what they noted
+            // was looked for from the day before on.
+            let today = (n.globals.day() as usize).saturating_sub(1);
+            for country in crate::opponent::played_nations(&n) {
+                for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                    let team = n.team(country, t).unwrap();
+                    // Not looked at: a club in no league, and one whose next
+                    // match is a European or a world one (not built).
+                    if team.next_country() == 0 && team.next_kind() == 0 || team.level() >= NO_LEAGUE || (5..=10).contains(&team.next_kind()) {
+                        continue;
+                    }
+                    all += 1;
+                    let mine = next_match(&n, &data.calendar, team, today);
+                    let theirs = NextMatch {
+                        day: team.next_day(),
+                        opponent: (team.next_country(), team.next_number()),
+                        venue: team.next_venue(),
+                        kind: team.next_kind(),
+                        round: team.next_round(),
+                    };
+                    if mine != Some(theirs) {
+                        misses.push(format!("{name} {country}/{t}: mine {mine:?} theirs {theirs:?}"));
+                    }
+                }
+            }
+        }
+        assert!(all > 400 && misses.is_empty(), "{} misses of {all}:\n{}", misses.len(), misses.join("\n"));
     }
 
     fn calendar() -> Planner {

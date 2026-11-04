@@ -857,6 +857,9 @@ impl Cycle {
                                 season.day,
                                 &mut season.random,
                             );
+                            // The clubs note their next matches anew
+                            // (`FUN_0062c74b`'s `FUN_0062bfc9`).
+                            crate::year::note_next_matches(records, &self.data.calendar, season.day);
                         }
                         let start = season.day % WEEK_DAYS == 0;
                         if start {
@@ -995,6 +998,9 @@ impl Cycle {
                 // The humans' calendars start empty and take their clubs'
                 // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
                 crate::year::open_season(records, &self.data.calendar);
+                // Every club notes its first match of the season
+                // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
+                crate::year::note_next_matches(records, &self.data.calendar, 0);
                 // The human clubs' squads changed with the turn — players
                 // gone, new ones come — so each club the season follows
                 // stands anew as its records now have it, as a load would
