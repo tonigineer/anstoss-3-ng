@@ -308,7 +308,7 @@ fn fill_players(cx: &Cx, view: &mut View, (country, number): (u8, u16)) {
 /// Which of its country's league names a club's is (`FUN_0063e388`,
 /// `FUN_006755b8`): the main country's up to the third (England's the
 /// fourth), every other country's the first; no league one deeper.
-fn league_place(records: &Records, team: &a3_core::records::Team) -> usize {
+pub(crate) fn league_place(records: &Records, team: &a3_core::records::Team) -> usize {
     let country = team.country();
     let level = team.level();
     let place = |level: u8| -> u8 {

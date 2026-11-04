@@ -56,7 +56,9 @@ def main() -> int:
     badge("progress", "progress", f"{count}/{ORIGINAL_DIALOGS} screens",
           colour(100 * count / ORIGINAL_DIALOGS))
 
-    tests = run("cargo", "test", "--workspace", "--", "--include-ignored")
+    # Not the scratch examples, which the git-ignored folders hold by the
+    # hundred: their builds would fill the disk.
+    tests = run("cargo", "test", "--workspace", "--lib", "--tests", "--bins", "--", "--include-ignored")
     output = tests.stdout + tests.stderr
     # A test that finds no save skips without failing; then the count lies.
     if "among the saves" in output:

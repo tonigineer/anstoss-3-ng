@@ -651,7 +651,7 @@ pub fn id(club: (u8, i16), day: i16) -> u32 {
 
 /// The manager of a human club, by number from 1 (`FUN_00677574`); 0 for
 /// a computer club.
-fn manager_of(records: &Records, (country, number): (u8, i16)) -> u8 {
+pub(crate) fn manager_of(records: &Records, (country, number): (u8, i16)) -> u8 {
     let count = usize::try_from(records.globals.get::<i16>(HUMAN_COUNT)).unwrap_or(0).min(4);
     (0..count)
         .map(|k| HUMANS + 8 * k)

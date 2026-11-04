@@ -49,6 +49,7 @@ pub mod start;
 pub mod statistics;
 pub mod tactics;
 pub mod talk;
+pub mod tournament;
 pub mod training;
 pub mod year;
 pub mod youth;
@@ -276,6 +277,8 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(camp::CampConfirm),
         Box::new(camp::CampGroup),
         Box::new(friendly::FriendlyChoice::default()),
+        Box::new(tournament::TournamentChoice::default()),
+        Box::new(tournament::OwnTournament::default()),
         Box::new(donations::Donations::default()),
         Box::new(licence::Licence),
     ]
@@ -310,6 +313,7 @@ pub fn compose(game: &mut Game) {
     training::career::compose(&mut game.dialogs);
     camp::compose(&mut game.dialogs, &game.data.rules);
     friendly::compose(&mut game.dialogs);
+    tournament::compose(&mut game.dialogs);
     donations::compose(&mut game.dialogs);
     licence::compose(&mut game.dialogs);
     popups::compose(&mut game.dialogs);

@@ -1,8 +1,10 @@
 name: CI
 
 # On every push to main and every pull request: the tests that need no game
-# on Linux, and a build on Windows. The tests with the game run locally; their
-# count reaches the README through tools/badges.py. A pull request must come
+# on Linux, measured for their coverage, and a build on Windows. The tests
+# with the game run locally; their count reaches the README through
+# tools/badges.py, the coverage of the others through the badges branch,
+# which a push to main writes. A pull request must come
 # from a feature/ or fix/ branch, and a feature/ branch must raise the version
 # above main's (fix/ branches may keep it): main's ruleset requires all four
 # checks. Started by hand on a branch (gh workflow run ci.yml --ref
@@ -72,15 +74,26 @@ jobs:
   linux:
     name: Test (Linux)
     runs-on: ubuntu-latest
+    # On main it writes the coverage badge to the badges branch.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       # The dependencies' builds, one cache per job; pull requests read
       # main's and save none of their own, and a failed run keeps its.
+      # cargo-llvm-cov builds into a target directory of its own.
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: ". -> target/llvm-cov-target"
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
@@ -90,8 +103,41 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev
 
+      # The tests run instrumented, once: which share of the code they
+      # reach — the tests without the game only — goes to the run's summary.
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo llvm-cov --workspace --locked --json --summary-only --output-path coverage.json
+          {
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The README's coverage badge, a shields.io endpoint file on a branch
+      # of its own holding only it, written anew from main's run.
+      - name: Coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir badges
+          python3 - coverage.json > badges/coverage.json <<'EOF'
+          import json, sys
+          percent = json.load(open(sys.argv[1]))["data"][0]["totals"]["lines"]["percent"]
+          colour = next((c for limit, c in ((25, "red"), (50, "orange"), (75, "yellow"), (90, "green"))
+                         if percent < limit), "brightgreen")
+          print(json.dumps({"schemaVersion": 1, "label": "coverage", "message": f"{percent:.1f}%",
+                            "color": colour}))
+          EOF
+          cat badges/coverage.json
+          cd badges
+          git init -q -b badges
+          git add coverage.json
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Coverage of ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
 
   windows:
     name: Build (Windows)
