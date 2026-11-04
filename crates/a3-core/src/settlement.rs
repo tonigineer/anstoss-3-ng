@@ -431,6 +431,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         plan_season(&mut records.teams[i], second, held, cover);
         if planned(&records.teams[i]) {
             plan_drawn(&mut records.teams[i], skill, random);
+            number_sponsor(&mut records.teams[i], system, random);
         }
     }
 }
@@ -629,6 +630,18 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
     put::<u16>(team, 0x4fc, random.below(6) as u16 * 5);
     let class = i32::from(team.get::<u8>(CLUB_CLASS));
     put::<i32>(team, 0x500, (class * 4 + 4) * 1_000_000);
+}
+
+/// The main sponsor the walk signs a planned club with (`FUN_00716a87`):
+/// its number at +0x4ea, drawn among the forty of the country's cup
+/// system (`DAT_00ae5d0c`), from one. (The offer it signs, its years
+/// and money, is not built.) Measured on the original's first new-season
+/// day: all 147 planned clubs hold a number of their system's forty.
+const SPONSORS_PER_SYSTEM: u32 = 40;
+
+fn number_sponsor(team: &mut Team, system: usize, random: &mut Random) {
+    let first = system as u32 * SPONSORS_PER_SYSTEM + 1;
+    put::<u16>(team, 0x4ea, (first + random.below(SPONSORS_PER_SYSTEM)) as u16);
 }
 
 /// Whether the walk plans a club: below the tenth level, its +0x8b clear.
@@ -2675,5 +2688,36 @@ mod tests {
             shared += i32::from(want[0] == 0);
         }
         assert!(count > 140 && shared > 0, "{count} planned, {shared} sharing");
+    }
+
+    /// The main sponsor's number is one of the original's draws: on its
+    /// first new-season day every planned club's +0x4ea is reproduced by a
+    /// draw among its cup system's forty.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_sponsors_number_is_one_of_the_originals_draws() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
+                continue;
+            }
+            let system = usize::from(theirs.countries.cup_system(usize::from(theirs.teams[i].country())));
+            let want = club::<u16>(&theirs.teams[i], 0x4ea);
+            let found = (0..400).any(|seed| {
+                let mut team = theirs.teams[i].clone();
+                number_sponsor(&mut team, system, &mut Random::new(seed));
+                club::<u16>(&team, 0x4ea) == want
+            });
+            assert!(found, "{i}: {want} of system {system}");
+            count += 1;
+        }
+        assert!(count > 140, "{count}");
     }
 }
