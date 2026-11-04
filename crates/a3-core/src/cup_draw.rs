@@ -26,9 +26,10 @@
 //! Left out: the cups' first season (`FUN_006cf031`), Germany's rules
 //! before 2000, the other main countries' own entrants
 //! (`FUN_006cf964`, `FUN_006cfc09`, `FUN_006d057c`, …, which fall back to
-//! the plain rule here) and the league cups and supercups set up beside
-//! (`FUN_006ccc80`, `FUN_0077738d`). The original draws with its own
-//! generator.
+//! the plain rule here). England's league cup is drawn the same way
+//! beside its cup (`FUN_006cfaab`): the clubs of its four leagues by their
+//! level, its amateurs while there is room. The original draws with its
+//! own generator.
 
 use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS};
 use crate::random::Random;
@@ -61,11 +62,18 @@ const ORDER: [[i32; 5]; 5] =
     [[0, 1, 2, 3, 4], [1, 5, 6, 7, 8], [2, 6, 9, 10, 11], [3, 7, 10, 12, 13], [4, 8, 11, 13, 14]];
 /// The round table (0x8a5e10): by the cup's type and its round, the first
 /// tie, how many ties, the first entrant and how many entrants.
-const ROUNDS: [[(usize, usize, usize, usize); 3]; 3] = [
+const ROUNDS: [[(usize, usize, usize, usize); 3]; 6] = [
     [(0, 0, 0, 0), (0, 32, 0, 64), (32, 16, 0, 0)],
     [(0, 0, 0, 0), (0, 0, 0, 0), (32, 16, 0, 32)],
     [(0, 20, 44, 40), (20, 32, 0, 44), (52, 16, 0, 0)],
+    [(0, 0, 0, 0), (20, 32, 0, 64), (52, 16, 0, 0)],
+    [(0, 35, 22, 70), (35, 25, 7, 15), (60, 16, 0, 7)],
+    [(0, 0, 0, 0), (35, 25, 7, 50), (60, 16, 0, 7)],
 ];
+/// England's league cup (the object `0x1ba7488`, a cup's layout).
+const ENGLAND: u16 = 0x10;
+const LEAGUE_CUP: &str = "0x1ba7488";
+const LEAGUE_CUP_LEVELS: u8 = 4;
 
 /// A cup's setup by `FUN_006cef0b`'s case: its type, the round it draws
 /// and how many it takes.
@@ -166,6 +174,10 @@ pub fn draw(records: &mut Records, random: &mut Random) {
         draw_cup(records, country, main, random);
         // Its supercup beside (`FUN_006ccc80`).
         crate::supercup::set_up(records, country, random);
+        // England's league cup last (`FUN_006cfaab`).
+        if country == ENGLAND {
+            draw_league_cup(records, main, random);
+        }
     }
 }
 
@@ -214,6 +226,50 @@ fn draw_cup(records: &mut Records, country: u16, main: u16, random: &mut Random)
             entrants.enter((clubs + k) as i16, AMATEUR);
         }
     }
+    let slot = records.countries.slot(usize::from(country));
+    let name = format!("{CUPS_AT:#x}[{slot}]");
+    write_draw(records, &name, (country, main), (rule, kind, round, capacity), &entrants, random);
+}
+
+/// England's league cup, drawn as its national cup is (`FUN_006cfaab`):
+/// the object cleared, set up as `FUN_006cef0b`'s second case, the clubs
+/// of its four leagues as they now stand by their level, then its amateurs
+/// in a random order while there is room, its first round drawn and its
+/// entrants marked.
+fn draw_league_cup(records: &mut Records, main: u16, random: &mut Random) {
+    let clubs = usize::try_from(records.countries.team_count(usize::from(ENGLAND))).unwrap_or(0);
+    let (kind, round, capacity) = setup(1, ENGLAND == main);
+    let mut entrants = Entrants { country: ENGLAND as u8, capacity: usize::from(capacity), list: Vec::new() };
+    for level in 0..LEAGUE_CUP_LEVELS {
+        for team in list(records, ENGLAND, level) {
+            entrants.enter(team, level);
+        }
+    }
+    let picks = order(AMATEURS, random);
+    for &k in &picks {
+        if entrants.full() {
+            break;
+        }
+        entrants.enter((clubs + k) as i16, AMATEUR);
+    }
+    let Some(cup) = records.block_mut(LEAGUE_CUP) else { return };
+    cup.fill(0);
+    write_draw(records, LEAGUE_CUP, (ENGLAND, main), (0, kind, round, capacity), &entrants, random);
+}
+
+/// A cup's first drawn round into its object: the round's ties in the
+/// entrants' order, every side shuffled, the home rule, the ties by their
+/// clubs' classes, the setup and the entrants written and the entrants'
+/// season flags (`FUN_006cf2c9`, `FUN_00411935`, `FUN_006d0b8a`).
+fn write_draw(
+    records: &mut Records,
+    name: &str,
+    (country, main): (u16, u16),
+    (rule, kind, round, capacity): (u16, u16, u16, u16),
+    entrants: &Entrants,
+    random: &mut Random,
+) {
+    let clubs = usize::try_from(records.countries.team_count(usize::from(country))).unwrap_or(0);
     // The round's ties, in the entrants' order.
     let Some(&(first, ties, from, count)) = ROUNDS.get(usize::from(kind)).and_then(|r| r.get(usize::from(round)))
     else {
@@ -270,8 +326,7 @@ fn draw_cup(records: &mut Records, country: u16, main: u16, random: &mut Random)
             keys.swap(i, best);
         }
     }
-    let slot = records.countries.slot(usize::from(country));
-    let Some(cup) = records.block_mut(&format!("{CUPS_AT:#x}[{slot}]")) else { return };
+    let Some(cup) = records.block_mut(name) else { return };
     let mut put = |at: usize, v: u16| {
         if let Some(w) = cup.get_mut(at..at + 2) {
             w.copy_from_slice(&v.to_le_bytes());
@@ -389,6 +444,89 @@ mod tests {
             for e in &ex[..drawn_at] {
                 let t = ours.team(country, u16::from_le_bytes([e[2], e[3]])).unwrap();
                 assert_eq!(t.get::<u16>(0x110) & ENTERED, ENTERED, "{country}/{} entered", u16::from_le_bytes([e[2], e[3]]));
+            }
+        }
+    }
+
+    /// England's league cup over the same turn: set up as the original's,
+    /// its 57 entrants England's 26 clubs by their leagues — the
+    /// original's — and 31 of its amateurs drawn, the 50 behind the first
+    /// seven paired in its first round's 25 ties as the original pairs
+    /// its own, the ties by their clubs' classes, every club marked.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_draws_the_league_cup_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let mut random = Random::new(5);
+        let drawn = crate::promotion::draw(&mut ours, &mut random);
+        crate::statistics::archive_leagues(&mut ours);
+        crate::promotion::take(&mut ours, &drawn);
+        crate::settlement::open_season(&mut ours, &mut random);
+        let main = u16::try_from(ours.globals.main_country()).unwrap();
+        let (x, y) = (ours.block(LEAGUE_CUP).unwrap(), theirs.block(LEAGUE_CUP).unwrap());
+        assert_eq!(x[..0xc], y[..0xc], "the league cup's setup");
+        let capacity = usize::from(u16::from_le_bytes([x[CAPACITY], x[CAPACITY + 1]]));
+        assert_eq!(capacity, 57);
+        let entrants = |z: &[u8]| -> Vec<[u8; ENTRANT]> {
+            (0..capacity).map(|k| z[ENTRANTS + k * ENTRANT..ENTRANTS + (k + 1) * ENTRANT].try_into().unwrap()).collect()
+        };
+        let (ex, ey) = (entrants(x), entrants(y));
+        // England's 26 clubs first, by their leagues — the same clubs as
+        // the original's, the order apart only where the amateurs'
+        // promotions went another way — then its amateurs drawn, once
+        // each.
+        let clubs = ours.countries.team_count(usize::from(ENGLAND)) as u16;
+        let numbers = |es: &[[u8; ENTRANT]]| -> Vec<u16> {
+            let mut v: Vec<u16> = es.iter().filter(|e| e[1] != AMATEUR).map(|e| u16::from_le_bytes([e[2], e[3]])).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(numbers(&ex), numbers(&ey), "the league cup's clubs");
+        assert_eq!(numbers(&ex).len(), usize::from(clubs));
+        assert_eq!(ex[..17], ey[..17], "the Premier League's clubs in order");
+        let mut amateurs: Vec<u16> = ex[usize::from(clubs)..].iter().map(|e| u16::from_le_bytes([e[2], e[3]])).collect();
+        assert!(ex[usize::from(clubs)..].iter().all(|e| e[1] == AMATEUR));
+        assert!(amateurs.iter().all(|&n| (clubs..clubs + AMATEURS as u16).contains(&n)));
+        amateurs.sort_unstable();
+        amateurs.dedup();
+        assert_eq!(amateurs.len(), capacity - usize::from(clubs));
+        let (first, ties, from, count) = ROUNDS[5][1];
+        let mut sides: Vec<[u8; ENTRANT]> = Vec::new();
+        let mut last = -1;
+        for q in first..first + ties {
+            let p = &x[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+            let (home, away): ([u8; ENTRANT], [u8; ENTRANT]) = (p[..4].try_into().unwrap(), p[4..8].try_into().unwrap());
+            let team = |s: &[u8; ENTRANT]| i16::from_le_bytes([s[2], s[3]]);
+            let key = ORDER[class(&ours, ENGLAND, team(&home), main)][class(&ours, ENGLAND, team(&away), main)];
+            assert!(key >= last, "tie {q} in order");
+            last = key;
+            sides.extend([home, away]);
+        }
+        let mut want = ex[from..from + count].to_vec();
+        want.sort_unstable();
+        sides.sort_unstable();
+        assert_eq!(sides, want, "every entrant behind the first seven in one tie");
+        // The original's ties hold the same entrants.
+        let mut theirs_sides: Vec<[u8; ENTRANT]> = (first..first + ties)
+            .flat_map(|q| {
+                let p = &y[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING];
+                [p[..4].try_into().unwrap(), p[4..8].try_into().unwrap()]
+            })
+            .collect();
+        theirs_sides.sort_unstable();
+        let mut theirs_want = ey[from..from + count].to_vec();
+        theirs_want.sort_unstable();
+        assert_eq!(theirs_sides, theirs_want, "the original's ties as well");
+        for e in &ex {
+            let Some(t) = ours.team(ENGLAND, u16::from_le_bytes([e[2], e[3]])) else { continue };
+            if u16::from_le_bytes([e[2], e[3]]) < clubs {
+                assert_eq!(t.get::<u16>(0x110) & ENTERED, ENTERED);
             }
         }
     }
