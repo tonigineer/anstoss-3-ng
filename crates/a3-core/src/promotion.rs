@@ -1113,6 +1113,15 @@ mod tests {
         };
         let top_before = seasons(&ours);
         place(&mut ours);
+        // The clubs' classes of the new season by their new places.
+        crate::settlement::set_classes(&mut ours);
+        for country in crate::opponent::played_nations(&before) {
+            for n in 0..ours.countries.team_count(usize::from(country)) as u16 {
+                let at = crate::settlement::CLASS_AT;
+                let (x, y) = (ours.team(country, n).unwrap(), theirs.team(country, n).unwrap());
+                assert_eq!(x.get::<u8>(at), y.get::<u8>(at), "club {country}/{n}'s class");
+            }
+        }
         assert_ne!(seasons(&ours), top_before);
         assert_eq!(seasons(&ours), seasons(&theirs), "the first leagues' seasons");
         for country in crate::opponent::played_nations(&before) {

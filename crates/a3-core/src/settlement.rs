@@ -480,6 +480,7 @@ pub fn open_season_with(
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
+    set_classes(records);
     crate::statistics::open_fielded(records);
     crate::rollover::open_played(records, tables, random);
     crate::rollover::open_kept(records, tables, random);
@@ -734,6 +735,44 @@ const TEAM_SEASON_HALVED: [usize; 2] = [0x8ea, 0x8eb];
 /// A human club's +0xb0 and +0xff live in its extra data (+0x394, the
 /// special bonus, and +0x8a4).
 const HUMAN_CLUB_ZEROS: [(usize, usize); 2] = [(0x394, 4), (0x8a4, 1)];
+
+/// Each played club's class for the new season (`FUN_00772bee`, club
+/// +0x113, team +0x13c), by its league and its place in the new list: a
+/// club of the main country 6, 5 or 4 in the first league (the first six
+/// places, the next six, the rest), 3 or 2 in the second (the first
+/// six), England's third league 1 and lower 0, any other main country's
+/// lower leagues 1 for the first six places and 0; a club of a more
+/// country 9, 8 or 7 by its place; one in no league 0, its place too and
+/// +0x134 at five.
+pub(crate) const CLASS_AT: usize = 0x13c;
+const NO_LEAGUE_FORECAST: usize = 0x134;
+
+pub(crate) fn set_classes(records: &mut Records) {
+    let main = records.globals.main_country();
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            let (level, place) = (team.level(), team.league_place());
+            let by_place = |first: u8, second: u8, rest: u8| if place < 6 { first } else if place < 12 { second } else { rest };
+            let class = if country as i16 == main {
+                match level {
+                    0 => by_place(6, 5, 4),
+                    1 => by_place(3, 2, 2),
+                    _ if country == 16 => u8::from(level == 2),
+                    _ => by_place(1, 0, 0),
+                }
+            } else {
+                by_place(9, 8, 7)
+            };
+            team.put::<u8>(CLASS_AT, class);
+            if level == 10 {
+                team.put::<u8>(NO_LEAGUE_FORECAST, 5);
+                team.set_league_place(0);
+                team.put::<u8>(CLASS_AT, 0);
+            }
+        }
+    }
+}
 
 fn clear_club_seasons(records: &mut Records) {
     let second_season = records.globals.seasons() > 1;
