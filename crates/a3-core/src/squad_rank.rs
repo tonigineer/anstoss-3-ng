@@ -74,10 +74,10 @@ fn best_by_position(records: &Records, team: &crate::records::Team) -> [u8; BEST
             + crate::statistics::form_today(p)
             + 2 * p.good().count_ones() as i32)
             .max(0);
-        if let Some(b) = best.get_mut(usize::from(p.positions()[0])) {
-            if i32::from(*b) < value {
-                *b = value as u8;
-            }
+        if let Some(b) = best.get_mut(usize::from(p.positions()[0]))
+            && i32::from(*b) < value
+        {
+            *b = value as u8;
         }
     }
     best

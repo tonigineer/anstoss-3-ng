@@ -1642,10 +1642,9 @@ pub fn open_managers(records: &mut Records, random: &mut Random) {
     for n in 0..usize::from(records.globals.humans()) {
         let Some(m) = records.managers.get(n) else { continue };
         let (country, number) = (m.country(), m.team());
-        let cash = u16::try_from(number)
-            .ok()
+        let cash = Some(number)
             .filter(|_| number > 0 || country > 0)
-            .and_then(|t| records.team(country as u16, t))
+            .and_then(|t| records.team(country, t))
             .map(|t| club::<i64>(t, CASH));
         let Some(m) = records.managers.get_mut(n) else { continue };
         if let Some(cash) = cash {

@@ -534,12 +534,12 @@ fn books(records: &mut Records) {
         let c = country as u8;
         let booked = |b: &[u8], count: usize, at: usize, t: i16| (0..word(b, count).max(0) as usize).any(|k| word(b, at + 2 * k) == t);
         for t in 0..clubs {
-            if listed(SEEDS, c, t) || listed(QUALIFIERS, c, t) {
-                if !booked(block, BOOK_COUNTS[0], BOOK_CHAMPIONS, t) {
-                    let n = word(block, BOOK_COUNTS[0]);
-                    put_word(block, BOOK_CHAMPIONS + 2 * n as usize, t);
-                    put_word(block, BOOK_COUNTS[0], n + 1);
-                }
+            if (listed(SEEDS, c, t) || listed(QUALIFIERS, c, t))
+                && !booked(block, BOOK_COUNTS[0], BOOK_CHAMPIONS, t)
+            {
+                let n = word(block, BOOK_COUNTS[0]);
+                put_word(block, BOOK_CHAMPIONS + 2 * n as usize, t);
+                put_word(block, BOOK_COUNTS[0], n + 1);
             }
             if (listed(UEFA, c, t) || listed(UEFA_QUALIFIERS, c, t))
                 && !booked(block, BOOK_COUNTS[0], BOOK_CHAMPIONS, t)

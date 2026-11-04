@@ -415,12 +415,12 @@ fn book_fixtures(records: &Records, calendar: &crate::calendar::Calendar, (count
 fn fixture(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, d: usize) -> u32 {
     let country = u16::from(team.country());
     if records.countries.kind(country.into()) == 1 {
-        if team.level() < NO_LEAGUE {
-            if let Some(row) = calendar.row(country, usize::from(team.level())) {
-                let code = calendar.entry(row, d);
-                if code != 0 && code & COMPETITION < LEAGUE_CODES || code & COMPETITION == RELEGATION {
-                    return code;
-                }
+        if team.level() < NO_LEAGUE
+            && let Some(row) = calendar.row(country, usize::from(team.level()))
+        {
+            let code = calendar.entry(row, d);
+            if code != 0 && code & COMPETITION < LEAGUE_CODES || code & COMPETITION == RELEGATION {
+                return code;
             }
         }
         if let Some(row) = calendar.row(country, 0) {
@@ -458,12 +458,12 @@ fn book_league(records: &Records, team: &crate::records::Team, d: usize, code: u
     let (home, away) = if at_home { (own, other) } else { (other, own) };
     put_word(&mut e, MATCH_HOME + 2, home);
     put_word(&mut e, MATCH_AWAY + 2, away);
-    if matchday <= league.played() {
-        if let Some((_, _, Some((h, a)))) = game {
-            e[MATCH_GOALS] = h;
-            e[MATCH_GOALS + 1] = a;
-            e[MATCH_FLAGS] = RESULT_KNOWN;
-        }
+    if matchday <= league.played()
+        && let Some((_, _, Some((h, a)))) = game
+    {
+        e[MATCH_GOALS] = h;
+        e[MATCH_GOALS + 1] = a;
+        e[MATCH_FLAGS] = RESULT_KNOWN;
     }
     e[MATCH_VENUE] = country;
     put_word(&mut e, MATCH_VENUE + 2, home);
@@ -548,19 +548,19 @@ fn book_supercup(records: &Records, team: &crate::records::Team, d: usize, code:
     } else {
         (crate::supercup::FINAL_TIE, code & TURNED != 0)
     };
-    if let Some(p) = object.get(tie..tie + crate::supercup::TIE) {
-        if supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team) {
-            let (first, second, goals) = if turned { (4, 0, [p[0xb], p[0xa]]) } else { (0, 4, [p[8], p[9]]) };
-            e[MATCH_HOME..MATCH_HOME + 4].copy_from_slice(&p[first..first + 4]);
-            e[MATCH_AWAY..MATCH_AWAY + 4].copy_from_slice(&p[second..second + 4]);
-            e[MATCH_GOALS..MATCH_GOALS + 2].copy_from_slice(&goals);
-            e[MATCH_FLAGS] = p[PAIRING_FLAGS];
-            if turned && e[MATCH_FLAGS] & KEPT_TURNED == 0 {
-                e[MATCH_FLAGS] = 0;
-            }
-            let ground: [u8; 4] = e[MATCH_HOME..MATCH_HOME + 4].try_into().unwrap_or_default();
-            e[MATCH_VENUE..MATCH_VENUE + 4].copy_from_slice(&ground);
+    if let Some(p) = object.get(tie..tie + crate::supercup::TIE)
+        && (supercup_side(&p[0..4], team) || supercup_side(&p[4..8], team))
+    {
+        let (first, second, goals) = if turned { (4, 0, [p[0xb], p[0xa]]) } else { (0, 4, [p[8], p[9]]) };
+        e[MATCH_HOME..MATCH_HOME + 4].copy_from_slice(&p[first..first + 4]);
+        e[MATCH_AWAY..MATCH_AWAY + 4].copy_from_slice(&p[second..second + 4]);
+        e[MATCH_GOALS..MATCH_GOALS + 2].copy_from_slice(&goals);
+        e[MATCH_FLAGS] = p[PAIRING_FLAGS];
+        if turned && e[MATCH_FLAGS] & KEPT_TURNED == 0 {
+            e[MATCH_FLAGS] = 0;
         }
+        let ground: [u8; 4] = e[MATCH_HOME..MATCH_HOME + 4].try_into().unwrap_or_default();
+        e[MATCH_VENUE..MATCH_VENUE + 4].copy_from_slice(&ground);
     }
     planner.set_entry(d, e);
 }

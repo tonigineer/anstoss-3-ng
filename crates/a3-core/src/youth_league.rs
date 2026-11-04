@@ -433,11 +433,11 @@ fn scorers(records: &Records, group: &[u16]) -> Vec<(u16, u32)> {
 fn score(records: &mut Records, id: u16) {
     let Some(p) = records.player_mut(id) else { return };
     p.put::<u8>(YOUTH_GOALS, p.get::<u8>(YOUTH_GOALS).wrapping_add(1));
-    if let Ok(count) = usize::try_from(p.career_count()) {
-        if count > 0 {
-            let at = STATIONS + (count - 1) * STATION + STATION_GOALS;
-            p.put::<u16>(at, p.get::<u16>(at).wrapping_add(1));
-        }
+    if let Ok(count) = usize::try_from(p.career_count())
+        && count > 0
+    {
+        let at = STATIONS + (count - 1) * STATION + STATION_GOALS;
+        p.put::<u16>(at, p.get::<u16>(at).wrapping_add(1));
     }
 }
 

@@ -524,10 +524,10 @@ pub fn end_trials(
                     }
                 }
             }
-            if let Some(club) = key.and_then(|key| clubs.get_mut(&key)) {
-                if k < club.players.len() {
-                    club.leave(key.unwrap(), k);
-                }
+            if let Some(club) = key.and_then(|key| clubs.get_mut(&key))
+                && k < club.players.len()
+            {
+                club.leave(key.unwrap(), k);
             }
             k = 1;
         }

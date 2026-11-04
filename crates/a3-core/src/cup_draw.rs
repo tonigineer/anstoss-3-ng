@@ -364,10 +364,10 @@ fn write_draw(
     if records.countries.kind(usize::from(country)) == 1 {
         for e in &entrants.list {
             let number = u16::from_le_bytes([e[2], e[3]]);
-            if usize::from(number) < clubs && number != 200 {
-                if let Some(t) = records.team_mut(country, number) {
-                    t.put::<u16>(0x110, t.get::<u16>(0x110) | ENTERED);
-                }
+            if usize::from(number) < clubs && number != 200
+                && let Some(t) = records.team_mut(country, number)
+            {
+                t.put::<u16>(0x110, t.get::<u16>(0x110) | ENTERED);
             }
         }
     }

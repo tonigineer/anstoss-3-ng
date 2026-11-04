@@ -189,17 +189,17 @@ fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, ra
         if let Some(slot) = records.player_mut(id) {
             *slot = p;
         }
-        if young_riser {
-            if let Some(m) = usize::from(club.trainer).checked_sub(1).and_then(|s| records.managers.get_mut(s)) {
-                m.set_youth_marks(m.youth_marks() + YOUTH_MARKS);
-            }
+        if young_riser
+            && let Some(m) = usize::from(club.trainer).checked_sub(1).and_then(|s| records.managers.get_mut(s))
+        {
+            m.set_youth_marks(m.youth_marks() + YOUTH_MARKS);
         }
     }
-    if club.manager != 0 && (club.trainer != 0 || club.manager != 0) {
-        if let Some(m) = usize::from(club.manager).checked_sub(1).and_then(|s| records.managers.get_mut(s)) {
-            let nerves = (m.get::<i16>(NERVES) + sum).clamp(0, 100);
-            m.put::<i16>(NERVES, nerves);
-        }
+    if club.manager != 0 && (club.trainer != 0 || club.manager != 0)
+        && let Some(m) = usize::from(club.manager).checked_sub(1).and_then(|s| records.managers.get_mut(s))
+    {
+        let nerves = (m.get::<i16>(NERVES) + sum).clamp(0, 100);
+        m.put::<i16>(NERVES, nerves);
     }
 }
 
@@ -317,13 +317,13 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
     if up <= 0.0 {
         if down > 0.0 {
             down_bits |= 0x800;
-            if f64::from(random.below(100) as u32) < down {
+            if f64::from(random.below(100)) < down {
                 change -= 1;
             }
         }
     } else {
         up_bits |= 8;
-        if f64::from(random.below(100) as u32) < up {
+        if f64::from(random.below(100)) < up {
             change += 1;
         }
     }

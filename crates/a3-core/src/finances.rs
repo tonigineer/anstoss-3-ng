@@ -608,7 +608,7 @@ pub fn keep_last_season(records: &mut Records) {
     for n in 0..usize::from(records.globals.humans()) {
         let Some(slot) = records.human_slot(n) else { continue };
         let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
-        let Some(team) = u16::try_from(number).ok().and_then(|t| records.team(country as u16, t)) else { continue };
+        let Some(team) = records.team(country, number) else { continue };
         let block = team.bytes()[at(SEASON_BLOCK) - TEAM_BASE..at(SEASON_BLOCK) - TEAM_BASE + SEASON_BLOCK_LEN].to_vec();
         let plan = Accounts::plan(team);
         let other = PLAN_OTHER_COSTS.iter().fold(0i32, |s, &f| s.wrapping_add(plan.i32_(f))).wrapping_add(departments(team));

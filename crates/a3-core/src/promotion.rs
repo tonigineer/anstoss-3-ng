@@ -939,14 +939,14 @@ pub fn place(records: &mut Records) {
         for level in 0..records.countries.leagues(usize::from(country)).max(0) as u8 {
             let Some(league) = League::of(records, country, level) else { continue };
             let teams: Vec<i16> = (0..league.teams()).map(|i| league.team(i)).collect();
-            if level == 0 {
-                if let Some(block) = records.block_mut("0xb0b6b8") {
-                    for &team in &teams {
-                        let at = TOP_SEASONS + usize::try_from(team).unwrap_or(0) * 4 + slot * TOP_SEASONS_SLOT;
-                        if let Some(w) = block.get_mut(at..at + 2) {
-                            let n = i16::from_le_bytes([w[0], w[1]]).wrapping_add(1);
-                            w.copy_from_slice(&n.to_le_bytes());
-                        }
+            if level == 0
+                && let Some(block) = records.block_mut("0xb0b6b8")
+            {
+                for &team in &teams {
+                    let at = TOP_SEASONS + usize::try_from(team).unwrap_or(0) * 4 + slot * TOP_SEASONS_SLOT;
+                    if let Some(w) = block.get_mut(at..at + 2) {
+                        let n = i16::from_le_bytes([w[0], w[1]]).wrapping_add(1);
+                        w.copy_from_slice(&n.to_le_bytes());
                     }
                 }
             }
