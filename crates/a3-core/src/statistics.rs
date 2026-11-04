@@ -2143,7 +2143,7 @@ pub fn champions(records: &Records, country: u16) -> Vec<Champion> {
 /// A country's cup winners (`DAT_00b18b10`, 0x140 bytes a slot; written
 /// by `FUN_006ced69`): twenty finals of the year and the pairing, the
 /// newest first, as many as name a club counted back from the last.
-const CUP_WINNERS: (usize, usize) = (0xd458, 0x140);
+pub(crate) const CUP_WINNERS: (usize, usize) = (0xd458, 0x140);
 
 pub fn cup_winners(records: &Records, country: u16) -> Vec<(i16, CupPairing)> {
     let Some(b) = country_list(records, country, CUP_WINNERS) else { return Vec::new() };

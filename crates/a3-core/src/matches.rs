@@ -207,6 +207,17 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             }
         }
     }
+    // The final decided goes into the country's cup winners and its
+    // winner's count of cups ([`crate::honours::cup_final`]).
+    if round >= FINAL_ROUND {
+        let tie = records
+            .block(&name)
+            .and_then(|b| b.get(PAIRINGS + start * PAIRING..PAIRINGS + start * PAIRING + crate::honours::FINAL_PAIRING))
+            .map(<[u8]>::to_vec);
+        if let Some(tie) = tie.filter(|t| t[0xc] & CUP_PLAYED != 0) {
+            crate::honours::cup_final(records, nation, &tie);
+        }
+    }
     // The cup's gate belongs to both clubs: each books half of the played
     // match's money at +0x234 (`FUN_0078b26c`, the branch whose record kind
     // answers to the cup). Where the home club has a human's manager and the

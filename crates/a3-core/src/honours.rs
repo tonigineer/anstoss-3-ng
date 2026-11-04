@@ -79,6 +79,42 @@ pub fn title(records: &mut Records, country: u16, number: u16, kind: u8) {
     }
 }
 
+/// The bytes of a cup's pairing the cup winners list keeps.
+pub const FINAL_PAIRING: usize = 0xe;
+/// The day of the last cup final (`_DAT_00b5df8e`).
+const LAST_CUP_FINAL_DAY: usize = 0xb5df8e;
+
+/// A country's cup final decided (`FUN_006ced69`, and `FUN_00634ba3` in
+/// `FUN_006ce00e`): the country's cup winners list drops its oldest of
+/// twenty and keeps the final last — the start year and the pairing with
+/// its score —, the winner counts one cup more in the second titles list
+/// (the lists block +0x105e0, 0xd8 a slot), and the day is noted.
+pub fn cup_final(records: &mut Records, country: u16, tie: &[u8]) {
+    use crate::statistics::{CUP_WINNERS, LISTS, TITLES, TITLES_SLOT};
+    let Some(tie) = tie.get(..FINAL_PAIRING) else { return };
+    let year = records.globals.start_year();
+    let day = records.globals.day();
+    let slot = usize::from(records.countries.slot(usize::from(country)));
+    let w = usize::from(tie[0xd] != 0) * 4;
+    let winner = u16::from_le_bytes([tie[w + 2], tie[w + 3]]);
+    if let Some(b) = records.block_mut(LISTS) {
+        let (at, per) = CUP_WINNERS;
+        let from = at + slot * per;
+        if let Some(list) = b.get_mut(from..from + per) {
+            list.copy_within(0x10.., 0);
+            let e = &mut list[per - 0x10..];
+            e[0..2].copy_from_slice(&year.to_le_bytes());
+            e[2..2 + FINAL_PAIRING].copy_from_slice(tie);
+        }
+        let titles = TITLES[1] + slot * TITLES_SLOT + usize::from(winner) * 2;
+        if let Some(t) = b.get_mut(titles..titles + 2) {
+            let v = i16::from_le_bytes([t[0], t[1]]).wrapping_add(1);
+            t.copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    records.globals.put::<u16>(LAST_CUP_FINAL_DAY, day);
+}
+
 /// A club's title of `kind` in its trainer's career (`FUN_006b5190`'s
 /// computer branch).
 pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
@@ -266,10 +302,31 @@ mod tests {
             day.persons[id].put::<i16>(0x3c, v);
         }
         champions_day(&mut day);
+        // And the cups' finals, as the season's end holds them.
+        {
+            use crate::statistics::CUP_WINNERS;
+            let b = day.block_mut(LISTS).unwrap();
+            for country in crate::opponent::played_nations(&new) {
+                let slot = usize::from(a.countries.slot(usize::from(country)));
+                for (at, per) in [CUP_WINNERS, (TITLES[1], TITLES_SLOT)] {
+                    let r = at + slot * per..at + (slot + 1) * per;
+                    b[r.clone()].copy_from_slice(&lists[r]);
+                }
+            }
+        }
+        for country in crate::opponent::played_nations(&new) {
+            let slot = end.countries.slot(usize::from(country));
+            let cup = end.block(&format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)).unwrap();
+            let mode = usize::from(cup[0x24 - 0x20]).min(5);
+            let (start, _) = crate::opponent::cup_pairings(mode, 6).unwrap();
+            let at = crate::opponent::PAIRINGS + start * crate::opponent::PAIRING;
+            let tie = cup[at..at + FINAL_PAIRING].to_vec();
+            cup_final(&mut day, country, &tie);
+        }
         let (x, y) = (day.block(LISTS).unwrap(), end.block(LISTS).unwrap());
         for country in crate::opponent::played_nations(&new) {
             let slot = usize::from(a.countries.slot(usize::from(country)));
-            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT)] {
+            for (at, per) in [CHAMPIONS, (TITLES[0], TITLES_SLOT), crate::statistics::CUP_WINNERS, (TITLES[1], TITLES_SLOT)] {
                 let r = at + slot * per..at + (slot + 1) * per;
                 assert_eq!(x[r.clone()], y[r], "{country}'s list at {at:#x}");
             }
