@@ -3397,6 +3397,33 @@ const NATIONS: usize = 0x75;
 const FIELDED: &str = "0xa75968";
 const FIELDED_AT: usize = 2;
 const FIELDED_MOST: usize = 50;
+const FIELDED_STAMP: usize = 0;
+const FIELDED_ENTRY: usize = FIELDED_MOST * 2;
+
+/// The new season empties every played club's list of the players it
+/// fielded and stamps the lists with the day (`FUN_00774088` per club,
+/// `FUN_00772bee` → `FUN_006402d5`).
+pub fn open_fielded(records: &mut Records) {
+    let day = records.globals.day() as i16;
+    let mut entries = Vec::new();
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if let Some(index) = records.team_index(country, number) {
+                entries.push(index);
+            }
+        }
+    }
+    let Some(b) = records.block_mut(FIELDED) else { return };
+    if let Some(stamp) = b.get_mut(FIELDED_STAMP..FIELDED_STAMP + 2) {
+        stamp.copy_from_slice(&day.to_le_bytes());
+    }
+    for index in entries {
+        let at = FIELDED_AT + index * FIELDED_ENTRY;
+        if let Some(list) = b.get_mut(at..at + FIELDED_ENTRY) {
+            list.fill(0);
+        }
+    }
+}
 
 /// The league's clubs in the order of its table (`FUN_00642cd4`): for
 /// each its squad as the club lists it, every player's age on `today`
@@ -4919,6 +4946,25 @@ mod tests {
             assert_eq!(x, y, "country {country}'s all-time tables");
         }
         assert!(moved > 0, "the season moved the tables");
+    }
+
+    /// The fielded lists over the original's pair: emptied for the new
+    /// season by the replica, they stand byte for byte as NewSeason000
+    /// keeps them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_empties_the_fielded_lists_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        ours.globals.set_day(0);
+        assert!(ours.block(FIELDED).unwrap().iter().any(|&b| b != 0));
+        open_fielded(&mut ours);
+        assert_eq!(ours.block(FIELDED), theirs.block(FIELDED));
     }
 
     /// The European ranking over the original's pair: SeasonEnd364's rolled

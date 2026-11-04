@@ -455,6 +455,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::opponent::open_cups(records);
     crate::rollover::restart_form(records);
     crate::promotion::place(records);
+    crate::statistics::open_fielded(records);
     crate::rollover::open_played(records, random);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
