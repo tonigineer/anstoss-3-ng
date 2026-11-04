@@ -384,6 +384,29 @@ pub struct Fitness {
     pub smoker: bool,
 }
 
+/// The week's end keeps each human club player's form of the day as the
+/// form his trend is reckoned against (`FUN_0064e40f`'s `FUN_007863d0`:
+/// object +0x0a, R+0x34d), in his record and in the club's state.
+pub fn keep_forms(
+    records: &mut crate::records::Records,
+    clubs: &mut BTreeMap<(usize, usize), ClubState>,
+    world: &crate::world::World,
+) {
+    for (&(slot, index), club) in clubs.iter_mut() {
+        let Some(nation) = world.country(slot).map(|c| c.nation) else { continue };
+        let squad = records.team(nation, index as u16).map(|t| t.players()).unwrap_or_default();
+        for (i, &fitness) in club.fitness.iter().enumerate() {
+            let form = crate::lineup::form(fitness);
+            if let Some(status) = club.status.get_mut(i) {
+                status.last_form = Some(form);
+            }
+            if let Some(p) = squad.get(i).and_then(|&id| records.player_mut(id)) {
+                p.set_last_form(form.clamp(0, i32::from(u8::MAX)) as u8);
+            }
+        }
+    }
+}
+
 /// What the line-up's list tells of a player besides his fitness, as the
 /// original reckons it from his record (`FUN_00636638`): nothing for a new
 /// game.
@@ -951,6 +974,39 @@ fn rating(players: &[Player]) -> i32 {
         values.extend(fitting.into_iter().take(wanted));
     }
     if values.is_empty() { 0 } else { values.iter().sum::<i32>() * 10 / values.len() as i32 }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    /// The week's end over the original's save A: every player of the
+    /// human club keeps the form of the day, the record's and the club
+    /// state's trend form alike, as the line-up shows it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_keeps_the_forms_for_the_trend() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = crate::records::Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let slot = (0..crate::world::SLOTS).find(|&s| data.world.country(s).is_some_and(|c| c.nation == 14)).unwrap();
+        let key = (slot, 84);
+        let mut clubs = BTreeMap::new();
+        clubs.insert(key, crate::load::club(&records, &data, key).unwrap());
+        let squad = records.team(14, 84).unwrap().players();
+        let changed = squad.iter().enumerate().any(|(i, &id)| {
+            i32::from(records.player(id).unwrap().last_form()) != crate::lineup::form(clubs[&key].fitness[i])
+        });
+        assert!(changed, "the save's trend forms are a week old");
+        keep_forms(&mut records, &mut clubs, &data.world);
+        for (i, &id) in squad.iter().enumerate() {
+            let form = crate::lineup::form(clubs[&key].fitness[i]);
+            assert_eq!(i32::from(records.player(id).unwrap().last_form()), form, "player {id}");
+            assert_eq!(clubs[&key].status[i].last_form, Some(form));
+        }
+    }
 }
 
 #[cfg(test)]
