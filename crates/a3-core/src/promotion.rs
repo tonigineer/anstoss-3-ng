@@ -35,9 +35,10 @@
 //! `FUN_006b07f0`, `FUN_006b1c01`, `FUN_006b0d18`, `FUN_006b1920`,
 //! `FUN_006b122e`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
-//! booked moves set off besides — the managers' and the record lists'
-//! promotions (`FUN_00634d9c`, `FUN_00726382`, `FUN_007264bf`), the news
-//! (`FUN_006143d2`); the European places' flags. The clubs from outside
+//! booked moves set off besides — the managers' promotions
+//! (`FUN_00634d9c`), the news (`FUN_006143d2`); the European places'
+//! flags. Each club's record of moves (`FUN_00726382`, `FUN_007264bf`)
+//! counts every booked move. The clubs from outside
 //! are drawn with the replica's own generator.
 
 use crate::opponent::{LEAGUE_FIELDS, League};
@@ -98,13 +99,26 @@ const NO_CLUB: usize = 200;
 /// the object's +0x44).
 const MAIN_LEAGUES: usize = 0x24;
 
-/// A country's books of the season's moves (the object's +0x110 …).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A country's books of the season's moves (the object's +0x110 …); two
+/// books are the same when their lists are.
+#[derive(Clone, Debug, Default)]
 pub struct Moves {
     pub down: [Vec<i16>; 4],
     pub up: [Vec<i16>; 4],
     pub forced: [Vec<i16>; 2],
+    /// Every move as it was booked, up or down, with its level — the
+    /// lists above keep four a level only (the record of moves counts
+    /// them all).
+    log: Vec<(bool, usize, i16)>,
 }
+
+impl PartialEq for Moves {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.down, &self.up, &self.forced) == (&other.down, &other.up, &other.forced)
+    }
+}
+
+impl Eq for Moves {}
 
 fn book(list: &mut Vec<i16>, team: i16) {
     if list.len() < BOOKED {
@@ -115,10 +129,12 @@ fn book(list: &mut Vec<i16>, team: i16) {
 impl Moves {
     fn relegate(&mut self, level: usize, team: i16) {
         book(&mut self.down[level], team);
+        self.log.push((false, level, team));
     }
 
     fn promote(&mut self, level: usize, team: i16) {
         book(&mut self.up[level], team);
+        self.log.push((true, level, team));
     }
 
     fn force(&mut self, level: usize, team: i16) {
@@ -150,6 +166,7 @@ impl Moves {
             down: std::array::from_fn(|l| list(DOWN_COUNTS, DOWN_LISTS, l)),
             up: std::array::from_fn(|l| list(UP_COUNTS, UP_LISTS, l)),
             forced: std::array::from_fn(|l| list(FORCED_COUNTS, FORCED_LISTS, l)),
+            log: Vec::new(),
         }
     }
 
@@ -579,6 +596,7 @@ pub fn draw_with(records: &mut Records, order_of: &mut Orders) -> Drawn {
         if let Some(block) = records.block_mut(&format!("0x19f7fd0[{slot}]")) {
             moves.store(block);
         }
+        record_moves(records, country, &moves.log);
     }
     drawn
 }
@@ -679,6 +697,38 @@ pub fn count(records: &mut Records) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The clubs' record of moves, a played country's club by its place among
+/// all teams (`FUN_00726382`: `0xb06cd8`, four i16 a club — its
+/// promotions, and those from the first, second and third league;
+/// `FUN_007264bf`: `0xb07558`, five — its relegations, and those from the
+/// first four), counted as the books take each move (`FUN_006b6a33`,
+/// `FUN_006b6b22`), beyond the four a level the books keep as well.
+const PROMOTION_RECORD: (&str, usize, usize) = ("0xb06cd8", 4, 3);
+const RELEGATION_RECORD: (&str, usize, usize) = ("0xb07558", 5, 4);
+
+fn record_moves(records: &mut Records, country: u16, log: &[(bool, usize, i16)]) {
+    let first = usize::try_from(records.countries.first_team(usize::from(country))).unwrap_or(0);
+    let teams = records.countries.team_count(usize::from(country)).max(0);
+    for &(up, level, club) in log {
+        if club < 0 || club >= teams {
+            continue;
+        }
+        let (name, width, kinds) = if up { PROMOTION_RECORD } else { RELEGATION_RECORD };
+        let Some(block) = records.block_mut(name) else { continue };
+        let at = (first + club as usize) * width * 2;
+        let mut add = |k: usize| {
+            if let Some(w) = block.get_mut(at + 2 * k..at + 2 * k + 2) {
+                let v = i16::from_le_bytes([w[0], w[1]]).wrapping_add(1);
+                w.copy_from_slice(&v.to_le_bytes());
+            }
+        };
+        add(0);
+        if level < kinds {
+            add(1 + level);
         }
     }
 }
@@ -899,6 +949,7 @@ mod tests {
         moves.promote(0, 9);
         moves.force(1, 3);
         assert_eq!(moves.down[2], [1, 2, 3, 4]);
+        assert_eq!(moves.log.len(), 7, "the record of moves takes all six and the promotion");
         let mut block = vec![0xffu8; 0x300];
         moves.store(&mut block);
         assert_eq!(Moves::read(&block), moves);
@@ -912,7 +963,8 @@ mod tests {
     /// counts of promotions and relegations, the record lists of them and
     /// every club's season flags stand as the original's (the more countries' first
     /// leagues the main country's routine switched early reckoning their
-    /// champion and runner-up through their new clubs, as there), and
+    /// champion and runner-up through their new clubs, as there), every
+    /// club's record of promotions and relegations, and
     /// after the new season's placing every club's level and place in its
     /// list, and the first leagues' count of seasons.
     #[test]
@@ -970,6 +1022,13 @@ mod tests {
                 assert_eq!(next, list(&theirs, country, level), "{country} league {level}'s next clubs");
             }
             assert_eq!(moves(&ours, country), moves(&theirs, country), "{country}'s books");
+        }
+        // Every club's record of moves, the moves beyond the books' four
+        // a level counted too.
+        for name in [PROMOTION_RECORD.0, RELEGATION_RECORD.0] {
+            let (x, y) = (ours.block(name).unwrap(), theirs.block(name).unwrap());
+            assert!(x == y, "{name}: {} bytes differ", (0..x.len()).filter(|&k| x[k] != y[k]).count());
+            assert_ne!(x, before.block(name).unwrap(), "{name} moved");
         }
         count(&mut ours);
         for country in crate::opponent::played_nations(&before) {
