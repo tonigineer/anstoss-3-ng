@@ -621,7 +621,11 @@ pub fn restart_form(records: &mut Records) {
 /// The new season's first day for the kept countries (`FUN_00429418`):
 /// per club the contracts in their last year or run out extended, and
 /// from the second season on every player developed (`FUN_00429182`).
-pub fn open_kept(records: &mut Records, random: &mut Random) {
+pub fn open_kept(
+    records: &mut Records,
+    tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
+    random: &mut Random,
+) {
     let year = i32::from(records.globals.start_year());
     let today = {
         let [day, month, y] = records.globals.date();
@@ -644,6 +648,7 @@ pub fn open_kept(records: &mut Records, random: &mut Random) {
             }
         }
         let ids = squad(records, country, number);
+        let mut by_position = [0i16; 11];
         for &id in &ids {
             let Some(player) = records.player_mut(id) else { continue };
             let mut left = years_left(player, year);
@@ -653,7 +658,27 @@ pub fn open_kept(records: &mut Records, random: &mut Random) {
                 _ => {}
             }
             set_years_left(player, year, left);
+            by_position[usize::from(player.positions()[0]).min(10)] += 1;
         }
+        // A thin squad takes new players (`FUN_00429182` → `FUN_0066ca21`):
+        // two keepers below 28 men with fewer than two, and below 16 one
+        // for every position under its least.
+        if let Some(tables) = tables {
+            let club = (country, number);
+            if ids.len() < KEPT_THIN && by_position[1] < 2 {
+                for _ in 0..2 {
+                    crate::newplayer::for_kept_club(records, club, Some(1), tables, random);
+                }
+            }
+            if squad(records, country, number).len() < KEPT_SHORT {
+                for position in 2..11u8 {
+                    if by_position[usize::from(position)] < i16::from(KEPT_LEAST[usize::from(position)]) {
+                        crate::newplayer::for_kept_club(records, club, Some(position), tables, random);
+                    }
+                }
+            }
+        }
+        let ids = squad(records, country, number);
         let Some(today) = today.filter(|_| developing) else { continue };
         for &id in &ids {
             if let Some(player) = records.player_mut(id) {
@@ -661,6 +686,17 @@ pub fn open_kept(records: &mut Records, random: &mut Random) {
             }
         }
     }
+}
+
+/// A kept club this thin takes two keepers when it has fewer than two, this
+/// short one man for each position under its least (`DAT_008773e0`).
+const KEPT_THIN: usize = 28;
+const KEPT_SHORT: usize = 16;
+const KEPT_LEAST: [u8; 11] = [0, 2, 1, 3, 1, 1, 2, 2, 1, 2, 3];
+
+/// The regeneration of one class (`FUN_0066dc8b`).
+pub(crate) fn regenerate_class(records: &mut Records, class: usize, random: &mut Random) {
+    regenerate(records, Some(class), random);
 }
 
 /// The strength a talent reaches at most (`FUN_006ff4c0`): 12 for the

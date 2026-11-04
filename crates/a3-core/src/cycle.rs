@@ -945,7 +945,8 @@ impl Cycle {
             if let (Some(season), Some(records)) =
                 (state.season.as_mut(), state.records.as_mut())
             {
-                crate::settlement::open_season(records, &mut season.random);
+                let rules = &self.data.rules;
+                crate::settlement::open_season_with(records, &mut season.random, Some((&rules.contract, &rules.value)));
                 season.year = i32::from(records.globals.start_year());
                 season.day = 0;
                 season.statement = false;

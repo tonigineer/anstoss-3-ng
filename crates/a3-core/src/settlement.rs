@@ -447,6 +447,17 @@ fn clear_club(team: &mut Team) {
 /// player of the countries played, calls an empty `FUN_0065ebe4`: no
 /// ageing happens there.)
 pub fn open_season(records: &mut Records, random: &mut Random) {
+    open_season_with(records, random, None);
+}
+
+/// The new season as [`open_season`] opens it, the kept countries' clubs
+/// taking new players where they are thin when the contract and value
+/// tables are at hand ([`crate::newplayer::for_kept_club`]).
+pub fn open_season_with(
+    records: &mut Records,
+    random: &mut Random,
+    tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
+) {
     roll_globals(&mut records.globals, random);
     clear_objects(records);
     crate::finances::new_rates(&mut records.globals, random);
@@ -457,7 +468,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::promotion::place(records);
     crate::statistics::open_fielded(records);
     crate::rollover::open_played(records, random);
-    crate::rollover::open_kept(records, random);
+    crate::rollover::open_kept(records, tables, random);
     crate::statistics::open_lists(records, random);
     open_managers(records, random);
     crate::europe_entry::open_season(records, random);

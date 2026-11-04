@@ -38,6 +38,7 @@ pub mod matches;
 pub mod medical;
 pub mod merchandise;
 pub mod mood;
+pub mod newplayer;
 pub mod newgame;
 pub mod news;
 pub mod noracsa;
