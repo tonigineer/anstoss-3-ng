@@ -676,13 +676,35 @@ const CLUB_SEASON_ZEROS: [(usize, usize); 15] = [
 /// Its flag word +0xdf8 (+0x308) keeps only these bits, its +0x100
 /// (+0x12a) the two above its lowest, its +0x102 (+0x12c) its half's
 /// 0xaf.
-const CLUB_SEASON_FLAGS: (usize, u32) = (0x308, 0xffffdfeb & 0xfffff4ff & 0xffffbf1f & 0xfffc7fff);
+const CLUB_SEASON_FLAGS: (usize, u32) =
+    (0x308, 0xffffdfeb & 0xfffff4ff & 0xffffbf1f & 0xfffc7fff & 0xffe3ffff & 0xffdfffff);
+/// From the second season on its +0x124 keeps its half's top nibble
+/// (`FUN_0069d528`).
+const SECOND_SEASON_BYTE: usize = 0x124;
+
 const CLUB_SEASON_SHIFTS: [(usize, u8, u8); 2] = [(0x12a, 2, 3), (0x12c, 1, 0xaf)];
+/// What its `FUN_00699524` clears on the team record itself: +0x8e8,
+/// +0x8e9, +0x8ec, +0x8ed, the four bytes of +0x37c, the eight of +0x380,
+/// the ten of +0x388 (the players to keep, FUN_0069d7f5), the sixteen of
+/// +0x930, the eight of +0x940, and +0x338 to +0x33c; +0x8ea and +0x8eb
+/// it halves.
+const TEAM_SEASON_ZEROS: [(usize, usize); 8] = [
+    (0x8e8, 2),
+    (0x8ec, 2),
+    (0x37c, 4),
+    (0x380, 8),
+    (0x388, 10),
+    (0x930, 0x10),
+    (0x940, 8),
+    (0x338, 5),
+];
+const TEAM_SEASON_HALVED: [usize; 2] = [0x8ea, 0x8eb];
 /// A human club's +0xb0 and +0xff live in its extra data (+0x394, the
 /// special bonus, and +0x8a4).
 const HUMAN_CLUB_ZEROS: [(usize, usize); 2] = [(0x394, 4), (0x8a4, 1)];
 
 fn clear_club_seasons(records: &mut Records) {
+    let second_season = records.globals.seasons() > 1;
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team_mut(country, number) else { continue };
@@ -690,6 +712,17 @@ fn clear_club_seasons(records: &mut Records) {
                 for k in 0..len {
                     team.put::<u8>(at + k, 0);
                 }
+            }
+            for (at, len) in TEAM_SEASON_ZEROS {
+                for k in 0..len {
+                    team.put::<u8>(at + k, 0);
+                }
+            }
+            for at in TEAM_SEASON_HALVED {
+                team.put::<u8>(at, team.get::<u8>(at) >> 1);
+            }
+            if second_season {
+                team.put::<u8>(SECOND_SEASON_BYTE, (team.get::<u8>(SECOND_SEASON_BYTE) >> 1) & 0xf0);
             }
             let (at, keep) = CLUB_SEASON_FLAGS;
             team.put::<u32>(at, team.get::<u32>(at) & keep);
@@ -716,6 +749,8 @@ fn clear_club_seasons(records: &mut Records) {
                     extra.put::<u8>(at + k, 0);
                 }
             }
+            // And its together count (`FUN_0069d684`).
+            extra.set_together(0);
             // The fitness trainer's count starts anew (`FUN_00775219`'s
             // `FUN_00632ac1`).
             extra.set_fitness_count(0);
@@ -856,6 +891,7 @@ mod club_season_tests {
             .join("saves-kept");
         let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        ours.globals.set_seasons(2);
         clear_club_seasons(&mut ours);
         let mut clubs = 0;
         for country in crate::opponent::played_nations(&theirs) {
@@ -870,17 +906,19 @@ mod club_season_tests {
                 let ranges = CLUB_SEASON_ZEROS.into_iter().filter(|&(at, _)| at != 0x125);
                 let ranges = ranges.chain([(at, len), (CLUB_SEASON_FLAGS.0, flags)]);
                 let ranges = ranges.chain(CLUB_SEASON_SHIFTS.map(|(at, _, _)| (at, 1)));
+                let ranges = ranges.chain(TEAM_SEASON_ZEROS).chain(TEAM_SEASON_HALVED.map(|at| (at, 1)));
                 for (at, len) in ranges {
                     for k in at..at + len {
                         assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "{country}/{number} +{k:#x}");
                     }
                 }
+                assert_eq!(x.get::<u8>(SECOND_SEASON_BYTE), y.get::<u8>(SECOND_SEASON_BYTE), "{country}/{number}");
                 clubs += 1;
             }
         }
         assert!(clubs > 200);
         let (x, y) = (&ours.extras[0], &theirs.extras[0]);
-        for (at, len) in HUMAN_SEASON_CLEARED.into_iter().chain([(0xb90, 2)]) {
+        for (at, len) in HUMAN_SEASON_CLEARED.into_iter().chain(HUMAN_CLUB_ZEROS).chain([(0xb90, 2), (0x2564, 2)]) {
             for k in at..at + len {
                 assert_eq!(x.get::<u8>(k), y.get::<u8>(k), "extra +{k:#x}");
             }
