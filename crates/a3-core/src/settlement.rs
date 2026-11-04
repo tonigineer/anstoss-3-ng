@@ -646,7 +646,8 @@ const ENTRIES: usize = 50;
 /// and 100 and then lifted by ten below 70 or five below 90, the career's
 /// two counts capped, his nerves eighty up when at 20 or below and else
 /// back at a hundred less a draw below five, and the season's marks,
-/// flags and his entries' flags cleared. (The career's counts by the
+/// flags and his entries' flags cleared; then the humans' statistics of
+/// their last match cleared. (The career's counts by the
 /// titles of the last seasons, the training plan's reset and the rest of
 /// `FUN_00775219` are not built.)
 pub fn open_managers(records: &mut Records, random: &mut Random) {
@@ -694,7 +695,18 @@ pub fn open_managers(records: &mut Records, random: &mut Random) {
             }
         }
     }
+    // Last, the four humans' statistics of their last match go
+    // (`FUN_007cff4b` on `0x1c26dd8` + slot × 0x2058).
+    for slot in 0..LAST_MATCH_SLOTS {
+        if let Some(b) = records.block_mut(&format!("{LAST_MATCH}[{slot}]")) {
+            b.fill(0);
+        }
+    }
 }
+
+/// The humans' statistics of their last match, by slot.
+const LAST_MATCH: &str = "0x1c26dd8";
+const LAST_MATCH_SLOTS: usize = 4;
 
 /// The human manager's copy of his club's money, as the new season opens
 /// it (`FUN_00775219`'s `FUN_0078605e`: the club object's thousand bytes
@@ -1599,6 +1611,27 @@ mod tests {
         for k in 0..ENTRIES {
             let at = ENTRIES_AT + k * ENTRY;
             assert_eq!((x.get::<u8>(at), x.get::<u16>(at + 6)), (y.get::<u8>(at), y.get::<u16>(at + 6)), "entry {k}");
+        }
+    }
+
+    /// The new season's managers' year leaves the humans' last-match
+    /// statistics empty, as the original's NewSeason000 has them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_last_matchs_statistics_go_with_the_season() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let name = format!("{LAST_MATCH}[0]");
+        assert!(ours.block(&name).unwrap().iter().any(|&b| b != 0));
+        open_managers(&mut ours, &mut Random::new(1));
+        for slot in 0..LAST_MATCH_SLOTS {
+            let name = format!("{LAST_MATCH}[{slot}]");
+            assert_eq!(ours.block(&name), theirs.block(&name), "{name}");
         }
     }
 
