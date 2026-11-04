@@ -966,6 +966,9 @@ impl Cycle {
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);
+                // The humans' calendars start empty and take their clubs'
+                // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
+                crate::year::open_season(records, &self.data.calendar);
                 // The human clubs' squads changed with the turn — players
                 // gone, new ones come — so each club the season follows
                 // stands anew as its records now have it, as a load would
