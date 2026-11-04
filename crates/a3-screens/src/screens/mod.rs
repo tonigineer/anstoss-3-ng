@@ -277,10 +277,12 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(camp::CampConfirm),
         Box::new(camp::CampGroup),
         Box::new(friendly::FriendlyChoice::default()),
+        Box::new(friendly::FriendlyRequest),
         Box::new(tournament::TournamentChoice::default()),
         Box::new(tournament::OwnTournament::default()),
         Box::new(tournament::TournamentDraw),
         Box::new(tournament::TournamentResult),
+        Box::new(tournament::TournamentInvite),
         Box::new(donations::Donations::default()),
         Box::new(licence::Licence),
     ]

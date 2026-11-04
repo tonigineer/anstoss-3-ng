@@ -295,6 +295,11 @@ pub enum Args {
     OwnTournament { id: u32, day: usize, kind: u8 },
     /// A tournament to show, by its id.
     Tournament(u32),
+    /// A friendly offered to another human's club: the club, whether the
+    /// asking club plays away, the day.
+    FriendlyAsk { country: u8, number: i16, away: bool, day: usize },
+    /// A human's club invited to a tournament of one's own.
+    TournamentInvite { id: u32, country: u8, number: i16 },
     /// A camp's place to confirm, from 0, and its first day.
     Camp { place: usize, day: usize },
     /// The choice among a group's other places, from 0: up to three.

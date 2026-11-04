@@ -10,7 +10,8 @@
 //! `CEigenesTurnierVeranstalten`): the clubs the turn offers for the day,
 //! the friendly's, are invited one click each into the list of those in,
 //! with what each costs; its OK takes the tournament once it has its four
-//! or eight. Inviting another human (dialog 297) is not built.
+//! or eight. Another human at the same computer is invited by his button
+//! and answers in dialog 297 (`CTurnieranfrageVeranstalter`).
 
 use std::collections::HashMap;
 
@@ -210,6 +211,8 @@ pub struct OwnTournament {
     guests: Vec<(u8, i16)>,
     /// The other humans free on both days (`FUN_00488f2a`).
     humans: Vec<(u8, i16)>,
+    /// The human being invited.
+    inviting: Option<(u8, i16)>,
 }
 
 impl Screen for OwnTournament {
@@ -250,12 +253,9 @@ impl Screen for OwnTournament {
             options.chosen = crate::controls::options::NONE;
         }
         self.fill(cx, view);
-        let humans = self.humans.len();
         let works = |target: Target| match target {
             Target::Button(c) => dialog.controls[c].id.is_some_and(|id| id == OK || OWN_CLOSERS.contains(&id)),
-            // A disabled row answers nothing as it should; the humans'
-            // own are crossed out.
-            Target::Option { item, .. } => item >= humans,
+            Target::Option { .. } => true,
             _ => false,
         };
         mark_inert(view, dialog, works);
@@ -294,6 +294,94 @@ impl Screen for OwnTournament {
                 }
                 Outcome::Stay
             }
+            // A human's button invites him while there is room: at one
+            // computer he answers himself (dialog 297).
+            Target::Option { control: c, item } if dialog.controls[c].id == Some(HUMANS) => {
+                let Some(&club) = self.humans.get(item) else { return Outcome::Stay };
+                if self.guests.contains(&club) || self.guests.len() + 1 >= tournament::needed(self.kind) {
+                    return Outcome::Stay;
+                }
+                self.inviting = Some(club);
+                let args = Args::TournamentInvite { id: self.id, country: club.0, number: club.1 };
+                Outcome::Popup(Request::with(INVITE, args))
+            }
+            _ => Outcome::Stay,
+        }
+    }
+
+    /// His yes takes him in.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, reply: Reply) -> Outcome {
+        if let Some(club) = self.inviting.take()
+            && reply == Reply::Ok
+        {
+            self.guests.push(club);
+            self.fill(cx, view);
+        }
+        Outcome::Stay
+    }
+}
+
+/// Dialog 297 (`CTurnieranfrageVeranstalter`, `FUN_005ada65`): "%s %s, sie
+/// erhalten eine Einladung für das Turnier v4 am %s. Wollen Sie
+/// teilnehmen?" with the invited manager's names, both days by their
+/// weekdays (`FUN_00676008`) joined by text 3220 " und ", the host's
+/// phrases (`FUN_00733486`); yes and no.
+pub(crate) const INVITE: u16 = 297;
+const INVITE_TEXT: u16 = 3992;
+const INVITE_YES: u16 = 1;
+const INVITE_NO: u16 = 2;
+const AND: u16 = 3220;
+const DATE_TEXT: u16 = 1776;
+const WEEKDAY_TEXTS: u16 = 1779;
+
+#[derive(Default)]
+pub struct TournamentInvite;
+
+impl Screen for TournamentInvite {
+    fn ids(&self) -> &[u16] {
+        &[INVITE]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        let Args::TournamentInvite { id, country, number } = args else { return };
+        let Some(records) = cx.state.records.as_ref() else { return };
+        let Some(t) = tournament::find(records, id) else { return };
+        let manager = u16::try_from(number)
+            .ok()
+            .and_then(|n| records.team(country.into(), n))
+            .and_then(|team| usize::from(team.humans()[1]).checked_sub(1))
+            .and_then(|m| records.managers.get(m));
+        let (first, last) = manager.map_or((String::new(), String::new()), |m| (m.first_name(), m.last_name()));
+        let date = |day: usize| {
+            records.globals.date_of(day as i16).map_or_else(String::new, |d| {
+                use chrono::Datelike;
+                cx.game.text(DATE_TEXT)
+                    .replace("%1", cx.game.text(WEEKDAY_TEXTS + (day % 7) as u16))
+                    .replace("%2", &d.day().to_string())
+                    .replace("%3", &d.month().to_string())
+                    .replace("%4", &d.year().to_string())
+            })
+        };
+        let day = usize::try_from(t.day()).unwrap_or(0);
+        let days = format!("{}{}{}", date(day), cx.game.text(AND), date(day + 1));
+        let Some(c) = control(dialog, INVITE_TEXT) else { return };
+        let text = dialog.controls[c].text.replacen("%s", &first, 1).replacen("%s", &last, 1).replacen("%s", &days, 1);
+        let (hc, hn) = t.host();
+        let text = match cx.game.world.slot_of(hc.into()) {
+            Some(slot) => cx.game.with_club(&text, (slot, usize::try_from(hn).unwrap_or(0))),
+            None => text,
+        };
+        view.set_text(c, text);
+        mark_inert(view, dialog, |target| {
+            matches!(target, Target::Button(c) if matches!(dialog.controls[c].id, Some(INVITE_YES | INVITE_NO)))
+        });
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if cx.dialog.controls[c].id == Some(INVITE_YES) => Outcome::Close(Reply::Ok),
+            Target::Button(c) if cx.dialog.controls[c].id == Some(INVITE_NO) => Outcome::Close(Reply::Cancel),
             _ => Outcome::Stay,
         }
     }
@@ -513,7 +601,7 @@ impl Screen for TournamentResult {
 
 /// The captions.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    for id in [CHOICE, OWN_TOURNAMENT, DRAW, RESULT] {
+    for id in [CHOICE, OWN_TOURNAMENT, DRAW, RESULT, INVITE] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
         let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
         dialog.controls.insert(0, caption);

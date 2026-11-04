@@ -8246,6 +8246,86 @@ mod tests {
         assert_eq!(text(&runner, 299, 4025), fees);
     }
 
+    /// With a second human patched in at Arminia Bielefeld (manager 2,
+    /// Lena Lux), the friendly of the 17th of September offers her below
+    /// the list; her home button asks her (dialog 69) — Union's manager and
+    /// club, "in seinem Stadion", the day — and her yes books the friendly
+    /// into both calendars. A Turnier of one's own on that day offers her
+    /// too; her button invites her (297) with both days and the host, and
+    /// her yes takes her among those in.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn another_human_is_asked_to_a_friendly_and_a_turnier() {
+        let Some(dir) = std::env::var_os("ANSTOSS3_DIR").map(PathBuf::from) else { return };
+        if !dir.join("saves/A.an3").exists() && !dir.join("../saves-kept/A.an3").exists() {
+            return;
+        }
+        let root = patched(&dir, "A", "friendly-human", |records| {
+            const LIST: usize = 0xb5cbe2;
+            let globals = &mut records.globals;
+            globals.put::<u8>(LIST + 8, 14);
+            globals.put::<i16>(LIST + 10, 43);
+            globals.put::<i16>(LIST + 14, 2);
+            globals.put::<i16>(0xb5cc02, 2);
+            let team = records.team_mut(14, 43).unwrap();
+            team.set_humans([2, 2]);
+            team.set_human(2);
+            let mut name = |at: usize, len: usize, text: &str| {
+                let mut bytes = vec![0u8; len];
+                bytes[..text.len()].copy_from_slice(text.as_bytes());
+                for (k, &b) in bytes.iter().enumerate() {
+                    records.managers[1].put::<u8>(at + k, b);
+                }
+            };
+            name(0, 10, "Lena");
+            name(0xa, 0x12, "Lux");
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let text = |runner: &Runner, dialog: u16, id: u16| {
+            runner.host.view().text(control(&game.dialogs[&dialog], id).unwrap()).to_owned()
+        };
+
+        let offer = "now click bar 6\nuntil dialog 348\nnow drag at 540 403 to 180 260\nuntil dialog 72";
+        let runner = on_save(&game, "friendly-human", offer).unwrap();
+        assert_eq!(text(&runner, 72, 1667), "Arminia Bielefeld");
+        let ask = format!("{offer}\nnow choose 1675 0\nuntil dialog 69");
+        let runner = on_save(&game, "friendly-human", &ask).unwrap();
+        let union = {
+            let state = runner.host.state();
+            let m = &state.records.as_ref().unwrap().managers[0];
+            format!("{} {}", m.first_name(), m.last_name())
+        };
+        assert_eq!(
+            text(&runner, 69, 1660),
+            format!("Lena Lux, Ihr Kollege {union} (1.FC Union Berlin) bietet Ihnen ein Freundschaftsspiel in seinem Stadion an.")
+        );
+        assert_eq!(text(&runner, 69, 1661), "Der Termin wäre der 17.9");
+        let runner = on_save(&game, "friendly-human", &format!("{ask}\nnow press 1662\nuntil dialog 348")).unwrap();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let day = |m: usize| {
+            let d = a3_core::year::day(&records.calendars[m], 72);
+            (d.kind(), d.club())
+        };
+        assert_eq!(day(0), (a3_core::year::FRIENDLY, (14, 43)));
+        assert_eq!(day(1), (a3_core::year::FRIENDLY, (14, 84)));
+        let booked = a3_core::friendly::friendlies(records);
+        assert_eq!((booked.len(), booked[0].opponent, booked[0].away), (1, (14, 43), false));
+        drop(state);
+
+        let own = "now click bar 6\nuntil dialog 348\nnow drag at 540 253 to 180 260\nuntil dialog 296\n\
+                   now click at 347 173\nuntil dialog 45";
+        let runner = on_save(&game, "friendly-human", &format!("{own}\nnow choose 1405 0\nuntil dialog 297")).unwrap();
+        let invitation = text(&runner, 297, 3992);
+        assert!(invitation.starts_with("Lena Lux, sie erhalten eine Einladung für das Turnier"), "{invitation}");
+        assert!(invitation.contains(" und ") && invitation.ends_with("Wollen Sie teilnehmen?"), "{invitation}");
+        let taken = format!("{own}\nnow choose 1405 0\nuntil dialog 297\nnow press 1\nuntil dialog 45");
+        let runner = on_save(&game, "friendly-human", &taken).unwrap();
+        let rows = runner.host.view().list(control(&game.dialogs[&45], 1400).unwrap()).unwrap().rows.clone();
+        assert!(rows[0].starts_with("Arminia Bielefeld\t"), "{rows:?}");
+    }
+
     /// The friendly dragged onto the 17th of September offers, at random
     /// numbers poked into the original before the drop, the ten clubs the
     /// original offered (its trace drew the same thirty numbers): Sporting
