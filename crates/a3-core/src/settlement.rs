@@ -454,7 +454,8 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
 /// club in Europe (flag 0x4000), 1 200 000 more for the holder of the
 /// first or second European cup (`FUN_0042419d` over `DAT_00ae6dd4`).
 /// The squad's salaries stand at +0x17c (`FUN_0062023c`), +0x1fc at
-/// twenty or +0x304's figure (`FUN_00716a87`'s tail).
+/// twenty or +0x304's figure and +0x504 at 20 000 in the top three
+/// leagues, 10 000 below (`FUN_00716a87`'s tail).
 /// Measured on the pair: every one of the 147 clubs planned agrees. The
 /// walk's drawn parts (the TV's and the boards' money, +0x18c, +0x1a8,
 /// +0x1a4), the sponsors it signs (`FUN_00716a87`) and the first
@@ -463,6 +464,8 @@ const PLAN_STEP: i32 = 25_000;
 const PLAN_1B8: i32 = 100_000;
 const PLAN_5C4: u16 = 50;
 const PLAN_1FC: u16 = 20;
+const PLAN_RATE_TOP: i32 = 20_000;
+const PLAN_RATE_LOW: i32 = 10_000;
 const PLAN_1B0: [i32; 3] = [800_000, 450_000, 200_000];
 const CLUB_CLASS: usize = 0x875;
 const HIGH_CLASS: u8 = 5;
@@ -701,6 +704,10 @@ fn plan_season(team: &mut Team, second: bool, held: u8, cover: Cover) {
     // holds once set (`FUN_00716a87`'s tail).
     let set = club::<u16>(team, 0x304);
     put::<u16>(team, 0x1fc, if set == 0 { PLAN_1FC } else { set });
+    // Before it the sponsor's rate at +0x504 by the level (20 000 in the
+    // top three leagues, 10 000 below), which the plan's rest keeps within
+    // 5 000 and 50 000 (`DAT_00a3b3ac`, `DAT_00a3b3bc`).
+    put::<i32>(team, 0x504, if level < 3 { PLAN_RATE_TOP } else { PLAN_RATE_LOW });
     match level {
         0 => put::<u8>(team, 0x1f8, if team.get::<u8>(CLUB_CLASS) < HIGH_CLASS { 1 } else { 2 }),
         1 => put::<u8>(team, 0x1f8, 1),
@@ -2538,7 +2545,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
-        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278, 0x194, 0x29c, 0x280, 0x17c];
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8, 0x12c, 0x130, 0x1b4, 0x2bc, 0x26c, 0x270, 0x274, 0x278, 0x194, 0x29c, 0x280, 0x17c, 0x504];
         let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8, 0x300, 0x301, 0x302, 0x303];
         for team in ours.teams.iter_mut() {
             for at in words {
