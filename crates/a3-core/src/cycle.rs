@@ -914,6 +914,7 @@ impl Cycle {
                 let rules = &self.data.rules;
                 crate::free_agents::place(records, &agents, (&rules.contract, &rules.value), &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);
+                crate::settlement::close_managers(records, &mut season.random);
                 crate::statistics::roll_ranking(records);
                 // The original's leagues take their new clubs before its
                 // settlement, which reads the places the archive kept;

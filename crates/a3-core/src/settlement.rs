@@ -458,6 +458,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::rollover::open_played(records, random);
     crate::rollover::open_kept(records, random);
     crate::statistics::open_lists(records, random);
+    open_managers(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
     crate::finances::keep_last_season(records);
@@ -487,6 +488,118 @@ fn clear_objects(records: &mut Records) {
         for country in 1..KEPT_COUNTRIES {
             if let Some(w) = b.get_mut(country * KEPT_TABLE..country * KEPT_TABLE + 2) {
                 w.copy_from_slice(&(country as i16).to_le_bytes());
+            }
+        }
+    }
+}
+
+/// A manager's record: a standing of his own (the manager object's +0x30),
+/// his marks' sum and count (+0x34, +0x36), the game's mode (+0x40).
+const OWN_STANDING: usize = 0x11c;
+const MARKS_SUM: usize = 0x120;
+const MARKS_COUNT: usize = 0x122;
+const MODE_WITH_STANDING: i16 = 9;
+const STANDING_MOST: i16 = 70;
+
+/// The season's end for the human managers (`FUN_00624e4f`'s
+/// `FUN_006fd282` for each): a year more as a trainer; in the game's mode
+/// 9, his standing by his marks' average over the season — down three
+/// below 60, two below 70, one below 80, one even chance in two below 85,
+/// up one even chance in two from 98 while it stands below 70. (The rest
+/// of `FUN_00624e4f` — the contracts' years, the comparison's marks, the
+/// computer clubs' staff — is not built.)
+pub fn close_managers(records: &mut Records, random: &mut Random) {
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get_mut(n) else { continue };
+        m.set_trainer_years(m.trainer_years().wrapping_add(1));
+        let count = m.get::<i16>(MARKS_COUNT);
+        if m.mode() != MODE_WITH_STANDING || count == 0 {
+            continue;
+        }
+        let average = i32::from(m.get::<i16>(MARKS_SUM)) * 100 / i32::from(count);
+        let standing = m.get::<i16>(OWN_STANDING);
+        let by = if average < 9801 {
+            match average {
+                ..6000 => -3,
+                6000..7000 => -2,
+                7000..8000 => -1,
+                8000..8500 if random.below(2) != 0 => -1,
+                _ => 0,
+            }
+        } else if standing < STANDING_MOST && random.below(2) != 0 {
+            1
+        } else {
+            0
+        };
+        m.put::<i16>(OWN_STANDING, standing.wrapping_add(by));
+    }
+}
+
+/// A manager's nerves (the object's +0x32), the board's confidence and
+/// its bonus (+0x9c, +0xa1), two counts the career caps (+0x9e at 18,
+/// +0x9f at 9), the season's flags and fields the new season clears, his
+/// club's cash as it opens (+0x114), and fifty entries of 0x3a from +0x86c
+/// (the object's +0x720) with a flag, a word and a count kept below 100.
+const NERVES: usize = 0x11e;
+const NERVES_LOW: i16 = 20;
+const NERVES_LIFT: i16 = 80;
+const CONFIDENCE_BONUS: usize = 0x189;
+const CAREER_CAPS: [(usize, u8); 2] = [(0x186, 18), (0x187, 9)];
+const CLUB_CASH: usize = 0x2ec;
+const ENTRIES_AT: usize = 0x86c;
+const ENTRY: usize = 0x3a;
+const ENTRIES: usize = 50;
+
+/// The new season opens the human managers' year (`FUN_00775219`): his
+/// club's cash noted, the board's confidence moved by its bonus within 0
+/// and 100 and then lifted by ten below 70 or five below 90, the career's
+/// two counts capped, his nerves eighty up when at 20 or below and else
+/// back at a hundred less a draw below five, and the season's marks,
+/// flags and his entries' flags cleared. (The career's counts by the
+/// titles of the last seasons, the training plan's reset and the rest of
+/// `FUN_00775219` are not built.)
+pub fn open_managers(records: &mut Records, random: &mut Random) {
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get(n) else { continue };
+        let (country, number) = (m.country(), m.team());
+        let cash = u16::try_from(number)
+            .ok()
+            .filter(|_| number > 0 || country > 0)
+            .and_then(|t| records.team(country as u16, t))
+            .map(|t| club::<i64>(t, CASH));
+        let Some(m) = records.managers.get_mut(n) else { continue };
+        if let Some(cash) = cash {
+            m.put::<i32>(CLUB_CASH, cash.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+        }
+        let bonus = i16::from(m.get::<i8>(CONFIDENCE_BONUS));
+        let mut confidence = (m.confidence().wrapping_add(bonus)).clamp(0, 100);
+        if confidence < 70 {
+            confidence += 10;
+        } else if confidence < 90 {
+            confidence += 5;
+        }
+        m.set_confidence(confidence);
+        for (at, most) in CAREER_CAPS {
+            if m.get::<u8>(at) > most {
+                m.put::<u8>(at, most);
+            }
+        }
+        let nerves = m.get::<i16>(NERVES);
+        let nerves = if nerves <= NERVES_LOW { nerves + NERVES_LIFT } else { 100 - random.below(5) as i16 };
+        m.put::<i16>(NERVES, nerves);
+        m.put::<u8>(0x1f18, 0);
+        m.put::<u32>(0x1f1c, m.get::<u32>(0x1f1c) & 0xffff_f1ca);
+        m.put::<u16>(0x1f0, 0);
+        m.put::<i16>(MARKS_COUNT, 0);
+        m.put::<i16>(MARKS_SUM, 0);
+        m.put::<u8>(0x19a, 0);
+        m.put::<u32>(0x1a8, 0);
+        for k in 0..ENTRIES {
+            let at = ENTRIES_AT + k * ENTRY;
+            m.put::<u8>(at, 0);
+            m.put::<u16>(at + 6, 0);
+            if m.get::<i16>(at + 4) > 99 {
+                m.put::<i16>(at + 4, 0);
             }
         }
     }
@@ -1051,6 +1164,53 @@ mod tests {
             for k in at..at + len {
                 assert_eq!(ours.extras[slot].get::<u8>(k), theirs.extras[slot].get::<u8>(k), "extra +{k:#x}");
             }
+        }
+    }
+
+    /// The human managers' season end over the original's pair: a year
+    /// more as a trainer, and in mode 9 his standing two down on an
+    /// average mark of 67.76, as NewSeason000 keeps them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_closes_the_managers_season_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        close_managers(&mut ours, &mut Random::new(3));
+        let (x, y) = (&ours.managers[0], &theirs.managers[0]);
+        assert_eq!(x.trainer_years(), y.trainer_years());
+        assert_eq!(x.get::<i16>(OWN_STANDING), y.get::<i16>(OWN_STANDING));
+    }
+
+    /// The human managers' new season over the original's pair, SeasonEnd364
+    /// settled first: the board's confidence five up to 88, the nerves back
+    /// near a hundred, his club's cash noted, the season's marks and flags
+    /// and his entries' flags at nought, as NewSeason000 keeps them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_opens_the_managers_year_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        settle_season(&mut ours, &crate::league::LeagueTables::load(&exe).unwrap());
+        open_managers(&mut ours, &mut Random::new(3));
+        let (x, y) = (&ours.managers[0], &theirs.managers[0]);
+        assert_eq!(x.confidence(), y.confidence());
+        assert!((96..=100).contains(&x.get::<i16>(NERVES)) && (96..=100).contains(&y.get::<i16>(NERVES)));
+        assert_eq!(x.get::<i32>(CLUB_CASH), y.get::<i32>(CLUB_CASH), "the club's cash");
+        for at in [MARKS_SUM, MARKS_COUNT, 0x1f0, 0x1a8] {
+            assert_eq!(x.get::<u16>(at), y.get::<u16>(at), "manager +{at:#x}");
+        }
+        for k in 0..ENTRIES {
+            let at = ENTRIES_AT + k * ENTRY;
+            assert_eq!((x.get::<u8>(at), x.get::<u16>(at + 6)), (y.get::<u8>(at), y.get::<u16>(at + 6)), "entry {k}");
         }
     }
 
