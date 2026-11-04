@@ -937,6 +937,9 @@ impl Cycle {
                 crate::rollover::count_first_seasons(records);
                 let agents = crate::free_agents::release(records, &mut season.random);
                 crate::deals::execute(records, &mut season.random);
+                // Every club's verdict on its season against its goal
+                // (`FUN_006b44cb`'s `FUN_00775fd7`).
+                crate::season::close_goals(records, &self.data.rules);
                 crate::rollover::close_played(records, &mut season.random);
                 crate::rollover::close_kept(records, &mut season.random);
                 let rules = &self.data.rules;

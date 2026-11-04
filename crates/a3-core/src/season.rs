@@ -38,6 +38,7 @@ const CLUB_GOALS_AT: u32 = 0x8ac860;
 const GOAL_RANKS: usize = 24;
 const LEAGUE_SIZES: usize = 8;
 const HARDER_AT: u32 = 0x8ac9e0;
+const PLACE_CLASSES_AT: u32 = 0x8ac920;
 const EASIER_AT: u32 = 0x8ac9ec;
 const OFFER_GOALS_AT: u32 = 0x8ac9f8;
 pub const GOALS: usize = 12;
@@ -83,6 +84,9 @@ pub const CHAMPION: i64 = 1;
 /// The game's rules that live in tables of the executable.
 pub struct Rules {
     club_goals: Vec<Vec<u8>>,
+    /// The class a place reaches, by league size as the goals' table
+    /// (`DAT_008ac920`).
+    place_classes: Vec<Vec<u8>>,
     pub harder: Vec<u8>,
     pub easier: Vec<u8>,
     /// For a top league and below.
@@ -148,8 +152,10 @@ impl Rules {
         let amounts = AMOUNTS_AT
             .map(|at| exe.u16s(at, 12).map(|v| v.chunks(3).map(|c| [c[0], c[1], c[2]]).collect()));
         let [a, b, c, d] = amounts;
+        let places = exe.bytes(PLACE_CLASSES_AT, GOAL_RANKS * LEAGUE_SIZES)?;
         Ok(Self {
             club_goals: goals.chunks(GOAL_RANKS).map(<[u8]>::to_vec).collect(),
+            place_classes: places.chunks(GOAL_RANKS).map(<[u8]>::to_vec).collect(),
             harder: exe.bytes(HARDER_AT, GOALS)?.to_vec(),
             easier: exe.bytes(EASIER_AT, GOALS)?.to_vec(),
             offer_goals: [offer_goals[..GOALS].to_vec(), offer_goals[GOALS..].to_vec()],
@@ -248,6 +254,37 @@ impl Rules {
         (expected, asked)
     }
 
+    /// How far a club's final place went past its goal, in places
+    /// (`FUN_00775fd7`): beyond it the places it could have lost and still
+    /// reached it (`FUN_00775e0a`), short of it the places it lacked,
+    /// negated (`FUN_00775d3c`), by the class each place reaches in a
+    /// league of its size.
+    pub fn goal_verdict(&self, size: i32, place: i32, goal: i32) -> i32 {
+        if place < 1 || size < place {
+            return 0;
+        }
+        let row = ((size - 10) / 2).clamp(0, 7) as usize;
+        let class = |k: i32| i32::from(self.place_classes[row].get(k as usize).copied().unwrap_or(0));
+        if class(place - 1) < goal {
+            let mut k = place;
+            while k < size && class(k) < goal {
+                k += 1;
+            }
+            let beat = k - place;
+            if beat >= 1 {
+                return beat;
+            }
+        }
+        if goal < class(place - 1) {
+            let mut k = place - 2;
+            while k >= 0 && goal < class(k) {
+                k -= 1;
+            }
+            return -(place - k - 1);
+        }
+        0
+    }
+
     /// A club's own goal for the season, from how big its league is and
     /// where its squad ranks in it.
     fn club_goal(
@@ -268,6 +305,31 @@ impl Rules {
             goal = usize::from(self.harder[goal.min(GOALS - 1)]);
         }
         goal
+    }
+}
+
+/// Every played club's verdict on its season at the season's end (team
+/// +0x137, `FUN_006b44cb`'s `FUN_00775fd7`): its final place (+0x132)
+/// against the goal its board asked (+0x136) in a league of its size — a
+/// club below the sixth level counted as of 18.
+pub fn close_goals(records: &mut crate::records::Records, rules: &Rules) {
+    const PLACE_AT: usize = 0x132;
+    const GOAL_AT: usize = 0x136;
+    const VERDICT_AT: usize = 0x137;
+    for country in crate::opponent::played_nations(records) {
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team(country, number) else { continue };
+            let level = team.level();
+            let size = if level < 6 {
+                crate::opponent::League::of(records, country, level).map_or(0, |l| l.teams() as i32)
+            } else {
+                18
+            };
+            let verdict = rules.goal_verdict(size, i32::from(team.get::<u8>(PLACE_AT)), i32::from(team.get::<i8>(GOAL_AT)));
+            if let Some(team) = records.team_mut(country, number) {
+                team.put::<i8>(VERDICT_AT, verdict as i8);
+            }
+        }
     }
 }
 
@@ -1044,6 +1106,30 @@ fn rating(players: &[Player]) -> i32 {
 
 #[cfg(test)]
 mod form_tests {
+    /// From the original's SeasonEnd364 every played club's verdict on its
+    /// season comes out as NewSeason000 has it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_seasons_verdicts_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| crate::records::Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut b, n) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        close_goals(&mut b, &data.rules);
+        let (mut clubs, mut moved) = (0, 0);
+        for country in crate::opponent::played_nations(&n) {
+            for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (b.team(country, t).unwrap(), n.team(country, t).unwrap());
+                assert_eq!(x.get::<i8>(0x137), y.get::<i8>(0x137), "{country}/{t}");
+                clubs += 1;
+                moved += i32::from(y.get::<i8>(0x137) != 0);
+            }
+        }
+        assert!(clubs > 200 && moved > 100, "{moved} of {clubs}");
+    }
+
     /// On the original's NewSeason000, by its own squad ranks, every played
     /// club's expected goal comes out as the original's, and the goal the
     /// board asks is that one or one step harder.
