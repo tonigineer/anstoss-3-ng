@@ -432,6 +432,9 @@ pub struct Season {
     /// The friendlies' opponents offered this turn (`CDatenGegnerliste`,
     /// which no save keeps): empty in a fresh program, as after a load.
     pub opponents: crate::friendly::Cache,
+    /// The tournaments' screens the day leaves for the human, which the
+    /// week shows over itself: the dialog and the tournament.
+    pub tournament_screens: Vec<(u16, u32)>,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -828,6 +831,7 @@ impl Season {
             statement: false,
             week_hold: false,
             opponents: Default::default(),
+            tournament_screens: Vec::new(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

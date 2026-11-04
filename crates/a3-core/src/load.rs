@@ -83,6 +83,7 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         // keeps the first week end from rolling the market.
         week_hold: true,
         opponents: Default::default(),
+        tournament_screens: Vec::new(),
     }
 }
 

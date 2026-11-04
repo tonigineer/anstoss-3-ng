@@ -8199,6 +8199,53 @@ mod tests {
         assert_eq!(runner.host.view().id, 380);
     }
 
+    /// Paderborn's Turnier joined on Probe1 and the turn ended: on its day
+    /// its draw comes up over the week — the dates, the host, Ulm in the
+    /// first semifinal as the second slot, the host against the fourth —,
+    /// in its evening the results with the semifinals only, the game for
+    /// third and the final with their headers empty, and after the second
+    /// day all four with the fees, prizes, gate and crowd.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_joined_turnier_shows_its_draw_and_results() {
+        let game = game();
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
+                    on 380 press 4731\non 381 wait\non 2 wait\non 384 press 4741\non 99 press 2\non 423 ok";
+        let draw = format!(
+            "now click bar 6\nuntil dialog 348\nnow drag at 540 253 to 180 222\nuntil dialog 296\n\
+             now click at 347 209\nuntil dialog 348\nnow click bar 0\nuntil dialog 147\n{ways}\n\
+             now click bar 18\nuntil dialog 298"
+        );
+        let Some(runner) = on_save(&game, "Probe1", &draw) else { return };
+        let text = |runner: &Runner, dialog: u16, id: u16| {
+            runner.host.view().text(control(&game.dialogs[&dialog], id).unwrap()).to_owned()
+        };
+        assert_eq!(text(&runner, 298, 4003), "Auslosung für das Turnier vom 13.8 - 14.8.2025");
+        assert_eq!(text(&runner, 298, 3997), "SC Paderborn 07");
+        assert_eq!(text(&runner, 298, 3998), "SSV Ulm 1846 -");
+        assert_eq!(text(&runner, 298, 4000), "SC Paderborn 07 -");
+
+        let first = format!("{draw}\nnow ok\nuntil dialog 299");
+        let runner = on_save(&game, "Probe1", &first).unwrap();
+        assert_eq!(text(&runner, 299, 4018), "SSV Ulm 1846");
+        assert!(text(&runner, 299, 4019).starts_with("- "));
+        assert!(text(&runner, 299, 4023).contains(':'));
+        assert_eq!([text(&runner, 299, 4014), text(&runner, 299, 4017), text(&runner, 299, 4020)], ["", "", ""]);
+
+        let second = format!("{first}\nnow press 4012\nuntil dialog 299");
+        let runner = on_save(&game, "Probe1", &second).unwrap();
+        assert_eq!([text(&runner, 299, 4014), text(&runner, 299, 4017)], ["Spiel um Platz 3", "Finale"]);
+        assert!(text(&runner, 299, 4020).contains(':') && text(&runner, 299, 4021).contains(':'));
+        assert_eq!(text(&runner, 299, 4026), "70.000 €");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let t = a3_core::tournament::find(records, 0x0e38_0025).unwrap();
+        assert!((0..4).all(|g| t.result(g).is_some()));
+        let fees = crate::screens::playerinfo::money(&game, i64::from(t.takings().2));
+        assert_eq!(text(&runner, 299, 4025), fees);
+    }
+
     /// The friendly dragged onto the 17th of September offers, at random
     /// numbers poked into the original before the drop, the ten clubs the
     /// original offered (its trace drew the same thirty numbers): Sporting

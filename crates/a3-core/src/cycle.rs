@@ -47,6 +47,9 @@ pub mod dialogs {
     pub const FAILED: u16 = 102;
     pub const SIGNED: u16 = 104;
     pub const NOTICE: u16 = 380;
+    /// A Turnier's draw and its results, for a human taking part.
+    pub const TOURNAMENT_DRAW: u16 = 298;
+    pub const TOURNAMENT_RESULT: u16 = 299;
     pub const QUESTION: u16 = 384;
     pub const WAIT: u16 = 381;
     pub const OFFICE: u16 = 483;
@@ -194,6 +197,8 @@ const OFFICE_MENU: u8 = 1;
 /// The manager's choice of the text menu over the menu bar.
 const TEXT_MENU_CHOICE: u8 = 2;
 const WEEK_DAYS: usize = 7;
+/// Whether the game shows the tournaments' screens (`DAT_00b5d14f`).
+const TOURNAMENT_SCREENS: usize = 0xb5d14f;
 /// The game option "Spielankündigung vor jedem Spiel" (its byte among the
 /// switches at `0xb5d13c`), on; how many days ahead it announces a match.
 const ANNOUNCE_OPTION: usize = 2;
@@ -288,6 +293,8 @@ pub enum Args {
     TournamentDay { day: usize, kind: u8 },
     /// One's own tournament to invite clubs to, by its id.
     OwnTournament { id: u32, day: usize, kind: u8 },
+    /// A tournament to show, by its id.
+    Tournament(u32),
     /// A camp's place to confirm, from 0, and its first day.
     Camp { place: usize, day: usize },
     /// The choice among a group's other places, from 0: up to three.
@@ -842,14 +849,21 @@ impl Cycle {
                                 &mut season.random,
                             );
                             // The day's friendlies and tournaments
-                            // (`FUN_007615bb`); the screens they show the
-                            // humans taking part are not built yet.
-                            let _shown = crate::exhibition::play_day(
+                            // (`FUN_007615bb`): a Turnier's draw and its
+                            // results come up for the humans taking part
+                            // where the option shows them (`DAT_00b5d14f`,
+                            // events 0x9f and 0xa0).
+                            let shown = crate::exhibition::play_day(
                                 records,
                                 &self.data.calendar,
                                 today as i16,
                                 &mut season.random,
                             );
+                            if records.globals.get::<u8>(TOURNAMENT_SCREENS) == 1 {
+                                let drawn = shown.drawn.into_iter().map(|id| (dialogs::TOURNAMENT_DRAW, id));
+                                let results = shown.results.into_iter().map(|id| (dialogs::TOURNAMENT_RESULT, id));
+                                season.tournament_screens.extend(drawn.chain(results));
+                            }
                             // The day of the world closes it
                             // (`FUN_006504b6` with the weekday); the
                             // original's job steps stand between,

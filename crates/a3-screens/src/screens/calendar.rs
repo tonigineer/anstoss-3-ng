@@ -180,15 +180,14 @@ impl Screen for Week {
         super::mark_inert(view, cx.dialog, |_| false);
     }
 
-    /// A day has run: its tile lights up, the panels move on.
+    /// A day has run: its tile lights up, the panels move on — the day's
+    /// tile only once the tournaments' screens it left are seen, which the
+    /// original shows while the day runs.
     fn again(&mut self, cx: &mut Cx, view: &mut View, _: Args) -> bool {
         self.timer = (self.timer - DAY_SECS).max(0.0);
         let Some(season) = &cx.state.season else { return true };
-        for day in 0..(season.day - self.start).min(WEEK_DAYS) {
-            if let Some(tile) = control(cx.dialog, DAY_TILE + day as u16) {
-                view.controls[tile].hidden = false;
-            }
-        }
+        let running = usize::from(!season.tournament_screens.is_empty());
+        self.light(cx, view, (season.day - self.start).saturating_sub(running));
         show_panels(view, cx.dialog, cx.game, season, cx.state.records.as_ref());
         true
     }
@@ -197,12 +196,41 @@ impl Screen for Week {
         Outcome::Stay
     }
 
+    /// The last tournament screen seen, the day's tile lights up.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
+        if let Some(season) = &cx.state.season
+            && season.tournament_screens.is_empty()
+        {
+            self.light(cx, view, season.day - self.start);
+        }
+        Outcome::Stay
+    }
+
     fn tick(&mut self, cx: &mut Cx, _: &mut View, seconds: f32) -> Outcome {
+        // A Turnier's draw or results the day left come up over the week,
+        // one after the other, as the original's events 0x9f and 0xa0 do.
+        if let Some(season) = cx.state.season.as_mut()
+            && !season.tournament_screens.is_empty()
+        {
+            let (dialog, id) = season.tournament_screens.remove(0);
+            return Outcome::Popup(super::Request::with(dialog, Args::Tournament(id)));
+        }
         self.timer += seconds;
         if cx.state.season.is_none() || self.timer < DAY_SECS {
             return Outcome::Stay;
         }
         Outcome::Close(Reply::Ok)
+    }
+}
+
+impl Week {
+    /// The tiles of the days run so far lit.
+    fn light(&self, cx: &Cx, view: &mut View, days: usize) {
+        for day in 0..days.min(WEEK_DAYS) {
+            if let Some(tile) = control(cx.dialog, DAY_TILE + day as u16) {
+                view.controls[tile].hidden = false;
+            }
+        }
     }
 }
 

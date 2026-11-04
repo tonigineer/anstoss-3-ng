@@ -22,7 +22,7 @@ use a3_files::rch::Dialog;
 use super::discipline::CAPTION_ID;
 use super::playerinfo::money;
 use super::squad::own_team;
-use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert};
+use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
 use crate::controls::bitmap::Picture;
 use crate::game::Game;
 use crate::pointer::Target;
@@ -349,9 +349,171 @@ fn league(game: &Game, records: &Records, (country, number): (u8, i16)) -> Strin
     }
 }
 
+/// Dialog 298 (`CTurnierAuslosung`): the caption with the two days, the
+/// host's crest, name and its main sponsor's banner, the two semifinals.
+pub(crate) const DRAW: u16 = 298;
+const DRAW_CAPTION: u16 = 4003;
+const DRAW_HOST: u16 = 3997;
+const DRAW_CREST: u16 = 3995;
+const DRAW_BANNER: u16 = 4004;
+const DRAW_PAIRS: [(u16, u16); 2] = [(3998, 3999), (4000, 4001)];
+const DRAW_OK: u16 = 1;
+/// Dialog 299 (`CTurnierergebnis`): the same head, the four games — home,
+/// away, score —, the headers of the last two, the money and the crowd.
+pub(crate) const RESULT: u16 = 299;
+const RESULT_CAPTION: u16 = 4013;
+const RESULT_HOST: u16 = 4006;
+const RESULT_CREST: u16 = 4005;
+const RESULT_BANNER: u16 = 4024;
+const RESULT_ROWS: [(u16, u16, u16); 4] = [(4018, 4019, 4023), (4010, 4011, 4022), (4008, 4009, 4021), (4015, 4016, 4020)];
+const RESULT_HEADERS: [(usize, u16); 2] = [(tournament::THIRD, 4014), (tournament::FINAL, 4017)];
+const RESULT_FEES: u16 = 4025;
+const RESULT_PRIZES: u16 = 4026;
+const RESULT_GATE: u16 = 4027;
+const RESULT_CROWD: u16 = 4028;
+const RESULT_CLOSE: u16 = 4012;
+/// The dates: "%1.%2." and "%1.%2.%3"; a score's "n.V." and "n.E.".
+const SHORT_DATE: u16 = 1778;
+const LONG_DATE: u16 = 1777;
+const EXTRA_TIME: u16 = 0x761;
+const ON_PENALTIES: u16 = 0x762;
+/// The main sponsor's banner (club +0x4ea; `FUN_006960ed`): numbers past
+/// 480 show the 999th.
+const SPONSOR: usize = 0x4ea;
+const LAST_BANNER: u16 = 0x1e0;
+const NO_BANNER: u16 = 999;
+
+/// The head both dialogs share (`FUN_005ae99f`, `FUN_005af34b`): the
+/// caption's "%s - %s" with the first day short and the second whole,
+/// the host's name, its crest and its sponsor's banner.
+fn head(cx: &Cx, view: &mut View, t: &tournament::Tournament, [caption, host, crest_at, banner]: [u16; 4]) {
+    let dialog = cx.dialog;
+    let Some(records) = cx.state.records.as_ref() else { return };
+    let year = cx.state.season.as_ref().map_or(0, |s| s.year);
+    let day = usize::try_from(t.day()).unwrap_or(0);
+    let date = |text: u16, d: usize| {
+        let date = a3_core::calendar::date(year, d);
+        cx.game.text(text)
+            .replace("%1", &date.format("%-d").to_string())
+            .replace("%2", &date.format("%-m").to_string())
+            .replace("%3", &date.format("%Y").to_string())
+    };
+    if let Some(c) = control(dialog, caption) {
+        let text = dialog.controls[c].text.replacen("%s", &date(SHORT_DATE, day), 1).replacen("%s", &date(LONG_DATE, day + 1), 1);
+        view.set_text(c, text);
+    }
+    let (country, number) = t.host();
+    set(view, dialog, host, cx.game.club_name(Some(records), country, number));
+    if let Some(c) = control(dialog, crest_at) {
+        view.set_picture(c, crest(cx.game, records, t.host()));
+    }
+    let sponsor = u16::try_from(number)
+        .ok()
+        .and_then(|n| records.team(country.into(), n))
+        .map_or(0, |team| team.get::<u16>(SPONSOR + a3_core::finances::CLUB_TO_TEAM));
+    let sponsor = if sponsor > LAST_BANNER { NO_BANNER } else { sponsor };
+    if let Some(c) = control(dialog, banner) {
+        view.set_picture(c, Some(Picture::file(format!("Banden/Kom{sponsor}.bmp"))));
+    }
+}
+
+#[derive(Default)]
+pub struct TournamentDraw;
+
+impl Screen for TournamentDraw {
+    fn ids(&self) -> &[u16] {
+        &[DRAW]
+    }
+
+    /// The draw (`FUN_005ae99f`): "B -" against C, "A -" against D, the
+    /// slots as the Turnier holds them.
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        let Args::Tournament(id) = args else { return };
+        let Some(t) = cx.state.records.as_ref().and_then(|r| tournament::find(r, id)) else { return };
+        head(cx, view, &t, [DRAW_CAPTION, DRAW_HOST, DRAW_CREST, DRAW_BANNER]);
+        let Some(records) = cx.state.records.as_ref() else { return };
+        let clubs = t.clubs();
+        let name = |k: usize| clubs.get(k).map_or_else(String::new, |&(c, n)| cx.game.club_name(Some(records), c, n));
+        for (&(home, away), (h, a)) in DRAW_PAIRS.iter().zip([(1, 2), (0, 3)]) {
+            set(view, dialog, home, format!("{} -", name(h)));
+            set(view, dialog, away, name(a));
+        }
+        mark_inert(view, dialog, |target| matches!(target, Target::Button(c) if dialog.controls[c].id == Some(DRAW_OK)));
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if cx.dialog.controls[c].id == Some(DRAW_OK) => Outcome::Close(Reply::Ok),
+            _ => Outcome::Stay,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct TournamentResult;
+
+impl Screen for TournamentResult {
+    fn ids(&self) -> &[u16] {
+        &[RESULT]
+    }
+
+    /// The results (`FUN_005af34b`): the semifinals by the slots, the game
+    /// for third and the final — with their headers — once played; each
+    /// score with "n.V." or "n.E." (`FUN_005afb5f`); the fees paid, the
+    /// prize money, the host's gate, the crowd.
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        let Args::Tournament(id) = args else { return };
+        let Some(t) = cx.state.records.as_ref().and_then(|r| tournament::find(r, id)) else { return };
+        head(cx, view, &t, [RESULT_CAPTION, RESULT_HOST, RESULT_CREST, RESULT_BANNER]);
+        let Some(records) = cx.state.records.as_ref() else { return };
+        let name = |(c, n): (u8, i16)| cx.game.club_name(Some(records), c, n);
+        let score = |g: usize| match t.result(g) {
+            None => String::new(),
+            Some(((h, a), extra, penalties, _)) => {
+                let mut s = format!("{h}:{a}");
+                if penalties {
+                    s = format!("{s} {}", cx.game.text(ON_PENALTIES));
+                } else if extra {
+                    s = format!("{s} {}", cx.game.text(EXTRA_TIME));
+                }
+                s
+            }
+        };
+        let clubs = t.clubs();
+        let slot = |k: usize| clubs.get(k).copied().unwrap_or_default();
+        for (g, &(home, away, result)) in RESULT_ROWS.iter().enumerate() {
+            let [h, a] = if g < tournament::THIRD { [slot([1, 0][g]), slot([2, 3][g])] } else { t.sides(g) };
+            let shown = g < tournament::THIRD || t.result(g).is_some();
+            set(view, dialog, home, if shown { name(h) } else { String::new() });
+            set(view, dialog, away, if shown { format!("- {}", name(a)) } else { String::new() });
+            set(view, dialog, result, if shown { score(g) } else { String::new() });
+        }
+        for (g, header) in RESULT_HEADERS {
+            if t.result(g).is_none() {
+                set(view, dialog, header, String::new());
+            }
+        }
+        let (crowds, gates, fees, costs) = t.takings();
+        set(view, dialog, RESULT_FEES, money(cx.game, i64::from(fees)));
+        set(view, dialog, RESULT_PRIZES, money(cx.game, i64::from(costs)));
+        set(view, dialog, RESULT_GATE, money(cx.game, i64::from(gates)));
+        set(view, dialog, RESULT_CROWD, crowds.to_string());
+        mark_inert(view, dialog, |target| matches!(target, Target::Button(c) if dialog.controls[c].id == Some(RESULT_CLOSE)));
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if cx.dialog.controls[c].id == Some(RESULT_CLOSE) => Outcome::Close(Reply::Ok),
+            _ => Outcome::Stay,
+        }
+    }
+}
+
 /// The captions.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    for id in [CHOICE, OWN_TOURNAMENT] {
+    for id in [CHOICE, OWN_TOURNAMENT, DRAW, RESULT] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
         let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
         dialog.controls.insert(0, caption);
