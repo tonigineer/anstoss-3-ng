@@ -747,6 +747,10 @@ impl Cycle {
                         );
                     }
                     season.week_hold = false;
+                    // The computer clubs line up for the new week
+                    // (`FUN_0064e40f`'s `FUN_0042a76e`), so the week's
+                    // games are scored by their squads as they stand.
+                    crate::autolineup::computer_lineups(records, &self.data);
                 }
             }
             // The careers ended in the turns end before the week does
@@ -947,6 +951,9 @@ impl Cycle {
             {
                 let rules = &self.data.rules;
                 crate::settlement::open_season_with(records, &mut season.random, Some((&rules.contract, &rules.value)));
+                // Its computer clubs line up for the season
+                // (`FUN_0077655c`'s `FUN_0042a76e`).
+                crate::autolineup::computer_lineups(records, &self.data);
                 season.year = i32::from(records.globals.start_year());
                 season.day = 0;
                 season.statement = false;

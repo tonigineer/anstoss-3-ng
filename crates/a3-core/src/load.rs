@@ -94,7 +94,12 @@ pub fn club(records: &Records, data: &Data, (slot, index): (usize, usize)) -> Op
     Some(club_state(records, team, data))
 }
 
-fn club_state(records: &Records, team: &Team, data: &Data) -> ClubState {
+/// Any club's state as the line-up's code works on it.
+pub fn club_state_of(records: &Records, team: &Team, data: &Data) -> ClubState {
+    club_state(records, team, data)
+}
+
+pub(crate) fn club_state(records: &Records, team: &Team, data: &Data) -> ClubState {
     let squad: Vec<(u16, &records::Player)> =
         team.players().into_iter().filter_map(|id| Some((id, records.player(id)?))).collect();
     let players = squad.iter().map(|(_, record)| player(records, record)).collect();
