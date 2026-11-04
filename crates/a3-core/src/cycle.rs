@@ -50,6 +50,8 @@ pub mod dialogs {
     /// A Turnier's draw and its results, for a human taking part.
     pub const TOURNAMENT_DRAW: u16 = 298;
     pub const TOURNAMENT_RESULT: u16 = 299;
+    /// A hall's results, for a human taking part.
+    pub const HALL_RESULT: u16 = 94;
     pub const QUESTION: u16 = 384;
     pub const WAIT: u16 = 381;
     pub const OFFICE: u16 = 483;
@@ -858,17 +860,13 @@ impl Cycle {
                             // results come up for the humans taking part
                             // where the option shows them (`DAT_00b5d14f`,
                             // events 0x9f and 0xa0).
-                            let shown = crate::exhibition::play_day(
-                                records,
-                                &self.data.calendar,
-                                &self.data.presale,
-                                today as i16,
-                                &mut season.random,
-                            );
+                            let shown = crate::exhibition::play_day(&self.data, records, today as i16, &mut season.random);
                             if records.globals.get::<u8>(TOURNAMENT_SCREENS) == 1 {
                                 let drawn = shown.drawn.into_iter().map(|id| (dialogs::TOURNAMENT_DRAW, id));
                                 let results = shown.results.into_iter().map(|id| (dialogs::TOURNAMENT_RESULT, id));
-                                season.tournament_screens.extend(drawn.chain(results));
+                                let halls = shown.halls.iter().map(|h| (dialogs::HALL_RESULT, h.id));
+                                season.tournament_screens.extend(drawn.chain(results).chain(halls));
+                                season.halls.extend(shown.halls);
                             }
                             // The day of the world closes it
                             // (`FUN_006504b6` with the weekday); the

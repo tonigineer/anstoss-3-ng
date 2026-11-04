@@ -635,17 +635,64 @@ fn fill_one(records: &mut Records, calendar: &crate::calendar::Calendar, id: u32
     }
 }
 
+/// A club taken into a tournament (`FUN_00760118`): the next slot while
+/// there is room, else the last slot no human holds.
+pub(crate) fn take(records: &mut Records, id: u32, club: (u8, i16)) {
+    let mut list = tournaments(records);
+    let Some(e) = list.iter_mut().find(|e| e.id() == id) else { return };
+    if !e.add(club) {
+        let room = e.room();
+        if let Some(k) = (1..room).rev().find(|&k| {
+            let (c, n) = e.club(k);
+            !crate::statistics::is_human(records, c, n)
+        }) {
+            let at = SLOTS + k * SLOT;
+            e.0[at] = club.0;
+            e.set_word(at + 2, club.1);
+        }
+    }
+    store(records, &list);
+}
+
+/// A tournament's crowds, takings, fees and costs into its entry.
+pub(crate) fn set_takings(records: &mut Records, id: u32, (crowds, gates, fees, costs): (i32, i32, i32, i32)) {
+    let mut list = tournaments(records);
+    if let Some(e) = list.iter_mut().find(|e| e.id() == id) {
+        e.set_int(CROWDS, crowds);
+        e.set_int(GATES, gates);
+        e.set_int(FEES, fees);
+        e.set_int(COSTS, costs);
+    }
+    store(records, &list);
+}
+
 /// The tournaments' games of the day (`FUN_006257cd`): a Turnier on its
 /// first day filled by its computer host (`FUN_006261b5`), its guests'
 /// fees booked and its semifinals set — the second slot against the third,
 /// the host against the fourth (`FUN_00625ac8` with 0); on its second day
 /// the game for third place and the final. A Turnier short of clubs plays
-/// nothing.
-pub fn day_games(records: &mut Records, calendar: &crate::calendar::Calendar, today: i16, random: &mut Random) -> Vec<Fixture> {
+/// nothing. A hall is played whole on the day after its first
+/// ([`crate::hall::play`]), in the list's order; those a human played in
+/// come back for the screen.
+pub fn day_games(
+    data: &crate::data::Data,
+    records: &mut Records,
+    today: i16,
+    random: &mut Random,
+) -> (Vec<Fixture>, Vec<crate::hall::Hall>) {
+    let calendar = &data.calendar;
     let mut games = Vec::new();
-    let ids: Vec<(u32, i16)> =
-        tournaments(records).iter().filter(|t| t.kind() == TURNIER).map(|t| (t.id(), t.day())).collect();
-    for (id, day) in ids {
+    let mut halls = Vec::new();
+    let ids: Vec<(u32, i16, u8)> = tournaments(records).iter().map(|t| (t.id(), t.day(), t.kind())).collect();
+    for (id, day, kind) in ids {
+        if kind != TURNIER {
+            if day == today - 1
+                && let Some(hall) = crate::hall::play(data, records, id, random)
+            {
+                halls.push(hall);
+            }
+            continue;
+        }
         if day == today {
             let host = find(records, id).map(|t| t.host());
             if host.is_some_and(|(c, n)| !crate::statistics::is_human(records, c, n)) {
@@ -692,7 +739,7 @@ pub fn day_games(records: &mut Records, calendar: &crate::calendar::Calendar, to
             }
         }
     }
-    games
+    (games, halls)
 }
 
 /// A tournament game played (`FUN_00625d73`): its result kept, the gate
@@ -915,7 +962,7 @@ mod saves {
             .collect();
         let mut random = Random::new(5);
         for day in 35..=40 {
-            crate::exhibition::play_day(&mut records, &data.calendar, &data.presale, day, &mut random);
+            crate::exhibition::play_day(&data, &mut records, day, &mut random);
         }
         let played: Vec<Tournament> =
             tournaments(&records).into_iter().filter(|t| t.kind() == TURNIER && (35..=39).contains(&t.day())).collect();

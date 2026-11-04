@@ -8363,6 +8363,38 @@ mod tests {
         assert_eq!((extra.get::<i32>(0x2560), extra.together()), (66_036, 1));
     }
 
+    /// Union's own Hallenturnier on A for the 16th of September, seven of
+    /// the offered clubs invited: after its second day its results come up
+    /// over the week (dialog 94) — the host and its six thousand, the
+    /// groups' games and tables, the knockout games, the money with the
+    /// gain or the loss.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_hosted_hall_shows_its_results() {
+        let game = game();
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
+                    on 380 press 4731\non 270 press 3734\non 499 ok\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\n\
+                    on 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\n\
+                    on 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\n\
+                    on 1 click at 320 357\non 375 click at 617 182; press 4715";
+        let invite = "now row 1401 0\n".repeat(7);
+        let then = format!(
+            "now click bar 6\nuntil dialog 348\nnow drag at 540 289 to 180 257\nuntil dialog 296\n\
+             now click at 347 173\nuntil dialog 45\n{invite}now press 1\nuntil dialog 348\n\
+             now click bar 0\nuntil dialog 147\n{ways}\nuntil dialog 94"
+        );
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        let text = |id: u16| runner.host.view().text(control(&game.dialogs[&94], id).unwrap()).to_owned();
+        assert_eq!(text(crate::screens::discipline::CAPTION_ID), "ANSTOSS 3 - Ergebnisse Hallenturnier");
+        assert_eq!(text(1957), "Veranstalter: 1.FC Union Berlin (6000 Zuschauer)");
+        assert!(text(1960).starts_with("1.FC Union Berlin - "), "{}", text(1960));
+        assert!(text(1966).contains(" : ") && text(1990).ends_with(" Punkte"));
+        assert_eq!(text(1953), "560.000 €");
+        assert_eq!(text(1955), "100.000 €");
+    }
+
     /// The friendly dragged onto the 17th of September offers, at random
     /// numbers poked into the original before the drop, the ten clubs the
     /// original offered (its trace drew the same thirty numbers): Sporting

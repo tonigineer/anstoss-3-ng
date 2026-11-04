@@ -11,10 +11,8 @@
 //! the teams' strengths and a luck, a tie in a tournament decided by extra
 //! time and then penalties.
 
-use crate::calendar::Calendar;
 use crate::finances::CLUB_TO_TEAM;
 use crate::matches::{EVEN, HOME_EDGE, goals};
-use crate::presale::PresaleTables;
 use crate::random::Random;
 use crate::records::Records;
 use crate::tournament::{self, Fixture, Outcome};
@@ -44,6 +42,8 @@ const MOST: i32 = 200;
 pub struct Shown {
     pub drawn: Vec<u32>,
     pub results: Vec<u32>,
+    /// The halls played that a human took part in.
+    pub halls: Vec<crate::hall::Hall>,
 }
 
 /// A game of the day's list: the sides and the ground, a friendly's id or
@@ -63,10 +63,11 @@ impl Game {
 }
 
 /// The day's matches (`FUN_007615bb`) on day `today`.
-pub fn play_day(records: &mut Records, calendar: &Calendar, tables: &PresaleTables, today: i16, random: &mut Random) -> Shown {
+pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, random: &mut Random) -> Shown {
+    let (calendar, tables) = (&data.calendar, &data.presale);
     let mut games = friendlies(records, today);
-    let fixtures = tournament::day_games(records, calendar, today, random);
-    let mut shown = Shown::default();
+    let (fixtures, halls) = tournament::day_games(data, records, today, random);
+    let mut shown = Shown { halls, ..Shown::default() };
     for fixture in &fixtures {
         // A human in its four sees its pairings (`FUN_0062622f`).
         if fixture.game == tournament::SEMI_ONE && humans_in(records, fixture.id) {
@@ -365,7 +366,7 @@ mod saves {
         let (costs, gate, received, together) =
             (money(&records, union, OTHER_COSTS), money(&records, union, GATE), money(&records, (51, 0), OTHER_INCOME), records.extras[0].together());
         let mut random = Random::new(4);
-        play_day(&mut records, &data.calendar, &data.presale, 72, &mut random);
+        play_day(&data, &mut records, 72, &mut random);
         assert_eq!(money(&records, union, OTHER_COSTS) - costs, 140_000);
         assert_eq!(money(&records, (51, 0), OTHER_INCOME) - received, 140_000);
         let won = money(&records, union, GATE) - gate;
@@ -380,7 +381,7 @@ mod saves {
         let day = (73..120).find(|&d| records.calendars[0].entry(d)[0] == 0).unwrap() as i16;
         assert!(crate::friendly::book(&mut records, union, 1, &near, day));
         let (g_union, g_near) = (money(&records, union, GATE), money(&records, (14, 107), GATE));
-        play_day(&mut records, &data.calendar, &data.presale, day, &mut random);
+        play_day(&data, &mut records, day, &mut random);
         let (d_union, d_near) = (money(&records, union, GATE) - g_union, money(&records, (14, 107), GATE) - g_near);
         assert!(d_near > 0 && d_union == d_near, "{d_union} {d_near}");
         assert_eq!(records.extras[0].get::<i32>(LAST_SHARE), d_union);

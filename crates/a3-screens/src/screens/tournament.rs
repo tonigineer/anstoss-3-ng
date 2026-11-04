@@ -599,9 +599,98 @@ impl Screen for TournamentResult {
     }
 }
 
+/// Dialog 94 (`CHallenturnierErgebnis`, `FUN_004c3786`): a hall's
+/// results for a human taking part.
+pub(crate) const HALL: u16 = 94;
+const HALL_TITLES: [u16; 2] = [4447, 4448];
+const HALL_HOST: u16 = 1957;
+const HOST_TEXT: u16 = 2456;
+const HALL_GAMES: [(u16, u16); 2] = [(1960, 1966), (1972, 1978)];
+const HALL_ROWS: [(u16, u16); 2] = [(1986, 1990), (1994, 1998)];
+const POINTS_TEXT: u16 = 1998;
+const HALL_SEMIS: [(u16, u16); 2] = [(1945, 1947), (1946, 1948)];
+const HALL_THIRD: (u16, u16) = (2004, 2005);
+const HALL_FINAL: (u16, u16) = (2007, 2008);
+const HALL_SCORER: u16 = 5840;
+const HALL_KEEPER: u16 = 5841;
+const HALL_MONEY: [u16; 4] = [1953, 1954, 1955, 1956];
+const GAIN_LABEL: u16 = 1952;
+const LOSS: u16 = 2455;
+const HALL_OK: u16 = 2009;
+
+#[derive(Default)]
+pub struct HallResult;
+
+impl Screen for HallResult {
+    fn ids(&self) -> &[u16] {
+        &[HALL]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        let Args::Tournament(id) = args else { return };
+        let Some(hall) = cx.state.season.as_ref().and_then(|s| s.halls.iter().rev().find(|h| h.id == id)).cloned()
+        else {
+            return;
+        };
+        let Some(records) = cx.state.records.as_ref() else { return };
+        let name = |i: usize| {
+            let (c, n) = hall.clubs[i];
+            cx.game.club_name(Some(records), c, n)
+        };
+        let title = cx.game.text(HALL_TITLES[usize::from(hall.kind.clamp(1, 2) - 1)]).to_owned();
+        set(view, dialog, CAPTION_ID, title);
+        let host = super::finances::printf(cx.game.text(HOST_TEXT), &[&name(0), &hall.crowd]);
+        set(view, dialog, HALL_HOST, host);
+        let mut game = |g: &a3_core::hall::HallGame, (names, score): (u16, u16)| {
+            set(view, dialog, names, format!("{} - {}", name(g.home), name(g.away)));
+            set(view, dialog, score, format!("{} : {}", g.goals.0, g.goals.1));
+        };
+        for (g, &(names, scores)) in HALL_GAMES.iter().enumerate() {
+            for (n, played) in hall.groups[g].iter().enumerate() {
+                game(played, (names + n as u16, scores + n as u16));
+            }
+        }
+        for (k, &ids) in HALL_SEMIS.iter().enumerate() {
+            game(&hall.semis[k], ids);
+        }
+        game(&hall.third, HALL_THIRD);
+        game(&hall.final_game, HALL_FINAL);
+        for (g, &(names, points)) in HALL_ROWS.iter().enumerate() {
+            for (r, row) in hall.tables[g].iter().enumerate() {
+                set(view, dialog, names + r as u16, name(row.club));
+                let p = super::finances::printf(cx.game.text(POINTS_TEXT), &[&row.points]);
+                set(view, dialog, points + r as u16, p);
+            }
+        }
+        if let Some((id, goals)) = hall.scorer {
+            let who = records.known_as(id).unwrap_or_default();
+            set(view, dialog, HALL_SCORER, format!("{who} ({goals})"));
+        }
+        if let Some(id) = hall.keeper {
+            set(view, dialog, HALL_KEEPER, records.known_as(id).unwrap_or_default());
+        }
+        let gain = hall.takings - hall.fees - hall.costs;
+        for (&id, value) in HALL_MONEY.iter().zip([hall.takings, hall.fees, hall.costs, gain.abs()]) {
+            set(view, dialog, id, money(cx.game, i64::from(value)));
+        }
+        if gain < 0 {
+            set(view, dialog, GAIN_LABEL, cx.game.text(LOSS).to_owned());
+        }
+        mark_inert(view, dialog, |target| matches!(target, Target::Button(c) if dialog.controls[c].id == Some(HALL_OK)));
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if cx.dialog.controls[c].id == Some(HALL_OK) => Outcome::Close(Reply::Ok),
+            _ => Outcome::Stay,
+        }
+    }
+}
+
 /// The captions.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
-    for id in [CHOICE, OWN_TOURNAMENT, DRAW, RESULT, INVITE] {
+    for id in [CHOICE, OWN_TOURNAMENT, DRAW, RESULT, INVITE, HALL] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
         let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
         dialog.controls.insert(0, caption);

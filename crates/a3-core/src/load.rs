@@ -84,6 +84,7 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         week_hold: true,
         opponents: Default::default(),
         tournament_screens: Vec::new(),
+        halls: Vec::new(),
     }
 }
 

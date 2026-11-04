@@ -435,6 +435,8 @@ pub struct Season {
     /// The tournaments' screens the day leaves for the human, which the
     /// week shows over itself: the dialog and the tournament.
     pub tournament_screens: Vec<(u16, u32)>,
+    /// The halls a human played this session, for their screen.
+    pub halls: Vec<crate::hall::Hall>,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -832,6 +834,7 @@ impl Season {
             week_hold: false,
             opponents: Default::default(),
             tournament_screens: Vec::new(),
+            halls: Vec::new(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

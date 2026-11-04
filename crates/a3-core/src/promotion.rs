@@ -231,7 +231,7 @@ fn level(records: &Records, country: u16, team: i16) -> u8 {
 
 /// A random order of `n` (`FUN_00675630`): each place in turn drawn
 /// among those still free.
-fn permutation(n: usize, random: &mut Random) -> Vec<usize> {
+pub(crate) fn permutation(n: usize, random: &mut Random) -> Vec<usize> {
     let mut order: Vec<Option<usize>> = vec![None; n];
     for k in 0..n {
         loop {

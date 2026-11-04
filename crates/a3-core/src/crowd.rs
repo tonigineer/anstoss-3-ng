@@ -329,8 +329,23 @@ pub(crate) fn gate(
     records: &mut Records,
     calendar: &crate::calendar::Calendar,
     tables: &PresaleTables,
+    sides: ((u8, i16), (u8, i16), (u8, i16)),
+    round: i16,
+    random: &mut Random,
+) -> Gate {
+    gate_cut(records, calendar, tables, sides, round, true, random)
+}
+
+/// The same, the classes' cut only where `classes` asks it: a hall's
+/// forecast reads the classes from stack nothing set (`FUN_0064ce47`'s
+/// record), the even case's quarter.
+pub(crate) fn gate_cut(
+    records: &mut Records,
+    calendar: &crate::calendar::Calendar,
+    tables: &PresaleTables,
     (home, away, ground): ((u8, i16), (u8, i16), (u8, i16)),
     round: i16,
+    classes: bool,
     random: &mut Random,
 ) -> Gate {
     fn team(records: &Records, c: (u8, i16)) -> Option<&crate::records::Team> {
@@ -342,7 +357,7 @@ pub(crate) fn gate(
     let (h, a) = crate::presale::match_demand(records, home, away, ground, prices, round, tables).unwrap_or((0, 0));
     let factor = f64::from(ROUND_FACTOR[round.clamp(0, 7) as usize]);
     let (mut h, mut a) = ((f64::from(h) * factor) as i32 / 2, (f64::from(a) * factor) as i32 / 2);
-    let (lh, la) = (class(records, calendar, home), class(records, calendar, away));
+    let (lh, la) = if classes { (class(records, calendar, home), class(records, calendar, away)) } else { (0, 0) };
     let (mh, ma) = (played(records, home).min(PLAYED_MOST), played(records, away).min(PLAYED_MOST));
     count(records, home);
     count(records, away);
