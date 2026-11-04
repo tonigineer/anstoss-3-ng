@@ -343,6 +343,8 @@ const LEAGUE_CODES: u32 = 0x3f;
 const CUP: u32 = 0x4000_0000;
 const RELEGATION: u32 = 0x1000_0000;
 const SUPERCUP: u32 = 0x3000_0000;
+/// England's league cup's days (`FUN_006ceeb9`), its object a cup's.
+const LEAGUE_CUP: u32 = 0x0100_0000;
 /// The code's matchday or round, and the final's mark of a neutral ground.
 const MATCHDAY: u32 = 0x3f;
 const FINAL: usize = 6;
@@ -583,7 +585,8 @@ const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 
 /// A club's next match from the day after `today` on, within 63 days
 /// (`FUN_0062bfc9` with `FUN_0062d181`): the first day its league plays a
-/// matchday, its cup a round it is in, its supercup a round it plays —
+/// matchday, its cup — or England's league cup — a round it is in, its
+/// supercup a round it plays —
 /// the opponent named once the tie stands, none before. (A European
 /// cup's, the world's and the relegation's days are not built: they are
 /// passed over.)
@@ -603,9 +606,14 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
                 let (other, venue) = if home == place { (away, 0) } else { (home, 1) };
                 return Some(at((country, league.team(other)), venue, NEXT_LEAGUE, 0));
             }
-            CUP => {
+            CUP | LEAGUE_CUP => {
                 let slot = records.countries.slot(usize::from(country));
-                let Some(cup) = records.block(&format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)) else { continue };
+                let name = if code & COMPETITION == LEAGUE_CUP {
+                    crate::cup_draw::LEAGUE_CUP.to_owned()
+                } else {
+                    format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)
+                };
+                let Some(cup) = records.block(&name) else { continue };
                 if !in_cup(cup, team, code) {
                     continue;
                 }
