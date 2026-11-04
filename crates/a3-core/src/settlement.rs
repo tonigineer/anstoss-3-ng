@@ -461,6 +461,7 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
     crate::finances::keep_last_season(records);
+    clear_human_season(records);
     clear_bookings(records);
 }
 
@@ -486,6 +487,26 @@ fn clear_objects(records: &mut Records) {
         for country in 1..KEPT_COUNTRIES {
             if let Some(w) = b.get_mut(country * KEPT_TABLE..country * KEPT_TABLE + 2) {
                 w.copy_from_slice(&(country as i16).to_le_bytes());
+            }
+        }
+    }
+}
+
+/// What the new season puts to nought of a human club's extra data, as
+/// the original's first day after the turn stands: last week's and the
+/// season's training units, the away gates, the opposing fans' gates and
+/// the home incomes by game, and a byte per squad place at +0x919. (Its
+/// training plan stands at nought there too, filled again before it trains;
+/// the replica keeps the plan.)
+const HUMAN_SEASON_COUNTERS: [(usize, usize); 4] = [(0x315, 39), (0x33c, 78), (0x398, 3 * 23 * 4), (0x919, 0x52)];
+
+fn clear_human_season(records: &mut Records) {
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(slot) = records.human_slot(n) else { continue };
+        let Some(extra) = records.extras.get_mut(slot) else { continue };
+        for (at, len) in HUMAN_SEASON_COUNTERS {
+            for k in 0..len {
+                extra.put::<u8>(at + k, 0);
             }
         }
     }
@@ -1006,6 +1027,30 @@ mod tests {
             );
             assert_eq!((g.europe_stage(), g.uefa_round()), (0, -1));
             assert!(g.lottery() < 1000, "a lottery drawn for the season after");
+        }
+    }
+
+    /// The human club's season counters over the original's pair: SeasonEnd364
+    /// cleared by the replica stands as NewSeason000 keeps them, all at
+    /// nought — among them the season's training units, which would
+    /// otherwise count on season after season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_clears_the_human_clubs_counters_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let slot = ours.human_slot(0).unwrap();
+        assert!(ours.extras[slot].season_units().iter().any(|&u| u != 0), "the closing season trained");
+        clear_human_season(&mut ours);
+        for (at, len) in HUMAN_SEASON_COUNTERS {
+            for k in at..at + len {
+                assert_eq!(ours.extras[slot].get::<u8>(k), theirs.extras[slot].get::<u8>(k), "extra +{k:#x}");
+            }
         }
     }
 
