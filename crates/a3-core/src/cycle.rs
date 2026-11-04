@@ -283,6 +283,11 @@ pub enum Args {
     CampDay(usize),
     /// The choice of a friendly's opponent, for a day.
     FriendlyDay(usize),
+    /// The choice of a tournament of a kind (0 Turnier, 1 hall, 2 beach)
+    /// for a day: one's own or another's to join.
+    TournamentDay { day: usize, kind: u8 },
+    /// One's own tournament to invite clubs to, by its id.
+    OwnTournament { id: u32, day: usize, kind: u8 },
     /// A camp's place to confirm, from 0, and its first day.
     Camp { place: usize, day: usize },
     /// The choice among a group's other places, from 0: up to three.

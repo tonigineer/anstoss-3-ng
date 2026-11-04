@@ -120,7 +120,13 @@ AREAS = {
                  (*bar(7, 348, "now random 12345 67890", "now drag at 540 403 to 180 260",
                        "until dialog 72"), 72),
                  (*bar(7, 348, "now random 12345 67890", "now drag at 540 403 to 180 260",
-                       "until dialog 72", "now row 1666 3", "until dialog 348"), 348)],
+                       "until dialog 72", "now row 1666 3", "until dialog 348"), 348),
+                 # A Turnier on the 17th: one's own to host (296), its
+                 # invitations (45).
+                 (*bar(7, 348, "now drag at 540 253 to 180 260", "until dialog 296"), 296),
+                 (*bar(7, 348, "now drag at 540 253 to 180 260", "until dialog 296",
+                       "now random 12345 67890", "now click at 347 173", "until dialog 45",
+                       "now row 1401 0", "now row 1401 1"), 45)],
     "planner": [(*bar(8, 413), 413), (*bar(8, 413, "now press 6215", "until dialog 358"), 358),
                 (*bar(8, 413, "now press 5036", "until dialog 397"), 397),
                 (*bar(8, 413, "now press 5036", "until dialog 397",

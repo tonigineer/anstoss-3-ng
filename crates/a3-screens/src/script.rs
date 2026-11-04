@@ -8149,6 +8149,56 @@ mod tests {
         assert_eq!(atlantis(&runner), (true, true));
     }
 
+    /// On Probe1 (day 35) the Turnier dragged onto the 13th of August offers
+    /// what the original offered there: hosting one's own, the invitations
+    /// of SC Paderborn 07 and Chemnitzer FC, two rows empty. Paderborn's
+    /// joined, its entry takes Ulm and both days show it. One's own, at
+    /// random numbers poked into the original before the click, invites
+    /// the three clubs the original's list held first and takes them as
+    /// its entry 43; with one guest only, OK warns instead.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_calendar_joins_and_hosts_a_tournament() {
+        let game = game();
+        let offer = "now click bar 6\nuntil dialog 348\nnow drag at 540 253 to 180 222\nuntil dialog 296";
+        let Some(runner) = on_save(&game, "Probe1", offer) else { return };
+        let rows = control(&game.dialogs[&296], 3984).unwrap();
+        let labels = runner.host.view().options(rows).unwrap().labels.clone();
+        assert_eq!(labels, [
+            "eigenes Turnier veranstalten",
+            "Einladung SC Paderborn 07 annehmen",
+            "Einladung Chemnitzer FC annehmen",
+            "",
+            ""
+        ]);
+        let calendar_day = |runner: &Runner, d: usize| {
+            let state = runner.host.state();
+            let day = a3_core::year::day(&state.records.as_ref().unwrap().calendars[0], d);
+            (day.kind(), day.club(), day.value())
+        };
+        let tournament = |runner: &Runner, id: u32| {
+            let state = runner.host.state();
+            a3_core::tournament::find(state.records.as_ref().unwrap(), id).map(|t| t.clubs())
+        };
+
+        let runner = on_save(&game, "Probe1", &format!("{offer}\nnow click at 347 209\nuntil dialog 348")).unwrap();
+        assert_eq!(tournament(&runner, 0x0e38_0025), Some(vec![(14, 56), (14, 82)]));
+        assert_eq!(calendar_day(&runner, 37).0, a3_core::year::TOURNAMENT);
+        assert_eq!(calendar_day(&runner, 37).1, (14, 56));
+        assert_eq!((calendar_day(&runner, 38).0, calendar_day(&runner, 38).1), (a3_core::year::TOURNAMENT, (14, 56)));
+
+        let own = format!("{offer}\nnow random 12345 67890\nnow click at 347 173\nuntil dialog 45");
+        let hosted = format!("{own}\nnow row 1401 0\nnow row 1401 1\nnow row 1401 2\nnow press 1\nuntil dialog 348");
+        let runner = on_save(&game, "Probe1", &hosted).unwrap();
+        assert_eq!(tournament(&runner, 0x0e52_0025), Some(vec![(14, 82), (14, 103), (14, 11), (14, 27)]));
+        let count = a3_core::tournament::tournaments(runner.host.state().records.as_ref().unwrap()).len();
+        assert_eq!(count, 44);
+        assert_eq!((calendar_day(&runner, 37).0, calendar_day(&runner, 37).1), (a3_core::year::TOURNAMENT, (14, 82)));
+
+        let runner = on_save(&game, "Probe1", &format!("{own}\nnow row 1401 0\nnow press 1\nuntil dialog 380")).unwrap();
+        assert_eq!(runner.host.view().id, 380);
+    }
+
     /// The friendly dragged onto the 17th of September offers, at random
     /// numbers poked into the original before the drop, the ten clubs the
     /// original offered (its trace drew the same thirty numbers): Sporting

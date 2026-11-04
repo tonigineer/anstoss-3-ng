@@ -68,6 +68,7 @@ pub mod stock;
 pub mod tactics;
 pub mod talk;
 pub mod tickets;
+pub mod tournament;
 pub mod trainers;
 pub mod training;
 pub mod training_day;

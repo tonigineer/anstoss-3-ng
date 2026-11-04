@@ -5,7 +5,8 @@
 //! event. A party or an event is booked by dragging its label onto a day,
 //! and gone again by a click on its row; a click in the camp column moves
 //! the camp's end. A camp's label opens the world map of its places, the
-//! friendly's the choice of its opponent; the tournaments' are not built.
+//! friendly's the choice of its opponent, a tournament's the choice of
+//! hosting one or joining another's.
 
 use std::collections::HashMap;
 
@@ -15,7 +16,7 @@ use a3_core::calendar;
 use a3_core::cycle::dialogs::NOTICE;
 use a3_core::records::{Planner, Records, Team};
 use a3_core::season::Rules;
-use a3_core::year::{self, CAMP, EVENT, FRIENDLY, LAST_BOOKING, MATCH, PARTY};
+use a3_core::year::{self, CAMP, EVENT, FRIENDLY, LAST_BOOKING, MATCH, PARTY, TOURNAMENT};
 use a3_files::rch::Dialog;
 use image::Rgba;
 
@@ -38,6 +39,9 @@ const CAMP_LABEL: u16 = 5038;
 const CAMP_PICTURE: u16 = 2613;
 const FRIENDLY_LABEL: u16 = 5137;
 const FRIENDLY_PICTURE: u16 = 2619;
+/// The tournaments' labels, Turnier, hall and beach, and their pictures.
+const TOURNAMENT_LABELS: [u16; 3] = [5039, 5040, 5132];
+const TOURNAMENT_PICTURES: [u16; 3] = [2614, 2615, 2616];
 /// The OK, whose place the bar takes.
 const OK: u16 = 1;
 const CAPTION_ID: u16 = 9931;
@@ -104,8 +108,9 @@ pub struct YearCalendar {
     whistle: bool,
     /// The day a camp was dropped on, while the world map is open.
     camp_day: Option<usize>,
-    /// Whether the friendly's choice of an opponent is open.
-    friendly: bool,
+    /// Whether a choice that books itself is open — the friendly's
+    /// opponent, a tournament.
+    refill: bool,
 }
 
 impl Screen for YearCalendar {
@@ -132,6 +137,9 @@ impl Screen for YearCalendar {
             (PARTY_LABEL, PARTY_PICTURE),
             (CAMP_LABEL, CAMP_PICTURE),
             (FRIENDLY_LABEL, FRIENDLY_PICTURE),
+            (TOURNAMENT_LABELS[0], TOURNAMENT_PICTURES[0]),
+            (TOURNAMENT_LABELS[1], TOURNAMENT_PICTURES[1]),
+            (TOURNAMENT_LABELS[2], TOURNAMENT_PICTURES[2]),
         ] {
             let Some(c) = control(dialog, label) else { continue };
             view.set_clickable(c, true);
@@ -197,7 +205,8 @@ impl Screen for YearCalendar {
                 }
             }
             Target::Drop { from: Grip::Control(c), moved, .. }
-                if [EVENT_LABEL, PARTY_LABEL, CAMP_LABEL, FRIENDLY_LABEL].contains(&id(c)) =>
+                if [EVENT_LABEL, PARTY_LABEL, CAMP_LABEL, FRIENDLY_LABEL].contains(&id(c))
+                    || TOURNAMENT_LABELS.contains(&id(c)) =>
             {
                 let at = dialog.controls[c].rect.min
                     + bevy_math::Vec2::new(f32::from(moved.0), f32::from(moved.1));
@@ -220,8 +229,9 @@ impl Screen for YearCalendar {
             }
             self.fill(cx, view);
         }
-        // The friendly's choice books it itself; the month shows it.
-        if std::mem::take(&mut self.friendly) {
+        // The friendly's and the tournaments' choices book themselves;
+        // the month shows what they booked.
+        if std::mem::take(&mut self.refill) {
             self.fill(cx, view);
         }
         Outcome::Stay
@@ -368,8 +378,22 @@ impl YearCalendar {
             if year::in_camp(calendar, day) && !tables.allowed_in_camp(FRIENDLY) {
                 return Outcome::Popup(Request::with(NOTICE, Args::Text(IN_CAMP)));
             }
-            self.friendly = true;
+            self.refill = true;
             return Outcome::Popup(Request::with(super::friendly::CHOICE, Args::FriendlyDay(day)));
+        }
+        if let Some(k) = TOURNAMENT_LABELS.iter().position(|&l| l == label) {
+            let kind = TOURNAMENT + k as u8;
+            let tables = &cx.game.rules.year;
+            let Some(calendar) = calendar_of(cx) else { return Outcome::Stay };
+            if !tables.free(calendar, day, kind) {
+                return Outcome::Stay;
+            }
+            if year::in_camp(calendar, day) && !tables.allowed_in_camp(kind) {
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(IN_CAMP)));
+            }
+            self.refill = true;
+            let args = Args::TournamentDay { day, kind: k as u8 };
+            return Outcome::Popup(Request::with(super::tournament::CHOICE, args));
         }
         if label == CAMP_LABEL {
             let tables = &cx.game.rules.year;
