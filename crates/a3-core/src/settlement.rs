@@ -403,11 +403,14 @@ pub fn count_down_contracts(records: &mut Records) {
 /// sales plan copied down over the rest; the cash between the blocks
 /// keeps what the season made (`FUN_0042b2fc` walks the countries'
 /// clubs, `FUN_0042b424` reaches `FUN_0042b589`, and there
-/// `FUN_00672839` clears). What the original sets back up beside the
-/// clearing — the ticket sales target (`FUN_0067324c`) and the class
-/// template's money — the replica has not built, so its clubs stand at
-/// nought there. The cycle reaches this from [`open_season`].
+/// `FUN_00672839` clears), and the clubs the walk plans get their
+/// season's sums and grades again (`plan_season`). What the original sets
+/// back up beside — the ticket sales target (`FUN_0067324c`), the drawn
+/// sums and the class template's money — the replica has not built, so
+/// its clubs stand at nought there. The cycle reaches this from
+/// [`open_season`].
 pub fn clear_bookings(records: &mut Records) {
+    let second = records.globals.seasons() > 1;
     for i in 0..records.teams.len() {
         let country = i16::from(records.teams[i].country());
         if country == 0 || !records.globals.played(country) {
@@ -416,6 +419,64 @@ pub fn clear_bookings(records: &mut Records) {
         let system = usize::from(records.countries.cup_system(usize::from(records.teams[i].country())));
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
+        plan_season(&mut records.teams[i], second);
+    }
+}
+
+/// What the original's walk sets up beside the clearing for each club it
+/// plans (`FUN_0042b589`: a club below the tenth level whose +0x8b is
+/// clear, so not the human's): the two sums of 25 000 for every band step
+/// below the top (+0x19c, +0x1a0: 75 000 in the first league, 50 000 in
+/// the second, 25 000 lower), 100 000 at +0x1b8, fifty at +0x5c4, the
+/// grade at +0x5e0 by the league and the place (the first league four
+/// less a tenth of the place, the second three less, lower two in the
+/// top ten and one below), +0x5e1 to nought and +0x5e2 one for a top-ten
+/// club of the first league (a club with no manager at +0x8a), +0x1b0 by
+/// the league a season after the first (800 000, 450 000, 200 000) and
+/// +0x1f8 one in the second league and in the first, two there for a
+/// club of class five or more (team +0x875, the object's +0x11e0).
+/// Measured on the pair: every one of the 147 clubs planned agrees. The
+/// walk's drawn parts (the TV's and the boards' money, +0x18c, +0x1a8,
+/// +0x1a4), the sponsors it signs (`FUN_00716a87`) and the first
+/// season's +0x1b0 are not built.
+const PLAN_STEP: i32 = 25_000;
+const PLAN_1B8: i32 = 100_000;
+const PLAN_5C4: u16 = 50;
+const PLAN_1B0: [i32; 3] = [800_000, 450_000, 200_000];
+const CLUB_CLASS: usize = 0x875;
+const HIGH_CLASS: u8 = 5;
+
+fn plan_season(team: &mut Team, second: bool) {
+    let [manager, human] = team.humans();
+    let level = team.level();
+    if human != 0 || level >= 10 {
+        return;
+    }
+    let band = level.min(2);
+    let place = team.league_place();
+    let steps = PLAN_STEP * (3 - i32::from(band));
+    put::<i32>(team, 0x19c, steps);
+    put::<i32>(team, 0x1a0, steps);
+    let grade = match level {
+        0 => 4u8.wrapping_sub(place / 10),
+        1 => 3u8.wrapping_sub(place / 10),
+        _ if place < 10 => 2,
+        _ => 1,
+    };
+    put::<u16>(team, 0x5c4, PLAN_5C4);
+    put::<u8>(team, 0x5e0, grade);
+    if manager == 0 {
+        put::<u8>(team, 0x5e2, u8::from(level == 0 && place < 10));
+        put::<u8>(team, 0x5e1, 0);
+    }
+    if second {
+        put::<i32>(team, 0x1b0, PLAN_1B0[usize::from(band)]);
+    }
+    put::<i32>(team, 0x1b8, PLAN_1B8);
+    match level {
+        0 => put::<u8>(team, 0x1f8, if team.get::<u8>(CLUB_CLASS) < HIGH_CLASS { 1 } else { 2 }),
+        1 => put::<u8>(team, 0x1f8, 1),
+        _ => {}
     }
 }
 
@@ -2170,5 +2231,56 @@ mod tests {
                 "flag {flag}"
             );
         }
+    }
+
+    /// The planned clubs' new-season fields come out as the original's:
+    /// on its first new-season day every club below the tenth level but
+    /// the human's, with the fields put to nought, is planned back to the
+    /// original's values from its league, place and class; the human's and
+    /// the amateurs' stay as they were.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_planned_clubs_open_the_season_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("NewSeason000.an3"), read("NewSeason000.an3"));
+        let words = [0x19c, 0x1a0, 0x1b0, 0x1b8];
+        let bytes = [0x5e0, 0x5e1, 0x5e2, 0x1f8];
+        for team in ours.teams.iter_mut() {
+            for at in words {
+                put::<i32>(team, at, 0);
+            }
+            for at in bytes {
+                put::<u8>(team, at, 0);
+            }
+            put::<u16>(team, 0x5c4, 0);
+        }
+        let (mut planned, mut kept) = (0, 0);
+        for i in 0..ours.teams.len() {
+            let country = i16::from(ours.teams[i].country());
+            if country == 0 || !ours.globals.played(country) {
+                continue;
+            }
+            plan_season(&mut ours.teams[i], true);
+            let (x, y) = (&ours.teams[i], &theirs.teams[i]);
+            if y.humans()[1] != 0 || y.level() >= 10 {
+                assert_eq!(club::<i32>(x, 0x19c), 0, "{i} not planned");
+                kept += 1;
+                continue;
+            }
+            for at in words {
+                assert_eq!(club::<i32>(x, at), club::<i32>(y, at), "{i} +{at:#x}");
+            }
+            for at in bytes {
+                assert_eq!(club::<u8>(x, at), club::<u8>(y, at), "{i} +{at:#x}");
+            }
+            assert_eq!(club::<u16>(x, 0x5c4), club::<u16>(y, 0x5c4), "{i} +0x5c4");
+            planned += 1;
+        }
+        assert!(planned > 140 && kept > 0, "{planned} planned, {kept} kept");
     }
 }
