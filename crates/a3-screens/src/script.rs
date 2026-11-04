@@ -8910,6 +8910,55 @@ mod tests {
     /// all-time table of the first league and is the archive's newest; the
     /// leagues have taken their promoted and relegated clubs, and the cup
     /// its first round.
+    /// The game plays on season after season: from A's turn (its day set
+    /// to 320) the replica plays five more seasons to the end, each turn's
+    /// steps on its own state, and stands in the sixth with its counters
+    /// rolled — the year on, the half weeks counted, the league open, the
+    /// European cups entered, every played club's squad within its bounds.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_game_plays_on_season_after_season() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "seasons-on", |records| records.globals.set_day(320));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
+                        on 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\n\
+                        on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
+                        on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
+                        on 381 wait\n";
+        let turns = "until dialog 417\nnow press 1\n".repeat(5);
+        let then = format!(
+            "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
+             now press 1\n{turns}until day 30"
+        );
+        let Some(mut runner) = on_save(&game, "seasons-on", &then) else { return };
+        let _ = runner.settle();
+        let log = runner.log.join("\n");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(records.globals.seasons(), 7, "{log}");
+        assert_eq!(records.globals.start_year(), 2031);
+        assert_eq!(season.day, 30);
+        assert_eq!(records.globals.half_weeks(), 8);
+        let league = a3_core::opponent::League::of(records, 14, 0).unwrap();
+        assert_eq!(league.teams(), 18);
+        let entrants = records.block("0x8e7c88").unwrap();
+        let count = |at: usize| i16::from_le_bytes([entrants[at], entrants[at + 1]]);
+        assert_eq!((count(0), count(2), count(6)), (16, 32, 82), "the European cups entered");
+        for c in [14u16, 16, 20, 28, 63] {
+            for t in 0..records.countries.team_count(usize::from(c)).max(0) as u16 {
+                let n = records.team(c, t).unwrap().players().len();
+                assert!(n <= 40, "club {c}/{t} with {n} players");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_new_season_rolls_the_kept_countries_players_over() {
