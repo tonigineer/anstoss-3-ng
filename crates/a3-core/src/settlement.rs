@@ -531,6 +531,11 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         plan_season(&mut records.teams[i], second, held, cover);
         if planned(&records.teams[i]) {
             plan_drawn(&mut records.teams[i], skill, random);
+            let capacity = records
+                .block(&format!("{STADIUMS}[{i}]"))
+                .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
+                .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            sign_main_sponsor(&mut records.teams[i], system, skill, held, capacity, random);
             number_sponsor(&mut records.teams[i], system, random);
             plan_price(&mut records.teams[i], system, random);
             sign_boards(&mut records.teams[i], system, random);
@@ -734,6 +739,135 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
     put::<u16>(team, 0x4fc, random.below(6) as u16 * 5);
     let class = i32::from(team.get::<u8>(CLUB_CLASS));
     put::<i32>(team, 0x500, (class * 4 + 4) * 1_000_000);
+}
+
+/// The main sponsor's offer the walk signs every planned club with
+/// (`FUN_00716be0`, taken over by `FUN_00671bce` in `FUN_00716a87`), a
+/// season after the first:
+/// - the cut on relegation at +0x50a: ten times one more than a fifth of
+///   the place (at most two) and a draw of two;
+/// - its years at +0x509: one, two or three by a draw of a hundred (below
+///   20, below 80, else), one more drawn of two for a champion or a
+///   promoted club (flags 1, 4), of five for flag 0x10, of two for the
+///   cup's winner, a European cup's holder or home gates above 40 000;
+/// - its money at +0x510: 24 less the place in 100 000s, 400 000 and
+///   the gates' fiftieth in 5 000s below the eighteenth place and not
+///   promoted, else the gates' fifth in 300s and 300 000, at most 15
+///   millions; two millions more for the champion, else 1 500 000 for
+///   flag 0x40; a promoted club one million in the first league, 500 000
+///   in the second; a fifth more for a club in Europe (0x4000);
+/// - the extras for a title (+0x514, 9–12 × 250 000), a European place
+///   (+0x518, first league 4–6 × 250 000), the cup's final (+0x51c, 6–8
+///   × 200 000), a cup round (+0x520, 3–5 × 50 000) and +0x524 (first
+///   league 6–9 × 500 000), all drawn;
+/// - the attendance contract: the gates two thousand up in thousands at
+///   +0x52c, within nine tenths of the stadium (+0x3c of its record; 500
+///   with none), and its bonus at +0x528, the money's thousandths times
+///   275, 300 or 325 drawn — both nought when no gate is asked;
+/// then the seven sums in hundredths times the club's +0x10f (team
+/// +0x138) twice over fifty and ninety, by the system's row of
+/// `DAT_008a7aa8`; a drawn style takes three or six tenths of some of
+/// them (`DAT_008a7af0`); each rounded by its size (`FUN_007169f0`) and
+/// again, in hundredths times three for each of the manager's skill and
+/// 150 (`FUN_00716a87`). The plan's rest books the money at +0x2f4. (The
+/// offer's bytes +0x50b to +0x50d the original leaves as its stack held
+/// them, so they are not written.) Measured on the original's first
+/// new-season day: every planned club's fields are among their draws.
+const STADIUM_CAPACITY: usize = 0x3c;
+const SPONSOR_STYLES: [(usize, usize, i32); 3] = [(1, 6, 3), (0, 6, 6), (0, 1, 3)];
+
+fn round_by_size(v: i32) -> i32 {
+    let unit = if v < 10_000 {
+        100
+    } else if v < 100_000 {
+        1_000
+    } else if v < 1_000_000 {
+        10_000
+    } else if v < 10_000_000 {
+        50_000
+    } else {
+        100_000
+    };
+    v / unit * unit
+}
+
+fn sign_main_sponsor(team: &mut Team, system: usize, skill: i64, held: u8, capacity: i32, random: &mut Random) {
+    let level = team.level();
+    let place = i32::from(team.league_place());
+    let flags = team.get::<u16>(FLAGS_AT);
+    let promoted = flags & 4 != 0;
+    let gates = home_average(team);
+    let cut = ((place / 5).min(2) + 1 + random.below(2) as i32) * 10;
+    let mut years: u8 = match random.below(100) {
+        0..20 => 1,
+        20..80 => 2,
+        _ => 3,
+    };
+    if (flags & CHAMPION_FLAG != 0 || promoted) && random.below(2) != 0 {
+        years += 1;
+    }
+    if flags & 0x10 != 0 && random.below(5) == 0 {
+        years += 1;
+    }
+    if (flags & CUP_WINNER_FLAG != 0 || held != 0 || gates > 40_000) && random.below(2) != 0 {
+        years += 1;
+    }
+    let mut money = if place < 18 && !promoted {
+        (24 - place) * 100_000 + 400_000 + gates / 50 * 5_000
+    } else {
+        gates / 5 * 3_000 / 10 + 300_000
+    };
+    money = money.min(15_000_000);
+    if flags & CHAMPION_FLAG != 0 {
+        money += 2_000_000;
+    } else if flags & 0x40 != 0 {
+        money += 1_500_000;
+    }
+    if promoted {
+        match level {
+            0 => money += 1_000_000,
+            1 => money += 500_000,
+            _ => {}
+        }
+    }
+    if flags & EUROPE_FLAG != 0 {
+        money = money / 5 * 6;
+    }
+    let mut sums = [0i32; 7];
+    sums[0] = money;
+    sums[1] = (random.below(4) as i32 + 9) * 250_000;
+    sums[2] = if level == 0 { (random.below(3) as i32 + 4) * 250_000 } else { 0 };
+    sums[3] = (random.below(3) as i32 + 6) * 200_000;
+    sums[4] = (random.below(3) as i32 + 3) * 50_000;
+    sums[5] = if level == 0 { (random.below(4) as i32 + 6) * 500_000 } else { 0 };
+    let mut gate = (gates + 2_000) / 1_000 * 1_000;
+    sums[6] = money / 1_000 * (random.below(3) as i32 * 25 + 275);
+    let held_most = ((f64::from(capacity) * 0.9) / 500.0 * 500.0) as i32;
+    let held_most = if held_most == 0 { 500 } else { held_most };
+    gate = gate.min(held_most);
+    if gate < 1 {
+        sums[6] = 0;
+        gate = 0;
+    }
+    let figure = (i32::from(team.get::<u8>(0x138)) * 2 / 50 + 90) * BOARD_ROWS.get(system * 3 + usize::from(level.min(2))).copied().unwrap_or(0) / 100;
+    for v in &mut sums {
+        *v = *v / 100 * figure;
+    }
+    let (from, to, tenths) = SPONSOR_STYLES[random.below(3) as usize];
+    for v in &mut sums[from..to] {
+        *v = *v * tenths / 10;
+    }
+    let pull = skill * 3 + 150;
+    for (k, v) in sums.iter_mut().enumerate() {
+        let first = round_by_size(*v);
+        let scaled = (i64::from(first) / 100 * pull) as i32;
+        put::<i32>(team, 0x510 + k * 4, round_by_size(scaled));
+    }
+    put::<u8>(team, 0x509, years);
+    put::<u8>(team, 0x50a, cut as u8);
+    put::<i32>(team, 0x52c, gate);
+    let booked = club::<i32>(team, 0x510);
+    put::<i32>(team, 0x2f4, booked);
 }
 
 /// The main sponsor the walk signs a planned club with (`FUN_00716a87`):
@@ -3262,5 +3396,54 @@ mod tests {
             count += 1;
         }
         assert!(count > 200, "{count}");
+    }
+
+    /// The main sponsor's offer is among the original's draws: on its
+    /// first new-season day every planned club's years, cut, sums and
+    /// attendance contract each come out of some draw of the offer.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_main_sponsors_offer_is_among_the_originals_draws() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let holders = theirs.block(HOLDERS).unwrap().to_vec();
+        let words: Vec<usize> = (0..8).map(|k| 0x510 + k * 4).chain([0x2f4]).collect();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
+                continue;
+            }
+            let t = &theirs.teams[i];
+            let system = usize::from(theirs.countries.cup_system(usize::from(t.country())));
+            let first = theirs.countries.first_team(usize::from(t.country())) as usize;
+            let held = holder(&holders, t.country(), i - first);
+            let skill = manager_skill(&theirs, t);
+            let b = theirs.block(&format!("{STADIUMS}[{i}]")).unwrap();
+            let capacity = i32::from_le_bytes(b[STADIUM_CAPACITY..STADIUM_CAPACITY + 4].try_into().unwrap());
+            let mut seen_words: Vec<std::collections::HashSet<i32>> = vec![Default::default(); words.len()];
+            let mut seen_bytes: [std::collections::HashSet<u8>; 2] = Default::default();
+            for seed in 0..4000 {
+                let mut team = t.clone();
+                sign_main_sponsor(&mut team, system, skill, held, capacity, &mut Random::new(seed));
+                for (k, &at) in words.iter().enumerate() {
+                    seen_words[k].insert(club::<i32>(&team, at));
+                }
+                seen_bytes[0].insert(club::<u8>(&team, 0x509));
+                seen_bytes[1].insert(club::<u8>(&team, 0x50a));
+            }
+            for (k, &at) in words.iter().enumerate() {
+                let want = club::<i32>(t, at);
+                assert!(seen_words[k].contains(&want), "{i} +{at:#x}: {want} not among {:?}", seen_words[k].iter().take(8).collect::<Vec<_>>());
+            }
+            assert!(seen_bytes[0].contains(&club::<u8>(t, 0x509)), "{i} years {}", club::<u8>(t, 0x509));
+            assert!(seen_bytes[1].contains(&club::<u8>(t, 0x50a)), "{i} cut {}", club::<u8>(t, 0x50a));
+            count += 1;
+        }
+        assert!(count > 140, "{count}");
     }
 }
