@@ -107,9 +107,14 @@ fn years_left(records: &Records, p: &Player) -> i32 {
 /// Whether his contract holds him on at a club playing a league of
 /// `class` next season (`FUN_004271fb`): two years left at least, and its
 /// clause (the terms' low two bits) no bar.
-fn holds(records: &Records, p: &Player, class: i16) -> bool {
+pub(crate) fn holds(records: &Records, p: &Player, class: i16) -> bool {
     let clause = (p.terms() & 3) as i16;
     years_left(records, p) >= 2 && (clause == 0 || class < clause)
+}
+
+/// Whether the free agents' list still takes one (`FUN_0040e8cc`'s room).
+pub(crate) fn takes(agents: &[FreeAgent]) -> bool {
+    agents.len() < LIST_MOST
 }
 
 /// The season's end lets the players go whose contracts do not hold them

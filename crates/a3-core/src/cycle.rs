@@ -938,8 +938,8 @@ impl Cycle {
                 crate::promotion::flag(records, &self.data.rules.forecast.tickets);
                 crate::europe_entry::qualify(records, &mut season.random);
                 crate::rollover::count_first_seasons(records);
-                let agents = crate::free_agents::release(records, &mut season.random);
-                crate::deals::execute(records, &mut season.random);
+                let mut agents = crate::free_agents::release(records, &mut season.random);
+                crate::deals::execute_with(records, &mut season.random, &mut agents);
                 // Every club's verdict on its season against its goal
                 // (`FUN_006b44cb`'s `FUN_00775fd7`).
                 crate::season::close_goals(records, &self.data.rules);

@@ -22,9 +22,10 @@
 //! seller as sold, the buyer as come (`FUN_0070ebfb`). The list then stands
 //! empty (`FUN_0070f564`).
 //!
-//! Left out: a player whose sale is called off with his contract running
-//! out goes to the free agents (`FUN_0040e8cc`) — here he stays —, the
-//! human clubs' training plans of a player between them (`FUN_00746ddf`),
+//! A player whose sale is called off with his contract running out goes
+//! to the free agents (`FUN_0040e8cc`, [`execute_with`]).
+//!
+//! Left out: the human clubs' training plans of a player between them (`FUN_00746ddf`),
 //! the news (`FUN_0070eccd`), the record and the all-time lists
 //! (`FUN_005dbeb7`, `FUN_005dbefc`, `FUN_006d5931`) and the share market's
 //! note (`FUN_00405bf3`).
@@ -52,6 +53,8 @@ const LOAN: usize = 0x25;
 const SALES: usize = 0x470;
 const PURCHASES: usize = 0x478;
 const NET: usize = 0x258;
+/// The retiring byte's bit: he ends his career.
+const RETIRING: u8 = 0x80;
 /// A club takes no more than this many.
 const SQUAD_MOST: usize = 35;
 /// Fees count in thousands where they are kept.
@@ -408,6 +411,16 @@ pub(crate) fn bring_in(records: &mut Records, club: (u8, i16), id: u16, fee: u32
 
 /// Carries out the season's agreed transfers (`FUN_0070f7cf`).
 pub fn execute(records: &mut Records, random: &mut Random) {
+    let mut agents = Vec::new();
+    execute_with(records, random, &mut agents);
+}
+
+/// The season's agreed transfers carried out, a player whose sale is
+/// called off and whose contract no longer holds him at his club let go
+/// onto the free agents' list `agents` — or ending his career when he
+/// retires or the list is full (`FUN_004271fb`, `FUN_0040e8cc`,
+/// `FUN_0070e29e`), his human club noting him gone to no club.
+pub fn execute_with(records: &mut Records, random: &mut Random, agents: &mut Vec<crate::free_agents::FreeAgent>) {
     let mut deals = read(records);
     let year = i32::from(records.globals.start_year());
     let age_of = |records: &Records, id: u16| -> i32 {
@@ -424,6 +437,18 @@ pub fn execute(records: &mut Records, random: &mut Random) {
         }
         if !deal.loan() && !accepts(records, deal) {
             deal.open = false;
+            let class = next_class(records, seller.0, seller.1);
+            let holds = records.player(id).is_some_and(|p| crate::free_agents::holds(records, p, class));
+            if !holds {
+                let_go(records, seller, id, 0, Some(buyer.0));
+                let retires = records.player(id).is_some_and(|p| p.retiring() & RETIRING != 0);
+                if !retires && crate::free_agents::takes(agents) {
+                    note(records, seller, id, SOLD, [0; 4], 0);
+                    agents.push(crate::free_agents::FreeAgent { id, country: seller.0, team: seller.1 });
+                } else {
+                    crate::rollover::retire(records, u16::from(seller.0), number, id, random);
+                }
+            }
             continue;
         }
         let fee = deal.fee();
@@ -504,6 +529,39 @@ pub fn execute(records: &mut Records, random: &mut Random) {
 
 #[cfg(test)]
 mod tests {
+    /// Over the original's season end (SeasonEnd364): Rönnow's sale to a
+    /// club whose league his contract does not hold is called off, and
+    /// with his contract not holding him at Union either he goes to the
+    /// free agents, Union's history noting him gone to no club, as the
+    /// original's NewSeason000 has him.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_called_off_sale_lets_the_player_go_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let mut random = Random::new(3);
+        let mut agents = crate::free_agents::release(&mut ours, &mut random);
+        const RONNOW: u16 = 3257;
+        assert!(ours.team(14, 84).unwrap().players().contains(&RONNOW), "the release keeps him");
+        execute_with(&mut ours, &mut random, &mut agents);
+        assert!(!ours.team(14, 84).unwrap().players().contains(&RONNOW));
+        assert!(!theirs.team(14, 84).unwrap().players().contains(&RONNOW));
+        assert!(agents.iter().any(|a| a.id == RONNOW && (a.country, a.team) == (14, 84)));
+        let entry = |r: &Records| -> Option<[u8; 0x14]> {
+            let e = r.extras.get(0)?;
+            (0..e.get::<i16>(0xdde).max(0) as usize).map(|k| e.get::<[u8; 0x14]>(0xde0 + k * 0x14)).find(|a| {
+                r.player(RONNOW).is_some_and(|p| u16::from_le_bytes([a[4], a[5]]) == p.first_name()) && a[2] == 0xff
+            })
+        };
+        // The other club's second byte the original leaves as its stack
+        // held it (`local_1c`'s unset byte).
+        let clean = |e: Option<[u8; 0x14]>| e.map(|mut a| { a[9] = 0; a });
+        assert_eq!(clean(entry(&ours)), clean(entry(&theirs)));
+    }
+
     use super::*;
 
     /// The season's deals over the original's pair: SeasonEnd364 run
