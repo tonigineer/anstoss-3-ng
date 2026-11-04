@@ -1041,6 +1041,8 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
     }
 }
 
+/// The training flags' team meeting before the next match.
+const TEAM_MEETING: u32 = 0x1000;
 /// The human clubs' shirt sales, by slot (`DAT_00a51ea8`).
 const SHIRT_SALES: &str = "0xa51ea8";
 
@@ -1092,6 +1094,13 @@ fn clear_club_seasons(records: &mut Records) {
             }
             // And its together count (`FUN_0069d684`).
             extra.set_together(0);
+            // A team meeting stands planned before its first match
+            // (`FUN_00515df1`: club +0xdf8's 0x1000; the original plans it
+            // at every club, the computer clubs' gone by the season's
+            // first day by a step not traced).
+            if let Some(team) = records.team_mut(country, number) {
+                team.set_training_flags(team.training_flags() | TEAM_MEETING);
+            }
             // The shirts its players sold start again from none
             // (`FUN_00699351`, emptied, `FUN_006993e0`).
             if let Some(b) = records.block_mut(&format!("{SHIRT_SALES}[{}]", human - 1)) {
@@ -1273,6 +1282,14 @@ mod club_season_tests {
         let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
         ours.globals.set_seasons(2);
         clear_club_seasons(&mut ours);
+        // A team meeting planned at the human club alone, as the
+        // original's first day has it.
+        for country in crate::opponent::played_nations(&theirs) {
+            for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (ours.team(country, number).unwrap(), theirs.team(country, number).unwrap());
+                assert_eq!(x.training_flags() & TEAM_MEETING, y.training_flags() & TEAM_MEETING, "{country}/{number}");
+            }
+        }
         // The human club's shirt sales stand emptied as the original's.
         for slot in 0..4 {
             let name = format!("{SHIRT_SALES}[{slot}]");
