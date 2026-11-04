@@ -1043,6 +1043,12 @@ pub(crate) fn open_standings(records: &mut Records, random: &mut Random) {
 
 /// The training flags' team meeting before the next match.
 const TEAM_MEETING: u32 = 0x1000;
+/// The season's flags of a club promoted or relegated, and what
+/// `FUN_0069da17` puts back for it: four words to nought, two bytes to
+/// 0xff.
+const MOVED: u16 = 4 | 8;
+const MOVED_WORDS: [usize; 4] = [0xfe, 0x100, 0x102, 0x104];
+const MOVED_BYTES: [usize; 2] = [0x106, 0x107];
 /// The human clubs' shirt sales, by slot (`DAT_00a51ea8`).
 const SHIRT_SALES: &str = "0xa51ea8";
 
@@ -1051,6 +1057,16 @@ fn clear_club_seasons(records: &mut Records) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team_mut(country, number) else { continue };
+            // A club gone up or down starts afresh at +0xfe … +0x107
+            // (`FUN_0069da17`).
+            if team.get::<u16>(SEASON_FLAGS) & MOVED != 0 {
+                for at in MOVED_WORDS {
+                    team.put::<u16>(at, 0);
+                }
+                for at in MOVED_BYTES {
+                    team.put::<u8>(at, 0xff);
+                }
+            }
             for (at, len) in CLUB_SEASON_ZEROS {
                 for k in 0..len {
                     team.put::<u8>(at + k, 0);
@@ -1281,7 +1297,37 @@ mod club_season_tests {
         let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
         ours.globals.set_seasons(2);
+        // The season's flags as the original's turn set them.
+        let mut moved = 0;
+        for country in crate::opponent::played_nations(&theirs) {
+            for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                let flags = theirs.team(country, number).unwrap().get::<u16>(SEASON_FLAGS);
+                moved += i32::from(flags & MOVED != 0);
+                ours.team_mut(country, number).unwrap().put::<u16>(SEASON_FLAGS, flags);
+            }
+        }
+        assert!(moved > 20, "{moved} clubs moved");
         clear_club_seasons(&mut ours);
+        // The clubs gone up or down start afresh at +0xfe … +0x107 as the
+        // original's (their flags as the original's turn set them).
+        for country in crate::opponent::played_nations(&theirs) {
+            for number in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                let y = theirs.team(country, number).unwrap();
+                if y.get::<u16>(SEASON_FLAGS) & MOVED == 0 {
+                    continue;
+                }
+                let x = ours.team(country, number).unwrap();
+                if x.get::<u16>(SEASON_FLAGS) & MOVED == 0 {
+                    continue;
+                }
+                for at in MOVED_WORDS {
+                    assert_eq!(x.get::<u16>(at), y.get::<u16>(at), "{country}/{number} +{at:#x}");
+                }
+                for at in MOVED_BYTES {
+                    assert_eq!(x.get::<u8>(at), y.get::<u8>(at), "{country}/{number} +{at:#x}");
+                }
+            }
+        }
         // A team meeting planned at the human club alone, as the
         // original's first day has it.
         for country in crate::opponent::played_nations(&theirs) {
