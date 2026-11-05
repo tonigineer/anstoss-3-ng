@@ -35,6 +35,7 @@ pub mod musik;
 pub mod notepad;
 pub mod nutzung;
 pub mod office;
+pub mod open_day;
 pub mod optionen;
 pub mod opponent;
 pub mod planner;
@@ -151,6 +152,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(duties::Takers::default()),
         Box::new(medical::Medical::default()),
         Box::new(medical::Visit),
+        Box::new(open_day::OpenDay),
         Box::new(opponent::Opponent),
         Box::new(playerinfo::PlayerInfo::default()),
         Box::new(office::Office),
@@ -302,6 +304,7 @@ pub fn compose(game: &mut Game) {
     duties::compose(&mut game.dialogs);
     medical::compose(&mut game.dialogs);
     medical::compose_visit(&mut game.dialogs);
+    open_day::compose_open_day(&mut game.dialogs);
     opponent::compose(&mut game.dialogs);
     playerinfo::compose(&mut game.dialogs);
     discipline::compose(&mut game.dialogs);

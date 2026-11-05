@@ -179,6 +179,8 @@ pub mod dialogs {
     /// A talk with a player, on the day it was booked for.
     pub const TALK: u16 = 461;
     pub const VISIT: u16 = 210;
+    /// The year calendar's open day, `IDD_TAG_DER_OFFENEN_TUER`.
+    pub const OPEN_DAY: u16 = 270;
 }
 
 use self::dialogs::*;
@@ -217,6 +219,9 @@ const LEAGUE_MATCH: u8 = 2;
 /// A talk booked in the week planner, and the talk itself.
 const TALK: u8 = 0x19;
 const TALK_DIALOG: u16 = dialogs::TALK;
+/// An event entry of the year calendars, and the open day's number in it.
+const CALENDAR_EVENT: u8 = 8;
+const OPEN_DAY_EVENT: u16 = 6;
 /// A sick visit booked in the week planner; what the week calls each.
 const VISIT: u8 = 0x0b;
 const TALK_TEXT: u16 = 4230;
@@ -827,6 +832,7 @@ impl Cycle {
             self.ask(Request::new(week))?;
             for _ in 0..WEEK_DAYS {
                 self.appointments()?;
+                self.open_events()?;
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1280,6 +1286,42 @@ impl Cycle {
             };
             if let Some((dialog, args)) = booked {
                 self.ask(Request::with(dialog, args))?;
+            }
+        }
+        self.season(|s| s.current = 0);
+        Ok(())
+    }
+
+    /// What the year calendars booked, manager by manager: save A's day
+    /// 63 holds the open day, entry kind 8 with the open day's number 6
+    /// where a talk's would name the player. The dialog opens in its
+    /// manager's turn and shuffles its pictures at the open
+    /// (`FUN_006cbbc7`'s three `FUN_00675630` over 3, 7 and 4 places,
+    /// which the screen itself draws). What the event rolls for its
+    /// success stays unported: `FUN_0062a325` walking the country's
+    /// leagues into `FUN_00690a9e`'s squad spans, eight draws of 9 or
+    /// 10 — its semantics are a next step.
+    fn open_events(&self) -> Result<(), Gone> {
+        let managers = self.season(|s| s.managers.len()).unwrap_or(0);
+        for n in 0..managers {
+            let booked = {
+                let mut state = self.state();
+                let state = &mut *state;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_ref())
+                else {
+                    return Ok(());
+                };
+                season.current = n;
+                records
+                    .human_slot(n)
+                    .and_then(|slot| records.calendars.get(slot))
+                    .is_some_and(|c| {
+                        let entry = c.day(season.day);
+                        entry.kind == CALENDAR_EVENT && entry.player == OPEN_DAY_EVENT
+                    })
+            };
+            if booked {
+                self.ask(Request::new(OPEN_DAY))?;
             }
         }
         self.season(|s| s.current = 0);
