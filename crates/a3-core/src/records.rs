@@ -489,6 +489,11 @@ record! {
     0xcf => intensity_states, set_intensity_states: u8;
     0xc7 => anti_offside, set_anti_offside: u8;
     0xc8 => set_pieces, set_set_pieces: u16;
+    /// A sixth tactic level 0 to 5, of no known name (the club
+    /// object's +0xa5; see `crate::settlement`, and the week's bulk
+    /// training in `crate::computer_training`, which teaches it with
+    /// the tricks).
+    0xcb => tactic_extra, set_tactic_extra: u8;
     /// Before the next match: bit 0x800 a training camp, bit 0x1000 a
     /// team meeting (the club object's +0xdf8).
     0x308 => training_flags, set_training_flags: u32;

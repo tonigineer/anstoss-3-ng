@@ -28,8 +28,8 @@ pub const OPERATION_DUE: u16 = 0x0800;
 pub const INJECTION: u16 = 0x1000;
 pub const KNOCKS: u16 = 0xe000;
 const GLANDULAR_FEVER: u16 = 0x2000;
-const ACHILLES: u16 = 0x4000;
-const GROIN: u16 = 0x8000;
+pub const ACHILLES: u16 = 0x4000;
+pub const GROIN: u16 = 0x8000;
 /// The operations: the kind of injury each turns into, and for how long.
 const ACHILLES_OPERATION: (u8, i32) = (65, 56);
 const GROIN_OPERATION: (u8, i32) = (66, 42);

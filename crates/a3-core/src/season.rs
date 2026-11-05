@@ -124,6 +124,8 @@ pub struct Rules {
     pub training: crate::training::TrainingTables,
     /// The individual training's difficulties and intensities.
     pub individual: crate::individual::IndividualTables,
+    /// The computer clubs' own weekly training plans.
+    pub computer_training: crate::computer_training::Tables,
     /// The year calendar's kinds, events, parties and camps' places.
     pub year: crate::year::YearTables,
     /// The forecasts' months left and perimeter advertising.
@@ -185,6 +187,7 @@ impl Rules {
             tactics: crate::tactics::TacticsTables::load(exe)?,
             training: crate::training::TrainingTables::load(exe)?,
             individual: crate::individual::IndividualTables::load(exe)?,
+            computer_training: crate::computer_training::Tables::load(exe)?,
             year: crate::year::YearTables::load(exe)?,
             forecast: crate::forecast::ForecastTables::load(exe)?,
             contract: crate::contract::ContractTables::load(exe)?,

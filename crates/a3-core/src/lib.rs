@@ -8,6 +8,7 @@ pub mod betting;
 pub mod calendar;
 pub mod cards;
 pub mod cohesion;
+pub mod computer_training;
 pub mod contract;
 pub mod crowd;
 pub mod cup_draw;

@@ -832,8 +832,24 @@ impl Cycle {
                     let state = &mut *guard;
                     state.season.as_mut().map(|season| {
                         // The human clubs' day starts it (`FUN_0064f981`):
-                        // the event gates, then the day's ticket sales.
+                        // on the second weekday the computer clubs'
+                        // own week first, then the event gates, then
+                        // the day's ticket sales.
                         let today = season.day as i32;
+                        if today % 7 == 1 {
+                            // The bulk draws from the shared dice, so
+                            // its draws come in the original's order
+                            // (`FUN_0074ca91`).
+                            if let Some(records) = state.records.as_mut() {
+                                crate::computer_training::week(
+                                    records,
+                                    &self.data.rules.computer_training,
+                                    &self.data.rules.training,
+                                    season.date(),
+                                    &mut season.random,
+                                );
+                            }
+                        }
                         let slots =
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         if let Some(records) = state.records.as_mut() {
