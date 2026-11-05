@@ -62,6 +62,25 @@ impl Random {
         }
         result
     }
+
+    /// A shuffled row of `count` places: every place drawn again and
+    /// again till it falls on a free one, which takes the next number
+    /// (`count` draws at least, more for the falls already taken).
+    ///
+    /// Original: FUN_00675630, as a dialog's pictures use it.
+    pub fn shuffle(&mut self, count: usize) -> Vec<i16> {
+        let mut place = vec![-1; count];
+        let mut next = 0;
+        while next < count {
+            let at = self.below(count as u32) as usize;
+            if place[at] >= 0 {
+                continue;
+            }
+            place[at] = i16::try_from(next).unwrap();
+            next += 1;
+        }
+        place
+    }
 }
 
 /// A draw as recorded: its range, its result and where it was asked for.
@@ -110,6 +129,23 @@ mod tests {
     /// The generator steps as the original's FUN_0078a8f4 does on its
     /// state: Schrage's 40014 and 40692 on 0x7fffffab and 0x7fffff07, the
     /// difference wrapped below one, its high bits taken.
+    /// The shuffle on a fresh walk seed: `below(3)` drawing 1, 0, 0 and
+    /// 2 — the third fall already taken, so the row reads [1, 0, 2].
+    /// (The original's open-day ctor draws 1, 2, 0 from its 12345/67890;
+    /// its two numbers reach the generator differently than the script's
+    /// `now random` does, and what it really leaves in the state is a
+    /// next step.)
+    #[test]
+    fn the_shuffle_places_over_the_falls() {
+        let mut random = Random::from_state(12_345, 67_890);
+        assert_eq!(random.shuffle(3), [1, 0, 2]);
+        for count in [7usize, 4] {
+            let row = random.shuffle(count);
+            assert_eq!(row.len(), count);
+            assert!((0..count).all(|n| row.iter().any(|&p| p == n as i16)));
+        }
+    }
+
     #[test]
     fn the_generator_steps_as_the_original() {
         let original = |s1: &mut i32, s2: &mut i32| -> i32 {
