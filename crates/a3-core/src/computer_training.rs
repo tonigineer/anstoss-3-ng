@@ -415,7 +415,7 @@ fn tactics(team: &mut crate::records::Team, plan: &Plan, random: &mut Random) {
 /// A tactic level 0 to 5, one step (`FUN_00698a4b` and its like).
 fn tactic(level: u8, step: i32) -> u8 {
     let level = (i32::from(level) + step) as i16;
-    (if level < 0 { 0 } else if level > 5 { 5 } else { level }) as u8
+    level.clamp(0, 5) as u8
 }
 
 /// One three-bit field of the set pieces, one step (`FUN_0069851b`
@@ -423,7 +423,7 @@ fn tactic(level: u8, step: i32) -> u8 {
 /// tricks at 12).
 fn field(pieces: u16, shift: u16, mask: u16, step: i32) -> u16 {
     let level = (i32::from((pieces >> shift) & 7) + step) as i16;
-    let level = if level < 0 { 0 } else if level > 5 { 5 } else { level } as u16;
+    let level = level.clamp(0, 5) as u16;
     pieces & mask | level << shift
 }
 
@@ -431,13 +431,7 @@ fn field(pieces: u16, shift: u16, mask: u16, step: i32) -> u16 {
 /// word wraps, then sits within 0 and 10000 (`FUN_00411130`).
 fn train(value: i16, steps: i16) -> i16 {
     let value = value.wrapping_add(steps.wrapping_mul(100));
-    if value < 0 {
-        0
-    } else if 10000 < value {
-        10000
-    } else {
-        value
-    }
+    value.clamp(0, 10000)
 }
 
 /// The condition as the game reads it: a smoker's reads five lower,
