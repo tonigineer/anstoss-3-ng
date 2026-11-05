@@ -313,13 +313,13 @@ fn european_odds(records: &mut Records) {
 const TOURNAMENTS: [usize; 2] = [0x1a94, 0x1c66];
 const NATION_ODDS: usize = 0xea;
 const NATIONS_MOST: usize = 115;
-const NATIONS: usize = 0x75;
+pub(crate) const NATIONS: usize = 0x75;
 /// A nation's strength byte (`DAT_00ae6223`), and the national teams'
 /// records (`0xa9d660` + nation × 0x990, a team's layout).
-const NATION_STRENGTH: usize = 0xae6223;
-const NATIONAL_TEAMS: u32 = 0xa9d660;
-const NATIONAL_COUNT: usize = 0x112 - 0x20;
-const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
+pub(crate) const NATION_STRENGTH: usize = 0xae6223;
+pub(crate) const NATIONAL_TEAMS: u32 = 0xa9d660;
+pub(crate) const NATIONAL_COUNT: usize = 0x112 - 0x20;
+pub(crate) const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
 
 /// The tournaments' odds (`FUN_0077713a`, `FUN_0077f776` for each): the
 /// European championship's nations, then every nation for the world cup.

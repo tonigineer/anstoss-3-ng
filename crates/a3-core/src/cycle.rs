@@ -890,6 +890,17 @@ impl Cycle {
                                 season.tournament_screens.extend(drawn.chain(results).chain(halls));
                                 season.halls.extend(shown.halls);
                             }
+                            // The nations play their owed international
+                            // dates on the weekdays 3 and 6
+                            // (`FUN_006bd980`): in the original it walks
+                            // the youth league and just before the
+                            // world's day, the replica's youth leagues
+                            // standing later, after the matches.
+                            crate::internationals::play_day(
+                                records,
+                                today,
+                                &mut season.random,
+                            );
                             // The day of the world closes it
                             // (`FUN_006504b6` with the weekday); the
                             // original's job steps stand between,

@@ -33,6 +33,7 @@ pub mod honours;
 pub mod human_day;
 pub mod illegal;
 pub mod individual;
+pub mod internationals;
 pub mod jobs;
 pub mod league;
 pub mod licence;
