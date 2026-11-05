@@ -50,6 +50,10 @@ const CHART_STEP: u32 = 6;
 /// Ids for the tiles the week screen marks its elapsed days with, which the
 /// game draws itself.
 const DAY_TILE: u16 = 9900;
+/// The week's dial: its background art draws the orange circle in the
+/// corner, the replica only gives its click area this id of its own.
+const WEEK_DIAL: u16 = 9932;
+const DIAL: (f32, f32, f32, f32) = (600.0, 448.0, 640.0, 478.0);
 
 /// Texts by id.
 const WEEK_HOME: u16 = 2843;
@@ -110,6 +114,14 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
             rect: Rect::new(0.0, top, w, top + h),
             ..bitmap(Vec2::ZERO, 0.0, DAY_TILE + day as u16)
         }));
+        // The week's dial of an orange circle in its bottom right corner,
+        // which its background art already draws: clicking it breaks into
+        // the running week (`FUN_00710839`), and the day walks on.
+        let (left, top, right, bottom) = DIAL;
+        screen.controls.push(Control {
+            rect: Rect::new(left, top, right, bottom),
+            ..bitmap(Vec2::ZERO, 0.0, WEEK_DIAL)
+        });
         dialogs.insert(id, screen);
     }
 }
@@ -181,7 +193,11 @@ impl Screen for Week {
             set(view, cx.dialog, WEEK_CAPTION, title);
         }
         show_week(view, cx.dialog, cx.game, season, cx.state.records.as_ref());
-        // The week runs by itself; none of its buttons does anything yet.
+        if let Some(dial) = control(cx.dialog, WEEK_DIAL) {
+            view.set_clickable(dial, true);
+        }
+        // The week runs by itself; only its dial walks a day, and none of
+        // its buttons does anything yet.
         super::mark_inert(view, cx.dialog, |_| false);
     }
 
@@ -197,7 +213,17 @@ impl Screen for Week {
         true
     }
 
-    fn input(&mut self, _: &mut Cx, _: &mut View, _: Target, _: bool) -> Outcome {
+    /// The week's own dial walks the day on at once: what the day left to
+    /// be seen comes up first, then it moves on (`FUN_00710839` breaks
+    /// into the running week, `FUN_0062a959` moves the day).
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, pressed: bool) -> Outcome {
+        if pressed
+            && control(cx.dialog, WEEK_DIAL).is_some_and(|dial| {
+                matches!(target, Target::Control(i) | Target::Button(i) if i == dial)
+            })
+        {
+            self.timer = DAY_SECS;
+        }
         Outcome::Stay
     }
 

@@ -7854,6 +7854,52 @@ mod tests {
         assert_eq!((away.sold, away.prices), (188, [15, 20, 40, 150]));
     }
 
+    /// The dial the running week answers to: its orange circle lives in
+    /// the screen's own background art, and the replica only gives its
+    /// click area an id of its own, 9932 — no bar of the menu stands under
+    /// the week — while the week walks its days on its own and the dial
+    /// walks one on at once (the original's click id breaking into the
+    /// week, `FUN_00710839`, and `FUN_0062a959` moving the day). Watched
+    /// on A at its first week's walk, two dials deep.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_walks_to_its_dial() {
+        let game = game();
+        let load = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\n";
+        let walk = format!("{load}until dialog 2");
+        let dialled = format!("{walk}\nnow press 9932\nnow press 9932\nuntil dialog 2");
+        let Some(plain) = on_save(&game, "A", &walk) else { return };
+        let Some(runner) = on_save(&game, "A", &dialled) else { return };
+        // The two presses of the week's own dial were taken, and the walk
+        // stood where it stood before them.
+        let presses = |runner: &Runner| {
+            runner.log.iter().filter(|l| l.trim() == "Press(9932)").count()
+        };
+        assert_eq!(presses(&runner), presses(&plain) + 2);
+        assert_eq!(
+            runner.host.state().season.as_ref().map(|s| s.day),
+            plain.host.state().season.as_ref().map(|s| s.day)
+        );
+        let view = runner.host.view();
+        assert_eq!(view.id, a3_core::cycle::dialogs::WEEKS[1]);
+        assert!(is_week(view.id));
+        let dialog = &game.dialogs[&view.id];
+        assert!(
+            !dialog.controls.iter().any(|c| matches!(c.kind, Kind::Bar { .. })),
+            "the week shows no bar of the menu"
+        );
+        let dial = dialog
+            .controls
+            .iter()
+            .position(|c| c.id == Some(9932))
+            .expect("the week's dial");
+        assert_eq!(
+            dialog.controls[dial].rect,
+            bevy_math::Rect::new(600.0, 448.0, 640.0, 478.0)
+        );
+        assert!(view.controls[dial].state.as_bitmap().unwrap().clickable);
+    }
+
     #[test]
     #[ignore = "needs the game"]
     fn the_finanzen_pays_salaries_and_estimates_values() {
