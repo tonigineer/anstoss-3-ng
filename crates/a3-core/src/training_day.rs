@@ -1511,6 +1511,23 @@ mod tests {
         assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 41, 0, (64, date), &mut random), trainer != 0);
         assert!(trainer == 0 || defenders(&records) >= before);
         assert_eq!(random, held);
+        // Event 110 puts a man out whose knock's count passed five: the
+        // Achilles tendon for 182 days (kind 0x41), the groin for 100
+        // (0x42), into the record's own fields, today as the day.
+        let (achilles, groin) = (squad[0], squad[1]);
+        for (id, bit) in [(achilles, crate::medical::ACHILLES), (groin, crate::medical::GROIN)] {
+            let p = records.player_mut(id).unwrap();
+            p.set_knocks(p.knocks() & !(crate::medical::ACHILLES | crate::medical::GROIN) | bit);
+            p.put::<u8>(0x27c, 6);
+            p.set_injured_to([0, 0]);
+        }
+        let held = random.clone();
+        assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), 110, 0, (64, date), &mut recent, &mut random));
+        assert_eq!(random, held, "the long knocks draw nothing");
+        for (id, kind, days) in [(achilles, 0x41, 182), (groin, 0x42, 100)] {
+            let p = records.player(id).unwrap();
+            assert_eq!((p.injury_kind(), p.injured_on(), days_out(&records, p)), (kind, 64, days));
+        }
         // Code 35 waits for twenty matchdays: on A, a few in, it neither
         // draws nor takes place.
         let team = records.team(club.0, club.1).unwrap();
