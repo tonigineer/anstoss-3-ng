@@ -896,7 +896,9 @@ fn player_event(
 /// (the handle's +0xb5, the record's `intensity`): five less of the
 /// media's liking and of the board's confidence (`FUN_0041849a`, the
 /// manager's +0x9c, his record's `confidence`), the mood ten down, the
-/// man knocked about a week.
+/// man knocked about a week; 29, behind the gate, a human trainer whose
+/// board stands 75 or more behind him (`FUN_007701b2`,
+/// [`crate::stock::confidence`]) lifting the mood ten.
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
 fn run_player_event(
@@ -1004,6 +1006,13 @@ fn run_player_event(
             if 2 <= random.below(3) {
                 knock(records, keeper, 5);
             }
+            true
+        }
+        29 if gate => {
+            if trainer == 0 || crate::stock::confidence(records, usize::from(trainer) - 1) < 0x4b {
+                return false;
+            }
+            mood(records, 10);
             true
         }
         30 if gate => {
@@ -1372,6 +1381,13 @@ mod tests {
         let lost = if trainer != 0 && top { before.min(10) } else { 0 };
         assert_eq!(media(&records), before - lost);
         assert_eq!(random, held);
+        // Code 29 in an open unit (0): met as the board's confidence in a
+        // human trainer stands at 75 or more, the mood then ten up.
+        let backed = trainer != 0 && crate::stock::confidence(&records, usize::from(trainer).max(1) - 1) >= 0x4b;
+        let mood_before = i32::from(records.team(club.0, club.1).unwrap().mood());
+        assert_eq!(run_player_event(&mut records, club, &trainable, &tables, 29, 0, (64, date), &mut random), backed);
+        let lifted = if backed { (mood_before + 10).min(200) } else { mood_before };
+        assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), lifted);
         // Code 38 outside its hard units neither draws nor takes place.
         let held = random.clone();
         assert!(!run_player_event(&mut records, club, &trainable, &tables, 38, 0, (64, date), &mut random));
