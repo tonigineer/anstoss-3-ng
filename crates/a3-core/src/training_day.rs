@@ -898,7 +898,9 @@ fn player_event(
 /// manager's +0x9c, his record's `confidence`), the mood ten down, the
 /// man knocked about a week; 29, behind the gate, a human trainer whose
 /// board stands 75 or more behind him (`FUN_007701b2`,
-/// [`crate::stock::confidence`]) lifting the mood ten.
+/// [`crate::stock::confidence`]) lifting the mood ten; 41, with a human
+/// trainer, every trained defender (main position 2 to 5,
+/// `FUN_00677c5f`) one more content with the team (`FUN_005ee7ed`).
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
 fn run_player_event(
@@ -1100,6 +1102,19 @@ fn run_player_event(
             };
             if let Some(p) = records.player_mut(id) {
                 p.set_good(p.good() & !bit);
+            }
+            true
+        }
+        41 => {
+            if trainer == 0 {
+                return false;
+            }
+            for &id in trainable {
+                if let Some(p) = records.player_mut(id)
+                    && (2..=5).contains(&p.get::<u8>(0x21d))
+                {
+                    crate::mood::change(p, 1, 1);
+                }
             }
             true
         }
@@ -1388,6 +1403,20 @@ mod tests {
         assert_eq!(run_player_event(&mut records, club, &trainable, &tables, 29, 0, (64, date), &mut random), backed);
         let lifted = if backed { (mood_before + 10).min(200) } else { mood_before };
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), lifted);
+        // Code 41 lifts every trained defender's team contentment by one
+        // with a human trainer, and draws nothing.
+        let defenders = |records: &Records| -> i32 {
+            trainable
+                .iter()
+                .map(|&id| records.player(id).unwrap())
+                .filter(|p| (2..=5).contains(&p.get::<u8>(0x21d)))
+                .map(|p| i32::from(p.contentment()[1]))
+                .sum()
+        };
+        let (held, before) = (random.clone(), defenders(&records));
+        assert_eq!(run_player_event(&mut records, club, &trainable, &tables, 41, 0, (64, date), &mut random), trainer != 0);
+        assert!(trainer == 0 || defenders(&records) >= before);
+        assert_eq!(random, held);
         // Code 38 outside its hard units neither draws nor takes place.
         let held = random.clone();
         assert!(!run_player_event(&mut records, club, &trainable, &tables, 38, 0, (64, date), &mut random));
