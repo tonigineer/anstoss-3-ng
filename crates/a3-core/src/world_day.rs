@@ -66,7 +66,7 @@ const MONTH_DAYS: [u16; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
 
 /// Whether a year has 366 days (`FUN_00675e65`).
 fn leap(year: u16) -> bool {
-    year % 400 == 0 || (year % 100 != 0 && year % 4 == 0)
+    year.is_multiple_of(400) || (!year.is_multiple_of(100) && year.is_multiple_of(4))
 }
 
 /// The date one day on (`FUN_00675a73(1)` behind its schedule walk): the
