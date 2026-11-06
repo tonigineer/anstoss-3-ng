@@ -4,20 +4,24 @@
 //! (`FUN_00749508` with `FUN_0074a1ec`, which the day's advance
 //! `FUN_0064f981` runs after the ticket sales).
 //!
+//! Here besides: the session's injury (`FUN_00767225`), the unit's team
+//! skills (`FUN_0069851b` and its kin), the events 100 to 110 of
+//! `FUN_0060c1c0` with 25 of event 102's 31 player events, the secret
+//! training's toll (`FUN_0041828e`), and the day's news pick after the
+//! friendlies ([`news`]).
+//!
 //! What is not here yet: the day's snapshot of the squad
 //! (`FUN_00746c48`) — and with it the block which decays the positions
 //! at the week's start and the units' position development with their
 //! rolls (`FUN_00747246`; nothing of it rolled in the day-63
 //! comparison, where draws 8 to 10 stand); the training gains
-//! (`FUN_0074ae97`, `FUN_00767225`); what the day's news posts once its
-//! category is picked (`FUN_005ee5c0` with `FUN_005ef430` and
-//! `FUN_005f1eaf`; the pick itself stands in [`crate::news`]); the
-//! events 100 to 110
-//! of `FUN_0060c1c0`; the camp's own happenings (`FUN_0060ff69`); the
-//! writes of `FUN_0041828e` behind the secret flag; the flag helpers
-//! `FUN_0069851b` and friends; the player-manager's block behind the
-//! club's byte +0x8a; and the third case of `FUN_00745d3c`, which
-//! weighs two abilities.
+//! (`FUN_0074ae97`); what the day's news posts once its category is
+//! picked (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the
+//! pick itself stands in [`crate::news`]), and the events' news; the
+//! player events 8, 16, 20, 26, 34 and 35; the camp's own happenings
+//! (`FUN_0060ff69`); the player-manager's block behind the club's byte
+//! +0x8a; and the third case of `FUN_00745d3c`, which weighs two
+//! abilities.
 
 use std::collections::BTreeMap;
 
