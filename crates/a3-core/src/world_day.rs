@@ -51,7 +51,53 @@ pub fn day(records: &mut Records, weekday: i32, random: &mut Random) {
         _ => {}
     }
     luck_round_of_list(records, random);
+    // The game's day counter steps on (`DAT_00b5cbd4`), then the day's
+    // step (`FUN_00675a73(1)`): the schedule walk, the date after it.
+    records.globals.set_day(records.globals.day().wrapping_add(1));
     schedule_walk(&*records, random);
+    step_date(&mut records.globals);
+}
+
+/// The days of the months (`DAT_008a3088`, by the month; February's
+/// stand apart, by the leap rule).
+const MONTH_DAYS: [u16; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/// Whether a year has 366 days (`FUN_00675e65`).
+fn leap(year: u16) -> bool {
+    year % 400 == 0 || (year % 100 != 0 && year % 4 == 0)
+}
+
+/// The date one day on (`FUN_00675a73(1)` behind its schedule walk): the
+/// day of the month and the day of the year count up; past the month's
+/// last day — February's 28th, or its 29th in a leap year — the month
+/// steps, and past December the year: January then, its day of the year
+/// counted from nought and the year's length set anew. What a new month
+/// runs (`FUN_007853a7`) and the new year's day table (`FUN_00675eb3`)
+/// are not here.
+fn step_date(globals: &mut crate::records::Globals) {
+    let [mut day, mut month, mut year] = globals.date();
+    let mut of_year = globals.day_of_year().wrapping_add(1);
+    day = day.wrapping_add(1);
+    if month == 2 {
+        let last = if leap(year) { 29 } else { 28 };
+        if last < day {
+            day -= last;
+            month = 3;
+        }
+    } else if let Some(&last) = MONTH_DAYS.get(usize::from(month))
+        && last < day
+    {
+        day -= last;
+        month += 1;
+        if 12 < month {
+            of_year = day.wrapping_sub(1);
+            month = 1;
+            year = year.wrapping_add(1);
+            globals.set_year_days(if leap(year) { 366 } else { 365 });
+        }
+    }
+    globals.set_date([day, month, year]);
+    globals.set_day_of_year(of_year);
 }
 
 /// The day's step behind the counter's increment (`FUN_00675a73(1)`):
@@ -62,9 +108,9 @@ pub fn day(records: &mut Records, weekday: i32, random: &mut Random) {
 /// shifted by the walk's pair (the rotation `FUN_007842a1` draws
 /// nothing); the day then re-rolls the table's fives ([`reroll_fives`])
 /// and in the late phases fades some of its threes ([`fade_threes`],
-/// `FUN_0078418b`). The phase machine steps no phase boundary at
-/// A.an3 — its table day counts at +0xb5cbda are read but not written
-/// back, and neither is the shifted table.
+/// `FUN_0078418b`). The phase is the date's month (+0xb5cbdc), which
+/// [`step_date`] moves on after the walk; the shifted table is not
+/// written back.
 fn schedule_walk(records: &Records, random: &mut Random) {
     /// The walk's target per phase (`DAT_008acfec`, `FUN_00675a73`'s
     /// `_DAT_00b5cbdc` index).
@@ -317,6 +363,30 @@ fn club(team: Option<&Team>, random: &mut Random) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The date's day step: within a month, over a month's end, over
+    /// February's in a leap year and not, and over the year's end, the
+    /// day of the year counted from nought in the new January.
+    #[test]
+    fn the_date_steps_over_months_and_years() {
+        let zeros = vec![0; crate::records::Globals::SIZE];
+        let mut globals = crate::records::Globals::new(&zeros).unwrap();
+        let step = |globals: &mut crate::records::Globals, date: [u16; 3], of_year: u16| {
+            globals.set_date(date);
+            globals.set_day_of_year(of_year);
+            step_date(globals);
+            (globals.date(), globals.day_of_year())
+        };
+        assert_eq!(step(&mut globals, [8, 9, 2025], 250), ([9, 9, 2025], 251));
+        assert_eq!(step(&mut globals, [30, 9, 2025], 272), ([1, 10, 2025], 273));
+        assert_eq!(step(&mut globals, [28, 2, 2026], 58), ([1, 3, 2026], 59));
+        assert_eq!(step(&mut globals, [28, 2, 2028], 58), ([29, 2, 2028], 59));
+        assert_eq!(step(&mut globals, [29, 2, 2028], 59), ([1, 3, 2028], 60));
+        assert_eq!(step(&mut globals, [31, 12, 2025], 364), ([1, 1, 2026], 0));
+        assert_eq!(globals.year_days(), 365);
+        step(&mut globals, [31, 12, 2027], 364);
+        assert_eq!(globals.year_days(), 366);
+    }
 
     /// A computer club's day: every squad player gets the roll of a
     /// hundred and the roll of ten thousand, and only the ten thousand

@@ -7884,7 +7884,13 @@ mod tests {
         for _ in 0..5314 {
             original.below(2);
         }
-        assert_eq!(runner.host.state().season.as_ref().map(|s| s.random.clone()), Some(original));
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().map(|s| s.random.clone()), Some(original));
+        // The day's close stepped the game's own counter and date, as
+        // the next day's computer clubs read them for their men's days
+        // out (`FUN_006504b6`, `FUN_00675a73`).
+        let globals = &state.records.as_ref().unwrap().globals;
+        assert_eq!((globals.day(), globals.date()), (64, [9, 9, 2025]));
     }
 
     /// The dial the running week answers to: its orange circle lives in
