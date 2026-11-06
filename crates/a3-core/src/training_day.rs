@@ -348,23 +348,52 @@ fn session(
                 team.set_offside(sum.min(200));
             }
         }
-        for bit in [2, 4, 8, 0x10, 0x40] {
-            if flags & bit != 0 && random.below(100) < 0x46 {
-                // The helpers `FUN_0069851b` and friends are not here.
+        // The unit's skills, each a step up within 0 to 5 on its roll, in
+        // the exe's order: seventy in a hundred for the anti-offside
+        // (flag 2, `FUN_00698a4b`, club +0xa1 = team +0xc7) and three
+        // fields of the set pieces' word (4, 8, 0x10: its bits 3, 6 and
+        // 0; `FUN_00698616`, `FUN_0069871d`, `FUN_0069851b`; club +0xa2
+        // = team +0xc8); twenty twice for 0x20's two (team +0xcb,
+        // `FUN_00698b8d`, club +0xa5; the word's bits 12, `FUN_0069893d`);
+        // seventy for the pressing (0x40, `FUN_00698aec`, club +0x9f =
+        // team +0xc5).
+        for (bit, shift) in [(2u32, None), (4, Some(3)), (8, Some(6)), (0x10, Some(0))] {
+            if flags & bit != 0
+                && random.below(100) < 0x46
+                && let Some(team) = records.team_mut(country, number)
+            {
+                match shift {
+                    None => team.set_anti_offside(skill_step(team.anti_offside())),
+                    Some(shift) => step_set_piece(team, shift),
+                }
             }
         }
-        for _ in 0..2 {
-            if flags & 0x20 != 0 && random.below(100) < 0x14 {
-                // `FUN_0069893d` and `FUN_00698b8d` are not here.
+        if flags & 0x20 != 0 {
+            if random.below(100) < 0x14
+                && let Some(team) = records.team_mut(country, number)
+            {
+                team.set_tactic_extra(skill_step(team.tactic_extra()));
             }
+            if random.below(100) < 0x14
+                && let Some(team) = records.team_mut(country, number)
+            {
+                step_set_piece(team, 12);
+            }
+        }
+        if flags & 0x40 != 0
+            && random.below(100) < 0x46
+            && let Some(team) = records.team_mut(country, number)
+        {
+            team.set_pressing(skill_step(team.pressing()));
         }
         if unit == 9 && !trainable.is_empty() {
             let roll = random.below(trainable.len() as u32);
             if let Some(team) = records.team_mut(country, number) {
-                let sum = (i32::from(team.get::<u8>(0xa4))
+                // The club's +0xa4 is the team's +0xca (`FUN_0063b75a`).
+                let sum = (i32::from(team.get::<u8>(0xca))
                     + trainable.len() as i32 / 3
                     + roll as i32) as u8;
-                team.put::<u8>(0xa4, sum.min(200));
+                team.put::<u8>(0xca, sum.min(200));
             }
         } else if unit == 0x1a {
             if let Some(team) = records.team_mut(country, number) {
@@ -1163,6 +1192,20 @@ fn train_condition(player: &mut Player, steps: i32) {
     player.set_condition(condition.clamp(0, 10_000) as i16);
 }
 
+/// A team skill a step up, held within 0 to 5 (`FUN_00698a4b` and its
+/// kin): a 7, "unknown", comes down to 5.
+fn skill_step(value: u8) -> u8 {
+    (i16::from(value) + 1).clamp(0, 5) as u8
+}
+
+/// A field of three bits of the set pieces' word a step up (`FUN_00698616`
+/// and its kin).
+fn step_set_piece(team: &mut Team, shift: u16) {
+    let bits = team.set_pieces();
+    let value = skill_step(((bits >> shift) & 7) as u8);
+    team.set_set_pieces(bits & !(7 << shift) | u16::from(value) << shift);
+}
+
 /// The team's mood, within 0 to 200 (`FUN_007147ce`).
 fn add_mood(team: &mut Team, steps: i32) {
     let mood = i32::from(team.mood()) + steps;
@@ -1188,6 +1231,20 @@ mod tests {
             None
         });
         assert_eq!(code, Some(31));
+    }
+
+    /// A unit's skill step: one up within 0 to 5, "unknown" (7) down to 5,
+    /// each field of the set pieces' word apart from the others.
+    #[test]
+    fn the_team_skills_step_within_five() {
+        assert_eq!((skill_step(0), skill_step(4), skill_step(5), skill_step(7)), (1, 5, 5, 5));
+        let zeros = vec![0; Team::SIZE];
+        let mut team = Team::new(&zeros).unwrap();
+        team.set_set_pieces(4 << 12 | 5 << 6 | 2 << 3 | 7);
+        for shift in [12, 6, 3, 0] {
+            step_set_piece(&mut team, shift);
+        }
+        assert_eq!(team.set_pieces(), 5 << 12 | 5 << 6 | 3 << 3 | 5);
     }
 
     /// The training's events on A's human squad: 100 and 101 take three
