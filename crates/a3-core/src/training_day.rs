@@ -426,7 +426,7 @@ fn session(
         // training luck behind comes when none was met (`FUN_0074a1ec`
         // on its answer of 0).
         let event = pick(&EVENTS, 10_000, random);
-        let met = training_event(records, (country, number), ids, &trainable, event, today, recent, random);
+        let met = training_event(records, (country, number), ids, &trainable, event, unit, today, recent, random);
         if !met && !trainable.is_empty() {
             let at = random.below(trainable.len() as u32) as usize;
             let id = trainable[at];
@@ -485,6 +485,7 @@ fn training_event(
     squad: &[u16],
     trainable: &[u16],
     event: u32,
+    unit: usize,
     today: i32,
     recent: &mut Vec<i32>,
     random: &mut Random,
@@ -504,7 +505,7 @@ fn training_event(
             }
             true
         }
-        102 => player_event(records, (country, number), trainable, recent, random),
+        102 => player_event(records, (country, number), trainable, unit, today, recent, random),
         108 => {
             let co = records.team(country, number).map_or(0, |t| t.co_trainer());
             if co != 0 {
@@ -566,6 +567,12 @@ fn training_event(
         _ => true,
     }
 }
+
+/// The training units' gate of the player events (`DAT_008aa5c2`, the
+/// unit row's byte +0x32, `FUN_00748f29`).
+const UNIT_GATES: [u8; 39] = [
+    1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1,
+];
 
 /// The ability bits event 105 draws over (`DAT_00890040`, text and bit):
 /// a keeper's six first, then the others' ten.
@@ -670,6 +677,8 @@ fn player_event(
     records: &mut Records,
     club: (u16, u16),
     trainable: &[u16],
+    unit: usize,
+    today: i32,
     recent: &mut Vec<i32>,
     random: &mut Random,
 ) -> bool {
@@ -682,7 +691,7 @@ fn player_event(
         if recent.contains(&key) {
             continue;
         }
-        if run_player_event(records, club, trainable, code, random) {
+        if run_player_event(records, club, trainable, code, unit, today, random) {
             if recent.len() == RECENT {
                 recent.remove(0);
             }
@@ -701,7 +710,14 @@ fn player_event(
 /// (`FUN_00700a6d`) — 10 answering "not met" all the same; 12 and 14, a
 /// man who keeps no goal drawn and two or one more content; 31, two
 /// friends in the training (case 0x1b): one man drawn, and when his best
-/// friend (+0x204) trains too, both three more content. The other codes,
+/// friend (+0x204) trains too, both three more content; 23, a keeper
+/// drawn and his +0x2f set to 5 (`FUN_00766af9`); and, in a unit whose
+/// row allows it ([`UNIT_GATES`], `FUN_00748f29`), 24, two men who keep
+/// no goal drawn and a roll of four — both +0x2f at 1, or the first
+/// injured (kind 0x1c for five days, kind 0x32 for seven;
+/// `FUN_00766b92`); 28, a keeper and a man drawn, and on a three-roll's
+/// 2 the keeper's +0x2f at 5; 30, with a human trainer half the time a
+/// man drawn, without one always, and the mood five up. The other codes,
 /// drawing over the squad, the manager and the club each in its own
 /// way, take nothing place here yet.
 fn run_player_event(
@@ -709,8 +725,23 @@ fn run_player_event(
     (country, number): (u16, u16),
     trainable: &[u16],
     code: u32,
+    unit: usize,
+    today: i32,
     random: &mut Random,
 ) -> bool {
+    let gate = UNIT_GATES.get(unit).is_some_and(|&g| g != 0);
+    let put = |records: &mut Records, id: u16, at: usize, value: u8| {
+        if let Some(p) = records.player_mut(id) {
+            p.put::<u8>(at, value);
+        }
+    };
+    let injure = |records: &mut Records, id: u16, kind: u8, days: i16| {
+        if let Some(p) = records.player_mut(id) {
+            p.put::<u8>(0x2e, kind);
+            p.put::<i16>(0x2c, days);
+            p.put::<i16>(0x2a, today as i16);
+        }
+    };
     let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| {
         let Some(id) = draw_listed(records, trainable, keepers, random) else { return false };
         if let Some(p) = records.player_mut(id) {
@@ -732,6 +763,49 @@ fn run_player_event(
         11 => content(records, true, -3, random),
         12 => content(records, false, 2, random),
         14 => content(records, false, 1, random),
+        23 => {
+            let Some(keeper) = draw_listed(records, trainable, true, random) else { return false };
+            put(records, keeper, 0x2f, 5);
+            true
+        }
+        24 if gate => {
+            let Some(one) = draw_listed(records, trainable, false, random) else { return false };
+            let Some(other) = draw_listed(records, trainable, false, random) else { return false };
+            if one == other {
+                return false;
+            }
+            match random.below(4) {
+                0 => {}
+                1 => {
+                    put(records, one, 0x2f, 1);
+                    put(records, other, 0x2f, 1);
+                }
+                2 => injure(records, one, 0x1c, 5),
+                _ => injure(records, one, 0x32, 7),
+            }
+            true
+        }
+        28 if gate => {
+            let Some(keeper) = draw_listed(records, trainable, true, random) else { return false };
+            let Some(other) = draw_listed(records, trainable, false, random) else { return false };
+            if keeper == other {
+                return false;
+            }
+            if 2 <= random.below(3) {
+                put(records, keeper, 0x2f, 5);
+            }
+            true
+        }
+        30 if gate => {
+            let trainer = records.team(country, number).map_or(0, |t| t.humans()[0]);
+            if (trainer == 0 || random.below(2) != 0) && draw_listed(records, trainable, false, random).is_none() {
+                return false;
+            }
+            if let Some(team) = records.team_mut(country, number) {
+                add_mood(team, 5);
+            }
+            true
+        }
         31 => {
             let Some(one) = draw_listed(records, trainable, false, random) else { return false };
             let friend = records.player(one).map_or(0, |p| p.best_friend());
@@ -913,7 +987,7 @@ mod tests {
         let mut recent = Vec::new();
         for (event, by) in [(100, 300), (101, 500), (103, 0)] {
             let before = conditions(&records);
-            assert!(training_event(&mut records, club, &squad, &trainable, event, 64, &mut recent, &mut random));
+            assert!(training_event(&mut records, club, &squad, &trainable, event, 0, 64, &mut recent, &mut random));
             let after = conditions(&records);
             for (b, a) in before.iter().zip(&after) {
                 assert_eq!(*a, (b - by).max(0), "event {event}");
@@ -926,16 +1000,16 @@ mod tests {
         if co != 0 && (expected.below(100) as i32) < i32::from(skill) * 7 {
             expected.below(trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count() as u32);
         }
-        assert!(training_event(&mut records, club, &squad, &trainable, 108, 64, &mut recent, &mut random));
+        assert!(training_event(&mut records, club, &squad, &trainable, 108, 0, 64, &mut recent, &mut random));
         assert_eq!(random, expected);
         // The player events' plainest: the team's mood ten down and up
         // again, and code 12's one draw over the outfield, one man two
         // more content with the team.
         let mood = i32::from(records.team(club.0, club.1).unwrap().mood());
-        assert!(run_player_event(&mut records, club, &trainable, 4, &mut random));
+        assert!(run_player_event(&mut records, club, &trainable, 4, 0, 64, &mut random));
         let down = (mood - 10).max(0);
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), down);
-        assert!(run_player_event(&mut records, club, &trainable, 5, &mut random));
+        assert!(run_player_event(&mut records, club, &trainable, 5, 0, 64, &mut random));
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), (down + 10).min(200));
         assert_eq!(random, expected, "the mood events draw nothing");
         let outfield = trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count();
@@ -943,10 +1017,21 @@ mod tests {
             trainable.iter().map(|&id| i32::from(records.player(id).unwrap().contentment()[1])).sum()
         };
         let before = team_parts(&records);
-        assert!(run_player_event(&mut records, club, &trainable, 12, &mut random));
+        assert!(run_player_event(&mut records, club, &trainable, 12, 0, 64, &mut random));
         expected.below(outfield as u32);
         assert_eq!(random, expected);
         assert!((0..=2).contains(&(team_parts(&records) - before)));
+        // Code 24 in a unit whose row shuts it (unit 1) is no event and
+        // draws nothing; code 23 draws a keeper and sets his +0x2f to 5.
+        let held = random.clone();
+        assert!(!run_player_event(&mut records, club, &trainable, 24, 1, 64, &mut random));
+        assert_eq!(random, held);
+        let keepers: Vec<u16> =
+            trainable.iter().copied().filter(|&id| records.player(id).unwrap().get::<u8>(0x21d) == 1).collect();
+        if !keepers.is_empty() {
+            assert!(run_player_event(&mut records, club, &trainable, 23, 0, 64, &mut random));
+            assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u8>(0x2f) == 5));
+        }
         // The ability and trait events over many rolls: 106 only gives a
         // trait bit, 107 only takes one, 105 moves at most one ability
         // bit, each on one man.
@@ -962,7 +1047,7 @@ mod tests {
         for _ in 0..200 {
             for event in [105, 106, 107] {
                 let before = words(&records);
-                training_event(&mut records, club, &squad, &trainable, event, 64, &mut recent, &mut random);
+                training_event(&mut records, club, &squad, &trainable, event, 0, 64, &mut recent, &mut random);
                 let after = words(&records);
                 let changed: Vec<_> = before.iter().zip(&after).filter(|(b, a)| b != a).collect();
                 assert!(changed.len() <= 1, "event {event} changed {} men", changed.len());
