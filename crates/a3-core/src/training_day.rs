@@ -891,7 +891,12 @@ fn player_event(
 /// its country's top division (the club's +0x105, the team's +0x12e)
 /// costing him ten of the media's liking (`FUN_0041828e` → `FUN_004184d4`
 /// on the manager's +0x3a, his record's `popularity`), answering "not
-/// met".
+/// met"; 38, a human trainer's hard unit (6, 0x10, 0x11) and up to three
+/// draws for a man worn out — freshness 19 or less at the intensity 3
+/// (the handle's +0xb5, the record's `intensity`): five less of the
+/// media's liking and of the board's confidence (`FUN_0041849a`, the
+/// manager's +0x9c, his record's `confidence`), the mood ten down, the
+/// man knocked about a week.
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
 fn run_player_event(
@@ -1046,6 +1051,28 @@ fn run_player_event(
                     crate::mood::change(p, 1, 1);
                 }
             }
+            true
+        }
+        38 => {
+            if trainer == 0 || !matches!(unit, 6 | 0x10 | 0x11) {
+                return false;
+            }
+            let worn = |records: &Records, id: Option<u16>| {
+                id.and_then(|id| records.player(id)).is_some_and(|p| {
+                    crate::computer_training::fresh_percent(p) <= 0x13 && p.intensity() == 3
+                })
+            };
+            let Some(id) = (0..3).map(|_| draw_any(trainable, random)).find(|&id| worn(records, id)).flatten() else {
+                return false;
+            };
+            if let Some(m) = records.managers.get_mut(usize::from(trainer) - 1) {
+                let mut popularity = m.popularity();
+                popularity[2] = (popularity[2] as i8).wrapping_sub(5).clamp(0, 100) as u8;
+                m.set_popularity(popularity);
+                m.set_confidence((m.confidence() - 5).clamp(0, 100));
+            }
+            mood(records, -10);
+            knock(records, id, 7);
             true
         }
         39 | 40 if gate => {
@@ -1344,6 +1371,10 @@ mod tests {
         assert!(!run_player_event(&mut records, club, &trainable, &tables, 9, 0, (64, date), &mut random));
         let lost = if trainer != 0 && top { before.min(10) } else { 0 };
         assert_eq!(media(&records), before - lost);
+        assert_eq!(random, held);
+        // Code 38 outside its hard units neither draws nor takes place.
+        let held = random.clone();
+        assert!(!run_player_event(&mut records, club, &trainable, &tables, 38, 0, (64, date), &mut random));
         assert_eq!(random, held);
         // Code 15 draws nothing and is met with a human trainer unless
         // the next match is tomorrow.
