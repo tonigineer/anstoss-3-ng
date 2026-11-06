@@ -650,11 +650,7 @@ fn training_injury(
         return;
     }
     let roll = random.below(total as u32) as i32;
-    let mut at = 0;
-    while at < TRAINING_KINDS - 1 && starts[at] <= roll {
-        at += 1;
-    }
-    let kind = at as u8 + 1;
+    let kind = band_after(&starts, roll) as u8 + 1;
     let Some(p) = records.player(id) else { return };
     if medical.knock_bits(usize::from(kind)) != 0 {
         let bits = medical.knock_bits(roll as usize);
@@ -723,6 +719,18 @@ fn move_likings(records: &mut Records, (country, number): (u16, u16), by: [i8; 3
             p.put::<u8>(at, step(value, by));
         }
     }
+}
+
+/// The place `FUN_00767225`'s walk stops at for a roll over bands that
+/// start at `starts`: it steps on while a band starts at or below the
+/// roll, so it lands on the band after the one the roll falls in — but
+/// never past the last.
+fn band_after(starts: &[i32], roll: i32) -> usize {
+    let mut at = 0;
+    while at + 1 < starts.len() && starts[at] <= roll {
+        at += 1;
+    }
+    at
 }
 
 /// A man's days out as the training's handle holds them (+0x2c, which
@@ -1374,6 +1382,16 @@ mod tests {
             None
         });
         assert_eq!(code, Some(31));
+    }
+
+    /// The injury table's walk lands one band late, as the exe's loop
+    /// does: a roll in the first band names the second kind, and every
+    /// roll from the last band's start on stays on the last.
+    #[test]
+    fn the_injury_walk_lands_one_band_late() {
+        let starts = [0, 2, 5, 9];
+        let picked: Vec<usize> = (0..12).map(|roll| band_after(&starts, roll)).collect();
+        assert_eq!(picked, [1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3]);
     }
 
     /// A unit's skill step: one up within 0 to 5, "unknown" (7) down to 5,
