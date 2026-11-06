@@ -792,6 +792,13 @@ impl Cycle {
                 {
                     let today = season.day as i32;
                     let held = season.week_hold;
+                    // The rolling autosaves, after the turns: the week's
+                    // end writes them right before it clears the load's
+                    // hold, so the week a game was loaded in keeps none
+                    // (`FUN_0064e40f` → `FUN_006ecfeb`).
+                    if !held {
+                        self.autosave(records, season.day / WEEK_DAYS);
+                    }
                     season.week_hold = false;
                     // The human clubs' players keep their forms for the
                     // trend (`FUN_007863d0`), and each human manager a
@@ -985,11 +992,10 @@ impl Cycle {
                         start.then_some(season.day / WEEK_DAYS)
                     })
                 };
-                if let Some(Some(weeks)) = week_start
+                if let Some(Some(_)) = week_start
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
-                    self.autosave(records, weeks);
                 }
                 self.ask(Request::new(week))?;
             }
