@@ -1,7 +1,9 @@
 //! The world's day (`FUN_006504b6` running `FUN_007848fa` with the day
 //! of the week): on the first weekday every club of the countries
 //! played besides the main one lives its day, on the second the main
-//! country's clubs do; the game day counter stands in `DAT_00b5cbd4`.
+//! country's clubs do; the game day counter stands in `DAT_00b5cbd4`,
+//! and the day's close steps it and the date (`step_date`), which every
+//! reckoning of days out and the autosaves go by.
 //!
 //! One club's day (`FUN_00784a6d`) draws over every player of its
 //! squad: a roll of a hundred for the player's mood (`FUN_007849f3`,
