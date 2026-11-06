@@ -6,7 +6,7 @@
 //!
 //! Here besides: the session's injury (`FUN_00767225`), the unit's team
 //! skills (`FUN_0069851b` and its kin), the events 100 to 110 of
-//! `FUN_0060c1c0` with 26 of event 102's 31 player events, the secret
+//! `FUN_0060c1c0` with 27 of event 102's 31 player events, the secret
 //! training's toll (`FUN_0041828e`), and the day's news pick after the
 //! friendlies ([`news`]).
 //!
@@ -18,7 +18,7 @@
 //! (`FUN_0074ae97`); what the day's news posts once its category is
 //! picked (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the
 //! pick itself stands in [`crate::news`]), and the events' news; the
-//! player events 8, 16, 20, 26 and 34; the camp's own happenings
+//! player events 8, 20, 26 and 34; the camp's own happenings
 //! (`FUN_0060ff69`); the player-manager's block behind the club's byte
 //! +0x8a; and the third case of `FUN_00745d3c`, which weighs two
 //! abilities.
@@ -956,6 +956,11 @@ fn player_event(
 /// season's goal (`FUN_00775fa0`): two men drawn take the reason 0x800,
 /// the mood falls to nought, and a human manager (club +0x8b) loses ten
 /// of his record's +0x11e (`FUN_006be8b8`, the manager object's +0x32);
+/// 16, with a human trainer, a man drawn (`FUN_005eb1ff`: a five-roll's
+/// 0 takes the trainer's man of the week's individual training) and a
+/// three-roll — its 0 makes him one less content with his
+/// distractions, the rest one more with the team, each with a roll of
+/// three or five for its news's wording;
 /// 41, with a human
 /// trainer, every trained defender (main position 2 to 5,
 /// `FUN_00677c5f`) one more content with the team (`FUN_005ee7ed`).
@@ -1028,6 +1033,41 @@ fn run_player_event(
                 v = 200;
             }
             team.put::<u8>(0xca, v);
+            true
+        }
+        16 => {
+            if trainer == 0 || trainable.is_empty() {
+                return false;
+            }
+            // `FUN_005eb1ff`: on a five-roll's 0 the man the trainer has
+            // in individual training this week (the manager object's
+            // +0x726 + week × 0x3a, his record's 0x872 on, the week the
+            // turn's day over seven), if he is in the squad; else one of
+            // the trained drawn.
+            let week = usize::try_from(records.globals.week_start() / 7).unwrap_or(0);
+            let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
+            let mut picked = None;
+            if random.below(5) == 0 {
+                let weekly = records
+                    .managers
+                    .get(usize::from(trainer) - 1)
+                    .map_or(0, |m| m.get::<i16>(0x872 + week * 0x3a));
+                picked = u16::try_from(weekly).ok().filter(|id| *id != 0 && squad.contains(id));
+            }
+            let id = picked.unwrap_or_else(|| trainable[random.below(trainable.len() as u32) as usize]);
+            if crate::mood::LAST_REAL_ID < id {
+                return false;
+            }
+            let Some(p) = records.player_mut(id) else { return false };
+            if random.below(3) == 0 {
+                if 1 < statistics::form_today(p) {
+                    crate::mood::change(p, 5, -1);
+                    random.below(3);
+                }
+            } else {
+                crate::mood::change(p, 1, 1);
+                random.below(5);
+            }
             true
         }
         23 => {
