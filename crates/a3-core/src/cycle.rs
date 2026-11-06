@@ -887,6 +887,7 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
+                                &mut season.recent_events,
                                 &mut season.random,
                             );
                         }

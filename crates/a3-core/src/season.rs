@@ -440,6 +440,11 @@ pub struct Season {
     pub tournament_screens: Vec<(u16, u32)>,
     /// The halls a human played this session, for their screen.
     pub halls: Vec<crate::hall::Hall>,
+    /// The events lately met, twenty at most (`DAT_00a32738`, with
+    /// `FUN_005e5e90` asking and `FUN_005e5ee0` adding): a training's
+    /// player event is not met twice while it stands here. No save keeps
+    /// it, so a load starts it empty.
+    pub recent_events: Vec<i32>,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -838,6 +843,7 @@ impl Season {
             opponents: Default::default(),
             tournament_screens: Vec::new(),
             halls: Vec::new(),
+            recent_events: Vec::new(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

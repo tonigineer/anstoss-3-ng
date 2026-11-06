@@ -97,20 +97,63 @@ const EVENTS: [(u32, u32); 11] = [
     (100, 110),
 ];
 
+/// Event 102's player events (`DAT_0088fe88`, registered at `0xa32794`
+/// by `FUN_0060bdb7`): 31 pairs of weight and code, the weights summing
+/// to the cap of 2011, so every roll meets one.
+const PLAYER_EVENTS: [(u32, u32); 31] = [
+    (90, 4),
+    (90, 5),
+    (60, 8),
+    (30, 9),
+    (120, 10),
+    (30, 11),
+    (150, 12),
+    (30, 13),
+    (60, 14),
+    (60, 15),
+    (90, 16),
+    (30, 20),
+    (30, 23),
+    (60, 24),
+    (30, 26),
+    (90, 28),
+    (30, 29),
+    (30, 30),
+    (30, 31),
+    (120, 32),
+    (60, 33),
+    (60, 34),
+    (120, 35),
+    (60, 36),
+    (90, 37),
+    (120, 38),
+    (90, 39),
+    (90, 40),
+    (30, 41),
+    (30, 42),
+    (1, 43),
+];
+/// A player event stands among the recent ones as its code plus this.
+const PLAYER_EVENT_BASE: i32 = 13_000;
+/// The recent events kept (`FUN_005e5ee0`'s twenty).
+const RECENT: usize = 20;
+
 /// The injuries a player-manager takes (`FUN_00766b92` with the table
 /// at `DAT_008ac341`): the kind and the days out; no table flag is set
 /// for these six.
 const MANAGER_INJURIES: [(u8, i16); 6] = [(25, 7), (28, 7), (31, 3), (32, 7), (44, 7), (47, 3)];
 
-/// A training day at each human club. `today` is the day counter and
-/// `date` the day it stands on; the day's news follows apart, in
-/// [`news`].
+/// A training day at each human club. `today` is the day counter,
+/// `date` the day it stands on and `recent` the events lately met
+/// ([`crate::season::Season::recent_events`]); the day's news follows
+/// apart, in [`news`].
 pub fn day(
     records: &mut Records,
     clubs: &mut BTreeMap<(usize, usize), ClubState>,
     world: &world::World,
     today: i32,
     date: NaiveDate,
+    recent: &mut Vec<i32>,
     random: &mut Random,
 ) {
     let weekday = today.rem_euclid(7) as usize;
@@ -196,6 +239,7 @@ pub fn day(
                 today,
                 date,
                 slot,
+                recent,
                 random,
             );
         }
@@ -263,6 +307,7 @@ fn session(
     today: i32,
     date: NaiveDate,
     slot: usize,
+    recent: &mut Vec<i32>,
     random: &mut Random,
 ) {
     let mut trainable = Vec::new();
@@ -377,10 +422,17 @@ fn session(
                 }
             }
         }
-        // `FUN_0060c1c0`'s events 100 to 110 are not here; only the
-        // pick stands, and the training luck behind it.
+        // `FUN_0060c1c0`'s events 100 to 110: 102 meets a player event
+        // ([`player_event`]); the others are not here, only their pick
+        // stands, taken as met. The training luck behind comes when no
+        // event was met (`FUN_0074a1ec` on its answer of 0).
         let event = pick(&EVENTS, 10_000, random);
-        if event == 0 && !trainable.is_empty() {
+        let met = match event {
+            0 => false,
+            102 => player_event(records, &trainable, recent, random),
+            _ => true,
+        };
+        if !met && !trainable.is_empty() {
             let at = random.below(trainable.len() as u32) as usize;
             let id = trainable[at];
             luck(records, id, date, random);
@@ -414,6 +466,75 @@ fn session(
             }
         }
     }
+}
+
+/// Event 102 (`FUN_0060d119`): a player event out of [`PLAYER_EVENTS`],
+/// drawn once more when it stands among the recent ones; met once one
+/// is drawn that does not. Its run (`FUN_0060d1bf`) puts it among the
+/// recent ones when it took place.
+fn player_event(records: &mut Records, trainable: &[u16], recent: &mut Vec<i32>, random: &mut Random) -> bool {
+    for _ in 0..2 {
+        let code = pick(&PLAYER_EVENTS, 2011, random);
+        if code == 0 {
+            return false;
+        }
+        let key = code as i32 + PLAYER_EVENT_BASE;
+        if recent.contains(&key) {
+            continue;
+        }
+        if run_player_event(records, trainable, code, random) {
+            if recent.len() == RECENT {
+                recent.remove(0);
+            }
+            recent.push(key);
+        }
+        return true;
+    }
+    false
+}
+
+/// A player event's run (`FUN_0060d1bf`, by its code less 4): whether
+/// it took place. Only code 31 is here — two friends in the training
+/// (case 0x1b): one man drawn, and when his best friend (+0x204) trains
+/// too, the two grow more content with the team, three each
+/// (`FUN_00700a6d`); its news (99, 0x32, `FUN_005ee619`) is not posted.
+/// The other codes, drawing over the squad and the club each in its own
+/// way, take nothing place here yet.
+fn run_player_event(records: &mut Records, trainable: &[u16], code: u32, random: &mut Random) -> bool {
+    match code {
+        31 => {
+            let Some(one) = draw_outfield(records, trainable, random) else { return false };
+            let friend = records.player(one).map_or(0, |p| p.best_friend());
+            if friend == 0 || !trainable.contains(&friend) {
+                return false;
+            }
+            for id in [one, friend] {
+                if let Some(p) = records.player_mut(id) {
+                    crate::mood::change(p, 1, 3);
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// One of the listed men who keeps no goal, drawn (`FUN_005eaed7`; the
+/// handle's position byte +0x3 is the record's +0x21d): none when all
+/// keep goal, or when the one drawn is a playing manager. Its last
+/// check, the handle's +0x6a under the flag the event hands it, is not
+/// here.
+fn draw_outfield(records: &Records, list: &[u16], random: &mut Random) -> Option<u16> {
+    let outfield: Vec<u16> = list
+        .iter()
+        .copied()
+        .filter(|&id| records.player(id).is_some_and(|p| p.get::<u8>(0x21d) != 1))
+        .collect();
+    if outfield.is_empty() {
+        return None;
+    }
+    let id = outfield[random.below(outfield.len() as u32) as usize];
+    (id <= crate::mood::LAST_REAL_ID).then_some(id)
 }
 
 /// The luck of one trained player (`FUN_0074a1ec`'s chain): a young
@@ -516,4 +637,26 @@ fn train_condition(player: &mut Player, steps: i32) {
 fn add_mood(team: &mut Team, steps: i32) {
     let mood = i32::from(team.mood()) + steps;
     team.set_mood(mood.clamp(0, 200) as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Event 102's table as the exe registers it: its weights fill the cap
+    /// of 2011, and the roll the original drew on A's day 64, 1112, lands
+    /// on code 31, the two friends.
+    #[test]
+    fn the_player_events_fill_their_cap() {
+        assert_eq!(PLAYER_EVENTS.iter().map(|e| e.0).sum::<u32>(), 2011);
+        let mut rest = 1112;
+        let code = PLAYER_EVENTS.iter().find_map(|&(weight, code)| {
+            if weight > rest {
+                return Some(code);
+            }
+            rest -= weight;
+            None
+        });
+        assert_eq!(code, Some(31));
+    }
 }
