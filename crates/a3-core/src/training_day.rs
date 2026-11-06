@@ -154,6 +154,7 @@ const MANAGER_INJURIES: [(u8, i16); 6] = [(25, 7), (28, 7), (31, 3), (32, 7), (4
 /// `date` the day it stands on and `recent` the events lately met
 /// ([`crate::season::Season::recent_events`]); the day's news follows
 /// apart, in [`news`].
+#[allow(clippy::too_many_arguments)]
 pub fn day(
     records: &mut Records,
     clubs: &mut BTreeMap<(usize, usize), ClubState>,
@@ -642,8 +643,8 @@ fn training_injury(
 ) {
     let mut starts = [0i32; TRAINING_KINDS];
     let mut total = 0i32;
-    for k in 0..TRAINING_KINDS {
-        starts[k] = total;
+    for (k, start) in starts.iter_mut().enumerate() {
+        *start = total;
         total += i32::from(medical.weight(k as u8 + 1));
     }
     if total == 0 {
@@ -877,6 +878,7 @@ fn trait_event(records: &mut Records, (country, number): (u16, u16), trainable: 
 /// drawn once more when it stands among the recent ones; met once one
 /// is drawn that does not. Its run (`FUN_0060d1bf`) puts it among the
 /// recent ones when it took place.
+#[allow(clippy::too_many_arguments)]
 fn player_event(
     records: &mut Records,
     club: (u16, u16),
@@ -959,6 +961,7 @@ fn player_event(
 /// `FUN_00677c5f`) one more content with the team (`FUN_005ee7ed`).
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
+#[allow(clippy::too_many_arguments)]
 fn run_player_event(
     records: &mut Records,
     (country, number): (u16, u16),
