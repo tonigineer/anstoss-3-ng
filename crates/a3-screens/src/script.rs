@@ -3372,7 +3372,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3816,7 +3816,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 10 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -7844,7 +7844,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_ticket_office_sells_ahead_as_the_original() {
         let game = game();
-        let then = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\non 375 click at 617 182; press 4715\nuntil day 64";
+        let then = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\non 375 click at 617 182; press 4715\non 270 ok\nuntil day 64";
         let Some(runner) = on_save(&game, "A", then) else { return };
         let state = runner.host.state();
         let records = state.records.as_ref().unwrap();
@@ -7852,6 +7852,39 @@ mod tests {
         let away = a3_core::tickets::sale(records, (14, 10), (14, 84), 90).unwrap();
         assert_eq!((home.sold, home.prices), (4605, [17, 23, 43, 150]));
         assert_eq!((away.sold, away.prices), (188, [15, 20, 40, 150]));
+    }
+
+    /// The walk after the whistle draws as the original's, draw for draw:
+    /// A with its generator set to 12345/67890, the turn ended and walked
+    /// to the open day's dialog. The probe saw eleven draws on the way —
+    /// the week's end opening a far match's sale (below 2), the human
+    /// clubs' event gates (20, 100 and 3 a slot), the day's sale (2), the
+    /// training's event pick (10000) and its luck (26 and 450) — and the
+    /// dialog itself drawing none (`FUN_0064e40f`, `FUN_0064f981`,
+    /// `FUN_00749508`, `FUN_0074a1ec`). The rest of the day follows as
+    /// the original's, draw for draw by the probe's trace: the news after
+    /// the friendlies, the world's day — 5314 draws to the next day's
+    /// walk, whose computer clubs' training week parts 1801 draws on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_day_draws_as_the_original_to_its_open_day() {
+        use a3_core::random::Random;
+        let game = game();
+        let then = "now random 12345 67890\non 2 wait\non 381 wait\non 147 click bar 18\nuntil dialog 270";
+        let Some(runner) = on_save(&game, "A", then) else { return };
+        let mut original = Random::from_state(12345, 67890);
+        let drawn: Vec<u32> =
+            [2, 20, 100, 3, 3, 3, 3, 2, 10_000, 26, 450].iter().map(|&n| original.below(n)).collect();
+        assert_eq!(drawn, [1, 3, 6, 2, 1, 0, 1, 0, 2619, 12, 51]);
+        assert_eq!(runner.host.state().season.as_ref().map(|s| s.random.clone()), Some(original));
+        drop(runner);
+        let day = format!("{then}\non 270 ok\nuntil day 64");
+        let Some(runner) = on_save(&game, "A", &day) else { return };
+        let mut original = Random::from_state(12345, 67890);
+        for _ in 0..5314 {
+            original.below(2);
+        }
+        assert_eq!(runner.host.state().season.as_ref().map(|s| s.random.clone()), Some(original));
     }
 
     /// The dial the running week answers to: its orange circle lives in
@@ -8605,7 +8638,7 @@ mod tests {
         // its waiting screens are swept; the script ends a day into the
         // new week, the store long since booked.
         let then = "on 384 press 4741\non 380 press 4731\non 218 click bar 0\n\
-                    on 147 click bar 18\non 2 wait\non 381 wait\n\
+                    on 147 click bar 18\non 2 wait\non 381 wait\non 270 ok\n\
                     now click bar 9\nuntil dialog 417\nnow press 2222\nuntil dialog 63\n\
                     now choose 6022 1\nnow press 1\nuntil dialog 417\nnow press 2222\n\
                     until dialog 380\nuntil dialog 417\nnow click bar 18\n\
@@ -9756,7 +9789,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\nrepeat 14 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();

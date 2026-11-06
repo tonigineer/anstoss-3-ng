@@ -1,7 +1,7 @@
 //! The open day of the year calendar (dialog 270,
 //! `IDD_TAG_DER_OFFENEN_TUER`): the event the day's walk opens on the
-//! day it was booked, telling the club how the day went; its pictures
-//! shuffle at the open, and OK closes it again.
+//! day it was booked, telling the club how the day went; its ctor draws
+//! nothing, and OK closes it again.
 
 use std::collections::HashMap;
 
@@ -32,13 +32,9 @@ impl Screen for OpenDay {
     }
 
     fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
-        // The dialog's ctor (`FUN_006cbbc7`) shuffles its three picture
-        // rows before it shows anything: rows of 3, 7 and 4 places.
-        if let Some(season) = cx.state.season.as_mut() {
-            season.random.shuffle(3);
-            season.random.shuffle(7);
-            season.random.shuffle(4);
-        }
+        // No draw here: the shuffles of 3, 7 and 4 places once laid at
+        // this ctor are the music's playlists at the game's start
+        // (`FUN_006cbbc7`, `CMusik`), traced before any dialog.
         let club = cx.state.season.as_ref().and_then(|s| s.manager()?.club);
         if let (Some(i), Some(club)) = (control(cx.dialog, REPORT), club) {
             set(view, cx.dialog, REPORT, cx.game.with_club(&cx.dialog.controls[i].text, club));

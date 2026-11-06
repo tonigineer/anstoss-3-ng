@@ -102,17 +102,15 @@ const EVENTS: [(u32, u32); 11] = [
 /// for these six.
 const MANAGER_INJURIES: [(u8, i16); 6] = [(25, 7), (28, 7), (31, 3), (32, 7), (44, 7), (47, 3)];
 
-/// A training day at each human club. `today` is the day counter,
-/// `date` the day it stands on and `slots` the day's event gates of
-/// [`crate::human_day::event_slots`], one per human club in the order of
-/// [`crate::statistics::human_clubs`].
+/// A training day at each human club. `today` is the day counter and
+/// `date` the day it stands on; the day's news follows apart, in
+/// [`news`].
 pub fn day(
     records: &mut Records,
     clubs: &mut BTreeMap<(usize, usize), ClubState>,
     world: &world::World,
     today: i32,
     date: NaiveDate,
-    slots: &[i16],
     random: &mut Random,
 ) {
     let weekday = today.rem_euclid(7) as usize;
@@ -226,11 +224,17 @@ pub fn day(
             }
         }
     }
-    // The day's news (`FUN_005ef842`, run by `FUN_0064f981` in a second
-    // loop over the human clubs after the training): a club meets it when
-    // the day's gates drew today for its slot. The category pick, and
-    // category 19's pick of one of the club's own players over its squad,
-    // stand in `crate::news`.
+}
+
+/// The day's news (`FUN_005ef842`, run by `FUN_0064f981` in its second
+/// loop over the human clubs, after the training, the day's booked events
+/// and the friendlies (`FUN_007615bb`)): a club meets it when the day's
+/// gates drew today for its slot. The category pick, and category 19's
+/// pick of one of the club's own players over its squad, stand in
+/// `crate::news`. `slots` are the day's event gates of
+/// [`crate::human_day::event_slots`], one per human club in the order of
+/// [`crate::statistics::human_clubs`].
+pub fn news(records: &Records, today: i32, slots: &[i16], random: &mut Random) {
     for (k, (country, number)) in statistics::human_clubs(records).into_iter().enumerate() {
         if slots.get(k) == Some(&(today.rem_euclid(7) as i16)) {
             let code = crate::news::pick(random);

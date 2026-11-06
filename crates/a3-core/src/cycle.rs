@@ -763,8 +763,15 @@ impl Cycle {
             }
             // The week's end opens the advance sales of each human club's
             // league matches of the next four weeks (`FUN_0064e40f` ->
-            // `FUN_0077d4ea`), drawing as the original does; the sales
-            // clear the load's hold (`DAT_00b5cc04`).
+            // `FUN_0077d4ea`), and a record just opened sells at once
+            // (`FUN_0077c1d5`'s `FUN_0077bfbd`). The load's hold
+            // (`DAT_00b5cc04`, `CDiLoad`) covers the market block above
+            // and nothing after its clear: `FUN_0064e40f` clears the hold
+            // right before the club loop that keeps forms and opens these
+            // sales, so the traced original's first draw after `now
+            // random` was here — one far match's percent, `FUN_0078ab55`
+            // drawing below(2) and giving 1, one percent of a demand of
+            // 18.8 thousand sold right away.
             {
                 let mut guard = self.state();
                 let state = &mut *guard;
@@ -773,6 +780,7 @@ impl Cycle {
                 {
                     let today = season.day as i32;
                     let held = season.week_hold;
+                    season.week_hold = false;
                     // The human clubs' players keep their forms for the
                     // trend (`FUN_007863d0`), and each human manager a
                     // copy of his club's money (`FUN_0078605e`), as the
@@ -789,7 +797,6 @@ impl Cycle {
                             &self.data.presale,
                         );
                     }
-                    season.week_hold = false;
                     // The computer clubs line up for the new week
                     // (`FUN_0064e40f`'s `FUN_0042a76e`), so the week's
                     // games are scored by their squads as they stand.
@@ -832,11 +839,17 @@ impl Cycle {
             self.ask(Request::new(week))?;
             for _ in 0..WEEK_DAYS {
                 self.appointments()?;
-                self.open_events()?;
-                let week_start = {
+                // The day walked; its booked open day's dialog comes up in
+                // the walk's middle, once the day's training is done and
+                // before the friendlies and the news (`open_events_on`
+                // below): the traced original showed it right after the
+                // training's last draw.
+                let walked = self.season(|s| s.day).unwrap_or(0);
+                let mut slots = None;
+                {
                     let mut guard = self.state();
                     let state = &mut *guard;
-                    state.season.as_mut().map(|season| {
+                    if let Some(season) = state.season.as_mut() {
                         // The human clubs' day starts it (`FUN_0064f981`):
                         // on the second weekday the computer clubs'
                         // own week first, then the event gates, then
@@ -856,8 +869,9 @@ impl Cycle {
                                 );
                             }
                         }
-                        let slots =
+                        let gates =
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
+                        slots = Some(gates);
                         if let Some(records) = state.records.as_mut() {
                             // The half week ticks first, the winter break
                             // developing the players at its 56th
@@ -865,8 +879,7 @@ impl Cycle {
                             crate::development::half_week(records, today, &mut season.random);
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
                             // The day's training at the human clubs
-                            // follows the sales (`FUN_00749508`), and the
-                            // day's news its second club loop.
+                            // follows the sales (`FUN_00749508`).
                             let date = season.date();
                             crate::training_day::day(
                                 records,
@@ -874,9 +887,18 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
-                                &slots,
                                 &mut season.random,
                             );
+                        }
+                    }
+                }
+                self.open_events_on(walked)?;
+                let week_start = {
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    state.season.as_mut().map(|season| {
+                        let today = walked as i32;
+                        if let Some(records) = state.records.as_mut() {
                             // The day's friendlies and tournaments
                             // (`FUN_007615bb`): a Turnier's draw and its
                             // results come up for the humans taking part
@@ -889,6 +911,11 @@ impl Cycle {
                                 let halls = shown.halls.iter().map(|h| (dialogs::HALL_RESULT, h.id));
                                 season.tournament_screens.extend(drawn.chain(results).chain(halls));
                                 season.halls.extend(shown.halls);
+                            }
+                            // The day's news: `FUN_0064f981`'s second club
+                            // loop, after the friendlies.
+                            if let Some(gates) = &slots {
+                                crate::training_day::news(records, today, gates, &mut season.random);
                             }
                             // The nations play their owed international
                             // dates on the weekdays 3 and 6
@@ -1303,16 +1330,15 @@ impl Cycle {
         Ok(())
     }
 
-    /// What the year calendars booked, manager by manager: save A's day
-    /// 63 holds the open day, entry kind 8 with the open day's number 6
-    /// where a talk's would name the player. The dialog opens in its
-    /// manager's turn and shuffles its pictures at the open
-    /// (`FUN_006cbbc7`'s three `FUN_00675630` over 3, 7 and 4 places,
-    /// which the screen itself draws). What the event rolls for its
-    /// success stays unported: `FUN_0062a325` walking the country's
-    /// leagues into `FUN_00690a9e`'s squad spans, eight draws of 9 or
-    /// 10 — its semantics are a next step.
-    fn open_events(&self) -> Result<(), Gone> {
+    /// What the year calendars booked on the day just walked, manager by
+    /// manager: save A's day 63 holds the open day, entry kind 8 with the
+    /// open day's number 6 where a talk's would name the player. The
+    /// dialog comes up in that day's walk, after the day's training and
+    /// before its games; its constructor draws nothing. What the event
+    /// rolls for its success stays unported: `FUN_0062a325` walking the
+    /// country's leagues into `FUN_00690a9e`'s squad spans, eight draws
+    /// of 9 or 10 — its semantics are a next step.
+    fn open_events_on(&self, day: usize) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
         for n in 0..managers {
             let booked = {
@@ -1327,7 +1353,7 @@ impl Cycle {
                     .human_slot(n)
                     .and_then(|slot| records.calendars.get(slot))
                     .is_some_and(|c| {
-                        let entry = c.day(season.day);
+                        let entry = c.day(day);
                         entry.kind == CALENDAR_EVENT && entry.player == OPEN_DAY_EVENT
                     })
             };
