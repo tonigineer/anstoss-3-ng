@@ -422,16 +422,11 @@ fn session(
                 }
             }
         }
-        // `FUN_0060c1c0`'s events 100 to 110: 102 meets a player event
-        // ([`player_event`]); the others are not here, only their pick
-        // stands, taken as met. The training luck behind comes when no
-        // event was met (`FUN_0074a1ec` on its answer of 0).
+        // `FUN_0060c1c0`'s events 100 to 110 ([`training_event`]); the
+        // training luck behind comes when none was met (`FUN_0074a1ec`
+        // on its answer of 0).
         let event = pick(&EVENTS, 10_000, random);
-        let met = match event {
-            0 => false,
-            102 => player_event(records, &trainable, recent, random),
-            _ => true,
-        };
+        let met = training_event(records, (country, number), ids, &trainable, event, today, recent, random);
         if !met && !trainable.is_empty() {
             let at = random.below(trainable.len() as u32) as usize;
             let id = trainable[at];
@@ -465,6 +460,108 @@ fn session(
                 team.set_mood((mood - 3) as u8);
             }
         }
+    }
+}
+
+/// The training's event of the day (`FUN_0060c1c0` by its pick out of
+/// [`EVENTS`], 0 for none): whether one was met. Its news is not posted.
+/// 100 and 101 tire the trained men by three or five of their condition
+/// when their forms today sum above twelve each — forms of 20 to 80
+/// always do; 102 is a player event ([`player_event`]); 103 and 104 do
+/// nothing; 108 has the co-trainer (the team's +0xa2, a person of
+/// `0xbe3920` up to 1499) work one trained man who keeps no goal two up
+/// in condition on a hundred-roll under seven times his skill (+0x24),
+/// and 109 the second coach (+0xa4, a person of `0xbe17f8` up to 100)
+/// one keeper on a sixty-roll under three times his skill and sixteen;
+/// 110 puts the first of the squad, as many as train, out with their
+/// knock once its count (+0x27c) passes five — 100 days for the groin,
+/// 182 for the Achilles tendon, unless out longer already. Events 105
+/// to 107 (`FUN_005eb193`'s men and their position bits) are not here
+/// and stand as met.
+#[allow(clippy::too_many_arguments)]
+fn training_event(
+    records: &mut Records,
+    (country, number): (u16, u16),
+    squad: &[u16],
+    trainable: &[u16],
+    event: u32,
+    today: i32,
+    recent: &mut Vec<i32>,
+    random: &mut Random,
+) -> bool {
+    match event {
+        0 => false,
+        100 | 101 => {
+            let forms: i32 =
+                trainable.iter().filter_map(|&id| records.player(id)).map(statistics::form_today).sum();
+            if (trainable.len() as i32) * 12 < forms {
+                let by = if event == 100 { -3 } else { -5 };
+                for &id in trainable {
+                    if let Some(p) = records.player_mut(id) {
+                        train_condition(p, by);
+                    }
+                }
+            }
+            true
+        }
+        102 => player_event(records, trainable, recent, random),
+        108 => {
+            let co = records.team(country, number).map_or(0, |t| t.co_trainer());
+            if co != 0 {
+                let skill = if (1..=1499).contains(&co) {
+                    records.persons.get(co as usize).map_or(0, |p| p.get::<u8>(0x24))
+                } else {
+                    0
+                };
+                if (random.below(100) as i32) < i32::from(skill) * 7
+                    && let Some(id) = draw_listed(records, trainable, false, random)
+                    && let Some(p) = records.player_mut(id)
+                {
+                    train_condition(p, 2);
+                }
+            }
+            true
+        }
+        109 => {
+            let coach = records.team(country, number).map_or(0, |t| t.get::<i16>(0xa4));
+            if coach != 0 {
+                let skill = if (1..=100).contains(&coach) {
+                    records.block(&format!("0xbe17f8[{coach}]")).and_then(|b| b.get(0x24 - 0x20)).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                if (random.below(60) as i32) < i32::from(skill) * 3 + 16
+                    && let Some(id) = draw_listed(records, trainable, true, random)
+                    && let Some(p) = records.player_mut(id)
+                {
+                    train_condition(p, 2);
+                }
+            }
+            true
+        }
+        110 => {
+            for &id in squad.iter().take(trainable.len()) {
+                let Some(p) = records.player_mut(id) else { continue };
+                let knocks = p.knocks();
+                let out = if knocks & crate::medical::ACHILLES != 0 {
+                    Some((0x41, 0xb6))
+                } else if knocks & crate::medical::GROIN != 0 {
+                    Some((0x42, 100))
+                } else {
+                    None
+                };
+                if let Some((kind, days)) = out
+                    && 5 < p.get::<u8>(0x27c)
+                    && p.get::<i16>(0x2c) < 0xb4
+                {
+                    p.put::<u8>(0x2e, kind);
+                    p.put::<i16>(0x2c, days);
+                    p.put::<i16>(0x2a, today as i16);
+                }
+            }
+            true
+        }
+        _ => true,
     }
 }
 
@@ -503,7 +600,7 @@ fn player_event(records: &mut Records, trainable: &[u16], recent: &mut Vec<i32>,
 fn run_player_event(records: &mut Records, trainable: &[u16], code: u32, random: &mut Random) -> bool {
     match code {
         31 => {
-            let Some(one) = draw_outfield(records, trainable, random) else { return false };
+            let Some(one) = draw_listed(records, trainable, false, random) else { return false };
             let friend = records.player(one).map_or(0, |p| p.best_friend());
             if friend == 0 || !trainable.contains(&friend) {
                 return false;
@@ -519,21 +616,21 @@ fn run_player_event(records: &mut Records, trainable: &[u16], code: u32, random:
     }
 }
 
-/// One of the listed men who keeps no goal, drawn (`FUN_005eaed7`; the
-/// handle's position byte +0x3 is the record's +0x21d): none when all
-/// keep goal, or when the one drawn is a playing manager. Its last
-/// check, the handle's +0x6a under the flag the event hands it, is not
-/// here.
-fn draw_outfield(records: &Records, list: &[u16], random: &mut Random) -> Option<u16> {
-    let outfield: Vec<u16> = list
+/// One of the listed keepers, or of those who keep no goal, drawn
+/// (`FUN_005ead2f`, `FUN_005eaed7`; the handle's position byte +0x3 is
+/// the record's +0x21d): none when the list has none such, or when the
+/// one drawn is a playing manager. Their last check, the handle's +0x6a
+/// under the flag the event hands it, is not here.
+fn draw_listed(records: &Records, list: &[u16], keepers: bool, random: &mut Random) -> Option<u16> {
+    let such: Vec<u16> = list
         .iter()
         .copied()
-        .filter(|&id| records.player(id).is_some_and(|p| p.get::<u8>(0x21d) != 1))
+        .filter(|&id| records.player(id).is_some_and(|p| (p.get::<u8>(0x21d) == 1) == keepers))
         .collect();
-    if outfield.is_empty() {
+    if such.is_empty() {
         return None;
     }
-    let id = outfield[random.below(outfield.len() as u32) as usize];
+    let id = such[random.below(such.len() as u32) as usize];
     (id <= crate::mood::LAST_REAL_ID).then_some(id)
 }
 
@@ -658,5 +755,45 @@ mod tests {
             None
         });
         assert_eq!(code, Some(31));
+    }
+
+    /// The training's events on A's human squad: 100 and 101 take three
+    /// and five of every trained man's condition and draw nothing, 103
+    /// does nothing, and 108 rolls the co-trainer's hundred, picking a man
+    /// only under seven times his skill.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn the_training_events_work_on_the_squad() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let squad = records.team(club.0, club.1).unwrap().players();
+        let trainable: Vec<u16> =
+            squad.iter().copied().filter(|&id| records.player(id).is_some_and(|p| p.get::<i16>(0x2c) < 7)).collect();
+        let conditions = |records: &Records| -> Vec<i16> {
+            trainable.iter().map(|&id| records.player(id).unwrap().condition()).collect()
+        };
+        let start = Random::from_state(12345, 67890);
+        let mut random = start.clone();
+        let mut recent = Vec::new();
+        for (event, by) in [(100, 300), (101, 500), (103, 0)] {
+            let before = conditions(&records);
+            assert!(training_event(&mut records, club, &squad, &trainable, event, 64, &mut recent, &mut random));
+            let after = conditions(&records);
+            for (b, a) in before.iter().zip(&after) {
+                assert_eq!(*a, (b - by).max(0), "event {event}");
+            }
+        }
+        assert_eq!(random, start, "the tiring events draw nothing");
+        let co = records.team(club.0, club.1).unwrap().co_trainer();
+        let skill = records.persons.get(co.max(0) as usize).map_or(0, |p| p.get::<u8>(0x24));
+        let mut expected = start.clone();
+        if co != 0 && (expected.below(100) as i32) < i32::from(skill) * 7 {
+            expected.below(trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count() as u32);
+        }
+        assert!(training_event(&mut records, club, &squad, &trainable, 108, 64, &mut recent, &mut random));
+        assert_eq!(random, expected);
     }
 }
