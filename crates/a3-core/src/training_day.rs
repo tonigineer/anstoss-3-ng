@@ -887,7 +887,11 @@ fn player_event(
 /// +0xa4) up by the trained men's count, a byte held to 200 (the
 /// club's +0xc91 it asks first is never written, so always nought);
 /// 33, with a human trainer and behind the gate, two men drawn who both
-/// take the reason 0x800 (`FUN_00770800`).
+/// take the reason 0x800 (`FUN_00770800`); 9, a human trainer's club in
+/// its country's top division (the club's +0x105, the team's +0x12e)
+/// costing him ten of the media's liking (`FUN_0041828e` → `FUN_004184d4`
+/// on the manager's +0x3a, his record's `popularity`), answering "not
+/// met".
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
 fn run_player_event(
@@ -929,6 +933,19 @@ fn run_player_event(
         11 => content(records, true, -3, random),
         12 => content(records, false, 2, random),
         14 => content(records, false, 1, random),
+        9 => {
+            let top = records.team(country, number).is_some_and(|t| t.get::<u8>(0x12e) == 0);
+            if trainer != 0
+                && top
+                && let Some(m) = records.managers.get_mut(usize::from(trainer) - 1)
+            {
+                let mut popularity = m.popularity();
+                let media = (popularity[2] as i8).wrapping_sub(10).clamp(0, 100);
+                popularity[2] = media as u8;
+                m.set_popularity(popularity);
+            }
+            false
+        }
         13 => {
             let Some(id) = draw_any(trainable, random) else { return false };
             let Some(p) = records.player_mut(id) else { return false };
@@ -1317,6 +1334,17 @@ mod tests {
             assert!(run_player_event(&mut records, club, &trainable, &tables, 23, 0, (64, date), &mut random));
             assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u16>(0x1de) == 64 + 5));
         }
+        // Code 9 draws nothing, answers "not met", and costs a human
+        // trainer in the top division ten of the media's liking.
+        let held = random.clone();
+        let team = records.team(club.0, club.1).unwrap();
+        let (trainer, top) = (team.humans()[0], team.get::<u8>(0x12e) == 0);
+        let media = |records: &Records| records.managers[usize::from(trainer).max(1) - 1].popularity()[2];
+        let before = media(&records);
+        assert!(!run_player_event(&mut records, club, &trainable, &tables, 9, 0, (64, date), &mut random));
+        let lost = if trainer != 0 && top { before.min(10) } else { 0 };
+        assert_eq!(media(&records), before - lost);
+        assert_eq!(random, held);
         // Code 15 draws nothing and is met with a human trainer unless
         // the next match is tomorrow.
         let held = random.clone();
