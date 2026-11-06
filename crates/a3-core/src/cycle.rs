@@ -887,7 +887,7 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
-                                &self.data.rules.discipline.mood,
+                                (&self.data.rules.discipline.mood, &self.data.rules.medical),
                                 &mut season.recent_events,
                                 &mut season.random,
                             );

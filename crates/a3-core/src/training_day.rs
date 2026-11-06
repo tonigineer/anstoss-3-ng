@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use chrono::NaiveDate;
 
 use crate::lineup;
+use crate::medical::MedicalTables;
 use crate::mood::MoodTables;
 use crate::random::Random;
 use crate::records::{Player, Records, Team};
@@ -154,7 +155,7 @@ pub fn day(
     world: &world::World,
     today: i32,
     date: NaiveDate,
-    mood: &MoodTables,
+    (mood, medical): (&MoodTables, &MedicalTables),
     recent: &mut Vec<i32>,
     random: &mut Random,
 ) {
@@ -241,7 +242,7 @@ pub fn day(
                 today,
                 date,
                 slot,
-                mood,
+                (mood, medical),
                 recent,
                 random,
             );
@@ -310,7 +311,7 @@ fn session(
     today: i32,
     date: NaiveDate,
     slot: usize,
-    mood: &MoodTables,
+    (mood, medical): (&MoodTables, &MedicalTables),
     recent: &mut Vec<i32>,
     random: &mut Random,
 ) {
@@ -394,8 +395,10 @@ fn session(
                 fc += fc / 10;
             }
         }
-        // `FUN_00767225`'s gain and its news are not here.
-        if random.below(fc.max(0) as u32) == 0 {}
+        // Its 0 hurts him (`FUN_00767225`).
+        if random.below(fc.max(0) as u32) == 0 {
+            training_injury(records, (country, number), id, today, date, medical, random);
+        }
     }
     if counter == 1 {
         if !injured.is_empty() {
@@ -566,6 +569,88 @@ fn training_event(
         105 => ability_event(records, trainable, random),
         106 | 107 => trait_event(records, (country, number), trainable, event == 106, random),
         _ => true,
+    }
+}
+
+/// The cap of a medical level's spending (`FUN_006773c4` on the club's
+/// +0x2ac, the team's +0x314): below each one level less, 4 at most —
+/// 150, 400, 800 and 1700 thousands (`FUN_00627bd0`, a thousand being
+/// `DAT_00a3b3e4`).
+const MEDICAL_LEVELS: [i32; 4] = [150_000, 400_000, 800_000, 1_700_000];
+/// What a day less out costs (`DAT_00a3b37c`, a hundred thousands).
+const MEDICAL_DAY: i32 = 100_000;
+/// The injury kinds a session draws over (`FUN_00767225`): 1 to 61.
+const TRAINING_KINDS: usize = 61;
+
+/// A session's injury (`FUN_00767225`): a kind out of the table by its
+/// weights — the walk stops one band late, as the exe's does, on the
+/// kind after the one the roll falls in (but at the last); a knock kind
+/// adds the knock bits of the row the roll itself names (`DAT_008ac348`
+/// by the roll) and clears the knock's count, else he is out: kind 0x25
+/// as 0x43 when his freshness is under 35, for the kind's days scaled
+/// by what the club spends on its doctors (a hundred less three per
+/// medical level and a draw below a day's cost in its spending, over a
+/// hundred; one day at least), and kinds 0x1b and 0x1e may leave him
+/// knocked about by the knee (`FUN_007675c6`).
+fn training_injury(
+    records: &mut Records,
+    (country, number): (u16, u16),
+    id: u16,
+    today: i32,
+    date: NaiveDate,
+    medical: &MedicalTables,
+    random: &mut Random,
+) {
+    let mut starts = [0i32; TRAINING_KINDS];
+    let mut total = 0i32;
+    for k in 0..TRAINING_KINDS {
+        starts[k] = total;
+        total += i32::from(medical.weight(k as u8 + 1));
+    }
+    if total == 0 {
+        return;
+    }
+    let roll = random.below(total as u32) as i32;
+    let mut at = 0;
+    while at < TRAINING_KINDS - 1 && starts[at] <= roll {
+        at += 1;
+    }
+    let kind = at as u8 + 1;
+    let Some(p) = records.player(id) else { return };
+    if medical.knock_bits(usize::from(kind)) != 0 {
+        let bits = medical.knock_bits(roll as usize);
+        if let Some(p) = records.player_mut(id) {
+            p.set_knocks(p.knocks() | bits);
+            p.put::<u8>(0x27c, 0);
+        }
+        return;
+    }
+    let kind = if kind == 0x25 && crate::computer_training::fresh_percent(p) < 0x23 { 0x43 } else { kind };
+    let spent = records.team(country, number).map_or(0, |t| t.get::<i32>(0x314));
+    let level = MEDICAL_LEVELS.iter().filter(|&&cap| cap <= spent).count() as i64;
+    let care = i64::from(random.below((spent / MEDICAL_DAY).max(0) as u32));
+    let base = i64::from(medical.base_days(kind));
+    // The factor goes to the FPU as a 64-bit integer whose high word is
+    // nought — below nought it is read as 2^32 more — and the days come
+    // back through `ftol` into a short (past i32, its 0x80000000).
+    let factor = i64::from((100 - 3 * level - care) as i32 as u32);
+    let whole = factor * base / 100;
+    let whole = i32::try_from(whole).unwrap_or(i32::MIN);
+    let days = i32::from((whole as i16).max(1));
+    injure(records, id, kind, days, today);
+    if kind == 0x1b || kind == 0x1e {
+        let Some(p) = records.player(id) else { return };
+        let age = statistics::age_on(p, date);
+        let [first, second] = p.traits();
+        let base = if second & 1 != 0 || first & 1 != 0 { 180 } else { 200 };
+        let chance = base - 9 * (40 - age);
+        if (random.below(200) as i32) < chance && p.knocks() & 8 == 0 {
+            // Knocked a second time he would go to the club's news
+            // (`FUN_006a6c20`, event 0x16), which is not posted here.
+            if let Some(p) = records.player_mut(id) {
+                p.set_knocks(p.knocks() | 8);
+            }
+        }
     }
 }
 
@@ -1197,6 +1282,24 @@ mod tests {
         }
         assert_eq!(run_player_event(&mut records, club, &trainable, &tables, 37, 0, (64, date), &mut random), staffed);
         assert_eq!(random, thrice);
+        // The session's injury over many rolls: the man is out from today
+        // a day at least, of a kind the table puts out, or only his
+        // knocks grow.
+        let medical = MedicalTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        for k in 0..100 {
+            let id = trainable[k % trainable.len()];
+            let before = records.player(id).unwrap().knocks();
+            training_injury(&mut records, club, id, 64, date, &medical, &mut random);
+            let p = records.player(id).unwrap();
+            if p.knocks() != before && medical.knock_bits(usize::from(p.injury_kind())) == 0 && p.injured_on() != 64 {
+                assert_eq!(p.knocks() & !before, p.knocks() ^ before, "knocks only grow");
+                continue;
+            }
+            if p.injured_on() == 64 {
+                assert!(days_out(&records, p) >= 1, "out a day at least");
+                assert_eq!(medical.knock_bits(usize::from(p.injury_kind())), 0);
+            }
+        }
         // The ability and trait events over many rolls: 106 only gives a
         // trait bit, 107 only takes one, 105 moves at most one ability
         // bit, each on one man.

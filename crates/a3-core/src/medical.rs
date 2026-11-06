@@ -21,6 +21,8 @@ const KINDS: usize = 95;
 const INJECTION_BYTE: usize = 6;
 const BASE_DAYS_BYTE: usize = 1;
 const WEIGHT_BYTE: usize = 5;
+/// The knock bits a kind gives instead of an injury, 0 for an injury.
+const KNOCK_BITS_BYTE: usize = 8;
 
 /// Bits of a player's knocks (`Player::knocks`): an operation due, the
 /// injection, the three knocks he plays on with.
@@ -41,6 +43,8 @@ pub struct MedicalTables {
     /// Each kind's base days (+1) and its weight in a random injury (+5).
     base_days: Vec<u8>,
     weights: Vec<u8>,
+    /// The knock bits (+8), 0 for a kind that puts him out.
+    knock_bits: Vec<u16>,
 }
 
 impl MedicalTables {
@@ -50,6 +54,10 @@ impl MedicalTables {
             injection: kinds.chunks(KIND_SIZE).map(|k| k[INJECTION_BYTE] != 0).collect(),
             base_days: kinds.chunks(KIND_SIZE).map(|k| k[BASE_DAYS_BYTE]).collect(),
             weights: kinds.chunks(KIND_SIZE).map(|k| k[WEIGHT_BYTE]).collect(),
+            knock_bits: kinds
+                .chunks(KIND_SIZE)
+                .map(|k| u16::from_le_bytes([k[KNOCK_BITS_BYTE], k[KNOCK_BITS_BYTE + 1]]))
+                .collect(),
         })
     }
 
@@ -59,6 +67,10 @@ impl MedicalTables {
     }
 
     /// How likely a random injury is of this kind.
+    pub fn knock_bits(&self, kind: usize) -> u16 {
+        self.knock_bits.get(kind).copied().unwrap_or(0)
+    }
+
     pub fn weight(&self, kind: u8) -> u8 {
         self.weights.get(usize::from(kind)).copied().unwrap_or(0)
     }

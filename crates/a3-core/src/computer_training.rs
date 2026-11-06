@@ -453,7 +453,7 @@ fn cond_percent_of(condition: i16, shown: u32) -> i16 {
 
 /// The freshness as a percent: three words of a hundredth, the whole
 /// capped (`FUN_006ff649`).
-fn fresh_percent(p: &crate::records::Player) -> i16 {
+pub(crate) fn fresh_percent(p: &crate::records::Player) -> i16 {
     let [first, second, third] = p.freshness();
     let sum = first.wrapping_add(second).wrapping_add(third);
     if sum < 0 {
