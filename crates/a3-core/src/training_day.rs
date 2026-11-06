@@ -224,10 +224,15 @@ pub fn day(
                 continue;
             }
             if secret {
-                // `FUN_0041828e`'s happenings are not here; the rolls
-                // still go.
-                if random.below(6) == 0 {}
-                if random.below(14) < 2 {}
+                // Training in secret costs the trainer a little of the
+                // media's liking now and then, and of the fans'
+                // (`FUN_00749508` → `FUN_0041828e`).
+                if random.below(6) == 0 {
+                    move_likings(records, (country, number), [0, 0, -1]);
+                }
+                if random.below(14) < 2 {
+                    move_likings(records, (country, number), [0, -1, 0]);
+                }
             }
             counter += 1;
             session(
@@ -683,6 +688,38 @@ fn training_injury(
     }
 }
 
+/// The trainer's three likings moved, by the public, the fans and the
+/// media (`FUN_0041828e` with `FUN_004184d4`), each a signed byte held to
+/// 0 to 100: a human trainer's own (his record's `popularity`, the
+/// manager object's +0x3a), else the computer trainer's — the club's
+/// +0x7e, or its +0x80 (the team's `staff`), a person of `0xbe3920` up
+/// to 1499 (`FUN_006317c6`, `FUN_006318f4`: his +0x4a to +0x4c).
+fn move_likings(records: &mut Records, (country, number): (u16, u16), by: [i8; 3]) {
+    let Some(team) = records.team(country, number) else { return };
+    let trainer = team.humans()[0];
+    let [first, second, _] = team.staff();
+    let step = |value: u8, by: i8| (value as i8).wrapping_add(by).clamp(0, 100) as u8;
+    if trainer != 0 {
+        if let Some(m) = records.managers.get_mut(usize::from(trainer) - 1) {
+            let mut likings = m.popularity();
+            for (liking, by) in likings.iter_mut().zip(by) {
+                *liking = step(*liking, by);
+            }
+            m.set_popularity(likings);
+        }
+        return;
+    }
+    let person = if first != 0 { first } else { second };
+    if (1..=1499).contains(&person)
+        && let Some(p) = records.persons.get_mut(usize::from(person))
+    {
+        for (at, by) in (0x4a..0x4d).zip(by) {
+            let value = p.get::<u8>(at);
+            p.put::<u8>(at, step(value, by));
+        }
+    }
+}
+
 /// A man's days out as the training's handle holds them (+0x2c, which
 /// `FUN_00636638` reckons out of `injured_to`).
 fn days_out(records: &Records, p: &Player) -> i32 {
@@ -944,14 +981,8 @@ fn run_player_event(
         14 => content(records, false, 1, random),
         9 => {
             let top = records.team(country, number).is_some_and(|t| t.get::<u8>(0x12e) == 0);
-            if trainer != 0
-                && top
-                && let Some(m) = records.managers.get_mut(usize::from(trainer) - 1)
-            {
-                let mut popularity = m.popularity();
-                let media = (popularity[2] as i8).wrapping_sub(10).clamp(0, 100);
-                popularity[2] = media as u8;
-                m.set_popularity(popularity);
+            if trainer != 0 && top {
+                move_likings(records, (country, number), [0, 0, -10]);
             }
             false
         }
@@ -1421,6 +1452,14 @@ mod tests {
         let held = random.clone();
         assert!(!run_player_event(&mut records, club, &trainable, &tables, 38, 0, (64, date), &mut random));
         assert_eq!(random, held);
+        // The secret training's toll: a human trainer one less with the
+        // fans, the others as they were.
+        if trainer != 0 {
+            let before = records.managers[usize::from(trainer) - 1].popularity();
+            move_likings(&mut records, club, [0, -1, 0]);
+            let after = records.managers[usize::from(trainer) - 1].popularity();
+            assert_eq!(after, [before[0], before[1].saturating_sub(1), before[2]]);
+        }
         // Code 15 draws nothing and is met with a human trainer unless
         // the next match is tomorrow.
         let held = random.clone();
