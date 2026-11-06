@@ -1336,10 +1336,11 @@ impl Cycle {
     /// manager: save A's day 63 holds the open day, entry kind 8 with the
     /// open day's number 6 where a talk's would name the player. The
     /// dialog comes up in that day's walk, after the day's training and
-    /// before its games; its constructor draws nothing. What the event
-    /// rolls for its success stays unported: `FUN_0062a325` walking the
-    /// country's leagues into `FUN_00690a9e`'s squad spans, eight draws
-    /// of 9 or 10 — its semantics are a next step.
+    /// before its games; its constructor draws nothing. Not ported, and
+    /// not shown to belong to the open day: the eight draws of 9 or 10
+    /// the traced original makes at the load, before the turn's screen —
+    /// `FUN_0062a325`, which dispatches the day-keyed table at `0x8914e0`
+    /// and walks the country's leagues into `FUN_00690a9e`'s squad spans.
     fn open_events_on(&self, day: usize) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
         for n in 0..managers {
