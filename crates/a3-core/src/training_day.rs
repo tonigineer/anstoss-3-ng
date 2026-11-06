@@ -758,7 +758,14 @@ fn player_event(
 /// first ability bit 2 or 4, which he loses. Ungated: 37, with a human
 /// trainer and a co-trainer, three draws over the trained, each one more
 /// content with the team; 42, with a human trainer in a unit the gate
-/// shuts, the mood ten down; 43, the mood five up, answering "not met".
+/// shuts, the mood ten down; 43, the mood five up, answering "not met";
+/// 13, any trained man drawn, at a morale of 106 or more two less
+/// content with his distractions (`FUN_00701210`, the record's +0x294);
+/// 15, with a human trainer, met unless the next match is tomorrow
+/// (the club's +0xb44, the team's `next_day`); 32, unless the next
+/// match is the league's, at its round 7 the team's +0xca (the club's
+/// +0xa4) up by the trained men's count, a byte held to 200 (the
+/// club's +0xc91 it asks first is never written, so always nought).
 /// The other codes, drawing over the squad, the manager and the club
 /// each in its own way, take nothing place here yet.
 fn run_player_event(
@@ -799,6 +806,28 @@ fn run_player_event(
         11 => content(records, true, -3, random),
         12 => content(records, false, 2, random),
         14 => content(records, false, 1, random),
+        13 => {
+            let Some(id) = draw_any(trainable, random) else { return false };
+            let Some(p) = records.player_mut(id) else { return false };
+            if p.morale() < 0x6a {
+                return false;
+            }
+            crate::mood::change(p, 5, -2);
+            true
+        }
+        15 => trainer != 0 && records.team(country, number).is_some_and(|t| i32::from(t.next_day()) != today + 1),
+        32 => {
+            let Some(team) = records.team_mut(country, number) else { return false };
+            if team.next_kind() == 2 || team.next_round() != 7 {
+                return false;
+            }
+            let mut v = team.get::<u8>(0xca).wrapping_add(trainable.len() as u8);
+            if 200 < v {
+                v = 200;
+            }
+            team.put::<u8>(0xca, v);
+            true
+        }
         23 => {
             let Some(keeper) = draw_listed(records, trainable, true, random) else { return false };
             knock(records, keeper, 5);
@@ -1120,6 +1149,13 @@ mod tests {
             assert!(run_player_event(&mut records, club, &trainable, 23, 0, (64, date), &mut random));
             assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u16>(0x1de) == 64 + 5));
         }
+        // Code 15 draws nothing and is met with a human trainer unless
+        // the next match is tomorrow.
+        let held = random.clone();
+        let team = records.team(club.0, club.1).unwrap();
+        let expected_15 = team.humans()[0] != 0 && team.next_day() != 65;
+        assert_eq!(run_player_event(&mut records, club, &trainable, 15, 0, (64, date), &mut random), expected_15);
+        assert_eq!(random, held);
         // Code 43 lifts the mood five and answers "not met"; 37 draws
         // three times with a human trainer and a co-trainer, else none.
         let mood = i32::from(records.team(club.0, club.1).unwrap().mood());
