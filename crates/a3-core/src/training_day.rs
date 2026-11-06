@@ -314,7 +314,7 @@ fn session(
     let mut injured = Vec::new();
     for &id in ids {
         let Some(player) = records.player(id) else { continue };
-        if player.get::<i16>(0x2c) < 7 {
+        if days_out(records, player) < 7 {
             // The national check (`FUN_006fef73`, `FUN_006feff8`) is
             // not in the corpus and caps nothing here; a 0x20 unit only
             // trains its own kind — the record's scratch byte +0x3,
@@ -401,8 +401,9 @@ fn session(
             }
             if code != 0 {
                 let at = random.below(injured.len() as u32) as usize;
-                if let Some(player) = records.player_mut(injured[at]) {
-                    let mut days = player.get::<i16>(0x2c);
+                let id = injured[at];
+                if let Some(player) = records.player(id) {
+                    let mut days = days_out(records, player);
                     if days < 0x2b {
                         if days > 0x15 {
                             if code == 1 {
@@ -418,7 +419,7 @@ fn session(
                     } else if code == 2 {
                         days += 14;
                     }
-                    player.put::<i16>(0x2c, days);
+                    set_days_out(records, id, days);
                 }
             }
         }
@@ -438,11 +439,8 @@ fn session(
                         if other == rival as u16 {
                             if random.below(3) != 0 {
                                 let at = random.below(6) as usize;
-                                if let Some(player) = records.player_mut(other) {
-                                    player.put::<u8>(0x2e, MANAGER_INJURIES[at].0);
-                                    player.put::<i16>(0x2c, MANAGER_INJURIES[at].1);
-                                    player.put::<i16>(0x2a, today as i16);
-                                }
+                                let (kind, days) = MANAGER_INJURIES[at];
+                                injure(records, other, kind, days.into(), today);
                             }
                             break;
                         }
@@ -542,7 +540,7 @@ fn training_event(
         }
         110 => {
             for &id in squad.iter().take(trainable.len()) {
-                let Some(p) = records.player_mut(id) else { continue };
+                let Some(p) = records.player(id) else { continue };
                 let knocks = p.knocks();
                 let out = if knocks & crate::medical::ACHILLES != 0 {
                     Some((0x41, 0xb6))
@@ -553,11 +551,9 @@ fn training_event(
                 };
                 if let Some((kind, days)) = out
                     && 5 < p.get::<u8>(0x27c)
-                    && p.get::<i16>(0x2c) < 0xb4
+                    && days_out(records, p) < 0xb4
                 {
-                    p.put::<u8>(0x2e, kind);
-                    p.put::<i16>(0x2c, days);
-                    p.put::<i16>(0x2a, today as i16);
+                    injure(records, id, kind, days, today);
                 }
             }
             true
@@ -565,6 +561,45 @@ fn training_event(
         105 => ability_event(records, trainable, random),
         106 | 107 => trait_event(records, (country, number), trainable, event == 106, random),
         _ => true,
+    }
+}
+
+/// A man's days out as the training's handle holds them (+0x2c, which
+/// `FUN_00636638` reckons out of `injured_to`).
+fn days_out(records: &Records, p: &Player) -> i32 {
+    crate::load::days_to(&records.globals, p.injured_to())
+}
+
+/// His days out set anew, as the handle's write-back keeps them
+/// (`FUN_006364cf`'s +0x2c): none clears the injury's end, its day and
+/// the doctor's visits; else it lasts that many days from today.
+fn set_days_out(records: &mut Records, id: u16, days: i32) {
+    if days < 1 {
+        if let Some(p) = records.player_mut(id) {
+            p.set_visits(0);
+            p.set_injured_to([0, 0]);
+            p.set_injured_on(0);
+        }
+    } else {
+        crate::medical::injure_for(records, id, days);
+    }
+}
+
+/// An injury of `kind` from today, `days` long (`FUN_00766b92` for a
+/// kind that is no knock): the kind (+0x228), the day (+0x1d8), the end.
+fn injure(records: &mut Records, id: u16, kind: u8, days: i32, today: i32) {
+    if let Some(p) = records.player_mut(id) {
+        p.set_injury_kind(kind);
+        p.set_injured_on(today as u16);
+    }
+    set_days_out(records, id, days);
+}
+
+/// Knocked about for `days` (`FUN_00766af9`, the handle's +0x2f, which
+/// the record keeps as the day it lasts to, +0x1de).
+fn knock_for(records: &mut Records, id: u16, days: u16, today: i32) {
+    if let Some(p) = records.player_mut(id) {
+        p.put::<u16>(0x1de, if days == 0 { 0 } else { (today as u16).wrapping_add(days) });
     }
 }
 
@@ -742,18 +777,7 @@ fn run_player_event(
         }
     };
     let gate = UNIT_GATES.get(unit).is_some_and(|&g| g != 0);
-    let put = |records: &mut Records, id: u16, at: usize, value: u8| {
-        if let Some(p) = records.player_mut(id) {
-            p.put::<u8>(at, value);
-        }
-    };
-    let injure = |records: &mut Records, id: u16, kind: u8, days: i16| {
-        if let Some(p) = records.player_mut(id) {
-            p.put::<u8>(0x2e, kind);
-            p.put::<i16>(0x2c, days);
-            p.put::<i16>(0x2a, today as i16);
-        }
-    };
+    let knock = |records: &mut Records, id: u16, days: u16| knock_for(records, id, days, today);
     let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| {
         let Some(id) = draw_listed(records, trainable, keepers, random) else { return false };
         if let Some(p) = records.player_mut(id) {
@@ -777,7 +801,7 @@ fn run_player_event(
         14 => content(records, false, 1, random),
         23 => {
             let Some(keeper) = draw_listed(records, trainable, true, random) else { return false };
-            put(records, keeper, 0x2f, 5);
+            knock(records, keeper, 5);
             true
         }
         24 if gate => {
@@ -789,11 +813,11 @@ fn run_player_event(
             match random.below(4) {
                 0 => {}
                 1 => {
-                    put(records, one, 0x2f, 1);
-                    put(records, other, 0x2f, 1);
+                    knock(records, one, 1);
+                    knock(records, other, 1);
                 }
-                2 => injure(records, one, 0x1c, 5),
-                _ => injure(records, one, 0x32, 7),
+                2 => injure(records, one, 0x1c, 5, today),
+                _ => injure(records, one, 0x32, 7, today),
             }
             true
         }
@@ -804,7 +828,7 @@ fn run_player_event(
                 return false;
             }
             if 2 <= random.below(3) {
-                put(records, keeper, 0x2f, 5);
+                knock(records, keeper, 5);
             }
             true
         }
@@ -821,8 +845,8 @@ fn run_player_event(
             if one == other {
                 return false;
             }
-            if records.player(other).is_some_and(|p| p.get::<i16>(0x2c) == 0) {
-                put(records, other, 0x2f, 1);
+            if records.player(other).is_some_and(|p| days_out(records, p) == 0) {
+                knock(records, other, 1);
             }
             true
         }
@@ -1041,7 +1065,7 @@ mod tests {
         let club = (u16::from(country), number as u16);
         let squad = records.team(club.0, club.1).unwrap().players();
         let trainable: Vec<u16> =
-            squad.iter().copied().filter(|&id| records.player(id).is_some_and(|p| p.get::<i16>(0x2c) < 7)).collect();
+            squad.iter().copied().filter(|&id| records.player(id).is_some_and(|p| days_out(&records, p) < 7)).collect();
         let conditions = |records: &Records| -> Vec<i16> {
             trainable.iter().map(|&id| records.player(id).unwrap().condition()).collect()
         };
@@ -1094,7 +1118,7 @@ mod tests {
             trainable.iter().copied().filter(|&id| records.player(id).unwrap().get::<u8>(0x21d) == 1).collect();
         if !keepers.is_empty() {
             assert!(run_player_event(&mut records, club, &trainable, 23, 0, (64, date), &mut random));
-            assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u8>(0x2f) == 5));
+            assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u16>(0x1de) == 64 + 5));
         }
         // Code 43 lifts the mood five and answers "not met"; 37 draws
         // three times with a human trainer and a co-trainer, else none.
