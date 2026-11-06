@@ -15,6 +15,10 @@ use crate::world::World;
 pub struct Data {
     /// The installation, with its saves in `saves/`.
     pub dir: PathBuf,
+    /// Where the rolling autosaves go: the installation's `saves/`, or
+    /// elsewhere for runs that must leave the saves there as they are —
+    /// the script tests, many walking at once.
+    pub saves: PathBuf,
     pub world: World,
     pub calendar: Calendar,
     /// The rules the game keeps in tables of its own.
@@ -30,6 +34,7 @@ impl Data {
         let exe = Exe::open(&dir.join("anstoss3.exe"))?;
         Ok(Self {
             dir: dir.to_owned(),
+            saves: dir.join("saves"),
             calendar: Calendar::load(&exe, &world)?,
             rules: Rules::load(&exe)?,
             presale: PresaleTables::load(&exe)?,

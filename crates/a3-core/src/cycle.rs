@@ -1134,10 +1134,10 @@ impl Cycle {
         if !autosave_due(&records.globals.game_options(), weeks) {
             return;
         }
-        let fresh = self.data.dir.join("saves").join("Autos.an3");
+        let fresh = self.data.saves.join("Autos.an3");
         match records.to_save().to_bytes_stored() {
             Ok(bytes) => {
-                if let Err(err) = roll_autosaves(&self.data.dir.join("saves"), &bytes) {
+                if let Err(err) = roll_autosaves(&self.data.saves, &bytes) {
                     warn!("{}: {err}", fresh.display());
                 }
             }

@@ -629,6 +629,12 @@ mod tests {
     fn game() -> Game {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let mut game = Game::load(&dir).unwrap();
+        // The walks' rolling autosaves stay out of the shared saves: one
+        // landing there mid-run would move every row of the load list
+        // under a parallel test's `on_save`.
+        let autosaves = std::env::temp_dir().join("a3-script-autosaves");
+        std::fs::create_dir_all(&autosaves).unwrap();
+        std::sync::Arc::get_mut(&mut game.data).expect("the game's data, just loaded").saves = autosaves;
         compose(&mut game);
         game
     }
