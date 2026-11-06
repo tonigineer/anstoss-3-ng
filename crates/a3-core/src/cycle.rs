@@ -723,6 +723,18 @@ impl Cycle {
     /// the turns, as the original's does (its cycle's case 2).
     fn weeks(&mut self, mut wait: bool) -> Result<(), Gone> {
         loop {
+            // The turns begin on the week's first day, which the planner,
+            // the market and the contract talks count from
+            // (`FUN_006da3a9`'s state 1: `DAT_00b5cbd6 = DAT_00b5cbd4`).
+            // A loaded game resumes in state 2, its saved day standing —
+            // a turn saved before a match within the week keeps its week.
+            if wait {
+                let mut guard = self.state();
+                if let Some(records) = guard.records.as_mut() {
+                    let today = records.globals.day();
+                    records.globals.set_week_start(today as i16);
+                }
+            }
             self.statement()?;
             if wait {
                 self.ask(Request::new(WAIT))?;
