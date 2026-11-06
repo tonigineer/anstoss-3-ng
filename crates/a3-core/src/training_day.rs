@@ -475,9 +475,9 @@ fn session(
 /// one keeper on a sixty-roll under three times his skill and sixteen;
 /// 110 puts the first of the squad, as many as train, out with their
 /// knock once its count (+0x27c) passes five — 100 days for the groin,
-/// 182 for the Achilles tendon, unless out longer already. Events 105
-/// to 107 (`FUN_005eb193`'s men and their position bits) are not here
-/// and stand as met.
+/// 182 for the Achilles tendon, unless out longer already; 105 to 107
+/// draw one trained man ([`draw_any`]) for his abilities and traits
+/// ([`ability_event`], [`trait_event`]).
 #[allow(clippy::too_many_arguments)]
 fn training_event(
     records: &mut Records,
@@ -561,8 +561,105 @@ fn training_event(
             }
             true
         }
+        105 => ability_event(records, trainable, random),
+        106 | 107 => trait_event(records, (country, number), trainable, event == 106, random),
         _ => true,
     }
+}
+
+/// The ability bits event 105 draws over (`DAT_00890040`, text and bit):
+/// a keeper's six first, then the others' ten.
+const ABILITY_BITS: [u16; 16] = [0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 5, 6, 7, 8, 9, 11];
+/// The trait bits events 106 and 107 draw over in the first trait word
+/// (`DAT_0088ffa4`: six words stand there, and a man who keeps no goal
+/// draws ten, the last four reading the table after it, as the exe does)
+/// and in the second (`DAT_0088ffe4`).
+const FIRST_TRAITS: [u16; 10] = [1, 1, 2, 4, 8, 0, 0, 0, 0, 1];
+const SECOND_TRAITS: [u16; 6] = [2, 4, 16, 32, 64, 512];
+
+/// One of the listed men, drawn (`FUN_005eb193`): none from an empty
+/// list, or when he is a playing manager (its +0x6a check is not here).
+fn draw_any(list: &[u16], random: &mut Random) -> Option<u16> {
+    if list.is_empty() {
+        return None;
+    }
+    let id = list[random.below(list.len() as u32) as usize];
+    (id <= crate::mood::LAST_REAL_ID).then_some(id)
+}
+
+/// Event 105 (`FUN_0060c1c0`'s case 5): a trained man with any first
+/// ability bit (`good`, the handle's +0xc; of nine for a keeper, else
+/// sixteen) has one of [`ABILITY_BITS`] drawn — a keeper's of the six,
+/// the others' of the ten; with three bits of both words set, up to five
+/// draws for one he has. One he has goes from both words
+/// (`FUN_00747689`), one he has in neither moves into the second
+/// (`bad`, +0xe; `FUN_00747770`). The human manager's plan of the man
+/// (`FUN_00643673`, the block at `0xa50028`) is not updated here.
+fn ability_event(records: &mut Records, trainable: &[u16], random: &mut Random) -> bool {
+    let Some(id) = draw_any(trainable, random) else { return false };
+    let Some(p) = records.player(id) else { return false };
+    let keeper = p.get::<u8>(0x21d) == 1;
+    let (good, bad) = (p.good(), p.bad());
+    let span = if keeper { 9 } else { 16 };
+    let count = |word: u16| (0..span).filter(|&i| word >> i & 1 != 0).count();
+    if count(good) == 0 {
+        return false;
+    }
+    let mut draw = || if keeper { random.below(6) as usize } else { random.below(10) as usize + 6 };
+    let at = if count(good) + count(bad) == 3 {
+        let Some(at) = (0..5).map(|_| draw()).find(|&at| good >> ABILITY_BITS[at] & 1 != 0) else {
+            return false;
+        };
+        at
+    } else {
+        draw()
+    };
+    let bit = 1u16 << ABILITY_BITS[at];
+    let Some(p) = records.player_mut(id) else { return false };
+    if good & bit != 0 {
+        p.set_good(good & !bit);
+        p.set_bad(bad & !bit);
+    } else if bad & bit != 0 {
+        return false;
+    } else {
+        p.set_bad(bad | bit);
+    }
+    true
+}
+
+/// Events 106 and 107 (`FUN_0060c1c0`'s cases 6 and 7): a trained man,
+/// and a roll over three for a keeper, else over the squad's size: 0
+/// draws a bit of the first trait word (+0x10, the record's `traits[0]`;
+/// of five for a keeper, else ten), 1 one of the second (+0x12, of
+/// six), anything else is no event. 106 gives the bit to a man without
+/// any of that word yet (`FUN_0074b4cf`'s sixteen, `FUN_0074b526`'s
+/// eight), 107 takes it from a man who has it.
+fn trait_event(records: &mut Records, (country, number): (u16, u16), trainable: &[u16], give: bool, random: &mut Random) -> bool {
+    let Some(id) = draw_any(trainable, random) else { return false };
+    let Some(p) = records.player(id) else { return false };
+    let keeper = p.get::<u8>(0x21d) == 1;
+    let squad = records.team(country, number).map_or(0, |t| t.player_count());
+    let roll = if keeper { random.below(3) } else { random.below(u32::from(squad)) };
+    let (word, bit, span) = match roll {
+        0 => (0, FIRST_TRAITS[random.below(if keeper { 5 } else { 10 }) as usize], 16),
+        1 => (1, SECOND_TRAITS[random.below(6) as usize], 8),
+        _ => return false,
+    };
+    let Some(p) = records.player_mut(id) else { return false };
+    let mut traits = p.traits();
+    if give {
+        if (0..span).any(|i| traits[word] >> i & 1 != 0) || traits[word] & bit != 0 {
+            return false;
+        }
+        traits[word] |= bit;
+    } else {
+        if traits[word] & bit == 0 {
+            return false;
+        }
+        traits[word] &= !bit;
+    }
+    p.set_traits(traits);
+    true
 }
 
 /// Event 102 (`FUN_0060d119`): a player event out of [`PLAYER_EVENTS`],
@@ -850,5 +947,43 @@ mod tests {
         expected.below(outfield as u32);
         assert_eq!(random, expected);
         assert!((0..=2).contains(&(team_parts(&records) - before)));
+        // The ability and trait events over many rolls: 106 only gives a
+        // trait bit, 107 only takes one, 105 moves at most one ability
+        // bit, each on one man.
+        let words = |records: &Records| -> Vec<(u16, u16, [u16; 2])> {
+            trainable
+                .iter()
+                .map(|&id| {
+                    let p = records.player(id).unwrap();
+                    (p.good(), p.bad(), p.traits())
+                })
+                .collect()
+        };
+        for _ in 0..200 {
+            for event in [105, 106, 107] {
+                let before = words(&records);
+                training_event(&mut records, club, &squad, &trainable, event, 64, &mut recent, &mut random);
+                let after = words(&records);
+                let changed: Vec<_> = before.iter().zip(&after).filter(|(b, a)| b != a).collect();
+                assert!(changed.len() <= 1, "event {event} changed {} men", changed.len());
+                for ((good, bad, traits), (good2, bad2, traits2)) in changed {
+                    match event {
+                        105 => {
+                            let moved = (good ^ good2) | (bad ^ bad2);
+                            assert_eq!(moved.count_ones(), 1, "105 moves one ability bit");
+                            assert_eq!(traits, traits2);
+                        }
+                        106 => {
+                            assert!((traits2[0] & traits[0]) == traits[0] && (traits2[1] & traits[1]) == traits[1]);
+                            assert_eq!((good, bad), (good2, bad2));
+                        }
+                        _ => {
+                            assert!((traits[0] & traits2[0]) == traits2[0] && (traits[1] & traits2[1]) == traits2[1]);
+                            assert_eq!((good, bad), (good2, bad2));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
