@@ -504,7 +504,7 @@ fn training_event(
             }
             true
         }
-        102 => player_event(records, trainable, recent, random),
+        102 => player_event(records, (country, number), trainable, recent, random),
         108 => {
             let co = records.team(country, number).map_or(0, |t| t.co_trainer());
             if co != 0 {
@@ -569,7 +569,13 @@ fn training_event(
 /// drawn once more when it stands among the recent ones; met once one
 /// is drawn that does not. Its run (`FUN_0060d1bf`) puts it among the
 /// recent ones when it took place.
-fn player_event(records: &mut Records, trainable: &[u16], recent: &mut Vec<i32>, random: &mut Random) -> bool {
+fn player_event(
+    records: &mut Records,
+    club: (u16, u16),
+    trainable: &[u16],
+    recent: &mut Vec<i32>,
+    random: &mut Random,
+) -> bool {
     for _ in 0..2 {
         let code = pick(&PLAYER_EVENTS, 2011, random);
         if code == 0 {
@@ -579,7 +585,7 @@ fn player_event(records: &mut Records, trainable: &[u16], recent: &mut Vec<i32>,
         if recent.contains(&key) {
             continue;
         }
-        if run_player_event(records, trainable, code, random) {
+        if run_player_event(records, club, trainable, code, random) {
             if recent.len() == RECENT {
                 recent.remove(0);
             }
@@ -591,14 +597,44 @@ fn player_event(records: &mut Records, trainable: &[u16], recent: &mut Vec<i32>,
 }
 
 /// A player event's run (`FUN_0060d1bf`, by its code less 4): whether
-/// it took place. Only code 31 is here — two friends in the training
-/// (case 0x1b): one man drawn, and when his best friend (+0x204) trains
-/// too, the two grow more content with the team, three each
-/// (`FUN_00700a6d`); its news (99, 0x32, `FUN_005ee619`) is not posted.
-/// The other codes, drawing over the squad and the club each in its own
+/// it took place; its news (`FUN_005f1e86`, `FUN_00601043`,
+/// `FUN_005ee619`, none of them drawing) is not posted. Here are:
+/// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 10 and 11,
+/// a keeper drawn and four or three less content with the team
+/// (`FUN_00700a6d`) — 10 answering "not met" all the same; 12 and 14, a
+/// man who keeps no goal drawn and two or one more content; 31, two
+/// friends in the training (case 0x1b): one man drawn, and when his best
+/// friend (+0x204) trains too, both three more content. The other codes,
+/// drawing over the squad, the manager and the club each in its own
 /// way, take nothing place here yet.
-fn run_player_event(records: &mut Records, trainable: &[u16], code: u32, random: &mut Random) -> bool {
+fn run_player_event(
+    records: &mut Records,
+    (country, number): (u16, u16),
+    trainable: &[u16],
+    code: u32,
+    random: &mut Random,
+) -> bool {
+    let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| {
+        let Some(id) = draw_listed(records, trainable, keepers, random) else { return false };
+        if let Some(p) = records.player_mut(id) {
+            crate::mood::change(p, 1, by);
+        }
+        true
+    };
     match code {
+        4 | 5 => {
+            if let Some(team) = records.team_mut(country, number) {
+                add_mood(team, if code == 4 { -10 } else { 10 });
+            }
+            true
+        }
+        10 => {
+            content(records, true, -4, random);
+            false
+        }
+        11 => content(records, true, -3, random),
+        12 => content(records, false, 2, random),
+        14 => content(records, false, 1, random),
         31 => {
             let Some(one) = draw_listed(records, trainable, false, random) else { return false };
             let friend = records.player(one).map_or(0, |p| p.best_friend());
@@ -795,5 +831,24 @@ mod tests {
         }
         assert!(training_event(&mut records, club, &squad, &trainable, 108, 64, &mut recent, &mut random));
         assert_eq!(random, expected);
+        // The player events' plainest: the team's mood ten down and up
+        // again, and code 12's one draw over the outfield, one man two
+        // more content with the team.
+        let mood = i32::from(records.team(club.0, club.1).unwrap().mood());
+        assert!(run_player_event(&mut records, club, &trainable, 4, &mut random));
+        let down = (mood - 10).max(0);
+        assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), down);
+        assert!(run_player_event(&mut records, club, &trainable, 5, &mut random));
+        assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), (down + 10).min(200));
+        assert_eq!(random, expected, "the mood events draw nothing");
+        let outfield = trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count();
+        let team_parts = |records: &Records| -> i32 {
+            trainable.iter().map(|&id| i32::from(records.player(id).unwrap().contentment()[1])).sum()
+        };
+        let before = team_parts(&records);
+        assert!(run_player_event(&mut records, club, &trainable, 12, &mut random));
+        expected.below(outfield as u32);
+        assert_eq!(random, expected);
+        assert!((0..=2).contains(&(team_parts(&records) - before)));
     }
 }
