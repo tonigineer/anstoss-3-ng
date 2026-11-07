@@ -6,7 +6,7 @@
 //!
 //! Here besides: the session's injury (`FUN_00767225`), the unit's team
 //! skills (`FUN_0069851b` and its kin), the events 100 to 110 of
-//! `FUN_0060c1c0` with 27 of event 102's 31 player events, the secret
+//! `FUN_0060c1c0` with all 31 of event 102's player events, the secret
 //! training's toll (`FUN_0041828e`), and the day's news pick after the
 //! friendlies ([`news`]).
 //!
@@ -18,10 +18,12 @@
 //! (`FUN_0074ae97`); what the day's news posts once its category is
 //! picked (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the
 //! pick itself stands in [`crate::news`]), and the events' news; the
-//! player events 8, 20, 26 and 34; the camp's own happenings
-//! (`FUN_0060ff69`); the player-manager's block behind the club's byte
-//! +0x8a; and the third case of `FUN_00745d3c`, which weighs two
-//! abilities.
+//! camp's own happenings (`FUN_0060ff69`); the player-manager's block
+//! behind the club's byte +0x8a; and the third case of `FUN_00745d3c`,
+//! which weighs two standing places — reached only in `FUN_00745281`'s
+//! own side block, itself not here, since the day's site stands with
+//! the first place free and event 102's picks draw men holding at most
+//! one.
 
 use std::collections::BTreeMap;
 
@@ -1652,8 +1654,9 @@ fn luck(records: &mut Records, id: u16, date: NaiveDate, random: &mut Random) {
                         let foot = player.get::<u8>(0x21d);
                         let other = player.get::<u8>(0x21f);
                         if foot != 1 && foot != 2 && other != 2 {
-                            // `FUN_00745d3c(p, 2)`; the weighing of two
-                            // abilities is not here.
+                            // `FUN_00745d3c(p, 2)`; the first place
+                            // stands free under the gate, so the
+                            // weighing of two never starts here.
                             if player.get::<u8>(0x21e) == 0 {
                                 player.put::<u8>(0x21e, 2);
                             } else if player.get::<u8>(0x21f) == 0 {
