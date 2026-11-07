@@ -933,7 +933,14 @@ fn player_event(
 /// A player event's run (`FUN_0060d1bf`, by its code less 4): whether
 /// it took place; its news (`FUN_005f1e86`, `FUN_00601043`,
 /// `FUN_005ee619`, none of them drawing) is not posted. Here are:
-/// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 10 and 11,
+/// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 8, with a
+/// human manager standing below ten (`FUN_006a61e5`) and his record's
+/// `unrest_count` (+0x180, the manager object's +0x94) at four or more:
+/// over the squad in its order every man whom no injury keeps out (the
+/// handle's +0x2c, [`days_out`]) is rolled at a tenth and, on its 0,
+/// stands one percentage point less in condition (`FUN_005ee85a`,
+/// `FUN_00411130` on the handle's +0x16, the record's condition in
+/// hundredths, wrapped before it is held to its range); 10 and 11,
 /// a keeper drawn and four or three less content with the team
 /// (`FUN_00700a6d`) — 10 answering "not met" all the same; 12 and 14, a
 /// man who keeps no goal drawn and two or one more content; 31, two
@@ -1030,6 +1037,38 @@ fn run_player_event(
         4 | 5 => {
             if let Some(team) = records.team_mut(country, number) {
                 add_mood(team, if code == 4 { -10 } else { 10 });
+            }
+            true
+        }
+        8 => {
+            if trainer == 0 {
+                return false;
+            }
+            let met = records
+                .managers
+                .get(usize::from(trainer) - 1)
+                .is_some_and(|m| m.standing() < 10 && m.unrest_count() >= 4);
+            if !met {
+                return false;
+            }
+            // FUN_005ee85a with -1 over the club's player array
+            // (+0xb50, count +0xe2, the team's `players`): only the men
+            // the handle sees fit (+0x2c, [days_out] below one) are
+            // rolled at, and on the roll's 0 `FUN_00411130` takes a
+            // hundredth off the handle's condition (+0x16, the record's
+            // +0x1ce) — the word wraps first, the result then sits
+            // within 0 and 10000.  The news (word 0xb) is not posted.
+            let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
+            for id in squad {
+                if !records.player(id).is_some_and(|p| days_out(records, p) < 1) {
+                    continue;
+                }
+                if random.below(10) == 0
+                    && let Some(p) = records.player_mut(id)
+                {
+                    let left = p.condition().wrapping_sub(100);
+                    p.set_condition(left.clamp(0, 10_000));
+                }
             }
             true
         }
@@ -2150,5 +2189,90 @@ mod tests {
         assert_eq!(random, expected, "the away man's draw, then the fitting one's");
         assert_eq!(records.player(man).unwrap().positions(), [state[defs.iter().position(|&y| y == man).unwrap()].1[0], 10, 0]);
         assert_eq!(records.player(away).unwrap().positions(), away_places, "the away man keeps his places");
+    }
+
+    /// Code 8 on A: the event opens on a human manager standing below
+    /// ten ([`Manager::standing`]) with his record's `unrest_count` at
+    /// four or more, and closes without a roll below either.  Open, the
+    /// walk runs over the squad in its order and rolls at a tenth every
+    /// man whom no injury keeps out ([`days_out`], the handle's +0x2c),
+    /// costing each of the rolls' 0 one percentage point of condition
+    /// (`FUN_005ee85a`, `FUN_00411130` in the hundredths word, held at
+    /// nought); the injured man stands out of the rolls.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn the_healthy_event_rolls_over_the_fit_squad() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let squad = records.team(club.0, club.1).unwrap().players();
+        let trainer = records.team(club.0, club.1).unwrap().humans()[0];
+        assert_ne!(trainer, 0, "A's club stands under its human");
+        let slot = usize::from(trainer) - 1;
+        let date = NaiveDate::from_ymd_opt(2025, 9, 9).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let (tables, league_tables) = (MoodTables::load(&exe).unwrap(), LeagueTables::load(&exe).unwrap());
+        let mut random = Random::from_state(24681, 13579);
+        // The gates: the count below four, and the manager at ten
+        // standing (level fifteen, the standing bits off) with the count
+        // at five — both shut the event without a roll.
+        records.managers.get_mut(slot).unwrap().set_unrest_count(0);
+        let held = random.clone();
+        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert_eq!(random, held, "the count below four shuts the event");
+        {
+            let m = records.managers.get_mut(slot).unwrap();
+            m.set_unrest_count(5);
+            m.set_level(15);
+            m.set_level_bits(0);
+        }
+        let held = random.clone();
+        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert_eq!(random, held, "the manager at ten standing shuts it");
+        // Open: standing nought, count four; the first fit man stands
+        // injured to see him out of the rolls, his condition held.
+        {
+            let m = records.managers.get_mut(slot).unwrap();
+            m.set_level(0);
+            m.set_level_bits(0);
+            m.set_unrest_count(4);
+        }
+        let hurt = squad
+            .iter()
+            .copied()
+            .find(|&id| records.player(id).is_some_and(|p| days_out(&records, p) < 1))
+            .expect("A has a fit man");
+        let held_hurt = records.player(hurt).unwrap().condition();
+        set_days_out(&mut records, hurt, 5);
+        let men: Vec<(u16, i16, bool)> = squad
+            .iter()
+            .map(|&id| {
+                let fit = records.player(id).is_some_and(|p| days_out(&records, p) < 1);
+                (id, records.player(id).map_or(0, |p| p.condition()), fit)
+            })
+            .collect();
+        let mut probe = random.clone();
+        let hits: Vec<bool> = men.iter().map(|&(_, _, fit)| fit && probe.below(10) == 0).collect();
+        let mut want: Vec<i16> = men
+            .iter()
+            .zip(&hits)
+            .map(|(&(_, cond, _), &hit)| if hit { cond.wrapping_sub(100).clamp(0, 10_000) } else { cond })
+            .collect();
+        // One man stands at fifty hundredths to see the hundredths word
+        // hold at nought rather than fall under it.
+        let low = men.iter().zip(&hits).position(|(&(_, _, fit), &hit)| fit && hit);
+        assert!(low.is_some(), "the fixture must see a roll land");
+        if let Some(i) = low {
+            records.player_mut(men[i].0).unwrap().set_condition(50);
+            want[i] = 0;
+        }
+        assert!(run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert_eq!(random, probe, "one roll at a tenth over every fit man, in the squad's order");
+        for ((id, _, _), &want) in men.iter().zip(&want) {
+            assert_eq!(records.player(*id).map_or(0, |p| p.condition()), want, "man {id}");
+        }
+        assert_eq!(records.player(hurt).unwrap().condition(), held_hurt, "the injured man stands out of the rolls");
     }
 }

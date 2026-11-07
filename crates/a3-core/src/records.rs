@@ -998,6 +998,13 @@ record! {
     0x17c => signed_day, set_signed_day: u8;
     0x17d => signed_month, set_signed_month: u8;
     0x17e => signed_year, set_signed_year: u16;
+    /// Next to the board's confidence a small count (the manager
+    /// object's +0x94, `FUN_006a426b`): the training day's player
+    /// events act at code 8 once it stands at four and the manager's
+    /// standing (`FUN_006a61e5`) below ten — the club's fit men then
+    /// lose condition.  What lifts the count is not followed (meaning
+    /// not traced further); the word behind it, 0x182, is unported.
+    0x180 => unrest_count, set_unrest_count: i16;
     /// The national team he manages, by country number, 0 when he manages
     /// none: the manager object's +0x17e6, whose name the honours page
     /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
