@@ -940,7 +940,12 @@ fn player_event(
 /// man drawn, without one always, and the mood five up; 36, two men
 /// drawn and the second's +0x2f at 1 unless he is out; 39 and 40, up to
 /// three draws of a man over thirty (`FUN_005eb3b5`) for one with the
-/// first ability bit 2 or 4, which he loses. Ungated: 37, with a human
+/// first ability bit 2 or 4, which he loses; 34, a man under 23 drawn
+/// (`FUN_005eb2c0`) and one over 30, men standing away from the club
+/// for none in either draw, the young one taking the reason 0x800 and
+/// the two falling out (`FUN_00703df4`): a standing friendship undone,
+/// each off the other's friends and onto the other's dislikes.
+/// Ungated: 37, with a human
 /// trainer and a co-trainer, three draws over the trained, each one more
 /// content with the team; 42, with a human trainer in a unit the gate
 /// shuts, the mood ten down; 43, the mood five up, answering "not met";
@@ -1145,6 +1150,15 @@ fn run_player_event(
             }
             true
         }
+        34 if gate => {
+            let Some(young) = draw_aged(records, trainable, date, 0x17, true, random) else { return false };
+            let Some(elder) = draw_aged(records, trainable, date, 0x1e, false, random) else { return false };
+            if let Some(p) = records.player_mut(young) {
+                tables.set_reasons(p, 0x800);
+            }
+            fall_out(records, young, elder);
+            true
+        }
         35 if gate => {
             let Some(team) = records.team(country, number) else { return false };
             if 0x47 <= team.mood() || crate::league::matchdays(records, team) < 0x14 {
@@ -1301,6 +1315,123 @@ fn draw_listed(records: &Records, list: &[u16], keepers: bool, random: &mut Rand
     }
     let id = such[random.below(such.len() as u32) as usize];
     (id <= crate::mood::LAST_REAL_ID).then_some(id)
+}
+
+/// One of the trained who keep no goal and are of an age, drawn
+/// (`FUN_005eb2c0` under 23, `FUN_005eb3b5` over 30, both with the
+/// event's flag set): the list's men at the position byte's 1 not
+/// standing, of the years the date gives, over the bound's other side;
+/// one roll over them.  None when the man drawn is a playing manager,
+/// or stands away from the club — the handle's +0x6a, which the load
+/// copy builds from the record's `away_to`.  Their forty stack slots
+/// never fill before a squad's men have all been walked.
+fn draw_aged(records: &Records, list: &[u16], date: NaiveDate, bound: i32, under: bool, random: &mut Random) -> Option<u16> {
+    let such: Vec<u16> = list
+        .iter()
+        .copied()
+        .filter(|&id| {
+            records.player(id).is_some_and(|p| {
+                let age = statistics::age_on(p, date);
+                p.get::<u8>(0x21d) != 1 && (if under { age < bound } else { bound < age })
+            })
+        })
+        .collect();
+    if such.is_empty() {
+        return None;
+    }
+    let id = such[random.below(such.len() as u32) as usize];
+    let away = records.player(id).is_some_and(|p| p.away_to()[0] != 0);
+    (id <= crate::mood::LAST_REAL_ID && !away).then_some(id)
+}
+
+/// The young man and the elder fall out (`FUN_00703df4`, the event's
+/// word 0x35): unless the young one already names the elder among the
+/// men he hates, a standing best friendship between them is undone,
+/// each leaves the other off his friends, and each joins the list of
+/// those the other dislikes.  The original's slips stand: taking a man
+/// off a dislike list zeroes the third friend in his place
+/// (`FUN_00703930`, as in [`crate::talk`]'s reconciling), and when one
+/// man's three dislikes all stand, the first of them leaves and the
+/// new one is written past the list, onto the best friend's own place.
+fn fall_out(records: &mut Records, young: u16, elder: u16) {
+    if records.player(young).is_some_and(|p| p.hates() == elder) {
+        return;
+    }
+    if records.player(young).is_some_and(|p| p.best_friend() == elder) {
+        if let Some(p) = records.player_mut(young) {
+            p.set_best_friend(0);
+        }
+        // `FUN_00703a0c`: the other side's best friend goes with it,
+        // whoever that stands at, and that man's in turn, until one of
+        // them names none.
+        let mut at = elder;
+        loop {
+            let next = match records.player_mut(at) {
+                Some(p) if p.best_friend() != 0 => {
+                    let next = p.best_friend();
+                    p.set_best_friend(0);
+                    next
+                }
+                _ => break,
+            };
+            at = next;
+        }
+    }
+    // `FUN_00703854`: each leaves the other off his friends.
+    for (who, other) in [(young, elder), (elder, young)] {
+        if let Some(r) = records.players.get_mut(usize::from(who)) {
+            let mut friends = r.friends();
+            if let Some(at) = friends.iter().take_while(|&&f| f != 0).position(|&f| f == other) {
+                for i in at..2 {
+                    friends[i] = friends[i + 1];
+                }
+                friends[2] = 0;
+                r.set_friends(friends);
+            }
+        }
+    }
+    // `FUN_007033a5` twice: each joins the other's dislikes.
+    for (who, other) in [(young, elder), (elder, young)] {
+        let standing = match records.player(who) {
+            Some(r) => r.dislikes(),
+            None => continue,
+        };
+        if standing.iter().take_while(|&&d| d != 0).any(|&d| d == other) {
+            continue;
+        }
+        let Some(at) = standing.iter().position(|&d| d == 0) else {
+            leave_dislike_lists(records, who, standing[0]);
+            if let Some(r) = records.player_mut(who) {
+                r.set_best_friend(other);
+            }
+            continue;
+        };
+        let mut dislikes = standing;
+        dislikes[at] = other;
+        if let Some(r) = records.player_mut(who) {
+            r.set_dislikes(dislikes);
+        }
+    }
+}
+
+/// Taking the one man off the other's list of dislikes, and him off
+/// his (`FUN_00703930` both ways): each list shifts up from his place,
+/// and its third friend is zeroed instead of the third dislike.
+fn leave_dislike_lists(records: &mut Records, one: u16, other: u16) {
+    for (who, other) in [(one, other), (other, one)] {
+        let Some(r) = records.players.get_mut(usize::from(who)) else { continue };
+        let mut dislikes = r.dislikes();
+        let Some(at) = dislikes.iter().take_while(|&&d| d != 0).position(|&d| d == other) else {
+            continue;
+        };
+        for i in at..2 {
+            dislikes[i] = dislikes[i + 1];
+        }
+        r.set_dislikes(dislikes);
+        let mut friends = r.friends();
+        friends[2] = 0;
+        r.set_friends(friends);
+    }
 }
 
 /// The luck of one trained player (`FUN_0074a1ec`'s chain): a young
@@ -1595,6 +1726,107 @@ mod tests {
         let held = random.clone();
         assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 38, 0, (64, date), &mut random));
         assert_eq!(random, held);
+        // Code 34, behind the gate: the young draw (`FUN_005eb2c0`,
+        // under 23) and the elder's (`FUN_005eb3b5`, over 30) each roll
+        // once over their trained outfield men; the young one's reason
+        // 0x800 and the two falling out.  A drawn man standing away
+        // from the club counts for none, which ends the event already
+        // at the young draw — the elder's roll never runs.
+        let at_age = |records: &Records, id: u16, under: bool| {
+            records.player(id).is_some_and(|p| {
+                let age = statistics::age_on(p, date);
+                p.get::<u8>(0x21d) != 1 && (if under { age < 23 } else { 30 < age })
+            })
+        };
+        let youngs: Vec<u16> = trainable.iter().copied().filter(|&id| at_age(&records, id, true)).collect();
+        let elders: Vec<u16> = trainable.iter().copied().filter(|&id| at_age(&records, id, false)).collect();
+        assert!(!youngs.is_empty() && !elders.is_empty(), "A fields both ages of the draw");
+        assert!(trainable.iter().any(|&id| id > crate::mood::LAST_REAL_ID), "A lists its playing manager among the trained");
+        let mut probe = random.clone();
+        let away = youngs[probe.below(youngs.len() as u32) as usize];
+        records.player_mut(away).unwrap().set_away_to([1, 0]);
+        let mut expected = random.clone();
+        expected.below(youngs.len() as u32);
+        let held = records.player(away).unwrap().dislikes();
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 34, 0, (64, date), &mut random));
+        assert_eq!(random, expected, "the young draw's roll, no other");
+        assert_eq!(records.player(away).unwrap().dislikes(), held);
+        // A drawn playing manager is none's company as well: with the
+        // manager the one man of his age in the list, the roll names
+        // him at once.
+        records.player_mut(away).unwrap().set_away_to([0, 0]);
+        let manager = trainable.iter().copied().find(|&id| id > crate::mood::LAST_REAL_ID).unwrap();
+        let one = [manager];
+        let mut expected = random.clone();
+        expected.below(1);
+        assert!(!run_player_event(&mut records, club, &one, (&tables, &league_tables), 34, 0, (64, date), &mut random));
+        assert_eq!(random, expected);
+        // Back at the club — every pool man cleared, the save has its
+        // own loaned men — the pair are seeded as friends and best
+        // friends; the young one's three dislikes all stand, and the
+        // first of them knows no dislikes.  The rolls come from the
+        // state the two standstill runs left, so the pair is drawn
+        // anew, over the real men only.
+        for &id in youngs.iter().chain(elders.iter()) {
+            records.player_mut(id).unwrap().set_away_to([0, 0]);
+        }
+        let real: Vec<u16> = trainable.iter().copied().filter(|&id| id <= crate::mood::LAST_REAL_ID).collect();
+        let youngs: Vec<u16> = real.iter().copied().filter(|&id| at_age(&records, id, true)).collect();
+        let elders: Vec<u16> = real.iter().copied().filter(|&id| at_age(&records, id, false)).collect();
+        let mut probe = random.clone();
+        let young = youngs[probe.below(youngs.len() as u32) as usize];
+        let elder = elders[probe.below(elders.len() as u32) as usize];
+        let others: Vec<u16> = squad
+            .iter()
+            .copied()
+            .filter(|&id| id != young && id != elder && id <= crate::mood::LAST_REAL_ID)
+            .take(3)
+            .collect();
+        for id in [others[0], others[1], others[2]] {
+            records.player_mut(id).unwrap().set_dislikes([0; 3]);
+        }
+        {
+            let p = records.player_mut(young).unwrap();
+            p.set_hates(0);
+            p.set_best_friend(elder);
+            p.set_friends([others[0], elder, others[1]]);
+            p.set_dislikes([others[0], others[1], others[2]]);
+        }
+        {
+            let p = records.player_mut(elder).unwrap();
+            p.set_best_friend(young);
+            p.set_friends([young, 0, 0]);
+            p.set_dislikes([0; 3]);
+        }
+        let other_friends = records.player(others[0]).unwrap().friends();
+        let elder_flags = records.player(elder).unwrap().flags();
+        let mut expected = random.clone();
+        expected.below(youngs.len() as u32);
+        expected.below(elders.len() as u32);
+        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, (64, date), &mut random));
+        assert_eq!(random, expected, "one roll over each draw's men");
+        assert_ne!(records.player(young).unwrap().flags() & 0x800, 0, "the young man's reason");
+        assert_eq!(records.player(elder).unwrap().flags(), elder_flags);
+        // The young one's full dislike list lost its first man, and the
+        // elder was written past its end onto the best friend's place —
+        // the third friend zeroed in the first dislike's place, the
+        // original's slip — with the friendship undone and each gone
+        // from the other's friends.
+        let y = records.player(young).unwrap();
+        assert_eq!((y.dislikes(), y.friends(), y.best_friend()), ([others[1], others[2], others[2]], [others[0], others[1], 0], elder));
+        let e = records.player(elder).unwrap();
+        assert_eq!((e.dislikes(), e.friends(), e.best_friend()), ([young, 0, 0], [0; 3], 0));
+        assert_eq!(records.player(others[0]).unwrap().friends(), other_friends, "no slip where the man was not named");
+        // With the hate already standing, the falling out does nothing.
+        records.player_mut(young).unwrap().set_hates(elder);
+        let before = (records.player(young).unwrap().dislikes(), records.player(elder).unwrap().dislikes(), records.player(young).unwrap().best_friend());
+        let mut expected = random.clone();
+        expected.below(youngs.len() as u32);
+        expected.below(elders.len() as u32);
+        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, (64, date), &mut random));
+        assert_eq!(random, expected);
+        let after = (records.player(young).unwrap().dislikes(), records.player(elder).unwrap().dislikes(), records.player(young).unwrap().best_friend());
+        assert_eq!(before, after);
         // The secret training's toll: a human trainer one less with the
         // fans, the others as they were.
         if trainer != 0 {
