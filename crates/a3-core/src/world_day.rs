@@ -57,7 +57,9 @@ pub fn day(records: &mut Records, weekday: i32, random: &mut Random) {
     // step (`FUN_00675a73(1)`): the schedule walk, the date after it.
     records.globals.set_day(records.globals.day().wrapping_add(1));
     schedule_walk(&*records, random);
-    step_date(&mut records.globals);
+    if step_date(&mut records.globals) {
+        fill_day_table(records);
+    }
 }
 
 /// The days of the months (`DAT_008a3088`, by the month; February's
@@ -73,13 +75,15 @@ fn leap(year: u16) -> bool {
 /// day of the month and the day of the year count up; past the month's
 /// last day — February's 28th, or its 29th in a leap year — the month
 /// steps, and past December the year: January then, its day of the year
-/// counted from nought and the year's length set anew. What a new month
-/// runs (`FUN_007853a7`) and the new year's day table (`FUN_00675eb3`)
-/// are not here.
-fn step_date(globals: &mut crate::records::Globals) {
+/// counted from nought and the year's length set anew. Returns whether
+/// the year rolled — [`day`] then lays the day table down anew
+/// ([`fill_day_table`]). What a new month runs (`FUN_007853a7`) is not
+/// here.
+fn step_date(globals: &mut crate::records::Globals) -> bool {
     let [mut day, mut month, mut year] = globals.date();
     let mut of_year = globals.day_of_year().wrapping_add(1);
     day = day.wrapping_add(1);
+    let mut rolled = false;
     if month == 2 {
         let last = if leap(year) { 29 } else { 28 };
         if last < day {
@@ -96,10 +100,55 @@ fn step_date(globals: &mut crate::records::Globals) {
             month = 1;
             year = year.wrapping_add(1);
             globals.set_year_days(if leap(year) { 366 } else { 365 });
+            rolled = true;
         }
     }
     globals.set_date([day, month, year]);
     globals.set_day_of_year(of_year);
+    rolled
+}
+
+/// The block the day table lives in (`DAT_00b1f860`, shared with the
+/// archive and the betting lists).
+pub(crate) const DAY_TABLE: &str = "0xb1f860";
+/// Where the table's pairs of days begin in the block (`DAT_00b1f874`).
+const DAY_PAIRS: usize = 0x14;
+
+/// The table of the coming days (`FUN_00675eb3`), laid down when the
+/// calendar rolls: at a year's end within [`day`] and at the season's
+/// opening ([`crate::settlement`]). A booking `k` days out takes its date
+/// from entry `day_of_year + k` there (`FUN_00637177`).
+pub(crate) fn fill_day_table(records: &mut Records) {
+    let (year, of_year) = (records.globals.date()[2], records.globals.day_of_year());
+    let block = records
+        .block_mut(DAY_TABLE)
+        .expect("the block the day table lives in");
+    fill_day_pairs(block, year, of_year);
+}
+
+/// Both fills of the table: from the day of the year on, every of the
+/// 2000 entries names its year and its day within that year, the entries
+/// before the starting day left as they stand; the ten u16s at the head
+/// count up the days of the ten years after the date's year.
+fn fill_day_pairs(block: &mut [u8], base: u16, of_year: u16) {
+    let (mut year, mut of_year, mut len) =
+        (base, u32::from(of_year), if leap(base) { 366 } else { 365 });
+    for k in of_year..2000 {
+        let at = DAY_PAIRS + k as usize * 4;
+        block[at..at + 2].copy_from_slice(&year.to_le_bytes());
+        block[at + 2..at + 4].copy_from_slice(&(of_year as u16).to_le_bytes());
+        of_year += 1;
+        if len <= of_year {
+            of_year = 0;
+            year += 1;
+            len = if leap(year) { 366 } else { 365 };
+        }
+    }
+    let mut acc: u16 = 0;
+    for j in 0..10 {
+        block[j * 2..j * 2 + 2].copy_from_slice(&acc.to_le_bytes());
+        acc += if leap(base.wrapping_add(j as u16 + 1)) { 366 } else { 365 };
+    }
 }
 
 /// The day's step behind the counter's increment (`FUN_00675a73(1)`):
@@ -388,6 +437,58 @@ mod tests {
         assert_eq!(globals.year_days(), 365);
         step(&mut globals, [31, 12, 2027], 364);
         assert_eq!(globals.year_days(), 366);
+    }
+
+    /// The year's end asks for the day table; an ordinary day and a
+    /// month's end do not.
+    #[test]
+    fn only_the_year_end_rolls_the_year() {
+        let zeros = vec![0; crate::records::Globals::SIZE];
+        let mut globals = crate::records::Globals::new(&zeros).unwrap();
+        globals.set_date([15, 5, 2026]);
+        globals.set_day_of_year(134);
+        assert!(!step_date(&mut globals));
+        globals.set_date([30, 9, 2025]);
+        globals.set_day_of_year(272);
+        assert!(!step_date(&mut globals));
+        globals.set_date([31, 12, 2025]);
+        globals.set_day_of_year(364);
+        assert!(step_date(&mut globals), "into January the table goes down anew");
+    }
+
+    /// The day table: from the day of the year on, every of the 2000
+    /// entries names its year and its day within that year — 2026 and
+    /// 2027 with 365 days, 2028 with 366 —, the entries before the
+    /// starting day left standing; the ten u16s at the head count up the
+    /// days of the ten years after the date's year.
+    #[test]
+    fn the_day_table_names_the_coming_days() {
+        let mut block = vec![0xff; DAY_PAIRS + 2000 * 4];
+        fill_day_pairs(&mut block, 2026, 186);
+        let entry = |k: usize| {
+            (
+                u16::from_le_bytes(block[DAY_PAIRS + k * 4..][..2].try_into().unwrap()),
+                u16::from_le_bytes(block[DAY_PAIRS + k * 4 + 2..][..2].try_into().unwrap()),
+            )
+        };
+        assert_eq!(
+            (entry(0), entry(185)),
+            ((0xffff, 0xffff), (0xffff, 0xffff)),
+            "the days before the starting day stand"
+        );
+        assert_eq!(entry(186), (2026, 186), "today's entry");
+        assert_eq!(entry(364), (2026, 364));
+        assert_eq!(entry(365), (2027, 0), "2026 has 365 days");
+        assert_eq!(entry(729), (2027, 364));
+        assert_eq!(entry(730), (2028, 0));
+        assert_eq!(entry(1095), (2028, 365), "2028 has 366");
+        assert_eq!(entry(1096), (2029, 0));
+        let offset = |j: usize| u16::from_le_bytes(block[j * 2..][..2].try_into().unwrap());
+        assert_eq!(
+            (offset(0), offset(1), offset(2), offset(3), offset(4)),
+            (0, 365, 731, 1096, 1461),
+            "the ten coming years' day offsets"
+        );
     }
 
     /// A computer club's day: every squad player gets the roll of a

@@ -1465,6 +1465,12 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
 pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Option<&crate::season::Rules>) {
     let tables = rules.map(|r| (&r.contract, &r.value));
     roll_globals(&mut records.globals, random);
+    // The season's first day lays the day table down (`FUN_00675c1c`'s
+    // `FUN_00675eb3`) and copies today's pair of it to 0xb5cca0.
+    crate::world_day::fill_day_table(records);
+    let (year, of_year) = (records.globals.date()[2], records.globals.day_of_year());
+    records.globals.put::<u16>(0xb5cca0, year);
+    records.globals.put::<u16>(0xb5cca2, of_year);
     clear_objects(records);
     // The ranked leagues' clubs by their squads (`FUN_00778394`).
     crate::squad_rank::rank(records);
@@ -2995,6 +3001,19 @@ mod tests {
         for at in (0xb5dfb0..0xb5dfba).chain([0xb5dfc4, 0xb5dfc5, 0xb5d1a4, 0xb5d1a5]) {
             assert_eq!(a.get::<u8>(at), b.get::<u8>(at), "globals {at:#x}");
         }
+        for at in [0xb5cca0, 0xb5cca2] {
+            assert_eq!(a.get::<u16>(at), b.get::<u16>(at), "today's pair, globals {at:#x}");
+        }
+        let (x, y) = (
+            closed.block(crate::world_day::DAY_TABLE).unwrap(),
+            opened.block(crate::world_day::DAY_TABLE).unwrap(),
+        );
+        assert_eq!(x[..0x14], y[..0x14], "the ten coming years' day offsets");
+        assert_eq!(
+            x[0x14..0x14 + 2000 * 4],
+            y[0x14..0x14 + 2000 * 4],
+            "the 2000 day pairs"
+        );
         for nation in opponent::played_nations(&closed) {
             for level in 0..closed.countries.leagues(usize::from(nation)).max(0) {
                 let (x, y) = (
