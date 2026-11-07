@@ -425,6 +425,9 @@ record! {
     Team, 0x990 - HEADER, base HEADER;
     /// The co-trainer, 0 none (the club object's +0x84).
     0xa2 => co_trainer, set_co_trainer: i16;
+    /// The second coach, 0 none (the club object's +0x86, a person of
+    /// `0xbe17f8` up to 100).
+    0xa4 => second_coach, set_second_coach: i16;
     /// The computer club's staff, by person ([`Person`]): a manager who is
     /// also trainer, a trainer, a manager (the club object's +0x7e …).
     0x9c => staff, set_staff: [u16; 3];

@@ -41,8 +41,8 @@
 //! Left out: the national legends (`FUN_0066df9e`), the stadium byte the season's
 //! end clears (`FUN_00638335`'s object +0x68); for the countries
 //! played the contracts that run out (`FUN_006b3f92`), the amateurs'
-//! retirements, the staff's contracts and the computer clubs' new youth
-//! and strength. The original draws with its own generator, so the men
+//! retirements and the computer clubs' new youth and strength.
+//! The original draws with its own generator, so the men
 //! who grow are others than the original's.
 
 use chrono::NaiveDate;
@@ -191,9 +191,9 @@ pub fn count_first_seasons(records: &mut Records) {
 /// season's end (`FUN_006b44cb` per club, `FUN_006b4727`): a club that is
 /// no reserve team clears its two season words and closes every player's
 /// season (`FUN_0070665a`), and its reserve team, if it has one
-/// (team +0x873), does the same. (The retirements from a club's
-/// amateurs, `FUN_00407ecd`, and its staff's contracts, `FUN_006b4d51`,
-/// are not built.)
+/// (team +0x873), does the same, each with its staff standing run
+/// down ([`close_staff`]). (The retirements from a club's amateurs,
+/// `FUN_00407ecd`, are not built.)
 pub fn close_played(records: &mut Records, random: &mut Random) {
     let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
@@ -210,6 +210,7 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
                         team.put::<u16>(at, 0);
                     }
                 }
+                close_staff(records, country, club);
                 for id in squad(records, country, club) {
                     if let Some(player) = records.player_mut(id) {
                         close_player(player, year, random);
@@ -220,6 +221,66 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
         // The country's youth leagues move their teams up and down
         // after its clubs (`FUN_006b44cb`'s `FUN_00670ac5`).
         crate::youth_league::close_season(records, country);
+    }
+}
+
+/// The first liking of a staff block (person +0x4a, where `move_likings`
+/// writes the three; these blocks hold the struct from +0x20).
+const STAFF_LIKING: usize = 0x4a - 0x20;
+
+/// What the season's end does to a club's staff (`FUN_006b4d51`): the
+/// co-trainer (team +0xa2, a person of `0xbe3920` up to 1499) and the
+/// second coach (team +0xa4, one of `0xbe17f8` up to 100) each lose a
+/// point of their first liking, the byte at +0x4a that a friendly's visit
+/// moves. Where it stands at nought after the year — or stood there
+/// already — the club lets the slot go; an id outside the tables stands
+/// for nobody and leaves the slot too.
+fn close_staff(records: &mut Records, country: u16, number: u16) {
+    let Some(team) = records.team(country, number) else { return };
+    let (co_trainer, coach) = (team.co_trainer(), team.second_coach());
+    let mut gone = (false, false);
+    if co_trainer != 0 {
+        let staff = (1..=1499)
+            .contains(&co_trainer)
+            .then(|| records.block_mut(&format!("0xbe3920[{co_trainer}]")))
+            .flatten();
+        match staff {
+            Some(block) => {
+                let left = block[STAFF_LIKING];
+                if left != 0 {
+                    block[STAFF_LIKING] = left - 1;
+                }
+                gone.0 = left <= 1;
+            }
+            None => gone.0 = true,
+        }
+    }
+    if coach != 0 {
+        let staff = (1..=100)
+            .contains(&coach)
+            .then(|| records.block_mut(&format!("0xbe17f8[{coach}]")))
+            .flatten();
+        match staff {
+            Some(block) => {
+                let left = block[STAFF_LIKING];
+                if left != 0 {
+                    block[STAFF_LIKING] = left - 1;
+                }
+                gone.1 = left <= 1;
+            }
+            None => gone.1 = true,
+        }
+    }
+    if gone == (false, false) {
+        return;
+    }
+    if let Some(team) = records.team_mut(country, number) {
+        if gone.0 {
+            team.set_co_trainer(0);
+        }
+        if gone.1 {
+            team.set_second_coach(0);
+        }
     }
 }
 
@@ -1069,6 +1130,87 @@ mod tests {
         }
         assert!(compared > 4000, "{compared} players compared");
         assert!(renewed < 10, "{renewed} counts renewed");
+    }
+
+    /// The season's end runs the played clubs' staff standing down
+    /// ([`close_staff`], `FUN_006b4d51`), over the original's pair and on
+    /// the bytes that pair does not show: of SeasonEnd364's played clubs
+    /// only team 14 84 has staff, and both its men stood spent — the club
+    /// lets the co-trainer and the second coach go, and the original's
+    /// staff market at the season's opening (`FUN_00409a3f`, not built)
+    /// draws 261 and 16 to stand in NewSeason000 where the replica's
+    /// slots stand empty. Set on the same save, a man with a liking to
+    /// spare keeps his id, one point shorter; one at his last point, and
+    /// an id outside the tables, leave the club.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_runs_the_staff_down() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        close_played(&mut ours, &mut Random::new(7));
+        let (nation, place, co, coach) = {
+            let mut found = None;
+            for country in crate::opponent::played_nations(&before) {
+                for number in 0..before.countries.team_count(usize::from(country)) as u16 {
+                    let team = before.team(country, number).unwrap();
+                    if team.co_trainer() != 0 {
+                        found = Some((country, number, team.co_trainer(), team.second_coach()));
+                    }
+                }
+            }
+            found.expect("the kept season's one staffed club")
+        };
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)) as u16 {
+                let (x, y) = (ours.team(country, number).unwrap(), theirs.team(country, number).unwrap());
+                for at in [0xa2, 0xa4] {
+                    if (country, number) == (nation, place) {
+                        assert_eq!(x.get::<i16>(at), 0, "team {country} {number} +{at:#x} let go");
+                        assert_ne!(y.get::<i16>(at), 0, "team {country} {number} +{at:#x} drawn anew");
+                        assert_ne!(y.get::<i16>(at), before.team(country, number).unwrap().get::<i16>(at));
+                    } else {
+                        assert_eq!(x.get::<i16>(at), y.get::<i16>(at), "team {country} {number} +{at:#x}");
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            ours.block(&format!("0xbe3920[{co}]")).unwrap()[STAFF_LIKING],
+            0,
+            "the spent liking"
+        );
+        assert_eq!(
+            ours.block(&format!("0xbe17f8[{coach}]")).unwrap()[STAFF_LIKING],
+            theirs.block(&format!("0xbe17f8[{coach}]")).unwrap()[STAFF_LIKING],
+            "the coach spent liking stays"
+        );
+        let mut probe = read("SeasonEnd364.an3");
+        probe.block_mut(&format!("0xbe3920[{co}]")).unwrap()[STAFF_LIKING] = 3;
+        probe.block_mut(&format!("0xbe17f8[{coach}]")).unwrap()[STAFF_LIKING] = 1;
+        close_played(&mut probe, &mut Random::new(7));
+        let team = probe.team(nation, place).unwrap();
+        assert_eq!(team.co_trainer(), co, "the man with a liking to spare");
+        assert_eq!(
+            probe.block(&format!("0xbe3920[{co}]")).unwrap()[STAFF_LIKING],
+            2,
+            "one point shorter"
+        );
+        assert_eq!(team.second_coach(), 0, "the man at his last point");
+        assert_eq!(probe.block(&format!("0xbe17f8[{coach}]")).unwrap()[STAFF_LIKING], 0);
+        let mut probe = read("SeasonEnd364.an3");
+        if let Some(mut team) = probe.team_mut(nation, place) {
+            team.set_co_trainer(9000);
+            team.set_second_coach(-5);
+        }
+        close_played(&mut probe, &mut Random::new(7));
+        let team = probe.team(nation, place).unwrap();
+        assert_eq!((team.co_trainer(), team.second_coach()), (0, 0), "ids outside the tables");
     }
 
     /// The season's end retires the played clubs' players who said they

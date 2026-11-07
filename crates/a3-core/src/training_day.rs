@@ -579,7 +579,7 @@ fn training_event(
             true
         }
         109 => {
-            let coach = records.team(country, number).map_or(0, |t| t.get::<i16>(0xa4));
+            let coach = records.team(country, number).map_or(0, |t| t.second_coach());
             if coach != 0 {
                 let skill = if (1..=100).contains(&coach) {
                     records.block(&format!("0xbe17f8[{coach}]")).and_then(|b| b.get(0x24 - 0x20)).copied().unwrap_or(0)

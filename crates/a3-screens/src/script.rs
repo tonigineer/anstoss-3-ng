@@ -9338,7 +9338,11 @@ mod tests {
         let root = patched(&dir, "A", "seasons-on", |records| records.globals.set_day(320));
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
+        // The staff's standing runs down at each season's end, so from one
+        // season to the next the club's training shifts and the week's
+        // book of gained and lost abilities can stand at the turn.
         let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\n\
                         on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
                         on 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\n\
