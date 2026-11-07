@@ -726,8 +726,10 @@ impl Cycle {
             // The turns begin on the week's first day, which the planner,
             // the market and the contract talks count from
             // (`FUN_006da3a9`'s state 1: `DAT_00b5cbd6 = DAT_00b5cbd4`).
-            // A loaded game resumes in state 2, its saved day standing —
-            // a turn saved before a match within the week keeps its week.
+            // A loaded game first shows its turn again on the saved day
+            // itself (the load opens 147); that short week then ends at
+            // the day boundary below, where the turns here keep counting
+            // from — the saved week's own start stands until then.
             if wait {
                 let mut guard = self.state();
                 if let Some(records) = guard.records.as_mut() {
@@ -746,13 +748,22 @@ impl Cycle {
                     return Ok(());
                 }
             }
+            // The week's end stands at the week's boundary, not behind
+            // the turn: the original's cycle gates the blocks on
+            // `DAT_00b5cbd4 % 7 == 0` (`FUN_006da3a9`'s states 1, 2 and
+            // the 4 below them). A game loaded in the middle of its week
+            // — save "Toni", day 62 of the week from 56 — therefore runs
+            // none of them on its saved day; its first week end, and its
+            // next turn with the week's dialog 147 back at 63, came in
+            // the trace of 7 Nov.
+            let at_week_start = self.season(|s| s.day % WEEK_DAYS == 0).unwrap_or(true);
             // The week's end first rolls the market (`FUN_00405c5e`):
             // every entry takes its price for the new week and the mean
             // of them moves the market's index. A freshly loaded game
             // holds that roll back (`DAT_00b5cc04`, `CDiLoad`) until its
             // advance sales below clear the hold — the traced original
             // week end, running just after a load, rolled no market.
-            {
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
@@ -784,7 +795,7 @@ impl Cycle {
             // random` was here — one far match's percent, `FUN_0078ab55`
             // drawing below(2) and giving 1, one percent of a demand of
             // 18.8 thousand sold right away.
-            {
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
@@ -831,7 +842,11 @@ impl Cycle {
             // (`FUN_006c5190`), and the highscores show them (its event
             // 0xb0) — unless no human is left: then the game ends as "Spiel
             // beenden" ends it, by its flag 4, before the event shows.
-            let (ended, left) = self.careers_end();
+            let (ended, left) = if at_week_start {
+                self.careers_end()
+            } else {
+                (false, true)
+            };
             if !left {
                 return Err(Gone);
             }
@@ -842,7 +857,7 @@ impl Cycle {
             // humans' clubs with the recipients' other income, and
             // empties the week's store so its givers may give again
             // (`FUN_006eeda7`).
-            {
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
@@ -856,7 +871,11 @@ impl Cycle {
                 return Ok(());
             };
             self.ask(Request::new(week))?;
-            for _ in 0..WEEK_DAYS {
+            // Days until the week's boundary: seven for a week that
+            // opened at one, and the rest of its own week for a loaded
+            // game standing mid-week — the `start` flag below fires on
+            // `day % 7 == 0`, where the turns begin again.
+            loop {
                 self.appointments()?;
                 // The day walked; its booked open day's dialog comes up in
                 // the walk's middle, once the day's training is done and
@@ -985,6 +1004,11 @@ impl Cycle {
                             // (`FUN_0062c74b`'s `FUN_0062bfc9`).
                             crate::year::note_next_matches(records, &self.data.calendar, season.day);
                         }
+                        // The day's match clears the load's hold
+                        // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
+                        // 3): the boundary's block below then rolls the
+                        // market even in the week a game was loaded in.
+                        season.week_hold = false;
                         let start = season.day % WEEK_DAYS == 0;
                         if start {
                             season.begin_week();
@@ -998,6 +1022,12 @@ impl Cycle {
                     crate::noracsa::age_requests(records);
                 }
                 self.ask(Request::new(week))?;
+                // The week's boundary was reached: turns, week's end and
+                // days come round again. (Without a season the loop ends
+                // too — it cannot walk any more days.)
+                if !matches!(week_start, Some(None)) {
+                    break;
+                }
             }
         }
     }

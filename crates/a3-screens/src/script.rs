@@ -726,6 +726,43 @@ mod tests {
         }
     }
 
+    /// A game loaded mid-week turns on its saved day and then walks only
+    /// the rest of its week: the traced original of save "Toni" (day 62,
+    /// its week from 56, 7 Nov) showed dialog 147 again at day 63, with
+    /// the week's wait 381 just before it — not seven days on at 69.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_load_mid_week_turns_again_at_its_weeks_boundary() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Toni", "midweek", |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let script = Script::parse(
+            "once 9 choose 4771 1; ok
+             on 424 row 5144 0; ok
+             until dialog 147
+             on 147 click bar 18
+             on 2 wait
+             on 461 ok
+             on 270 ok
+             on 381 wait
+             until day 64",
+        )
+        .unwrap();
+        let (runner, result) = Runner::play(&game, &script);
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let state = runner.host.state();
+        let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
+        // The turns came at 62 and at 63, and the walk stands in the new
+        // week at 64; the turns of 69 would mean the week ran wrong.
+        assert_eq!(season.day, 64, "{}", runner.log.join("\n"));
+        assert_eq!(seen(&runner, 147), 2, "{}", runner.log.join("\n"));
+        assert_eq!(seen(&runner, 381), 1, "{}", runner.log.join("\n"));
+        // The saved week's start (56) stood through the saved day's turn;
+        // the planner counts from 63 only since the new week opened.
+        assert_eq!(records.globals.week_start(), 63);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn every_save_opens_on_its_line_up() {
