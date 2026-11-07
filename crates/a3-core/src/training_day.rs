@@ -945,7 +945,12 @@ fn player_event(
 /// (`FUN_00700a6d`) — 10 answering "not met" all the same; 12 and 14, a
 /// man who keeps no goal drawn and two or one more content; 31, two
 /// friends in the training (case 0x1b): one man drawn, and when his best
-/// friend (+0x204) trains too, both three more content; 23, a keeper
+/// friend (+0x204) trains too, both three more content; 20, the offside
+/// trap (the club's +0xa0, the record's `offside`) twenty up where it
+/// stands below 70, the human trainer's standing (`FUN_0040a1ec`,
+/// `FUN_006a426b` and `FUN_006a61e5`) at eleven or more, and the human
+/// slot's merch range showing itself in its marketing byte and the
+/// fans' discount (+0xc89 and +0xc8c); 23, a keeper
 /// drawn and his +0x2f set to 5 (`FUN_00766af9`); and, in a unit whose
 /// row allows it ([`UNIT_GATES`], `FUN_00748f29`), 24, two men who keep
 /// no goal drawn and a roll of four — both +0x2f at 1, or the first
@@ -1004,8 +1009,7 @@ fn player_event(
 /// 24 at most and one side place free, none of his three positions
 /// standing at 10, who then takes position 10 on his free place
 /// (`FUN_00745d3c`).
-/// The other codes, drawing over the squad, the manager and the club
-/// each in its own way, take nothing place here yet.
+/// With 20 the last of them, all 31 codes the table holds run here.
 #[allow(clippy::too_many_arguments)]
 fn run_player_event(
     records: &mut Records,
@@ -1079,6 +1083,41 @@ fn run_player_event(
         11 => content(records, true, -3, random),
         12 => content(records, false, 2, random),
         14 => content(records, false, 1, random),
+        20 => {
+            // The offside trap rises: the club's byte at +0xa0 (the
+            // record's `offside`) stands below 70; the merch range of
+            // the human slot shows itself in the bytes +0xc89 and
+            // +0xc8c (the marketing man's flag is a whole i32 at
+            // 0xc88, so in practice the fans' discount's byte
+            // decides); with a human trainer, `FUN_0040a1ec` reads his
+            // standing (`FUN_006a426b`, `FUN_006a61e5`), and at eleven
+            // or more the trap rises by twenty.  The news (word 0x1e)
+            // is not posted.
+            let Some(team) = records.team(country, number) else {
+                return false;
+            };
+            let offside = team.offside();
+            if offside >= 0x46 {
+                return false;
+            }
+            if !crate::merchandise::Range::of(records, team)
+                .is_some_and(|r| r.marketing_or_discount_set())
+            {
+                return false;
+            }
+            if trainer == 0
+                || !records
+                    .managers
+                    .get(usize::from(trainer) - 1)
+                    .is_some_and(|m| m.standing() >= 0xb)
+            {
+                return false;
+            }
+            if let Some(team) = records.team_mut(country, number) {
+                team.set_offside(offside.wrapping_add(0x14));
+            }
+            true
+        }
         9 => {
             let top = records.team(country, number).is_some_and(|t| t.get::<u8>(0x12e) == 0);
             if trainer != 0 && top {
@@ -2274,5 +2313,73 @@ mod tests {
             assert_eq!(records.player(*id).map_or(0, |p| p.condition()), want, "man {id}");
         }
         assert_eq!(records.player(hurt).unwrap().condition(), held_hurt, "the injured man stands out of the rolls");
+    }
+
+    /// Event 102's code 20: the offside trap — the club's byte +0xa0,
+    /// the record's `offside` — rises by twenty where it stands below
+    /// 70, the human slot's merch range shows its marketing byte or the
+    /// fans' discount, and the human trainer stands at eleven (`FUN_0040a1ec`,
+    /// `FUN_006a61e5` → Manager::standing).  Nothing is drawn.
+    #[test]
+    #[ignore = "needs the game (ANSTOSS3_DIR)"]
+    fn the_offside_trap_rises_at_a_running_range() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let squad = records.team(club.0, club.1).unwrap().players();
+        let (trainer, range_slot) = {
+            let team = records.team(club.0, club.1).unwrap();
+            (usize::from(team.humans()[0]), usize::from(team.human()))
+        };
+        assert_ne!(trainer, 0, "A's club stands under its human");
+        assert!((1..=4).contains(&range_slot), "A's club holds a merch range");
+        let range_slot = range_slot - 1;
+        let date = NaiveDate::from_ymd_opt(2025, 9, 9).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let (tables, league_tables) = (MoodTables::load(&exe).unwrap(), LeagueTables::load(&exe).unwrap());
+        let run = |records: &mut Records, random: &mut Random| {
+            run_player_event(records, club, &squad, (&tables, &league_tables), 20, 0, [0, 0, 0], (64, date), random)
+        };
+        let mut random = Random::from_state(864213, 97531);
+        // The range, shut and open: the marketing man's flag is a whole
+        // i32 at 0xc88, so clearing it also clears the byte the event
+        // asks at 0xc89; the fans' discount's low byte stands in for it.
+        let mut range = crate::merchandise::Range::of(&records, records.team(club.0, club.1).unwrap()).expect("A's club holds a merch range");
+        let open = |range: &mut crate::merchandise::Range| {
+            range.set_marketing(false);
+            range.set_fans_discount(10);
+        };
+        records.managers.get_mut(trainer - 1).unwrap().set_level(15);
+        records.managers.get_mut(trainer - 1).unwrap().set_level_bits(0);
+        records.team_mut(club.0, club.1).unwrap().set_offside(60);
+        let held = random.clone();
+        range.set_marketing(false);
+        range.set_fans_discount(0);
+        range.write(&mut records, range_slot);
+        assert!(!run(&mut records, &mut random), "the shut range holds the trap down");
+        assert_eq!(random, held, "code 20 draws nothing");
+        // Open range, standing fifteen: the trap rises twenty, and a
+        // trap at 70 or above never rises again.
+        open(&mut range);
+        range.write(&mut records, range_slot);
+        assert!(run(&mut records, &mut random));
+        assert_eq!(records.team(club.0, club.1).unwrap().offside(), 80, "the trap of sixty stands at eighty");
+        let held = random.clone();
+        assert!(!run(&mut records, &mut random), "the trap at eighty is past the event's seventy");
+        assert_eq!(random, held);
+        assert_eq!(records.team(club.0, club.1).unwrap().offside(), 80);
+        // Standing, at the event's eleven and below it.
+        records.team_mut(club.0, club.1).unwrap().set_offside(60);
+        records.managers.get_mut(trainer - 1).unwrap().set_level(11);
+        assert!(run(&mut records, &mut random), "eleven standing carries the trap");
+        assert_eq!(records.team(club.0, club.1).unwrap().offside(), 80);
+        records.team_mut(club.0, club.1).unwrap().set_offside(60);
+        records.managers.get_mut(trainer - 1).unwrap().set_level(10);
+        let held = random.clone();
+        assert!(!run(&mut records, &mut random), "ten standing does not");
+        assert_eq!(random, held);
+        assert_eq!(records.team(club.0, club.1).unwrap().offside(), 60);
     }
 }

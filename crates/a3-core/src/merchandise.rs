@@ -257,6 +257,16 @@ impl Range {
         }
     }
 
+    /// The two bytes the club object holds at +0xc89 and +0xc8c, each
+    /// read as one: the byte behind the marketing man's flag (his hire
+    /// is a whole i32 at +0xc88, which never sets it) and the low byte
+    /// of the fans' discount.  Training day event 102's code 20 wants
+    /// one of them set.
+    pub fn marketing_or_discount_set(&self) -> bool {
+        self.0.get(0xc89).is_some_and(|&b| b != 0)
+            || self.0.get(FANS_DISCOUNT).is_some_and(|&b| b != 0)
+    }
+
     /// What a piece sells at, in cents (`FUN_00610a99`): the kind's price
     /// with the article's markup and the fans' discount, cut down to
     /// 50 cents, below 100 € to a euro, and from there to ten euros.
