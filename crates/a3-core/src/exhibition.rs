@@ -323,19 +323,46 @@ fn standing(records: &mut Records, club: (u8, i16), other: (u8, i16), d: i32) {
     }
 }
 
-/// The popularity with the public, the fans and the media of a human
-/// club's trainer and, where another, its manager (`FUN_00418065`), each
-/// within 0 and 100. A computer club's staff persons are not followed.
+/// The popularity with the public, the fans and the media of a club's
+/// trainer and, where another, its manager (`FUN_00418065`), each within
+/// 0 and 100: a human's own (his record's `popularity`, the manager
+/// object's +0x3a), and where the place stands without one the staff
+/// person of the club's `staff` row — the trainer's place taking the
+/// first staff person standing, the manager's place the third
+/// (`FUN_006317c6`, `FUN_006318f4`: his +0x4a to +0x4c).
 fn popularity(records: &mut Records, club: (u8, i16), by: [i32; 3]) {
-    let Some(humans) = team(records, club).map(|t| t.humans()) else { return };
-    let mut managers = vec![humans[0]];
-    if humans[1] != 0 && humans[1] != humans[0] {
-        managers.push(humans[1]);
+    let Some(team) = team(records, club) else { return };
+    let [trainer, manager] = team.humans();
+    let staff = team.staff();
+    let mut managers = Vec::new();
+    let mut persons = Vec::new();
+    if trainer != 0 {
+        managers.push(trainer);
+    } else {
+        let person = if staff[0] != 0 { staff[0] } else { staff[1] };
+        if person != 0 {
+            persons.push(person);
+        }
+    }
+    if manager != 0 && manager != trainer {
+        managers.push(manager);
+    } else if staff[2] != 0 {
+        persons.push(staff[2]);
     }
     for m in managers {
         if let Some(manager) = usize::from(m).checked_sub(1).and_then(|i| records.managers.get_mut(i)) {
             let p = manager.popularity();
             manager.set_popularity(std::array::from_fn(|k| (i32::from(p[k]) + by[k]).clamp(0, 100) as u8));
+        }
+    }
+    for person in persons {
+        if (1..=1499).contains(&person)
+            && let Some(p) = records.persons.get_mut(usize::from(person))
+        {
+            for (at, by) in (0x4a..0x4d).zip(by) {
+                let value = p.get::<u8>(at);
+                p.put::<u8>(at, (i32::from(value) + by).clamp(0, 100) as u8);
+            }
         }
     }
 }
@@ -386,5 +413,39 @@ mod saves {
         assert!(d_near > 0 && d_union == d_near, "{d_union} {d_near}");
         assert_eq!(records.extras[0].get::<i32>(LAST_SHARE), d_union);
         assert_eq!(records.extras[0].together(), together + 2);
+    }
+
+    /// Where a club stands without human trainer and manager, the staff
+    /// persons of its `staff` row carry the likings a friendly's result
+    /// moves (`FUN_00418065`): the first staff person standing — else the
+    /// second — for the trainer's place, the third for the manager's,
+    /// each on his +0x4a to +0x4c (`FUN_006317c6`, `FUN_006318f4`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_computer_clubs_staff_persons_carry_the_likings() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let club = (1..=200u16)
+            .map(|n| (14, n))
+            .filter_map(|(c, n)| records.team(c, n).map(|t| ((c, n), t.humans(), t.staff())))
+            .filter(|&(_, h, s)| h == [0, 0] && s[2] != 0)
+            .map(|(club, _, s)| (club, if s[0] != 0 { s[0] } else { s[1] }, s[2]))
+            .find(|&(_, first, third)| {
+                first != 0
+                    && first != third
+                    && (1..=1499).contains(&first)
+                    && (1..=1499).contains(&third)
+            })
+            .expect("A holds a computer club with two staff persons");
+        let ((country, number), first, third) = club;
+        let likings = |records: &Records, p: u16| {
+            [0x4a, 0x4b, 0x4c].map(|at| records.persons.get(usize::from(p)).unwrap().get::<u8>(at))
+        };
+        let (before_first, before_third) = (likings(&records, first), likings(&records, third));
+        let step = |v: u8, by: i32| (i32::from(v) + by).clamp(0, 100) as u8;
+        popularity(&mut records, (country as u8, number as i16), [0, 1, 0]);
+        assert_eq!(likings(&records, first), [before_first[0], step(before_first[1], 1), before_first[2]]);
+        assert_eq!(likings(&records, third), [before_third[0], step(before_third[1], 1), before_third[2]]);
     }
 }
