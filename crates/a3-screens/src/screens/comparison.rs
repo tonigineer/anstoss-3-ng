@@ -165,10 +165,12 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     hub::add_bar(dialog, rules);
 }
 
-/// The opponent's squad's caption, like every window's.
+/// The opponent's squad's caption, like every window's, and the row menu
+/// its list box answers with one item.
 pub(crate) fn compose_opponent(dialogs: &mut HashMap<u16, Dialog>) {
     if let Some(dialog) = dialogs.get_mut(&OPPONENT_SQUAD) {
         dialog.controls.insert(0, super::caption(dialog.frame, THEIR_CAPTION, String::new()));
+        dialog.controls.push(hub::menu_control());
     }
 }
 
@@ -772,9 +774,16 @@ fn tenths(value: i32) -> String {
 
 /// The opponent's squad, "Gegner" (dialog 476, `CSpielerkaderGegen`): the
 /// opponent in his squad's own order, the eleven in black, the bench blue,
-/// the rest in the stands green; his info is not built yet.
+/// the rest in the stands green; a right click on a row puts his info up.
 #[derive(Default)]
-pub struct OpponentSquad;
+pub struct OpponentSquad {
+    /// The row whose menu stands up, by the man's record id.
+    menu_player: Option<u16>,
+}
+
+/// The list box's menu holds one item here (`OnRButtonUp_00693231`): the
+/// other actions of the shared `CListBoxSpielerInfo` belong to own squads.
+const INFO_ONLY: [hub::Command; 1] = [hub::Command::Info];
 
 impl Screen for OpponentSquad {
     fn ids(&self) -> &[u16] {
@@ -784,6 +793,7 @@ impl Screen for OpponentSquad {
     /// The rows in the club's own order, sorted by nothing (`FUN_005652cb`).
     fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
         let (game, dialog) = (cx.game, cx.dialog);
+        self.menu_player = None;
         let Some(club) = opponent(cx) else { return };
         let key = next_opponent(cx);
         let name = cx
@@ -827,14 +837,39 @@ impl Screen for OpponentSquad {
         }
         let works = |target: Target| match target {
             Target::Button(c) => crate::controls::button::is_ok(&dialog.controls[c]),
-            // A row would ask for the player's info: not built yet.
-            Target::Row { .. } | Target::Cell { .. } | Target::Menu(_) => false,
             _ => true,
         };
         mark_inert(view, dialog, works);
     }
 
-    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        if let Some(record) = self.menu_player.take() {
+            if hub::close_menu(cx, view, target).and_then(|i| INFO_ONLY.get(i)).is_some() {
+                // The info pages through the rows backwards, by record id
+                // (`AddHead`).
+                cx.state.paging_ids = opponent(cx).map(|club| {
+                    club.status.iter().map(|s| s.id).filter(|&id| id != 0).rev().collect()
+                });
+                return Outcome::Popup(Request::with(playerinfo::CURRENT, Args::Record(record)));
+            }
+            return Outcome::Stay;
+        }
+        if let Target::Menu(grip @ Grip::Row { control: c, row }) = target
+            && dialog.controls[c].id == Some(THEIR_LIST)
+        {
+            let record = view
+                .list(c)
+                .and_then(|l| l.keys.get(l.scroll + row).copied())
+                .and_then(|p| opponent(cx).and_then(|club| club.status.get(p).map(|s| s.id)))
+                .filter(|&id| id != 0);
+            if let Some(record) = record
+                && hub::show_menu(cx, view, grip, &INFO_ONLY).is_some()
+            {
+                self.menu_player = Some(record);
+            }
+            return Outcome::Stay;
+        }
         if let Target::Button(c) = target
             && crate::controls::button::is_ok(&cx.dialog.controls[c])
         {

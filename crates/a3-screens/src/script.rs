@@ -1692,6 +1692,24 @@ mod tests {
 
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn an_opponents_squad_row_shows_his_info() {
+        let game = game();
+        // A right click on a row of the opponent's squad (list 5261 of
+        // 476) puts up his one-item menu and his info (399), as the
+        // shared `CListBoxSpielerInfo` has it.
+        let Some(run) = on_save(
+            &game,
+            "Toni",
+            "now click bar 1\nuntil dialog 78\nnow press 5664\nuntil dialog 476\n\
+             now rclick 5261 row 0\nnow choose 9950 0\nuntil dialog 399",
+        ) else {
+            return;
+        };
+        assert_eq!(seen(&run, 399), 1, "{}", run.log.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_calendar_books_and_the_planner_shows() {
         let game = game();
         // September: the family day dragged onto the 10th, the club party
