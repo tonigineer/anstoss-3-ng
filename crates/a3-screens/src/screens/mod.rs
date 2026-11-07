@@ -52,6 +52,7 @@ pub mod tactics;
 pub mod talk;
 pub mod tournament;
 pub mod training;
+pub mod week_abilities;
 pub mod year;
 pub mod youth;
 pub mod youth_tables;
@@ -271,6 +272,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(training::long::LongTraining::default()),
         Box::new(training::individual::IndividualTraining::default()),
         Box::new(training::individual::AbilityChoice::default()),
+        Box::new(week_abilities::WeekAbilities::default()),
         Box::new(training::settings::CoTrainerSettings::default()),
         Box::new(training::performance::TrainingStatistics::default()),
         Box::new(training::rooms::Rooms::default()),
@@ -315,6 +317,7 @@ pub fn compose(game: &mut Game) {
     training::editor::compose(&mut game.dialogs, &game.data.rules);
     training::long::compose(&mut game.dialogs, &game.data.rules);
     training::individual::compose(&mut game.dialogs, &game.data.rules);
+    week_abilities::compose(&mut game.dialogs);
     training::settings::compose(&mut game.dialogs);
     training::performance::compose(&mut game.dialogs);
     training::rooms::compose(&mut game.dialogs);

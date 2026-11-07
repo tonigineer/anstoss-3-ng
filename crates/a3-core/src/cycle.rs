@@ -97,6 +97,10 @@ pub mod dialogs {
     /// each player's own training, its sixth.
     pub const LONG_TRAINING: u16 = 345;
     pub const INDIVIDUAL_TRAINING: u16 = 347;
+    /// The abilities gained and lost over the week (`CFaehigkeitenWoche`),
+    /// which the turns show for a human club whose book of the week has
+    /// entries.
+    pub const WEEK_ABILITIES: u16 = 364;
     /// The ability a player is to work on, chosen from those he lacks.
     pub const ABILITY_CHOICE: u16 = 365;
     /// The year calendar, the bar's seventh symbol; the week planner, its
@@ -717,6 +721,34 @@ impl Cycle {
         .unwrap_or_default()
     }
 
+    /// The abilities gained and lost over the week: before a turn, a
+    /// human club whose book has entries shows its dialog
+    /// (`CFaehigkeitenWoche`, built and run by `CMyStartDialog`'s
+    /// `FUN_00499e7f` in the week's open block).  An empty book shows
+    /// nothing and waits for nothing: the dialog's `OnInit` ends it
+    /// itself at once when the first entry reads 0 (`FUN_007a0d38(1)`).
+    fn week_abilities(&mut self) -> Result<(), Gone> {
+        let club = self.season(|s| {
+            let (country, number) = s.manager()?.club?;
+            let nation = self.data.world.country(country)?.nation;
+            Some((nation, u16::try_from(number).ok()?))
+        });
+        let Some((nation, number)) = club.flatten() else { return Ok(()) };
+        let guard = self.state();
+        let book = guard
+            .records
+            .as_ref()
+            .and_then(|records| {
+                let slot = records.team(nation, number).map_or(0, |t| t.human());
+                (!records.abilities_week(slot).is_empty()).then_some(slot)
+            });
+        drop(guard);
+        if book.is_some() {
+            self.ok(WEEK_ABILITIES)?;
+        }
+        Ok(())
+    }
+
     /// The season week by week: the autosave's wait screen, every human
     /// manager's turn, and the week running day by day — until the week of
     /// the first match, which is not played yet. A loaded game starts with
@@ -744,6 +776,7 @@ impl Cycle {
             wait = true;
             for manager in self.turns() {
                 self.season(|s| s.current = manager);
+                self.week_abilities()?;
                 if !self.turn()? {
                     return Ok(());
                 }
@@ -818,6 +851,15 @@ impl Cycle {
                     crate::season::keep_forms(records, &mut season.clubs, &self.data.world);
                     crate::settlement::keep_club_money(records);
                     for club in crate::statistics::human_clubs(records) {
+                        // The week's book of gained and lost abilities
+                        // ends with the week (`FUN_0064e40f`'s
+                        // `FUN_006436b3`, right before the advance
+                        // sales); what the days below record shows at the
+                        // next boundary, before this clears it again.
+                        let slot = records
+                            .team(u16::from(club.0), club.1 as u16)
+                            .map_or(0, |t| t.human());
+                        records.clear_abilities_week(slot);
                         crate::presale::week_end(
                             records,
                             &self.data.calendar,

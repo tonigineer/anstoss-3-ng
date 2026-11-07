@@ -9865,4 +9865,104 @@ mod tests {
             let _ = std::fs::remove_dir_all(&root);
         }
     }
+
+    /// The week's book of gained and lost abilities opens the next turn
+    /// and then stands empty: what the days booked for the human club
+    /// shows on 364 at its manager's turn — the man's name, his main
+    /// position, the first ability he gained and the first he lost by
+    /// name, each with its icon in the list's two icon slots, the club's
+    /// name behind the caption (`FUN_00499fc3`'s rows) — and OK closes
+    /// it; the week's end clears the book (`FUN_006436b3`), so the turns
+    /// after this one show no 364 again.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_weeks_book_of_abilities_opens_the_turn_and_blanks() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "ability-book", |_| {});
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok";
+        let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
+        let icon = |keeper: bool, good: bool, at: usize| {
+            game.rules.pitch.ability_icon(keeper, good, at).unwrap()
+        };
+        let mut runner = Runner::new(&game, 0);
+        runner.run(&Script::parse(&load).unwrap()).unwrap();
+        // Two days on, the turn's week has ended and cleared its book;
+        // what the days between the weeks book shows at the next turn.
+        let day = runner.host.state().season.as_ref().unwrap().day;
+        let into = format!("{walk}\nuntil day {}", day + 2);
+        runner.run(&Script::parse(&into).unwrap()).unwrap_or_else(|err| {
+            panic!("{err}\n{}", runner.log.join("\n"));
+        });
+        // Book a gained and a lost field ability on one man and a lost
+        // keeper ability on another; an entry per man, as the writers do.
+        let (want, club) = {
+            let mut state = runner.host.state();
+            let records = state.records.as_mut().unwrap();
+            let manager = records.humans().next().unwrap();
+            let (country, number) = (manager.country(), manager.team());
+            let team = records.team(country, number).unwrap();
+            let (slot, players, club) = (team.human(), team.players(), team.name().to_owned());
+            let keeper = players
+                .iter()
+                .copied()
+                .find(|&id| records.player(id).is_some_and(|p| p.positions()[0] == 1))
+                .unwrap();
+            let field = players
+                .iter()
+                .copied()
+                .find(|&id| id != keeper && records.player(id).is_some_and(|p| p.positions()[0] != 1))
+                .unwrap();
+            records.ability_gained(slot, field, 2);
+            records.ability_lost(slot, field, 5);
+            records.ability_lost(slot, keeper, 3);
+            let line = |id: u16, gained: Option<usize>, lost: Option<usize>| {
+                let p = records.player(id).unwrap();
+                let is_keeper = p.positions()[0] == 1;
+                let names =
+                    if is_keeper { &game.rules.words.keeper_abilities } else { &game.rules.words.field_abilities };
+                let word = |at: Option<usize>| {
+                    at.map_or(String::new(), |b| game.text(names[b]).to_owned())
+                };
+                [
+                    records.known_as(id).unwrap(),
+                    crate::screens::hub::abbreviation(&game, p.positions()[0]),
+                    word(gained),
+                    word(lost),
+                ]
+                .join("\t")
+            };
+            (vec![line(field, Some(2), Some(5)), line(keeper, None, Some(3))], club)
+        };
+        // The walk to the turn: 364 comes before it and the script, which
+        // has no action for it, breaks there with the dialog standing.
+        let reached = runner.run(&Script::parse(&format!("{walk}\nrepeat 20 days")).unwrap());
+        assert!(matches!(reached, Err(Error::NoActions(364))), "no 364 at the turn: {:?}", reached);
+        let dialog = &game.dialogs[&364];
+        let list = crate::screens::control(dialog, 4598).unwrap();
+        let crate::controls::ControlState::List(rows) = &runner.host.view().controls[list].state
+        else {
+            panic!("{}: no list on 364", runner.log.join("\n"));
+        };
+        assert_eq!(rows.rows[..want.len()], want[..], "364: {}", runner.log.join("\n"));
+        let slots = crate::controls::list::icon_slots(&dialog.controls[list]);
+        assert_eq!(
+            rows.row_icons[0],
+            [(slots[0], icon(false, true, 2)), (slots[1], icon(false, false, 5))]
+        );
+        assert_eq!(rows.row_icons[1], [(slots[1], icon(true, false, 3))]);
+        let caption = crate::screens::control(dialog, 9946).unwrap();
+        assert_eq!(runner.host.view().text(caption), format!("{} {club}", dialog.title));
+        // OK closes it; four more days of turns show no 364 a second time.
+        let day = runner.host.state().season.as_ref().unwrap().day;
+        let again = format!("{walk}\non 364 ok\nuntil day {}", day + 4);
+        runner.run(&Script::parse(&again).unwrap()).unwrap_or_else(|err| {
+            panic!("{err}\n{}", runner.log.join("\n"));
+        });
+        assert_eq!(seen(&runner, 364), 1, "the book stood past the week's end:\n{}", runner.log.join("\n"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

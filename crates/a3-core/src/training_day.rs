@@ -606,7 +606,7 @@ fn training_event(
             }
             true
         }
-        105 => ability_event(records, trainable, random),
+        105 => ability_event(records, (country, number), trainable, random),
         106 | 107 => trait_event(records, (country, number), trainable, event == 106, random),
         _ => true,
     }
@@ -805,9 +805,16 @@ fn draw_any(list: &[u16], random: &mut Random) -> Option<u16> {
 /// the others' of the ten; with three bits of both words set, up to five
 /// draws for one he has. One he has goes from both words
 /// (`FUN_00747689`), one he has in neither moves into the second
-/// (`bad`, +0xe; `FUN_00747770`). The human manager's plan of the man
-/// (`FUN_00643673`, the block at `0xa50028`) is not updated here.
-fn ability_event(records: &mut Records, trainable: &[u16], random: &mut Random) -> bool {
+/// (`bad`, +0xe; `FUN_00747770`). Both log the loss into the human
+/// club's book of the week's abilities (`FUN_00643673`'s gate into
+/// `Records::ability_lost`); the manager's plan of the man (the block at
+/// `0xa50028`, behind the same gate) is not updated here.
+fn ability_event(
+    records: &mut Records,
+    (country, number): (u16, u16),
+    trainable: &[u16],
+    random: &mut Random,
+) -> bool {
     let Some(id) = draw_any(trainable, random) else { return false };
     let Some(p) = records.player(id) else { return false };
     let keeper = p.get::<u8>(0x21d) == 1;
@@ -827,16 +834,22 @@ fn ability_event(records: &mut Records, trainable: &[u16], random: &mut Random) 
         draw()
     };
     let bit = 1u16 << ABILITY_BITS[at];
+    let slot = records.team(country, number).map_or(0, |t| t.human());
     let Some(p) = records.player_mut(id) else { return false };
-    if good & bit != 0 {
+    let lost = if good & bit != 0 {
         p.set_good(good & !bit);
         p.set_bad(bad & !bit);
+        true
     } else if bad & bit != 0 {
         return false;
     } else {
         p.set_bad(bad | bit);
+        true
+    };
+    if lost {
+        records.ability_lost(slot, id, ABILITY_BITS[at]);
     }
-    true
+    lost
 }
 
 /// Events 106 and 107 (`FUN_0060c1c0`'s cases 6 and 7): a trained man,
@@ -1642,6 +1655,7 @@ mod tests {
                 })
                 .collect()
         };
+        let words0 = words(&records);
         for _ in 0..200 {
             for event in [105, 106, 107] {
                 let before = words(&records);
@@ -1668,5 +1682,24 @@ mod tests {
                 }
             }
         }
+        // And what 105 moved it booked: the human club's book of the week
+        // holds one entry per man, its lost bits exactly the ability bits
+        // the rolls moved off him and its gained side empty (the loss log
+        // `FUN_00747689` and `FUN_00747770` into `Records::ability_lost`).
+        let slot = records.team(club.0, club.1).unwrap().human();
+        let book = records.abilities_week(slot);
+        assert!(!book.is_empty(), "two hundred rolls of 105 moved no ability bit");
+        for (&id, (good, bad, _)) in trainable.iter().zip(&words0) {
+            let p = records.player(id).unwrap();
+            let moved = (good ^ p.good()) | (bad ^ p.bad());
+            let entry = book.iter().find(|e| e.id == id);
+            if moved == 0 {
+                assert!(entry.is_none(), "a man who moved nothing holds a book entry");
+            } else {
+                let e = entry.unwrap_or_else(|| panic!("no book entry for {id}'s moved {moved:#06x}"));
+                assert_eq!((e.gained, e.lost), (0, moved));
+            }
+        }
+        assert!(book.iter().all(|e| trainable.contains(&e.id)), "the book holds a man the rolls could not move");
     }
 }

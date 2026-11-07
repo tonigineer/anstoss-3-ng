@@ -1720,6 +1720,20 @@ pub struct SeasonMark {
     pub date: (u8, u8, u16),
 }
 
+/// One man's line in a club's book of the week's gained and lost
+/// abilities: the entry's id and the bits of what he gained and lost
+/// since the week began (the entries of `DAT_00ae3570`, read as three
+/// shorts in the original's stride of `0xe`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct WeekAbility {
+    pub id: u16,
+    pub gained: u16,
+    pub lost: u16,
+}
+
+/// The book's room: the original loops its entries over `0..0x32`.
+const WEEK_ABILITIES: usize = 0x32;
+
 /// A savegame's records, and the save itself for everything not read into
 /// them yet.
 pub struct Records {
@@ -1740,6 +1754,11 @@ pub struct Records {
     pub individual: Vec<IndividualStore>,
     /// The human managers' notepad pages, by slot.
     pub notes: Vec<Note>,
+    /// The human clubs' books of abilities gained and lost since the
+    /// week's start, by slot. Runtime only: the original keeps these at
+    /// `DAT_00ae3550`, outside the save, and `to_save` writes nothing
+    /// back.
+    pub abilities_week: Vec<Vec<WeekAbility>>,
     pub luck: Luck,
     /// The pool of names the players' names point into.
     pub names: Vec<String>,
@@ -1818,6 +1837,7 @@ impl Records {
             calendars,
             individual,
             notes,
+            abilities_week: (0..MANAGERS).map(|_| Vec::new()).collect(),
             luck,
             names,
             persons,
@@ -2099,6 +2119,61 @@ impl Records {
         let slots = self.globals.slots();
         self.managers.iter().zip(slots).filter(|(_, slot)| *slot > 0).map(|(manager, _)| manager)
     }
+
+    /// The club in a slot's book of abilities gained and lost since the
+    /// week's start (`DAT_00ae3550 + (slot - 1) * 0x2dc`).
+    pub fn abilities_week(&self, slot: u8) -> &[WeekAbility] {
+        Self::week_slot(slot).and_then(|i| self.abilities_week.get(i)).map_or(&[], Vec::as_slice)
+    }
+
+    /// The index of a slot's book, if the slot holds a human club (the
+    /// gates `FUN_00643633` and `FUN_00643673` demand the club's slot
+    /// byte at +0x11de).
+    fn week_slot(slot: u8) -> Option<usize> {
+        usize::from(slot).checked_sub(1).filter(|&i| i < MANAGERS)
+    }
+
+    /// Book that a man gained or lost an ability this week: the bit of
+    /// the ability drawn onto his entry, opening an entry if he has none
+    /// (`FUN_006432bc` and `FUN_0064337d`, which end at the book's
+    /// fifty entries).
+    fn note_ability(&mut self, slot: u8, id: u16, gained: bool, ability: u16) {
+        let Some(i) = Self::week_slot(slot) else { return };
+        Self::book(&mut self.abilities_week[i], id, gained, ability);
+    }
+
+    fn book(book: &mut Vec<WeekAbility>, id: u16, gained: bool, ability: u16) {
+        let bit = 1u16 << (ability & 0x1f);
+        match book.iter().position(|e| e.id == id) {
+            Some(at) if gained => book[at].gained |= bit,
+            Some(at) => book[at].lost |= bit,
+            None if book.len() < WEEK_ABILITIES => book.push(WeekAbility {
+                id,
+                gained: if gained { bit } else { 0 },
+                lost: if gained { 0 } else { bit },
+            }),
+            None => {}
+        }
+    }
+
+    /// Book that a man gained an ability this week (`FUN_006432bc`'s
+    /// writer behind the gate `FUN_00643633`).
+    pub fn ability_gained(&mut self, slot: u8, id: u16, ability: u16) {
+        self.note_ability(slot, id, true, ability);
+    }
+
+    /// Book that a man lost an ability this week (`FUN_0064337d`'s
+    /// writer behind the gate `FUN_00643673`).
+    pub fn ability_lost(&mut self, slot: u8, id: u16, ability: u16) {
+        self.note_ability(slot, id, false, ability);
+    }
+
+    /// End a club's book of the week (`FUN_006436b3`'s clear).
+    pub fn clear_abilities_week(&mut self, slot: u8) {
+        if let Some(i) = Self::week_slot(slot) {
+            self.abilities_week[i].clear();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2180,6 +2255,38 @@ mod tests {
         assert_eq!(extra.transfers().first().unwrap().0, 2001);
         let sponsors = extra.sponsors();
         assert_eq!((sponsors[0].0, sponsors.last().copied().unwrap()), (2022, (2071, 500)));
+    }
+
+    /// The book of the week draws one entry per man: gained and lost bits
+    /// merge onto his entry, the same ability booked twice stays one bit,
+    /// and past fifty men the book takes nothing (`FUN_006432bc` and
+    /// `FUN_0064337d` loop their entries over `0..0x32`).
+    #[test]
+    fn the_weeks_book_draws_one_entry_per_man() {
+        let mut book = Vec::new();
+        Records::book(&mut book, 100, false, 4);
+        Records::book(&mut book, 100, true, 1);
+        Records::book(&mut book, 100, false, 4);
+        Records::book(&mut book, 7, true, 15);
+        assert_eq!(
+            book,
+            [
+                WeekAbility { id: 100, gained: 1 << 1, lost: 1 << 4 },
+                WeekAbility { id: 7, gained: 1 << 15, lost: 0 },
+            ][..]
+        );
+        for id in 1..=WEEK_ABILITIES as u16 {
+            Records::book(&mut book, id, false, 0);
+        }
+        assert_eq!(book.len(), WEEK_ABILITIES, "the whole book holds fifty men");
+        assert!(!book.iter().any(|e| e.id == 50), "the fifty-first man goes unread");
+        Records::book(&mut book, 999, true, 0);
+        assert_eq!(book.len(), WEEK_ABILITIES, "past fifty the book is full");
+        // A slot outside the humans' four books holds nothing and books
+        // nothing (`FUN_00643633`'s gate reads the club's slot byte).
+        assert_eq!(Records::week_slot(0), None);
+        assert_eq!(Records::week_slot(1), Some(0));
+        assert_eq!(Records::week_slot(MANAGERS as u8 + 1), None);
     }
 
     #[test]
