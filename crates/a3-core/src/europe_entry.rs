@@ -570,7 +570,10 @@ const CHAMPIONS_POINTS: usize = 0xf44;
 const CHAMPIONS_QUALIFIER_TIES: usize = 16;
 const PAIRING: usize = 0xe;
 /// The UEFA cup's object (`0x8e8940`): its rounds' first pairings.
-const UEFA_CUP: &str = "0x8e8940";
+pub(crate) const UEFA_CUP: &str = "0x8e8940";
+/// Where its first tie stands — the round's run counted from one round's
+/// first to the next one's (`year::uefa_tie` and `FUN_004205a4`).
+pub(crate) const UEFA_TIES: usize = 0x20;
 const UEFA_STARTS: [u32; 8] = [0, 50, 98, 122, 138, 146, 150, 152];
 /// Each country's count of clubs in the two cups (`DAT_00b5cca6`).
 const COUNTRY_ENTRIES: usize = 0xb5cca6;
