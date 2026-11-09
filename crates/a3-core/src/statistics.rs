@@ -1720,12 +1720,15 @@ fn crowd_list(block: Option<&[u8]>) -> Vec<Crowd> {
 }
 
 /// The row `FUN_00725d61` builds from a match record for both lists: the
-/// attendance, the ground's nation byte and owning id (the record's +0x28
-/// and +0x2a), both sides as the record's first eight bytes — country, the
-/// level byte, team —, the goals at its +8 and the second result at its
-/// +0xa, the four bytes at +0xc, and a fifteenth and sixteenth the kept
-/// saves fill with numbers no page reads (a league row carries 0x4fc, a
-/// national game 0xa6 there); the replica leaves both pairs nought.
+/// attendance at its +0x34, the ground's nation byte and owning id (the
+/// record's +0x28 and +0x2a), then the record's own first thirteen bytes —
+/// both sides' country, level byte and team, the goals at its +8 and the
+/// second result at its +0xa — and the low word of its +0xc, the family
+/// stamp's slot, whose stamp sits in the upper bytes and so reads nought;
+/// the last two bytes the builder never writes at all, as the insert
+/// copies the full 24-byte row while the frame holds only 22 — the kept
+/// saves carry whatever stood on the stack there (a league row 0x4fc, a
+/// national game 0xa6); the replica leaves them nought.
 fn crowd_row(level: u8, ground: (u8, u16), crowd: &Crowd) -> [u8; 0x18] {
     let mut row = [0u8; 0x18];
     row[0..4].copy_from_slice(&crowd.attendance.to_le_bytes());
