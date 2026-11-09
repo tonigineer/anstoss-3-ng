@@ -755,10 +755,11 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
                     return !(m.kind == NEXT_EUROPE && m.round == 7);
                 }
                 if m.kind == NEXT_SUPERCUP {
-                    // A supercup day stands under 0x30 in the calendar
-                    // table and is itself the count `FUN_0062cd4b` reads
-                    // of it, so the office takes its fixture-list arm for
-                    // every club, the German plain arm never.
+                    // The arm gate `FUN_0062bfc9` reads stands in the
+                    // found tie's code slot, where `FUN_0062cd4b`
+                    // stamps the day's family 0x30 — low half nought —
+                    // for every supercup tie; the gate then turns on
+                    // the club's own country. Both arms open a record.
                     return true;
                 }
                 if m.kind != NEXT_CUP {
@@ -792,10 +793,14 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
                 if matches!(m.kind, NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO) {
                     crate::presale::open_international(records, i16::from(m.kind), home, away, m.day, m.round, today as i32, random, &data.presale);
                 } else if m.kind == NEXT_SUPERCUP {
-                    // Over the day's list, as the count decides for every
-                    // kind-4 note; the stage at +0xb4d never reaches the
-                    // record, whose +0x10 holds the office's flag instead.
-                    crate::presale::open_supercup(records, true, home, away, m.day, today as i32, random, &data.presale);
+                    // The tie's code slot gate is nought for every kind-4
+                    // note, so the arm turns on the club's own country:
+                    // the German one sells the day's list at the moment's
+                    // constants, every other reads its cup column; the
+                    // stage at +0xb4d never reaches the record, whose
+                    // +0x10 holds the office's flag either way.
+                    let fixture = own.0 == 0x0e;
+                    crate::presale::open_supercup(records, fixture, home, away, m.day, today as i32, random, &data.presale);
                 } else {
                     crate::presale::open_cup(records, home, away, m.day, m.round, today as i32, random, &data.presale);
                 }

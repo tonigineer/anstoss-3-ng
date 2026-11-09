@@ -1014,14 +1014,16 @@ pub fn open_cup(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i1
 /// match (`FUN_0062bfc9`'s kind-4 branch, its `FUN_0077d425` →
 /// [`fun@FUN_0077c4ee`] again): the two clubs and the issuing one stand as
 /// in the cup tie's record, only the kind is the supercup's own 4. The
-/// prices stand in no column: `FUN_0062bfc9` hands the day's fixture list
-/// to the office for every country, because a supercup day stands under
-/// 0x30 in the calendar table and so is itself the count `FUN_0062cd4b`
-/// reads — the branch's plain column arm asks for that count to be nought
-/// and never gets it for a kind-4 note. Over a fixture list the record's
-/// prices are the moment's constants: 10, 20, 20, 20 — `DAT_00a3b420` and
-/// thrice `DAT_00a3b418`, which `FUN_00627bd0` fills from floats times a
-/// multiplier of 1. +0x10 holds not the stage the note carries but the
+/// prices turn on the club's country: `FUN_0062bfc9`'s arm gate reads the
+/// found tie's code slot at the list's `+0xc`, where `FUN_0062cd4b`
+/// stamps the day's family 0x30 — a nought's low half for every kind-4
+/// note — and with the gate nought a club of the country 0x0e (the German
+/// league) goes over the day's fixture list while every other country
+/// takes the plain column. Over a list the record's prices are the
+/// moment's constants: 10, 20, 20, 20 — `DAT_00a3b420` and thrice
+/// `DAT_00a3b418`, which `FUN_00627bd0` fills from floats times a
+/// multiplier of 1; over no list they are the home club's cup column as
+/// in [`open_cup`]. +0x10 holds not the stage the note carries but the
 /// office's flag, 1 over the list and 0 in the plain column.
 pub fn open_supercup(records: &mut Records, fixture: bool, home: (u8, i16), away: (u8, i16), day: i16, today: i32, random: &mut Random, t: &PresaleTables) {
     if !open(records, home, away, day, SUPERCUP_TIE, today, random, t) {
