@@ -1586,3 +1586,61 @@ mod supercup_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod crowd_tests {
+    use super::*;
+
+    /// One league matchday's gates rank into both biggest-attendance
+    /// lists: every gate better than the international list's weakest
+    /// stands in it afterwards, the list keeps its descending order, and
+    /// the league's own list carries the day's rows as well (the cup's
+    /// do not reach it, per the family gate).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_matchdays_gates_rank_in_the_crowd_lists() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = League::of(&records, 14, 0).expect("Germany's first league");
+        let homes: Vec<u16> = league.open_games().iter().map(|&(h, _, _)| league.team(h) as u16).collect();
+        // Where each home club's next gate will stand among its gates.
+        let held: Vec<(u16, usize)> = homes
+            .iter()
+            .map(|&t| (t, usize::from(records.team(14, t).unwrap().home_games())))
+            .collect();
+        let before = statistics::international_crowds(&records);
+        let weakest = before.iter().rev().find(|c| c.attendance != 0).map_or(0, |c| c.attendance);
+        let mut random = Random::new(7);
+        let day = usize::from(records.globals.day());
+        settle(&mut records, 14, 0, day, &mut random);
+        let gates: Vec<i32> = held
+            .iter()
+            .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
+            .collect();
+        assert!(gates.iter().all(|&g| g > 0), "every home club booked a gate");
+        let after = statistics::international_crowds(&records);
+        let atts: Vec<u32> = after.iter().map(|c| c.attendance).collect();
+        let mut sorted = atts.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(atts, sorted, "the list stands descending");
+        for gate in gates.iter().filter(|&&g| u32::try_from(g).unwrap() > u32::try_from(weakest).unwrap()) {
+            assert!(atts.contains(&(*gate as u32)), "the gate {gate} ranks in");
+        }
+        assert_eq!(
+            after[0].attendance,
+            before[0].attendance.max(gates.iter().copied().max().unwrap() as u32),
+            "the top row is the best of the old list and the day"
+        );
+        let mine = statistics::crowds(&records, 14, 0);
+        for gate in &gates {
+            assert!(
+                mine.iter().any(|c| i32::try_from(c.attendance).unwrap_or(0) == *gate
+                    && c.home.1 >= 0 && homes.contains(&(c.home.1 as u16)))
+                    || u32::try_from(*gate).unwrap() <= u32::try_from(weakest).unwrap(),
+                "the league's list carries the day's gate {gate}"
+            );
+        }
+    }
+}
