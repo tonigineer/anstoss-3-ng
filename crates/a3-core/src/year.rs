@@ -720,17 +720,26 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             }
             let next = next_match(records, &data.calendar, team, today);
             let human = team.humans() != [0, 0];
-            // The cup tie the club's next match is, as the ticket office
-            // sees it: the two clubs with the home one first, the day and
-            // the round. Only a human club keeps a ticket office — the
-            // block holds its own fixtures and no other club's, as the
-            // week's `FUN_0077ca2b` already shows. The final on a neutral
-            // ground is left out here as in [`crate::presale::open_cup`];
-            // the supercup's record takes its prices from a fixture list
-            // of the moment, and the European ties' days are not built at
-            // all.
+            // The cup or the champion's cup tie the club's next match is,
+            // as the ticket office sees it: the two clubs with the home one
+            // first, the day and the round. Only a human club keeps a
+            // ticket office — the block holds its own fixtures and no other
+            // club's, as the week's `FUN_0077ca2b` already shows. The final
+            // on a neutral ground is left out here as in
+            // `crate::presale::open_cup` and the champion's cup's own
+            // [`crate::presale::open_international`]; the supercup's record
+            // takes its prices from a fixture list of the moment, and the
+            // UEFA cup's and the world's days are not built.
             let tie = next.filter(|m| {
-                if !human || m.kind != NEXT_CUP {
+                if !human {
+                    return false;
+                }
+                if m.kind == NEXT_EUROPE {
+                    // The champion's cup's final on neutral ground is the
+                    // only day of its first row noted with round 7.
+                    return m.round != 7;
+                }
+                if m.kind != NEXT_CUP {
                     return false;
                 }
                 let code = fixture(records, &data.calendar, team, usize::try_from(m.day).unwrap_or(0));
@@ -757,7 +766,11 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             if let Some(m) = tie {
                 let own = (team.country(), team.number() as i16);
                 let (home, away) = if m.venue == 0 { (own, m.opponent) } else { (m.opponent, own) };
-                crate::presale::open_cup(records, home, away, m.day, m.round, today as i32, random, &data.presale);
+                if m.kind == NEXT_EUROPE {
+                    crate::presale::open_international(records, home, away, m.day, m.round, today as i32, random, &data.presale);
+                } else {
+                    crate::presale::open_cup(records, home, away, m.day, m.round, today as i32, random, &data.presale);
+                }
             }
         }
     }

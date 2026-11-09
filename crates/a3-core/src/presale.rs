@@ -39,6 +39,9 @@ const SALE_PRICES: usize = 0x1a;
 const LEAGUE: i16 = 2;
 /// A cup tie's kind (`club +0xb4c`'s 3, the record's `FUN_0077c4ee` writes).
 const CUP_TIE: i16 = 3;
+/// A champion's cup tie's kind (`club +0xb4c`'s 5, the record's
+/// `FUN_0077c379` writes).
+const INTERNATIONAL: i16 = 5;
 /// Sales start after the season's sixth week, and look four weeks ahead,
 /// a week for the daily sales.
 const FIRST_SALES_DAY: i32 = 41;
@@ -201,6 +204,13 @@ impl<'a> Side<'a> {
     /// four stands (club +0x49e, +0x4a8, +0x4b2, +0x4bc — `FUN_0077c4ee`).
     fn cup_prices(&self) -> [i16; 4] {
         [0x49e, 0x4a8, 0x4b2, 0x4bc].map(|c| self.team.get::<i16>(c + CLUB_TO_TEAM))
+    }
+
+    /// The prices an international tie sells at, the international column
+    /// of the same four stands (club +0x4a0, +0x4aa, +0x4b4, +0x4be —
+    /// `FUN_0077c379`).
+    fn international_prices(&self) -> [i16; 4] {
+        [0x4a0, 0x4aa, 0x4b4, 0x4be].map(|c| self.team.get::<i16>(c + CLUB_TO_TEAM))
     }
 
     /// The league block it plays in (0x1a09d48[first league + level]).
@@ -856,15 +866,16 @@ fn matches(records: &Records, calendar: &Calendar, club: &Side) -> Vec<(i16, usi
 
 /// Opens a record for a match unless one is kept (`FUN_0077c1d5`), and
 /// makes its first sale; whether one was opened. The home club stands first
-/// and issues the record (`FUN_0077bec6`'s null fixture list); the kind and
-/// its mark — a cup tie's round — are the club's own next match's.
+/// and issues the record (`FUN_0077bec6`'s null fixture list), and the mark
+/// at +0x10 — a cup tie's round — starts empty: the original's `FUN_0077be53`
+/// gets a nought there, and only after the first sale has been made do the
+/// cup paths write the round ([`set_extra`]).
 fn open(
     records: &mut Records,
     home: (u8, i16),
     away: (u8, i16),
     day: i16,
     kind: i16,
-    extra: i16,
     today: i32,
     random: &mut Random,
     t: &PresaleTables,
@@ -897,7 +908,7 @@ fn open(
         r[SALE_ISSUER + 2..SALE_ISSUER + 4].copy_from_slice(&home.1.to_le_bytes());
         r[SALE_DAY..SALE_DAY + 2].copy_from_slice(&day.to_le_bytes());
         r[SALE_KIND..SALE_KIND + 2].copy_from_slice(&kind.to_le_bytes());
-        r[SALE_EXTRA..SALE_EXTRA + 2].copy_from_slice(&extra.to_le_bytes());
+        r[SALE_EXTRA..SALE_EXTRA + 2].copy_from_slice(&0i16.to_le_bytes());
         r[SALE_SOLD..SALE_SOLD + 4].copy_from_slice(&0i32.to_le_bytes());
         r[SALE_OPEN..SALE_OPEN + 2].copy_from_slice(&1i16.to_le_bytes());
         let sale = records.block(SALES_AT).and_then(|b| read(b, k));
@@ -929,7 +940,7 @@ pub fn week_end(records: &mut Records, calendar: &Calendar, club: (u8, i16), tod
                 break;
             }
             let (h, a) = if home { (club, (club.0, opponent)) } else { ((club.0, opponent), club) };
-            if !open(records, h, a, day as i16, LEAGUE, 0, today, random, t) {
+            if !open(records, h, a, day as i16, LEAGUE, today, random, t) {
                 continue;
             }
             let Some(own) = Side::of(records, club.0, club.1) else { continue };
@@ -956,22 +967,54 @@ fn set_prices(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16,
     }
 }
 
+/// The record the pair plays on that day takes this mark at +0x10, written
+/// after the first sale (`FUN_0077c4ee`'s and `FUN_0077c379`'s last step).
+fn set_extra(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16, extra: i16) {
+    let found = records.block(SALES_AT).and_then(|b| {
+        (0..SALES).find_map(|k| read(b, k).filter(|s| s.home == home && s.away == away && s.day == day))
+    });
+    if let (Some(s), Some(b)) = (found, records.block_mut(SALES_AT)) {
+        let at = s.at * SALE + SALE_EXTRA;
+        b[at..at + 2].copy_from_slice(&extra.to_le_bytes());
+    }
+}
+
 /// A club's next cup tie's record, opened where the club notes that match
 /// (`FUN_0062bfc9`'s `FUN_0077d425` → [`fun@FUN_0077c4ee`]): the day and the
 /// kind come from the club's own next-match fields, the two clubs stand with
 /// the home one first, the home club issues the record, and the tie's round
-/// goes in at +0x10 — the demand takes it as its round's factor. The prices
+/// goes in at +0x10 after the first sale — the demand of the days after
+/// takes it as its round's factor, the first sale does not see it. The prices
 /// are the home club's cup column as it stands, with none of the matchday's
 /// mark the week's path puts on its league records; the first sale follows
 /// before them, as the original's does. Not built: the final on a neutral
 /// ground, which the original prices from a fixture list of the moment
 /// (`DAT_00a3b418`, `DAT_00a3b420`) and issues from that list as well.
 pub fn open_cup(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16, round: u8, today: i32, random: &mut Random, t: &PresaleTables) {
-    if !open(records, home, away, day, CUP_TIE, i16::from(round), today, random, t) {
+    if !open(records, home, away, day, CUP_TIE, today, random, t) {
         return;
     }
     let Some(host) = Side::of(records, home.0, home.1) else { return };
     set_prices(records, home, away, day, host.cup_prices());
+    set_extra(records, home, away, day, i16::from(round));
+}
+
+/// A club's next champion's cup tie's record, opened where the club notes
+/// that match (`FUN_0062bfc9`'s `FUN_0077d405` → [`fun@FUN_0077c379`]):
+/// the same as [`open_cup`] with two differences — the kind is 5 and the
+/// prices come from the home club's international column, the third of the
+/// three columns a club keeps for its stands. Here too the round goes in
+/// only after the first sale. Not built: the final on a neutral ground,
+/// which the original prices from the fixture list of the moment as the
+/// cup's final is, and the UEFA cup's and the world's ties, whose kinds
+/// the office reaches by the same path.
+pub fn open_international(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16, round: u8, today: i32, random: &mut Random, t: &PresaleTables) {
+    if !open(records, home, away, day, INTERNATIONAL, today, random, t) {
+        return;
+    }
+    let Some(host) = Side::of(records, home.0, home.1) else { return };
+    set_prices(records, home, away, day, host.international_prices());
+    set_extra(records, home, away, day, i16::from(round));
 }
 
 /// The day's sales (`FUN_0077c8b5`): a record whose day has passed is let
@@ -1031,6 +1074,77 @@ mod tests {
         // day — leaves the one record standing (`FUN_0077bd10`).
         open_cup(&mut ours, (14, 84), (14, 22), 245, 3, 240, &mut random, &data.presale);
         assert_eq!(live(&ours).iter().filter(|s| s.day == 245).count(), 1);
+    }
+
+    /// Lets the office's international records go, as the day's path lets a
+    /// record whose day has passed go.
+    fn clear_international(records: &mut Records) {
+        if let Some(b) = records.block_mut(SALES_AT) {
+            for k in 0..SALES {
+                let r = &mut b[k * SALE..(k + 1) * SALE];
+                if i16::from_le_bytes([r[SALE_KIND], r[SALE_KIND + 1]]) == INTERNATIONAL {
+                    r[0] = 0;
+                    r[SALE_OPEN..SALE_OPEN + 2].copy_from_slice(&0i16.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// A champion's cup tie's record sells at the home club's third column
+    /// of prices, the international one. `NewSeason000.an3` stands where
+    /// the human club 14.84 plays away at 68.3 on day 31 — kind 5, round 0,
+    /// away — and the original's office holds the record: 68.3 first and
+    /// issuing it, priced [15, 25, 50, 100]. Noting the tie again leaves
+    /// that one record standing, the block byte for byte as the save has
+    /// it. The save's own columns cannot say which of the three was read —
+    /// a new season's clubs hold all three equal — so they are patched
+    /// apart and the record cleared: what comes back is priced by the
+    /// international column, neither the league's nor the cup's, with the
+    /// round at +0x10 written after the first sale.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_champion_cups_record_takes_the_home_clubs_international_column() {
+        let data = crate::data::Data::load(&std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))).unwrap();
+        let read = || Records::from_save(Save::read(&keeps().join("NewSeason000.an3")).unwrap()).unwrap();
+        let ours = read();
+        let human = ours.team(14, 84).expect("no human club 14.84");
+        assert_eq!(
+            (human.next_day(), human.next_kind(), human.next_round(), human.next_venue(), human.next_country(), human.next_number()),
+            (31, INTERNATIONAL as u8, 0, 1, 68, 3)
+        );
+        let opened: Vec<Sale> = live(&ours).into_iter().filter(|s| s.kind == INTERNATIONAL).collect();
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        let tie = &opened[0];
+        assert_eq!((tie.home, tie.away, tie.issuer, tie.day, tie.extra), ((68, 3), (14, 84), (68, 3), 31, 0));
+        let international = match Side::of(&ours, 68, 3) {
+            Some(side) => side.international_prices(),
+            None => panic!("no club 68.3"),
+        };
+        assert_eq!(tie.prices, international);
+        // The tie noted again finds the record standing: nothing is opened
+        // and nothing sold, the block as the save has it.
+        let mut ours = read();
+        let before = ours.block(SALES_AT).map(<[u8]>::to_vec).unwrap();
+        let mut random = Random::new(1);
+        crate::year::note_next_matches(&mut ours, &data, 0, &mut random);
+        assert_eq!(ours.block(SALES_AT).map(<[u8]>::to_vec), Some(before));
+        // Cleared, the record comes back of itself. Its home club's three
+        // columns are patched apart first, so the prices say which was read.
+        let mut ours = read();
+        clear_international(&mut ours);
+        let patched = [31, 32, 33, 34];
+        if let Some(t) = ours.team_mut(68, 3) {
+            for (base, column) in [(0x49c, [11, 12, 13, 14i16]), (0x49e, [21, 22, 23, 24]), (0x4a0, patched)] {
+                for (k, p) in column.iter().enumerate() {
+                    t.put::<i16>(base + [0, 0xa, 0x14, 0x1e][k] + CLUB_TO_TEAM, *p);
+                }
+            }
+        }
+        crate::year::note_next_matches(&mut ours, &data, 0, &mut random);
+        let again: Vec<Sale> = live(&ours).into_iter().filter(|s| s.day == 31).collect();
+        assert_eq!(again.len(), 1, "{again:?}");
+        assert_eq!((again[0].kind, again[0].extra, again[0].home, again[0].away, again[0].issuer), (INTERNATIONAL, 0, (68, 3), (14, 84), (68, 3)));
+        assert_eq!(again[0].prices, patched, "not the league's [11, 12, 13, 14] nor the cup's [21, 22, 23, 24]");
     }
 
     /// The block is a human club's own office: a computer club's cup round
