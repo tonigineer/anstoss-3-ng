@@ -40,11 +40,13 @@ const LEAGUE: i16 = 2;
 /// A cup tie's kind (`club +0xb4c`'s 3, the record's `FUN_0077c4ee` writes).
 const CUP_TIE: i16 = 3;
 /// The kinds an international tie's record takes — `club +0xb4c`'s 5 for a
-/// champion's cup tie and 8 for an Intertoto one, written by the same
-/// `FUN_0077c379`. The callers hand the kind along from the club's word,
-/// so only the tests name them.
+/// champion's cup tie, 7 for a UEFA cup one and 8 for an Intertoto one,
+/// written by the same `FUN_0077c379`. The callers hand the kind along
+/// from the club's word, so only the tests name them.
 #[cfg(test)]
 const INTERNATIONAL: i16 = 5;
+#[cfg(test)]
+const UEFA: i16 = 7;
 #[cfg(test)]
 const INTERTOTO: i16 = 8;
 /// Sales start after the season's sixth week, and look four weeks ahead,
@@ -1004,17 +1006,18 @@ pub fn open_cup(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i1
     set_extra(records, home, away, day, i16::from(round));
 }
 
-/// A club's next international tie's record — the champion's cup's or the
-/// Intertoto's — opened where the club notes that match (`FUN_0062bfc9`'s
-/// `FUN_0077d405` → [`fun@FUN_0077c379`]): the same as [`open_cup`] with two
-/// differences. The kind is the club's own next match's, 5 or 8, and the
-/// prices come from the home club's international column, the third of the
-/// three columns a club keeps for its stands. Here too the round goes in
-/// only after the first sale — the Intertoto's tie has none, its note at
-/// +0x10 staying a nought. Not built: the final on a neutral ground, which
-/// the original prices from the fixture list of the moment as the cup's
-/// final is, and the UEFA cup's and the world's ties, whose kinds the
-/// office reaches by the same path.
+/// A club's next international tie's record — the champion's cup's, the
+/// UEFA cup's or the Intertoto's — opened where the club notes that match
+/// (`FUN_0062bfc9`'s `FUN_0077d405` → [`fun@FUN_0077c379`]): the same as
+/// [`open_cup`] with two differences. The kind is the club's own next
+/// match's, 5, 7 or 8, and the prices come from the home club's
+/// international column, the third of the three columns a club keeps for
+/// its stands. Here too the round goes in only after the first sale — the
+/// UEFA cup's and the Intertoto's ties have none, their notes at +0x10
+/// staying a nought. Not built: the final on a neutral ground, which the
+/// original prices from the fixture list of the moment as the cup's final
+/// is, and the world's ties, whose kind the office reaches by the same
+/// path.
 pub fn open_international(records: &mut Records, kind: i16, home: (u8, i16), away: (u8, i16), day: i16, round: u8, today: i32, random: &mut Random, t: &PresaleTables) {
     if !open(records, home, away, day, kind, today, random, t) {
         return;
@@ -1158,6 +1161,25 @@ mod tests {
         assert_eq!(again.len(), 1, "{again:?}");
         assert_eq!((again[0].kind, again[0].extra, again[0].home, again[0].away, again[0].issuer), (INTERNATIONAL, 0, (68, 3), (14, 84), (68, 3)));
         assert_eq!(again[0].prices, patched, "not the league's [11, 12, 13, 14] nor the cup's [21, 22, 23, 24]");
+    }
+
+    /// A UEFA cup tie goes the same way: the record carries the club's own
+    /// kind — 7, read off the finder's `0x100` bit by `FUN_0062bfc9` — and
+    /// sells at the home club's international column, keeping a nought at
+    /// +0x10 since the tie is noted without a round. Patched into
+    /// `S2late.an3` as the Intertoto's was: no kept save stands the human
+    /// in a UEFA tie, and the original's notes of the kind — its 41 ties
+    /// of `A.an3` — sit on clubs of unplayed countries, who keep no office.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_uefa_cups_record_sells_at_the_international_column_too() {
+        let data = crate::data::Data::load(&std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))).unwrap();
+        let mut ours = Records::from_save(Save::read(&keeps().join("S2late.an3")).unwrap()).unwrap();
+        patch_columns(&mut ours, (14, 84), [(0x49c, [11, 12, 13, 14i16]), (0x49e, [21, 22, 23, 24]), (0x4a0, [35, 36, 37, 38])]);
+        let mut random = Random::new(1);
+        open_international(&mut ours, UEFA, (14, 84), (68, 3), 331, 0, 300, &mut random, &data.presale);
+        let tie = live(&ours).into_iter().find(|s| s.day == 331).expect("no record for the patched tie");
+        assert_eq!((tie.kind, tie.extra, tie.home, tie.away, tie.issuer, tie.prices), (UEFA, 0, (14, 84), (68, 3), (14, 84), [35, 36, 37, 38]));
     }
 
     /// An Intertoto tie goes the same way: the record carries the club's
