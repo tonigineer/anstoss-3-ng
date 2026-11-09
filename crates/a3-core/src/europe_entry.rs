@@ -26,7 +26,7 @@ use crate::records::Records;
 /// The entrants' block (from the object's +0x20): the lists' counts, the
 /// UEFA cup's limit, the lists, the holders, the world cup's opponent and
 /// every country's places.
-const ENTRANTS: &str = "0x8e7c88";
+pub(crate) const ENTRANTS: &str = "0x8e7c88";
 const SEEDS: List = List { count: 0x00, at: 0x12, most: 16 };
 const QUALIFIERS: List = List { count: 0x02, at: 0x92, most: 32 };
 const UEFA: List = List { count: 0x04, at: 0x112, most: i16::MAX };
@@ -575,7 +575,7 @@ const UEFA_STARTS: [u32; 8] = [0, 50, 98, 122, 138, 146, 150, 152];
 /// Each country's count of clubs in the two cups (`DAT_00b5cca6`).
 const COUNTRY_ENTRIES: usize = 0xb5cca6;
 /// The Intertoto's first list paired in twelve ties (the entrants' +0x4ea).
-const INTERTOTO_TIES: usize = 0x4ca;
+pub(crate) const INTERTOTO_TIES: usize = 0x4ca;
 /// The season flags the cups give a club (team +0x110): in Europe, and
 /// the Champions League's seed, the UEFA cup, the Intertoto.
 const IN_EUROPE: u16 = 0x4000;

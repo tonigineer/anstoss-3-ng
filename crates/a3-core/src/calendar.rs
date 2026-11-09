@@ -26,6 +26,12 @@ const ROWS_AT: u32 = 0x8914e0;
 const ROWS: usize = 34;
 const FIRST_ROWS_AT: u32 = 0x8315c8;
 const NATIONS: usize = 117;
+/// The Intertoto rounds' ties in the entrants' list: every round's first
+/// tie, `&DAT_0087724c` — the finder `FUN_004213b2` searches a round from
+/// its first tie up to the next round's first. Nothing in the executable
+/// writes the table; it stands there as it is read.
+const TIE_ROUNDS_AT: u32 = 0x87724c;
+const TIE_ROUNDS: usize = 5;
 const LAST_MATCHDAY: u32 = 0x3b;
 /// A nation's leagues are counted up to here.
 const MAX_LEAGUES: usize = 10;
@@ -46,6 +52,8 @@ pub struct Calendar {
     rows: Vec<Vec<u32>>,
     /// By nation code: the row of its first league.
     first_rows: Vec<u16>,
+    /// The Intertoto rounds' first ties, in the order of its three rounds.
+    tie_rounds: Vec<u32>,
 }
 
 impl Calendar {
@@ -70,7 +78,16 @@ impl Calendar {
                 }
             }
         }
-        Ok(Self { rows, first_rows })
+        let tie_rounds = exe.u32s(TIE_ROUNDS_AT, TIE_ROUNDS)?;
+        Ok(Self { rows, first_rows, tie_rounds })
+    }
+
+    /// Which ties of the entrants' list a round of the Intertoto holds:
+    /// counted from its first tie to the next round's first.
+    pub fn intertoto_ties(&self, round: usize) -> Option<(usize, usize)> {
+        let first = *self.tie_rounds.get(round)?;
+        let last = *self.tie_rounds.get(round + 1)?;
+        (last > first).then(|| (first as usize, last as usize))
     }
 
     /// The row of a nation's league, counted from its first.
