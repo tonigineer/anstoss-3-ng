@@ -997,9 +997,10 @@ fn set_extra(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16, 
 /// takes it as its round's factor, the first sale does not see it. The prices
 /// are the home club's cup column as it stands, with none of the matchday's
 /// mark the week's path puts on its league records; the first sale follows
-/// before them, as the original's does. Not built: the final on a neutral
-/// ground, which the original prices from a fixture list of the moment
-/// (`DAT_00a3b418`, `DAT_00a3b420`) and issues from that list as well.
+/// before them, as the original's does. The final on a neutral ground goes
+/// the same way: `FUN_0062cd4b` counts its day — id 6 under the 0x80000 flag
+/// — with the count's upper half a nought, so the plain column arm of the
+/// branch holds and the record carries the final's id at +0x10.
 pub fn open_cup(records: &mut Records, home: (u8, i16), away: (u8, i16), day: i16, round: u8, today: i32, random: &mut Random, t: &PresaleTables) {
     if !open(records, home, away, day, CUP_TIE, today, random, t) {
         return;
@@ -1045,9 +1046,9 @@ pub fn open_supercup(records: &mut Records, fixture: bool, home: (u8, i16), away
 /// its stands. Here too the round goes in only after the first sale — the
 /// UEFA cup's and the Intertoto's ties have none, their notes at +0x10
 /// staying a nought. Not built: the final on a neutral ground, which the
-/// original prices from the fixture list of the moment as the cup's final
-/// is, and the world's ties, whose kind the office reaches by the same
-/// path.
+/// original prices from the list's constants 10, 20, 20, 20 as
+/// [`open_supercup`]'s record does, and the world's ties, whose kind the
+/// office reaches by the same path.
 pub fn open_international(records: &mut Records, kind: i16, home: (u8, i16), away: (u8, i16), day: i16, round: u8, today: i32, random: &mut Random, t: &PresaleTables) {
     if !open(records, home, away, day, kind, today, random, t) {
         return;
@@ -1114,6 +1115,26 @@ mod tests {
         // day — leaves the one record standing (`FUN_0077bd10`).
         open_cup(&mut ours, (14, 84), (14, 22), 245, 3, 240, &mut random, &data.presale);
         assert_eq!(live(&ours).iter().filter(|s| s.day == 245).count(), 1);
+    }
+
+    /// The final on a neutral ground opens at the office like any other
+    /// round: `FUN_0062cd4b` counts its day — the id 6 under the 0x80000
+    /// flag — with the count's upper half a nought, so `FUN_0077d425`'s
+    /// plain column arm holds, the record prices from the home club's cup
+    /// column and carries the final's id 6 at +0x10. Patched into
+    /// `S2late.an3` as the other cup tie's was: no kept save stands the
+    /// human in a cup final. The champion's cup's own final — round 7
+    /// under its neutral flag — still waits with its fixture list.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_cups_final_opens_its_record_on_a_neutral_ground_too() {
+        let data = crate::data::Data::load(&std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))).unwrap();
+        let mut ours = Records::from_save(Save::read(&keeps().join("S2late.an3")).unwrap()).unwrap();
+        patch_columns(&mut ours, (14, 84), [(0x49c, [11, 12, 13, 14i16]), (0x49e, [21, 22, 23, 24]), (0x4a0, [31, 32, 33, 34])]);
+        let mut random = Random::new(1);
+        open_cup(&mut ours, (14, 84), (14, 22), 333, 6, 300, &mut random, &data.presale);
+        let tie = live(&ours).into_iter().find(|s| s.day == 333).expect("no record for the patched final");
+        assert_eq!((tie.kind, tie.extra, tie.home, tie.away, tie.issuer, tie.prices), (CUP_TIE, 6, (14, 84), (14, 22), (14, 84), [21, 22, 23, 24]));
     }
 
     /// The three price columns of a club's stands written apart, so a

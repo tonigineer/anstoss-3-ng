@@ -739,9 +739,9 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             // Only a human club keeps a ticket office — the block holds its
             // own fixtures and no other club's, as the week's
             // `FUN_0077ca2b` already shows. The final on a neutral ground
-            // is left out here as in `crate::presale::open_cup` and the
-            // international path's own
-            // [`crate::presale::open_international`]; the world's days are
+            // is left out here as in the international path's own
+            // [`crate::presale::open_international`]; the cup's own final
+            // opens with the rest of its rounds, and the world's days are
             // not built.
             let tie = next.filter(|m| {
                 if !human {
@@ -764,10 +764,11 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
                 if m.kind != NEXT_CUP {
                     return false;
                 }
-                let code = fixture(records, &data.calendar, team, usize::try_from(m.day).unwrap_or(0));
-                if m.round == FINAL as u8 && code & NEUTRAL == NEUTRAL_FINAL {
-                    return false;
-                }
+                // The final on a neutral ground opens too: `FUN_0062cd4b`
+                // counts its day — id 6 under the 0x80000 flag — with the
+                // count's upper half a nought, so the plain column arm of
+                // `FUN_0077d425` holds for it and the record carries the
+                // final's id at +0x10 like any other round.
                 true
             });
             let Some(team) = records.team_mut(country, number) else { continue };
