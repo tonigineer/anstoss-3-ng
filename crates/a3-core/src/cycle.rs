@@ -39,6 +39,7 @@ pub mod dialogs {
     pub const NAMES: u16 = 212;
     pub const CLUB: u16 = 304;
     pub const NATIONAL_TEAM: u16 = 352;
+    pub const NATIONAL_MENU: u16 = 355;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;

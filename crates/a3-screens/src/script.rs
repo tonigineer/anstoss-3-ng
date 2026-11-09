@@ -10003,4 +10003,39 @@ mod tests {
         assert_eq!(seen(&runner, 364), 1, "the book stood past the week's end:\n{}", runner.log.join("\n"));
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// The national menu, with a job poked into a copy of A (no kept save
+    /// has one): the bar's sixteenth symbol opens it, its symbol chosen and
+    /// on, the caption names the nation, the six buttons carry the file's
+    /// labels and none is chosen; the bar leaves it again.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_national_menu_opens_from_the_bar() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let root = patched(&dir, "A", "nationalmenu", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let runner = on_save(&game, "nationalmenu", "now click bar 15\nuntil dialog 355").unwrap();
+        let dialog = &game.dialogs[&355];
+        let view = runner.host.view();
+        let caption = crate::screens::control(dialog, 9935).unwrap();
+        assert_eq!(view.text(caption), "ANSTOSS 3 - Nationalmannschaft Toni Lubiniecki (Deutschland), 8.9.2025");
+        let bar = view.bar(crate::screens::control(dialog, 9930).unwrap()).unwrap();
+        assert_eq!(bar.chosen, 15);
+        assert!(!bar.off[15] && !bar.off[3] && !bar.off[5]);
+        let buttons = view.options(crate::screens::control(dialog, 4538).unwrap()).unwrap();
+        assert_eq!(buttons.labels.len(), 6);
+        assert_eq!(buttons.labels[0], "Kader zusammenstellen");
+        assert_eq!(buttons.labels[5], "Als Nationaltrainer zurücktreten");
+        assert_eq!(buttons.chosen, crate::controls::options::NONE);
+        // Item 5 does nothing yet; the bar's line-up symbol leaves.
+        let runner = on_save(&game, "nationalmenu", "now click bar 15\nuntil dialog 355\nnow click bar 0\nuntil dialog 147").unwrap();
+        assert_eq!(seen(&runner, 355), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

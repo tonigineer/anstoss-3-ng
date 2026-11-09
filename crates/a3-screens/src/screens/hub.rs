@@ -75,7 +75,7 @@ pub(crate) const NATIONAL_SYMBOL: usize = 15;
 pub(crate) const DRESSING_SYMBOL: usize = 17;
 pub const WHISTLE: usize = 18;
 /// The screens the bar's symbols lead to, as far as they are built.
-const BAR_SCREENS: [(usize, u16); 17] = [
+const BAR_SCREENS: [(usize, u16); 18] = [
     (LINEUP_SYMBOL, LINEUP),
     (COMPARISON_SYMBOL, COMPARISON),
     (TACTICS_SYMBOL, TACTICS),
@@ -91,6 +91,7 @@ const BAR_SCREENS: [(usize, u16); 17] = [
     (CONTACTS_SYMBOL, CONTACTS),
     (BOARD_SYMBOL, BOARD),
     (STATISTICS_SYMBOL, a3_core::cycle::dialogs::STATISTICS),
+    (NATIONAL_SYMBOL, a3_core::cycle::dialogs::NATIONAL_MENU),
     (HONOURS_SYMBOL, HONOURS),
     (DRESSING_SYMBOL, DRESSING_ROOM),
 ];
@@ -417,6 +418,26 @@ pub(crate) fn open_bar(cx: &Cx, view: &mut View, own: usize) {
     state.chosen = own;
     state.off = (0..BAR_SYMBOLS).map(|symbol| bar_closed(cx, symbol)).collect();
     state.tips = game.rules.bar_tips.iter().map(|&t| game.text(t as u16).to_owned()).collect();
+}
+
+/// The bar of the national menu (`FUN_0051dd53`), which switches its own
+/// way: its symbol never off; without a club all but the table's few; on a
+/// Saturday only the short training, where every other screen shuts the
+/// other two trainings instead.
+pub(crate) fn open_national_bar(cx: &Cx, view: &mut View) {
+    open_bar(cx, view, NATIONAL_SYMBOL);
+    let clubless = cx.state.season.as_ref().and_then(|s| s.manager()).is_none_or(|m| m.club.is_none());
+    let saturday = last_day(cx);
+    let Some(state) = control(cx.dialog, BAR_ID).and_then(|b| view.bar_mut(b)) else { return };
+    state.off = (0..BAR_SYMBOLS)
+        .map(|symbol| {
+            if clubless {
+                cx.game.rules.bar_without_club[symbol]
+            } else {
+                saturday && symbol == SHORT_TRAINING_SYMBOL
+            }
+        })
+        .collect();
 }
 
 /// Whether a symbol of the bar is switched off today: all but a few

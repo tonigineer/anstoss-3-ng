@@ -32,6 +32,7 @@ pub mod medical;
 pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
+pub mod national;
 pub mod notepad;
 pub mod nutzung;
 pub mod office;
@@ -195,6 +196,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(illegal::Illegal::default()),
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
+        Box::new(national::NationalMenu::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),
@@ -344,6 +346,7 @@ pub fn compose(game: &mut Game) {
     kalkulation::compose(&mut game.dialogs);
     merchandise::compose(&mut game.dialogs);
     illegal::compose(&mut game.dialogs);
+    national::compose(&mut game.dialogs, &game.data.rules);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);
