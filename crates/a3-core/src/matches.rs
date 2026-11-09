@@ -189,14 +189,36 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         // brings — the played match's reckoning (FUN_0078b26c) at a mark
         // no cup round holds, which leaves it as it is.
         let (country, number) = (p[0], u16_at(p, 2));
+        let (an, away_id) = (p[4], u16_at(p, 6));
+        let mut crowd = 0;
         if let Some(t) = records.team(u16::from(country), number) {
             let cap = capacity(records, u16::from(country), number);
             let att = attendance(t, cap, random);
             let money = tickets::booked_gate(records, t, att, 0);
             if money != 0 {
-                gates.push((country, number, p[4], u16_at(p, 6), money));
+                gates.push((country, number, an, away_id, money));
             }
+            crowd = att;
         }
+        // The cup tie's crowd goes into the international list only: the
+        // domestic cup's family stands over the gate the original puts
+        // before the league's list (record +0x20 under `0x3f000000`), and
+        // the single leg leaves the row's second result nought.
+        statistics::book_crowd(
+            records,
+            false,
+            u16::from(country),
+            0,
+            (country, number),
+            statistics::Crowd {
+                attendance: u32::try_from(crowd.max(0)).unwrap_or(0),
+                home: (country, number as i16),
+                away: (an, away_id as i16),
+                goals: [hg, ag],
+                second: [0, 0],
+                flags: 0,
+            },
+        );
     }
     if let Some(cup) = records.block_mut(&name) {
         for (q, [hg, ag, flags, winner]) in scored {
@@ -927,8 +949,9 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
             slot.copy_from_slice(&crowd.to_le_bytes());
         }
     }
-    for (((home, _, _), (&team, (att, money, cap))), &away) in
-        games.iter().zip(homes.iter().zip(booked)).zip(&aways)
+    let nat = u8::try_from(nation).unwrap_or(0);
+    for ((((home, _, _), (&team, (att, money, cap))), &away), &result) in
+        games.iter().zip(homes.iter().zip(booked)).zip(&aways).zip(&scored)
     {
         // The visiting fans: a part of the away club's own plan (save A
         // reads 3926 with the away club planning 34000), never more than
@@ -1007,6 +1030,26 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         if let Some(slot) = att_slot {
             statistics::book_attendance(records, slot, *home, att, cap);
         }
+        // The crowd goes into the biggest-attendance lists: the league's
+        // own and the international one, as the original's settlement of
+        // the day's record reaches both. The ground is the home club's,
+        // and the row's second result — the other leg's score — stays
+        // nought for a league match.
+        statistics::book_crowd(
+            records,
+            true,
+            nation,
+            level,
+            (nat, team),
+            statistics::Crowd {
+                attendance: u32::try_from(att.max(0)).unwrap_or(0),
+                home: (nat, team as i16),
+                away: (nat, away as i16),
+                goals: [result[0], result[1]],
+                second: [0, 0],
+                flags: 0,
+            },
+        );
     }
     // What the goals leave on the players of both sides.
     for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {

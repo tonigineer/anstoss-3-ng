@@ -1719,6 +1719,102 @@ fn crowd_list(block: Option<&[u8]>) -> Vec<Crowd> {
         .collect()
 }
 
+/// The row `FUN_00725d61` builds from a match record for both lists: the
+/// attendance, the ground's nation byte and owning id (the record's +0x28
+/// and +0x2a), both sides as the record's first eight bytes — country, the
+/// level byte, team —, the goals at its +8 and the second result at its
+/// +0xa, the four bytes at +0xc, and a fifteenth and sixteenth the kept
+/// saves fill with numbers no page reads (a league row carries 0x4fc, a
+/// national game 0xa6 there); the replica leaves both pairs nought.
+fn crowd_row(level: u8, ground: (u8, u16), crowd: &Crowd) -> [u8; 0x18] {
+    let mut row = [0u8; 0x18];
+    row[0..4].copy_from_slice(&crowd.attendance.to_le_bytes());
+    row[4] = ground.0;
+    row[6..8].copy_from_slice(&ground.1.to_le_bytes());
+    row[8] = crowd.home.0;
+    row[9] = level;
+    row[0xa..0xc].copy_from_slice(&crowd.home.1.to_le_bytes());
+    row[0xc] = crowd.away.0;
+    row[0xd] = level;
+    row[0xe..0x10].copy_from_slice(&crowd.away.1.to_le_bytes());
+    row[0x10] = crowd.goals[0];
+    row[0x11] = crowd.goals[1];
+    row[0x12] = crowd.second[0];
+    row[0x13] = crowd.second[1];
+    row[0x14] = crowd.flags;
+    row
+}
+
+/// The list's insert (`FUN_006c5bac` on the vftable `0x831cb0`): a crowd
+/// no better than the twentieth's drops out; the new row takes the first
+/// place whose attendance it beats, the rows before that place shifting
+/// down over the weakest. A row of the very same attendance already stands
+/// in the list, the new one replaces it there, and only when that twin
+/// stands behind the place does the shift free the place as well. The
+/// saved list keeps twenty rows and no count of its own, so the shift
+/// simply loses the last row.
+fn insert_crowd(rows: &mut [u8], row: [u8; 0x18]) {
+    let att = |e: &[u8]| i32::from_le_bytes([e[0], e[1], e[2], e[3]]);
+    let at = |k: usize| k * 0x18;
+    let n = (rows.len() / 0x18).min(20);
+    let new = att(&row);
+    if n == 0 || new <= att(&rows[at(n - 1)..]) {
+        return;
+    }
+    let i = (0..n).find(|&k| new > att(&rows[at(k)..])).unwrap_or(n - 1);
+    match (0..n).find(|&k| att(&rows[at(k)..]) == new) {
+        // The twin stands at or before the place: it is simply replaced.
+        Some(j) if j <= i => rows[at(j)..at(j) + 0x18].copy_from_slice(&row),
+        // The twin stands behind it: it goes, and the rows before the
+        // place shift down over its old ground.
+        Some(j) => {
+            for k in (i + 1..=j).rev() {
+                rows.copy_within(at(k) - 0x18..at(k), at(k));
+            }
+            rows[at(i)..at(i) + 0x18].copy_from_slice(&row);
+        }
+        None => {
+            for k in (i + 1..n).rev() {
+                rows.copy_within(at(k) - 0x18..at(k), at(k));
+            }
+            rows[at(i)..at(i) + 0x18].copy_from_slice(&row);
+        }
+    }
+}
+
+/// A played match's crowd goes into the lists, as the day's settlement
+/// (`FUN_007108d3`) hands every open record of the day both to
+/// `FUN_0072540e` — which finds the league's list at `DAT_00af5d74` by the
+/// record's country and level bytes — and, always, to `FUN_0072544d` for
+/// the international list at `DAT_00af723c`. The record's family at +0x20
+/// decides the first of these: under `0x3f000000` it stands (league,
+/// Europe's `0x02/04/08`, supercup's `0x30`), and the domestic cup's `0x40`
+/// does not — `into_league` carries that. A record settled a second time
+/// (its +0x24 no nought) never enters at all; the replica settles every
+/// match once.
+pub fn book_crowd(
+    records: &mut Records,
+    into_league: bool,
+    country: u16,
+    level: u8,
+    ground: (u8, u16),
+    crowd: Crowd,
+) {
+    if crowd.attendance == 0 {
+        return;
+    }
+    let row = crowd_row(level, ground, &crowd);
+    if into_league
+        && let Some(index) = league_of(records, country, level)
+        && let Some(list) = records.block_mut(&format!("0xaf5d74[{index}]"))
+    {
+        insert_crowd(list, row);
+    }
+    if let Some(list) = records.block_mut("0xaf723c") {
+        insert_crowd(list, row);
+    }
+}
+
 /// A country's all-time first-league figures (`FUN_0072b25b` mode 0):
 /// each club number's games, points, goals for and against over its
 /// seasons there (`DAT_00b131c4` in the lists block, 0xa20 a country by
@@ -4801,6 +4897,42 @@ pub fn biggest_stadiums(records: &Records, slot: Option<usize>) -> Vec<BigStadiu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_crowd_insert_ranks_replaces_and_drops() {
+        let row = |att: i32, team: u8| {
+            let mut r = [0u8; 0x18];
+            r[0..4].copy_from_slice(&att.to_le_bytes());
+            r[8] = team;
+            r
+        };
+        let mut rows = vec![0u8; 20 * 0x18];
+        let held = |rows: &[u8], k: usize| i32::from_le_bytes(rows[k * 0x18..][0..4].try_into().unwrap());
+        let side = |rows: &[u8], k: usize| rows[k * 0x18 + 8];
+        // Better crowds shift in before the weaker ones; the twentieth
+        // place never fills past the list's twenty rows.
+        for att in [300, 800, 500] {
+            insert_crowd(&mut rows, row(att, att as u8));
+        }
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3)), (800, 500, 300, 0));
+        // The very same attendance replaces its twin where it stands: the
+        // twin at 500 sits before the place a new 500 would take.
+        insert_crowd(&mut rows, row(500, 7));
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3)), (800, 500, 300, 0));
+        assert_eq!(side(&rows, 1), 7);
+        // Without a twin the rows below the place shift down and the
+        // weakest loses its place.
+        insert_crowd(&mut rows, row(700, 9));
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3), held(&rows, 4)), (800, 700, 500, 300, 0));
+        // A full list keeps its twenty: a crowd no better than the
+        // weakest never enters at all.
+        for att in (1..=16).rev() {
+            insert_crowd(&mut rows, row(att, 0));
+        }
+        assert_eq!((held(&rows, 0), held(&rows, 19)), (800, 1));
+        insert_crowd(&mut rows, row(1, 5));
+        assert_eq!(side(&rows, 19), 0);
+    }
 
     #[test]
     fn goal_graph_orders_and_scales() {
