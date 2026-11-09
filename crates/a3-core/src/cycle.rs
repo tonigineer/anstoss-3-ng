@@ -1043,8 +1043,9 @@ impl Cycle {
                                 &mut season.random,
                             );
                             // The clubs note their next matches anew
-                            // (`FUN_0062c74b`'s `FUN_0062bfc9`).
-                            crate::year::note_next_matches(records, &self.data.calendar, season.day);
+                            // (`FUN_0062c74b`'s `FUN_0062bfc9`), a cup tie
+                            // among them opening its sales record.
+                            crate::year::note_next_matches(records, &self.data, season.day, &mut season.random);
                         }
                         // The day's match clears the load's hold
                         // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
@@ -1197,7 +1198,7 @@ impl Cycle {
                 crate::year::open_season(records, &self.data.calendar);
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
-                crate::year::note_next_matches(records, &self.data.calendar, 0);
+                crate::year::note_next_matches(records, &self.data, 0, &mut season.random);
                 // The human clubs' squads changed with the turn — players
                 // gone, new ones come — so each club the season follows
                 // stands anew as its records now have it, as a load would

@@ -676,9 +676,12 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
 
 /// Every played club's next match noted anew (`FUN_0062bfc9`): its
 /// opponent, kind and referee cleared first, then the match found set; a
-/// human club keeps its referee, which the original draws anew (not
-/// built).
-pub fn note_next_matches(records: &mut Records, calendar: &crate::calendar::Calendar, today: usize) {
+/// human club keeps its referee, which the original draws anew (not built).
+/// A human club's cup tie found this way opens its sales record at once
+/// (the original's `FUN_0077d425`), the home club's prices and all; the
+/// ticket office's block holds a club's own fixtures, so a computer club's
+/// tie opens nothing.
+pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today: usize, random: &mut crate::random::Random) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team(country, number) else { continue };
@@ -686,8 +689,27 @@ pub fn note_next_matches(records: &mut Records, calendar: &crate::calendar::Cale
             if team.level() >= NO_LEAGUE {
                 continue;
             }
-            let next = next_match(records, calendar, team, today);
+            let next = next_match(records, &data.calendar, team, today);
             let human = team.humans() != [0, 0];
+            // The cup tie the club's next match is, as the ticket office
+            // sees it: the two clubs with the home one first, the day and
+            // the round. Only a human club keeps a ticket office — the
+            // block holds its own fixtures and no other club's, as the
+            // week's `FUN_0077ca2b` already shows. The final on a neutral
+            // ground is left out here as in [`crate::presale::open_cup`];
+            // the supercup's record takes its prices from a fixture list
+            // of the moment, and the European ties' days are not built at
+            // all.
+            let tie = next.filter(|m| {
+                if !human || m.kind != NEXT_CUP {
+                    return false;
+                }
+                let code = fixture(records, &data.calendar, team, usize::try_from(m.day).unwrap_or(0));
+                if m.round == FINAL as u8 && code & NEUTRAL == NEUTRAL_FINAL {
+                    return false;
+                }
+                true
+            });
             let Some(team) = records.team_mut(country, number) else { continue };
             team.set_next_country(0);
             team.set_next_number(0);
@@ -702,6 +724,11 @@ pub fn note_next_matches(records: &mut Records, calendar: &crate::calendar::Cale
                 team.set_next_venue(m.venue);
                 team.set_next_kind(m.kind);
                 team.set_next_round(m.round);
+            }
+            if let Some(m) = tie {
+                let own = (team.country(), team.number() as i16);
+                let (home, away) = if m.venue == 0 { (own, m.opponent) } else { (m.opponent, own) };
+                crate::presale::open_cup(records, home, away, m.day, m.round, today as i32, random, &data.presale);
             }
         }
     }
