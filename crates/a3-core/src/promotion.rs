@@ -89,7 +89,7 @@ const TOP_SEASONS_SLOT: usize = 0x1b0;
 /// The season flags the books set, and those of team +0x110 they leave.
 const CHAMPION: u16 = 0x1;
 const RUNNER_UP: u16 = 0x2;
-const PROMOTED: u16 = 0x4;
+pub(crate) const PROMOTED: u16 = 0x4;
 const RELEGATED: u16 = 0x8;
 const CUP_WINNER: u16 = 0x1000;
 const CUP_FINALIST: u16 = 0x2000;

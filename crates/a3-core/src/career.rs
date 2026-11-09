@@ -122,6 +122,36 @@ pub fn title(records: &mut Records, slot: usize, country: u16, number: u16, kind
     }
 }
 
+/// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
+/// the humans by the count at `DAT_00b5cbce`): each one whose club carries
+/// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
+/// counts it in his career. A promotion is no marked kind, so this is the
+/// counter at +0x16 alone: no window entry, no station's mark. What the
+/// same function does beside is not kept: the manager object's own tallies
+/// of promotions and relegations (the struct's +0x10 and +0x18, through
+/// `FUN_0069a0e1` and `FUN_0069a221`), his last club's standing
+/// (+0xb5 = `FUN_00775fa0`), the mask off +0xba and the zero at +0xc0, and
+/// `FUN_006a4917`.
+pub fn promotions(records: &mut Records) {
+    for (slot, held) in records.globals.slots().iter().copied().enumerate() {
+        if held == 0 {
+            continue;
+        }
+        let (country, number) = {
+            let m = &records.managers[slot];
+            (m.country(), m.team())
+        };
+        if country == 0 {
+            // The manager stands for no club; `*(short *)(trainer + 0x1e)
+            // != 0` is the original's own gate here.
+            continue;
+        }
+        if records.team(country, number).is_some_and(|t| t.get::<u16>(0x110) & crate::promotion::PROMOTED != 0) {
+            title(records, slot, country, number, crate::honours::PROMOTION);
+        }
+    }
+}
+
 /// One more on the station the manager stands at — its last row, since
 /// the original writes through `(byte)(count - 1)` unchecked: with no row
 /// of his yet there is nothing to mark.
@@ -233,6 +263,49 @@ mod tests {
         assert_eq!(&car[ENTRIES..ENTRIES + ENTRY], &second[..ENTRY], "the oldest gone, the rest one on");
         assert_eq!(car[ENTRIES + 48 * ENTRY], CUP, "the new title where `+0x22 + count * 8` puts it");
         assert_eq!(car[ENTRIES + 49 * ENTRY], 50, "the window's stale tail, as the original leaves it");
+    }
+
+    /// The season's books put the human's club up: he counts the promotion
+    /// in his own career — its counter at +0x16 alone. A promotion is no
+    /// marked kind, so the window of titles stays as it was, the station's
+    /// marks stay as they were, and the manager's own count of titles stays
+    /// with a championship's. Without the flag on his club nothing of his
+    /// record moves at all.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_promotion_counts_in_the_humans_own_career() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let records = read();
+        let slot = records.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        assert_eq!(records.team(country, number).unwrap().get::<u16>(0x110) & crate::promotion::PROMOTED, 0, "no kept save has the human's club going up");
+        drop(records);
+
+        // No flag, no credit.
+        let mut ours = read();
+        let before: Vec<u8> = ours.career(slot).unwrap().to_vec();
+        let titles = ours.managers[slot].titles();
+        promotions(&mut ours);
+        still_the_same(&before, ours.career(slot).unwrap(), &[]);
+        assert_eq!(ours.managers[slot].titles(), titles);
+
+        // The season's flag on, once and then again.
+        let flags = ours.team(country, number).unwrap().get::<u16>(0x110);
+        ours.team_mut(country, number).unwrap().put::<u16>(0x110, flags | crate::promotion::PROMOTED);
+        promotions(&mut ours);
+        let car = ours.career(slot).unwrap().to_vec();
+        assert_eq!(word(&car, 0x16), 1, "the promotion's counter");
+        assert_eq!(word(&car, WINDOW_COUNT), word(&before, WINDOW_COUNT), "no title in the window");
+        assert_eq!(word(&car, TOTAL), word(&before, TOTAL));
+        still_the_same(&before, &car, &[0x16..0x18]);
+        assert_eq!(ours.managers[slot].titles(), titles, "only a championship lifts it");
+        promotions(&mut ours);
+        assert_eq!(word(ours.career(slot).unwrap(), 0x16), 2);
     }
 
     /// Only the bytes in `touched` differ.

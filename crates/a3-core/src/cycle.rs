@@ -1143,6 +1143,11 @@ impl Cycle {
                 let rules = &self.data.rules;
                 crate::free_agents::place(records, &agents, (&rules.contract, &rules.value), &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);
+                // The humans whose club the season's books put up count the
+                // promotion in their own career records (`FUN_006b4e2f`
+                // reading the promoted flag `FUN_006b2e88` set, between the
+                // settlement and the managers' season end).
+                crate::career::promotions(records);
                 crate::settlement::close_managers(records, &mut season.random);
                 crate::statistics::roll_ranking(records);
                 // The transfer list closes the season (`FUN_00428fa2`).
