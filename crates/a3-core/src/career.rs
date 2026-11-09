@@ -122,6 +122,22 @@ pub fn title(records: &mut Records, slot: usize, country: u16, number: u16, kind
     }
 }
 
+/// The human in `slot` leaves his national team for `reason`
+/// (`FUN_006fdf90`): his last national station gets today's date and the
+/// reason, its three figures nought. Without a station nothing happens.
+pub fn left_national_team(records: &mut Records, slot: usize, reason: u8) {
+    let [day, month, year] = records.globals.date();
+    let Some(car) = records.career_mut(slot) else { return };
+    let Some(last) = usize::from(car[NATIONAL_STATIONS]).checked_sub(1) else { return };
+    let row = &mut car[NATIONALS_AT + last * STATION..][..STATION];
+    row[8] = day as u8;
+    row[9] = month as u8;
+    row[0xa..0xc].copy_from_slice(&year.to_le_bytes());
+    row[0xc] = reason;
+    row[0xe..0x12].fill(0);
+    row[0x14..0x18].fill(0);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —

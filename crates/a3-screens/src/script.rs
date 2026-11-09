@@ -10038,4 +10038,71 @@ mod tests {
         assert_eq!(seen(&runner, 355), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// The national menu's last button, with the job poked into a copy of
+    /// A: the question over the menu, the button held down under it, a no
+    /// that lets it go; a yes that takes the job off the records, closes
+    /// the station and leads to the line-up; and the chairman's refusal in
+    /// a week the team plays.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_coach_resigns_unless_his_team_plays_this_week() {
+        const OPEN: &str = "now click bar 15\nuntil dialog 355\nnow choose 4538 5";
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let job = |records: &mut a3_core::records::Records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            records.globals.put::<u8>(0xb5d172 + (slot + 1) * 8, 14);
+            records.globals.put::<u16>(0xb5d174 + (slot + 1) * 8, 200);
+            records.block_mut("0xa9d660[14]").unwrap()[0x88..0x8a].fill(1);
+            let career = records.career_mut(slot).unwrap();
+            career[0x1c3] = 2;
+            career[0x624 + 0x1c + 0xc] = 9;
+            career[0x624 + 0x1c + 0x10] = 7;
+        };
+        let root = patched(&dir, "A", "nationalresign", job);
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let question = on_save(&game, "nationalresign", &format!("{OPEN}\nuntil dialog 384")).unwrap();
+        let text = crate::screens::control(&game.dialogs[&384], 4738).unwrap();
+        assert_eq!(question.host.view().text(text), game.text(3471));
+        let menu = question.host.views().find(|v| v.id == 355).unwrap();
+        let buttons = crate::screens::control(&game.dialogs[&355], 4538).unwrap();
+        assert_eq!(menu.options(buttons).unwrap().chosen, 5, "held down under the question");
+        let no = on_save(&game, "nationalresign", &format!("{OPEN}\nuntil dialog 384\nnow cancel\nuntil dialog 355")).unwrap();
+        assert_eq!(no.host.view().options(buttons).unwrap().chosen, crate::controls::options::NONE);
+        assert_eq!(no.host.state().season.as_ref().unwrap().managers[0].national_team, Some(14));
+        let yes = on_save(&game, "nationalresign", &format!("{OPEN}\nuntil dialog 384\nnow ok\nuntil dialog 380")).unwrap();
+        let notice = crate::screens::control(&game.dialogs[&380], 4730).unwrap();
+        assert_eq!(yes.host.view().text(notice), game.text(3472));
+        let done = on_save(&game, "nationalresign", &format!("{OPEN}\nuntil dialog 384\nnow ok\nuntil dialog 380\nnow press 4731\nuntil dialog 147")).unwrap();
+        let state = done.host.state();
+        assert_eq!(state.season.as_ref().unwrap().managers[0].national_team, None);
+        let records = state.records.as_ref().unwrap();
+        let slot = records.human_slot(0).unwrap();
+        assert_eq!(records.managers[slot].national_team(), 0);
+        assert_eq!(records.globals.get::<u8>(0xb5d172 + (slot + 1) * 8), 0);
+        assert_eq!(records.globals.get::<u16>(0xb5d174 + (slot + 1) * 8), 0);
+        assert_eq!(records.block("0xa9d660[14]").unwrap()[0x88..0x8a], [0, 0]);
+        let row = &records.career(slot).unwrap()[0x624 + 0x1c..0x624 + 0x38];
+        let [day, month, year] = records.globals.date();
+        assert_eq!((row[8], row[9]), (day as u8, month as u8));
+        assert_eq!(u16::from_le_bytes([row[0xa], row[0xb]]), year);
+        assert_eq!((row[0xc], row[0x10]), (4, 0));
+        let _ = std::fs::remove_dir_all(&root);
+        let root = patched(&dir, "A", "nationalrefuses", |records| {
+            job(records);
+            let soon = records.globals.week_start() + 1;
+            records.block_mut("0xa9d660[14]").unwrap()[0x230..0x232].copy_from_slice(&soon.to_le_bytes());
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let refused = on_save(&game, "nationalrefuses", &format!("{OPEN}\nuntil dialog 380")).unwrap();
+        assert_eq!(refused.host.view().text(notice), game.text(3615));
+        let stays = on_save(&game, "nationalrefuses", &format!("{OPEN}\nuntil dialog 380\nnow press 4731\nuntil dialog 355")).unwrap();
+        assert_eq!(stays.host.state().season.as_ref().unwrap().managers[0].national_team, Some(14));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

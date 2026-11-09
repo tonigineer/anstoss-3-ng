@@ -4,12 +4,13 @@
 
 use std::collections::HashMap;
 
-use a3_core::cycle::dialogs::NATIONAL_MENU;
+use a3_core::cycle::dialogs::{LINEUP, NATIONAL_MENU, NOTICE, QUESTION};
+use a3_core::national;
 use a3_core::season::Rules;
 use a3_files::rch::Dialog;
 
 use super::hub;
-use super::{Args, Cx, Outcome, Reply, Screen, control, mark_inert, set};
+use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
 use crate::controls::options::NONE;
 use crate::pointer::Target;
 use crate::view::View;
@@ -21,6 +22,12 @@ const CAPTION_ID: u16 = 9935;
 const CAPTION: u16 = 3608;
 /// The six buttons, one group (`CMyHighButton`).
 const BUTTONS: u16 = 4538;
+/// The last button, "Als Nationaltrainer zurücktreten", and its three
+/// answers: refused before a match, sure?, accepted.
+const RESIGN: usize = 5;
+const NOT_BEFORE_THE_MATCH: u16 = 3615;
+const REALLY_RESIGN: u16 = 3471;
+const RESIGNATION_ACCEPTED: u16 = 3472;
 
 /// The bar takes the OK's place; the caption.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
@@ -30,11 +37,24 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     hub::add_bar(dialog, rules);
 }
 
+/// What the menu has opened over itself.
+#[derive(Default, PartialEq)]
+enum Open {
+    #[default]
+    Nothing,
+    /// The whistle's question.
+    Whistle,
+    /// "Your chairman refuses", or a resignation asked after.
+    Refused,
+    Question,
+    /// The resignation's last word; the line-up comes after it.
+    Accepted,
+}
+
 /// The menu (`FUN_0051dd53`).
 #[derive(Default)]
 pub struct NationalMenu {
-    /// Whether the whistle asks.
-    whistle: bool,
+    open: Open,
 }
 
 impl Screen for NationalMenu {
@@ -50,22 +70,86 @@ impl Screen for NationalMenu {
             buttons.actions = true;
             buttons.chosen = NONE;
         }
-        mark_inert(view, dialog, |target| hub::on_bar(dialog, target).is_some_and(hub::bar_works));
+        let works = |target: Target| match target {
+            Target::Option { control: c, item: RESIGN } => dialog.controls[c].id == Some(BUTTONS),
+            _ => hub::on_bar(dialog, target).is_some_and(hub::bar_works),
+        };
+        mark_inert(view, dialog, works);
     }
 
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
-        let Some(item) = hub::on_bar(cx.dialog, target) else { return Outcome::Stay };
-        let outcome = hub::bar_click(cx, view, item, hub::NATIONAL_SYMBOL);
-        self.whistle = matches!(outcome, Outcome::Popup(_));
-        outcome
+        if let Some(item) = hub::on_bar(cx.dialog, target) {
+            let outcome = hub::bar_click(cx, view, item, hub::NATIONAL_SYMBOL);
+            self.open = if matches!(outcome, Outcome::Popup(_)) { Open::Whistle } else { Open::Nothing };
+            return outcome;
+        }
+        match target {
+            Target::Option { control: c, item: RESIGN } if cx.dialog.controls[c].id == Some(BUTTONS) => {
+                self.resign(cx, view)
+            }
+            _ => Outcome::Stay,
+        }
     }
 
-    /// The whistle's question: a yes ends the turn.
-    fn answer(&mut self, _: &mut Cx, _: &mut View, reply: Reply) -> Outcome {
-        if std::mem::take(&mut self.whistle) && reply == Reply::Ok {
-            return Outcome::Close(Reply::Ok);
+    /// What the menu opened has closed; the chosen button lets go only now
+    /// (asm 0x51e3f9).
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, reply: Reply) -> Outcome {
+        match std::mem::take(&mut self.open) {
+            Open::Whistle if reply == Reply::Ok => return Outcome::Close(Reply::Ok),
+            Open::Question if reply == Reply::Ok => {
+                resigned(cx);
+                self.open = Open::Accepted;
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(RESIGNATION_ACCEPTED)));
+            }
+            Open::Accepted => return Outcome::Close(Reply::Goto(LINEUP)),
+            _ => {}
         }
+        hold(cx, view, None);
         Outcome::Stay
+    }
+}
+
+impl NationalMenu {
+    /// The resignation (asm 0x51e2b2): only a manager with a nation has
+    /// one to give, not in a week his team plays.
+    fn resign(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let season = cx.state.season.as_ref();
+        let Some(nation) = season.and_then(|s| s.manager()).and_then(|m| m.national_team) else {
+            return Outcome::Stay;
+        };
+        let refused = cx.state.records.as_ref().is_some_and(|r| {
+            national::plays_this_week(r, nation as i16)
+        });
+        hold(cx, view, Some(RESIGN));
+        if refused {
+            self.open = Open::Refused;
+            return Outcome::Popup(Request::with(NOTICE, Args::Text(NOT_BEFORE_THE_MATCH)));
+        }
+        self.open = Open::Question;
+        Outcome::Popup(Request::with(QUESTION, Args::Text(REALLY_RESIGN)))
+    }
+}
+
+/// Holds a button down, as the group draws its chosen item, or lets it go:
+/// the menu's buttons stay chosen while what they opened is up.
+fn hold(cx: &Cx, view: &mut View, item: Option<usize>) {
+    if let Some(buttons) = control(cx.dialog, BUTTONS).and_then(|c| view.options_mut(c)) {
+        buttons.actions = item.is_none();
+        buttons.chosen = item.unwrap_or(NONE);
+    }
+}
+
+/// The resignation accepted: the job goes, in the records and the season
+/// (`FUN_006b9872`, reason 4).
+fn resigned(cx: &mut Cx) {
+    let Some(season) = cx.state.season.as_mut() else { return };
+    if let Some(records) = cx.state.records.as_mut()
+        && let Some(slot) = records.human_slot(season.current)
+    {
+        national::leave(records, slot, national::RESIGNED);
+    }
+    if let Some(manager) = season.managers.get_mut(season.current) {
+        manager.national_team = None;
     }
 }
 
