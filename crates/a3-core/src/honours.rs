@@ -9,7 +9,17 @@
 //! club with a human manager instead credits his own career record
 //! ([`crate::career`], `FUN_006b5497` and `FUN_006b583a`). The trainers'
 //! all-time list (`FUN_00725f33`) and the club's trophies beside
-//! (`FUN_0061436f`) are not built.
+//! (`FUN_0061436f`) are not built; read apart on 9 Nov, the list keeps
+//! itself in the block `0xaf85bc` at the played country's
+//! [`crate::records`] `countries.slot` — twenty
+//! rows of 40 with the person id, his name in thirty bytes, and four
+//! saved counts: the championships, the cups, a word the kept saves hold
+//! as `0xfd00|country`, and a fourth; a fifth count the row builder
+//! computes falls off the row's far end. New rows rank first by the sum
+//! of the first three counts, then by the championships, then by the sum
+//! of all five (`FUN_00725e61`). The counters live in the list: the
+//! kept SeasonEnd364 holds the words at +0x3c nought for every trainer
+//! its rows name.
 //!
 //! The championship counts on the champions' day, half week 0x5c
 //! (`FUN_006da3a9` → `FUN_0071d351`): every played country's first league
