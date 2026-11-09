@@ -138,6 +138,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     let mut marks: Vec<(u8, u16, u8, u16, u8, u8)> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     let mut through: Vec<(u8, u16)> = Vec::new();
+    let mut beaten: Vec<(u8, u16)> = Vec::new();
     for q in start..start + count {
         let Some(p) = records
             .block(&name)
@@ -183,6 +184,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         marks.push((p[0], u16_at(p, 2), p[4], u16_at(p, 6), hg, ag));
         let at = usize::from(winner != 0);
         through.push((p[at * 4], u16_at(p, at * 4 + 2)));
+        beaten.push((p[(1 - at) * 4], u16_at(p, (1 - at) * 4 + 2)));
         // The home club's gate: a crowd as in the league, and the money it
         // brings — the played match's reckoning (FUN_0078b26c) at a mark
         // no cup round holds, which leaves it as it is.
@@ -258,12 +260,16 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // replica reads off the block instead). The final won adds the
     // manager's premium for a title and the sponsor's second extra
     // (`FUN_006cec7f`, the round `FUN_006d12a8` names the cup's last).
-    for (country, number) in through {
+    for ((country, number), (bc, bn)) in through.into_iter().zip(beaten) {
         settlement::cup_premium(records, u16::from(country), number, round >= FINAL_ROUND);
-        // The final's winner counts the cup in its trainer's career
-        // (`FUN_006b50a4` with kind 4).
+        // The final counts both ways in the men who played it: its winner
+        // the cup (kind 4), its loser the finalist's part (kind 0xd,
+        // `FUN_006b50a4` at `FUN_006ce00e`'s last round, which
+        // `FUN_006d12a8` names) — a kind the game marks nowhere, so it
+        // only fills the career record's own counter.
         if round >= FINAL_ROUND {
             crate::honours::title(records, u16::from(country), number, crate::honours::CUP);
+            crate::honours::title(records, u16::from(bc), bn, crate::honours::CUP_FINALIST);
         }
     }
     // On the human's year calendar the round's day fills its score, the
@@ -681,11 +687,11 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         .map(|v| v.into_iter().flatten().collect());
     let Some(mut sides) = decided else { return };
     if round >= 6 {
-        // The final's winner counts the league cup in its trainer's career
-        // (`FUN_0067e911`: `FUN_006b50a4` with kind 0xb or 0xc).
-        for side in sides {
-            crate::honours::title(records, u16::from(side[0]), u16::from_le_bytes([side[2], side[3]]), crate::honours::LEAGUE_CUP);
-        }
+        // The final decided ends the cup. It credits no career: the
+        // tournament's honours (`FUN_0067e911` with kinds 0xb and 0xc)
+        // are a national team's world's and European title, awarded only
+        // when the kind of the final is a tournament's (0xe) — a cup's
+        // kinds below 8 award nothing.
         return;
     }
     let Some((next, pairs)) = cup_pairings(mode, round + 1) else { return };
@@ -1488,8 +1494,10 @@ mod supercup_tests {
     /// NewSeason000 (its first round drawn there): every round's ties
     /// decided, two legs where the calendar plays two, the 25 winners of
     /// the first round and the seven waiting met in the second's 16 ties,
-    /// on to one final with its winner, the last drawn round following,
-    /// the winner's trainer counting the title.
+    /// on to one final with its winner, the last drawn round following —
+    /// and no career title in it: `FUN_0067e911` pays a cup kind its money
+    /// and awards its kinds 0xb and 0xc only in the final of a tournament
+    /// (kind 0xe), a national team's world's and European title.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_league_cup_is_played_on_its_days() {
@@ -1500,7 +1508,11 @@ mod supercup_tests {
         let mut records = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
         let data = crate::data::Data::load(&dir).unwrap();
         let mut random = Random::new(9);
-        let titles: Vec<i16> = records.persons.iter().map(|p| p.get::<i16>(0x42)).collect();
+        let titles: Vec<[i16; 5]> = records
+            .persons
+            .iter()
+            .map(|p| [0x3c, 0x3e, 0x40, 0x42, 0x44].map(|at| p.get::<i16>(at)))
+            .collect();
         let row = data.calendar.row(ENGLAND, 0).unwrap();
         let days: Vec<usize> = (0..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE).collect();
         assert!(days.len() >= 8, "{days:?}");
@@ -1519,15 +1531,15 @@ mod supercup_tests {
         }
         assert_eq!(cup_pairings(mode, 2).map(|r| r.1), Some(16));
         assert_eq!(b[0x28 - 0x20], 6, "the final the last drawn round");
-        // The final's winner's trainer counts the title.
+        // No career title in it. The final stands decided; its winner's
+        // trainer counts nothing, no person's counters of titles move over
+        // the whole cup.
         let (start, _) = cup_pairings(mode, 6).unwrap();
         let p = &b[PAIRINGS + start * PAIRING..PAIRINGS + (start + 1) * PAIRING];
-        let w = usize::from(p[0xd] != 0) * 4;
-        let (c, n) = (u16::from(p[w]), u16::from_le_bytes([p[w + 2], p[w + 3]]));
-        let winner = records.team(c, n).unwrap();
-        assert_eq!(winner.humans()[1], 0, "a computer club wins");
-        let [mt, tr, _] = winner.staff();
-        let id = usize::from(if tr != 0 { tr } else { mt });
-        assert_eq!(records.persons[id].get::<i16>(0x42), titles[id] + 1, "the winner's trainer {id}");
+        assert_ne!(p[0xd], 0, "the final's winner");
+        for (was, pl) in titles.iter().zip(&records.persons) {
+            let now = [0x3c, 0x3e, 0x40, 0x42, 0x44].map(|at| pl.get::<i16>(at));
+            assert_eq!(now, *was, "the cup of this kind credits no career");
+        }
     }
 }

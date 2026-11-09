@@ -6,17 +6,21 @@
 //! the supercups and the like at +0x42 (5, 9 to 12) and a promotion at
 //! +0x44 (2, counted for the whole staff by [`crate::promotion::count`]).
 //! A kind without a counter (the cup's finalist, 0xd) credits nothing. A
-//! human manager's own honours (`FUN_006b5497`, `FUN_006b583a`), the
-//! trainers' all-time list (`FUN_00725f33`) and the club's trophies
-//! beside (`FUN_0061436f`) are not built.
+//! club with a human manager instead credits his own career record
+//! ([`crate::career`], `FUN_006b5497` and `FUN_006b583a`). The trainers'
+//! all-time list (`FUN_00725f33`) and the club's trophies beside
+//! (`FUN_0061436f`) are not built.
 //!
 //! The championship counts on the champions' day, half week 0x5c
 //! (`FUN_006da3a9` → `FUN_0071d351`): every played country's first league
 //! honours its leader by the table then (`FUN_007293ea`) — its season
 //! played out by then in the kept one. The cup counts its final's winner
-//! (`FUN_006ce00e`), as do the
-//! supercups' (`FUN_006cc61b`, kind 5) and England's league cup's
-//! (`FUN_0067e911`, kind 0xb or 0xc).
+//! and its loser the finalist's part (`FUN_006ce00e`), as do the
+//! supercups' (`FUN_006cc61b`, kind 5). Kinds 0xb and 0xc are a national
+//! team's world's and European title, won only in an international
+//! tournament's final (`FUN_0067e911`), which the fixture's calendar has
+//! none of — England's league cup, for all that it is a cup beside the
+//! league's, awards nothing through it.
 
 use crate::records::Records;
 
@@ -24,7 +28,6 @@ pub const CHAMPIONSHIP: u8 = 1;
 pub const PROMOTION: u8 = 2;
 pub const CUP: u8 = 4;
 pub const SUPERCUP: u8 = 5;
-pub const LEAGUE_CUP: u8 = 0xb;
 pub const CUP_FINALIST: u8 = 0xd;
 
 /// The half week of the champions' day (`DAT_00b5cbd2 == 0x5c`).
@@ -45,8 +48,14 @@ fn counter(kind: u8) -> Option<usize> {
 }
 
 /// The kinds a club marks in its season's titles (`DAT_008a56b8`, the
-/// kinds of a promotion and below not among them).
+/// kinds of a promotion and below not among them); [`crate::career`]
+/// sorts the same kinds into a career's window of titles.
 const MARKED: [bool; 14] = [false, true, false, false, true, true, true, true, true, true, true, true, true, false];
+
+/// Whether the game marks a kind of title at all.
+pub fn marked(kind: u8) -> bool {
+    MARKED.get(usize::from(kind)).copied().unwrap_or(false)
+}
 /// The season's titles in the past seasons' byte (team +0x11e, the club
 /// object's +0xee): its low two bits, three at most.
 const SEASON_TITLES: usize = 0x11e;
@@ -60,9 +69,7 @@ const SEASON_TITLES: usize = 0x11e;
 /// built.)
 pub fn title(records: &mut Records, country: u16, number: u16, kind: u8) {
     honour(records, country, number, kind);
-    if MARKED.get(usize::from(kind)).copied().unwrap_or(false)
-        && let Some(t) = records.team_mut(country, number)
-    {
+    if marked(kind) && let Some(t) = records.team_mut(country, number) {
         let v = t.get::<u8>(SEASON_TITLES);
         let titles = ((v & 3) + 1).min(3);
         t.put::<u8>(SEASON_TITLES, v & !3 | titles);
@@ -115,11 +122,17 @@ pub fn cup_final(records: &mut Records, country: u16, tie: &[u8]) {
     records.globals.put::<u16>(LAST_CUP_FINAL_DAY, day);
 }
 
-/// A club's title of `kind` in its trainer's career (`FUN_006b5190`'s
-/// computer branch).
+/// A club's title of `kind` in one man's career (`FUN_006b5190`): a
+/// computer club credits its trainer, one with a human manager (club
+/// +0x8b) credits the career record of his slot ([`crate::career::title`],
+/// `FUN_006b5497`).
 pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
     let Some(team) = records.team(country, number) else { return };
-    if team.humans()[1] != 0 {
+    let human = team.humans()[1];
+    if human != 0 {
+        if let Some(slot) = usize::from(human).checked_sub(1) {
+            crate::career::title(records, slot, country, number, kind);
+        }
         return;
     }
     let [manager_trainer, trainer, _] = team.staff();

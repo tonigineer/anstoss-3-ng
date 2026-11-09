@@ -7,6 +7,7 @@ pub mod autolineup;
 pub mod betting;
 pub mod calendar;
 pub mod cards;
+pub mod career;
 pub mod cohesion;
 pub mod computer_training;
 pub mod contract;

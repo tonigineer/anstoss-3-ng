@@ -1963,6 +1963,11 @@ impl Records {
         self.block(&format!("0xa4de58[{n}]"))
     }
 
+    /// The same, to change.
+    pub fn career_mut(&mut self, n: usize) -> Option<&mut [u8]> {
+        self.block_mut(&format!("0xa4de58[{n}]"))
+    }
+
     pub fn season_marks(&self) -> Vec<SeasonMark> {
         const ENTRY: usize = 0x40;
         let Some(block) = self.block("0x1ba9f38") else { return Vec::new() };

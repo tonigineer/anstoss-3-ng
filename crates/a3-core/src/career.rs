@@ -1,0 +1,244 @@
+//! The human manager's own honours (`FUN_006b5497` and `FUN_006b583a`,
+//! behind [`crate::honours::honour`]'s human branch): a club with a human
+//! manager (club +0x8b, the team's second [`crate::records::Team::humans`]
+//! byte) credits
+//! no person at all but his own career record, the block
+//! `0xa4de58[<slot>]` the personal page at dialog 405 shows
+//! (ERFOLGE.md §A.1). A kind the game marks ([`crate::honours::marked`],
+//! `DAT_008a56b8`) goes into the record's window of the last fifty
+//! titles — the kind, the season (the game's own count,
+//! [`crate::records::Globals::seasons`], 1 at the start), the club's
+//! country and its
+//! number there — the oldest of the fifty giving way as the fiftieth
+//! comes in, and one more on the mark of the manager's current station:
+//! championships at +0x18, the European cups at +0x19, the cups at +0x1a
+//! and every other marked kind at +0x1b. A national team's title — kinds
+//! 0xb and 0xc, of the international tournaments the replica plays no
+//! final of — marks his last national team's station instead, the world's
+//! title at +0x1a and the European one at +0x18. Every kind counts in its
+//! own counter at the head of the record: the championship at +0, the cup
+//! at +2, the cup's finalist at +4, a promotion at +0x16, and so on to
+//! the international tournaments' at +0x1c to +0x20. A championship
+//! lifts the manager's own count of titles as well (his record's +0x210,
+//! the manager object's +0xdc), which the highscore lists add up.
+//!
+//! What the same two functions touch on the manager *object* and what
+//! never reaches the save with it is not kept: the level's marks behind
+//! `FUN_006a6805`, `FUN_006a6821`, `FUN_006a683d` and `FUN_006a6859`,
+//! the object's own count at +0x17c6, and the club's season object
+//! (`FUN_0061436f`, see [`crate::honours`]).
+
+use crate::records::Records;
+
+/// The window's count (`+0x26`) and the count of all marked titles
+/// (`+0x28`), both fifteen at the window's fiftieth entry.
+const WINDOW_COUNT: usize = 0x26;
+const TOTAL: usize = 0x28;
+/// The window's entries, eight bytes each — the kind, the season, the
+/// country and the number. The first of them stands where the count of
+/// them is one, which is why the original writes at `+0x22 + count * 8`.
+const ENTRIES: usize = 0x2a;
+const ENTRY: usize = 8;
+const WINDOW: usize = 50;
+/// The stations: their counts, where their rows stand, and what a title
+/// adds to the last row's mark.
+const CLUB_STATIONS: usize = 0x1c2;
+const NATIONAL_STATIONS: usize = 0x1c3;
+const CLUBS_AT: usize = 0x1c4;
+const NATIONALS_AT: usize = 0x624;
+const STATION: usize = 0x1c;
+const WON_CHAMPIONSHIPS: usize = 0x18;
+const WON_EUROPEAN: usize = 0x19;
+const WON_CUPS: usize = 0x1a;
+const WON_OTHER: usize = 0x1b;
+/// A national team's station: the European title at +0x18, the world's at
+/// +0x1a.
+const WON_CONTINENTAL: usize = 0x18;
+const WON_WORLD: usize = 0x1a;
+
+/// Where a kind of title counts in the career record (`FUN_006b583a`).
+fn counter(kind: u8) -> Option<usize> {
+    match kind {
+        1 => Some(0x0),
+        2 => Some(0x16),
+        3 => Some(0x18),
+        4 => Some(0x2),
+        5 => Some(0x6),
+        6 => Some(0x8),
+        7 | 8 => Some(0xc),
+        9 => Some(0x12),
+        10 => Some(0x14),
+        0xb => Some(0x1e),
+        0xc => Some(0x1a),
+        0xd => Some(0x4),
+        0xe => Some(0xa),
+        0xf => Some(0xe),
+        0x10 => Some(0x1c),
+        0x11 => Some(0x20),
+        _ => None,
+    }
+}
+
+/// The title of `kind` won by the club of `country` and `number` in the
+/// career of the human in slot `slot` ([`fun@FUN_006b5497`] writing the
+/// record, [`fun@FUN_006b583a`] its counters): a marked kind into the
+/// window of titles and onto the current station's mark, and every kind
+/// once more in the kind's own counter. A championship counts in the
+/// manager record as well.
+pub fn title(records: &mut Records, slot: usize, country: u16, number: u16, kind: u8) {
+    let season = records.globals.seasons();
+    let club = records.team(country, number).map(|t| (t.country(), t.number()));
+    let (country, number) = club.unwrap_or((0, 0));
+    if let Some(car) = records.career_mut(slot) {
+        if crate::honours::marked(kind) {
+            bump(car, TOTAL);
+            let mut count = word(car, WINDOW_COUNT).wrapping_add(1);
+            if count == i16::try_from(WINDOW).unwrap() {
+                // The window gives up its oldest entry.
+                car.copy_within(ENTRIES + ENTRY..ENTRIES + ENTRY + (WINDOW - 1) * ENTRY, ENTRIES);
+                count -= 1;
+            }
+            store(car, WINDOW_COUNT, count);
+            if let Ok(n) = usize::try_from(count) {
+                if let Some(e) = car.get_mut(ENTRIES + (n - 1) * ENTRY..ENTRIES + n * ENTRY) {
+                    e[0] = kind;
+                    e[2..4].copy_from_slice(&season.to_le_bytes());
+                    e[4] = country;
+                    e[6..8].copy_from_slice(&u16::from(number).to_le_bytes());
+                }
+            }
+            mark_station(car, kind);
+        }
+        if let Some(at) = counter(kind) {
+            bump(car, at);
+        }
+    }
+    if kind == crate::honours::CHAMPIONSHIP
+        && let Some(m) = records.managers.get_mut(slot)
+    {
+        let mut titles = m.titles();
+        titles[0] = titles[0].wrapping_add(1);
+        m.set_titles(titles);
+    }
+}
+
+/// One more on the station the manager stands at — its last row, since
+/// the original writes through `(byte)(count - 1)` unchecked: with no row
+/// of his yet there is nothing to mark.
+fn mark_station(car: &mut [u8], kind: u8) {
+    let (base, count_at, mark) = match kind {
+        1 => (CLUBS_AT, CLUB_STATIONS, WON_CHAMPIONSHIPS),
+        4 => (CLUBS_AT, CLUB_STATIONS, WON_CUPS),
+        6 | 7 | 8 => (CLUBS_AT, CLUB_STATIONS, WON_EUROPEAN),
+        0xb => (NATIONALS_AT, NATIONAL_STATIONS, WON_WORLD),
+        0xc => (NATIONALS_AT, NATIONAL_STATIONS, WON_CONTINENTAL),
+        _ => (CLUBS_AT, CLUB_STATIONS, WON_OTHER),
+    };
+    let last = usize::from(car[count_at]).wrapping_sub(1);
+    if let Some(row) = car.get_mut(base + last * STATION + mark) {
+        *row = row.wrapping_add(1);
+    }
+}
+
+fn word(car: &[u8], at: usize) -> i16 {
+    car.get(at..at + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]))
+}
+
+fn store(car: &mut [u8], at: usize, v: i16) {
+    if let Some(w) = car.get_mut(at..at + 2) {
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+fn bump(car: &mut [u8], at: usize) {
+    store(car, at, word(car, at).wrapping_add(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kept day-63 save's human manager: a championship, a cup, the
+    /// finalist's part of it and a supercup land in his own record — the
+    /// marked ones in its window of titles with the kind, the season, his
+    /// club's country and number, and on the mark of the one club station
+    /// he stands at; every kind in its own counter; the finalist's part
+    /// nowhere but its counter; the championship once more in the
+    /// manager's own count of titles. Nothing else in the block moves, and
+    /// with the window full a title drops the oldest entry out.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_title_lands_in_the_humans_own_record() {
+        use crate::honours::{CHAMPIONSHIP, CUP, CUP_FINALIST, SUPERCUP};
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let records = read();
+        let slot = records.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let human = u8::try_from(slot + 1).unwrap();
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        let team = records.team(country, number).expect("the human's club");
+        assert_eq!(team.humans()[1], human, "the club names slot {human} as its manager");
+        let (club, club_number) = (team.country(), team.number());
+        let season = records.globals.seasons();
+        drop(team);
+        let before: Vec<u8> = records.career(slot).unwrap().to_vec();
+        let titles = records.managers[slot].titles();
+
+        let mut ours = read();
+        title(&mut ours, slot, country, number, CHAMPIONSHIP);
+        let car = ours.career(slot).unwrap().to_vec();
+        assert_eq!(word(&car, 0x0), 1, "the championship's counter");
+        assert_eq!(word(&car, TOTAL), 1);
+        assert_eq!(word(&car, WINDOW_COUNT), 1);
+        let entry = [CHAMPIONSHIP, 0, season as u8, (season >> 8) as u8, club, 0, club_number, 0];
+        assert_eq!(&car[ENTRIES..ENTRIES + ENTRY], &entry, "the title in the window");
+        assert_eq!(car[CLUBS_AT + WON_CHAMPIONSHIPS], 1, "the station's mark");
+        assert_eq!(ours.managers[slot].titles()[0], titles[0] + 1, "the manager's own count");
+        still_the_same(&before, &car, &[0..2, WINDOW_COUNT..WINDOW_COUNT + 2, TOTAL..TOTAL + 2, ENTRIES..ENTRIES + ENTRY, CLUBS_AT + WON_CHAMPIONSHIPS..CLUBS_AT + WON_CHAMPIONSHIPS + 1]);
+
+        title(&mut ours, slot, country, number, CUP);
+        title(&mut ours, slot, country, number, CUP_FINALIST);
+        title(&mut ours, slot, country, number, SUPERCUP);
+        let car = ours.career(slot).unwrap().to_vec();
+        assert_eq!((word(&car, 0x2), word(&car, 0x4), word(&car, 0x6)), (1, 1, 1), "the counters of the cup, the finalist and the supercup");
+        assert_eq!(word(&car, WINDOW_COUNT), 3, "the finalist counts in no window");
+        assert_eq!(word(&car, TOTAL), 3);
+        assert_eq!(car[ENTRIES + ENTRY], CUP);
+        assert_eq!(car[ENTRIES + 2 * ENTRY], SUPERCUP);
+        assert_eq!(
+            (car[CLUBS_AT + WON_CHAMPIONSHIPS], car[CLUBS_AT + WON_CUPS], car[CLUBS_AT + WON_OTHER]),
+            (1, 1, 1),
+            "one title of each kind on his station"
+        );
+        assert_eq!(ours.managers[slot].titles()[0], titles[0] + 1, "only a championship lifts it");
+
+        // The window at its fiftieth: the oldest entry gives way.
+        let mut full = read();
+        let second: Vec<u8> = {
+            let car = full.career_mut(slot).unwrap();
+            car[WINDOW_COUNT..WINDOW_COUNT + 2].copy_from_slice(&49i16.to_le_bytes());
+            for k in 0..50 {
+                car[ENTRIES + k * ENTRY] = u8::try_from(k + 1).unwrap();
+            }
+            car[ENTRIES + ENTRY..ENTRIES + 2 * ENTRY].to_vec()
+        };
+        title(&mut full, slot, country, number, CUP);
+        let car = full.career(slot).unwrap().to_vec();
+        assert_eq!(word(&car, WINDOW_COUNT), 49, "the count back below its fifty");
+        assert_eq!(word(&car, TOTAL), 1);
+        assert_eq!(&car[ENTRIES..ENTRIES + ENTRY], &second[..ENTRY], "the oldest gone, the rest one on");
+        assert_eq!(car[ENTRIES + 48 * ENTRY], CUP, "the new title where `+0x22 + count * 8` puts it");
+        assert_eq!(car[ENTRIES + 49 * ENTRY], 50, "the window's stale tail, as the original leaves it");
+    }
+
+    /// Only the bytes in `touched` differ.
+    fn still_the_same(before: &[u8], after: &[u8], touched: &[std::ops::Range<usize>]) {
+        for (i, (a, b)) in before.iter().zip(after).enumerate() {
+            assert!(a == b || touched.iter().any(|r| r.contains(&i)), "byte {i:#x} moved, {a:#x} → {b:#x}");
+        }
+    }
+}
