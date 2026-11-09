@@ -6791,10 +6791,11 @@ mod tests {
     // there (S2late3, day 300 of Union's second season, the department raised
     // to three): the comparison counts the archived games of the season
     // before as well, the away rows over both seasons — two games against FC
-    // Bayern München away, none of them won. Both pages show their first two
-    // sections on the original; its third one (Alle Ligaspiele) is not shot
-    // there yet. The original's category is again the second one, and its
-    // list holds the two pages at its rows 24 and 25.
+    // Bayern München away, none of them won. All three of the page's sections
+    // are shot at the original; its category is again the second one, and its
+    // list holds the two pages at its rows 24 and 25. The third section sums
+    // the two above: Bayern's four games, the point of the one home win, and
+    // 5 goals scored against 11 conceded over both meetings at home and away.
     #[test]
     #[ignore = "needs the kept save S2late3"]
     fn the_second_season_names_the_foes_of_the_seasons_before() {
@@ -6808,26 +6809,40 @@ mod tests {
                 "SC Freiburg\t1\t0\t-1\t0\t:\t1",
                 "FC Bayern München\t2\t1\t-3\t3\t:\t6",
                 "Eintracht Frankfurt\t2\t1\t-1\t0\t:\t1",
-            ], [
+            ].as_slice(), [
                 "VfL Wolfsburg\t2\t0\t-4\t0\t:\t4",
                 "FC Bayern München\t2\t0\t-3\t2\t:\t5",
                 "SC Freiburg\t1\t0\t-2\t0\t:\t2",
                 "Hannover 96\t1\t0\t-1\t0\t:\t1",
-            ]),
+                "1.FSV Mainz 05\t2\t1\t-1\t1\t:\t2",
+            ].as_slice(), [
+                "FC Bayern München\t4\t1\t-6\t5\t:\t11",
+                "SC Freiburg\t2\t0\t-3\t0\t:\t3",
+                "Borussia Dortmund\t4\t3\t-5\t4\t:\t9",
+                "VfL Wolfsburg\t4\t3\t-4\t4\t:\t8",
+                "Hannover 96\t2\t1\t-1\t1\t:\t2",
+            ].as_slice()),
             ("Lieblingsgegner", 25, [
                 "VfB Stuttgart\t2\t6\t3\t4\t:\t1",
                 "TSG 1899 Hoffenheim\t2\t6\t2\t5\t:\t3",
                 "SV Werder Bremen\t2\t4\t2\t4\t:\t2",
                 "FC St. Pauli\t2\t4\t1\t1\t:\t0",
                 "1.FC Köln\t1\t3\t1\t2\t:\t1",
-            ], [
+            ].as_slice(), [
                 "RB Leipzig\t2\t6\t2\t3\t:\t1",
                 "SV Werder Bremen\t1\t3\t2\t2\t:\t0",
                 "1.FC Köln\t1\t3\t1\t2\t:\t1",
                 "FC St. Pauli\t1\t3\t1\t2\t:\t1",
-            ]),
+                "1.FC Heidenheim\t1\t3\t1\t1\t:\t0",
+            ].as_slice(), [
+                "TSG 1899 Hoffenheim\t4\t8\t2\t7\t:\t5",
+                "SV Werder Bremen\t3\t7\t4\t6\t:\t2",
+                "FC St. Pauli\t3\t7\t2\t3\t:\t1",
+                "1.FC Köln\t2\t6\t2\t4\t:\t2",
+                "1.FC Heidenheim\t2\t6\t2\t2\t:\t0",
+            ].as_slice()),
         ];
-        for (page, row, heim, auswaerts) in foe {
+        for (page, row, heim, auswaerts, alle) in foe {
             let then = format!("now click bar 14\nuntil dialog 18\nnow row 1283 1\nnow row 1284 {row}");
             let Some(runner) = on_save(&game, "foes", &then) else { return };
             let view = runner.host.view();
@@ -6848,6 +6863,7 @@ mod tests {
             };
             lines("Heimbegegnungen", &heim);
             lines("Auswärtsbegegnungen", &auswaerts);
+            lines("Alle Ligaspiele", alle);
         }
         let _ = std::fs::remove_dir_all(&root);
     }
