@@ -10105,4 +10105,109 @@ mod tests {
         assert_eq!(stays.host.state().season.as_ref().unwrap().managers[0].national_team, Some(14));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The week hub does not end the turn of a national coach whose squad is
+    /// too small for the international match in his week (`FUN_00650b84` asm
+    /// 0x6523d3): with the week moved onto one whose Wednesday the calendar's
+    /// international row flags and the team's next match pulled into it, the
+    /// whistle ends the turn only while 18 of the squad stand fit; short of
+    /// that the hub shows alert 4966 and its code −1600 opens the menu again.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_coach_turn_waits_for_eighteen_fit_in_his_squad() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let year = game();
+        // The first week of the year whose Wednesday — `week_start + 3`, as
+        // `FUN_0067dc44` asks `FUN_00629d80` — stands in an international
+        // window of row 0: "Nat.-Freund." 0x04000000, "WM-Quali" 0x08000000.
+        let week = (0..52)
+            .map(|w| w * 7)
+            .find(|&w| {
+                let wed = year.data.calendar.entry(0, w + 3) & 0x7f00_0000;
+                wed == 0x0400_0000 || wed == 0x0800_0000
+            })
+            .expect("no international window in the calendar's first row") as i16;
+        let job = |records: &mut a3_core::records::Records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            records.globals.put::<u8>(0xb5d172 + (slot + 1) * 8, 14);
+            records.globals.put::<u16>(0xb5d174 + (slot + 1) * 8, 200);
+            records.block_mut("0xa9d660[14]").unwrap()[0x88..0x8a].fill(1);
+            let career = records.career_mut(slot).unwrap();
+            career[0x1c3] = 2;
+            career[0x624 + 0x1c + 0xc] = 9;
+            career[0x624 + 0x1c + 0x10] = 7;
+        };
+        let window = |records: &mut a3_core::records::Records| {
+            records.globals.set_week_start(week);
+            let next = (week + 1).to_le_bytes();
+            records.block_mut("0xa9d660[14]").unwrap()[0x230..0x232].copy_from_slice(&next);
+        };
+        let root = patched(&dir, "A", "nationalsmall", |records| {
+            job(records);
+            window(records);
+            // The squad list down to 17: `FUN_00650b84` counts every player
+            // of the list at record 0x112/0x1f2 whose days of injury at his
+            // +0x2c stand under a week — 17 is the first number short.
+            records.block_mut("0xa9d660[14]").unwrap()[0xf2..0xf4].copy_from_slice(&17u16.to_le_bytes());
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let before = on_save(&game, "nationalsmall", "").unwrap();
+        let day = before.host.state().season.as_ref().unwrap().day;
+        drop(before);
+        let notice = crate::screens::control(&game.dialogs[&380], 4730).unwrap();
+        let alert = on_save(&game, "nationalsmall", "now click bar 18\nuntil dialog 380").unwrap();
+        assert_eq!(alert.host.view().text(notice), game.text(4966));
+        let runner = on_save(
+            &game,
+            "nationalsmall",
+            "now click bar 18\nuntil dialog 380\nnow press 4731\nuntil dialog 355",
+        )
+        .unwrap();
+        assert_eq!(seen(&runner, 355), 1, "the menu did not come back:\n{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().unwrap().day, day, "the turn ended anyway");
+        assert_eq!(state.season.as_ref().unwrap().managers[0].national_team, Some(14));
+        let _ = std::fs::remove_dir_all(&root);
+        // The saved squad of 23, all of them fit: the turn ends as ever,
+        // alert and menu out of the way to the next day.
+        let root = patched(&dir, "A", "nationalbig", |records| {
+            job(records);
+            let (ids, count) = {
+                let team = records.block("0xa9d660[14]").unwrap();
+                let n = i16::from_le_bytes([team[0xf2], team[0xf3]]) as usize;
+                let ids: Vec<u16> = (0..n)
+                    .map(|k| u16::from_le_bytes([team[0x1d2 + 2 * k], team[0x1d2 + 2 * k + 1]]))
+                    .collect();
+                (ids, n)
+            };
+            assert!(count > 17, "the saved squad of nation 14 holds only {count}");
+            window(records);
+            for id in ids {
+                records.player_mut(id).unwrap().set_injured_to([0, 0]);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // Day 63 of save A is a week boundary (`day % 7 == 0`): after the
+        // whistle its week end opens, then the new week's wait and turn,
+        // clicked again, until the walk stands in the next day.
+        let runner = on_save(
+            &game,
+            "nationalbig",
+            "on 147 click bar 18\non 2 wait\non 461 ok\non 270 ok\non 381 wait\nuntil day 64",
+        )
+        .unwrap();
+        assert_eq!(
+            seen(&runner, 380) + seen(&runner, 355),
+            0,
+            "the turn was held back:\n{}",
+            runner.log.join("\n")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

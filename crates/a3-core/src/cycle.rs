@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::data::Data;
 use crate::load;
 use crate::medical;
+use crate::national;
 use crate::newgame::{self, Mode, Setup};
 use crate::random::Random;
 use crate::records::Records;
@@ -199,6 +200,10 @@ const JOIN: usize = 4;
 const SCORES: usize = 5;
 /// "Niemand hat Sie mehr im Angebot": every offer is gone.
 const NO_ONE_LEFT: u16 = 5053;
+/// "Sie haben für das anstehende Länderspiel nicht genügend Spieler in
+/// ihrem Nationalkader!": the week hub's alert when its coach's squad is
+/// too small for his team's match this week.
+const NOT_ENOUGH_PLAYERS: u16 = 4966;
 /// Clubs from this class on have the grand office.
 const GRAND_CLASS: i64 = 5;
 /// The manager's choice of the office over the menu bar.
@@ -1507,7 +1512,41 @@ impl Cycle {
                 // "Neues Spiel": its flag 8 ends the game cycle, and the
                 // main loop goes back to the start menu (`FUN_00788115`).
                 Reply::NewGame => return Ok(false),
-                _ => return Ok(true),
+                _ => {
+                    // The turn does not end for a national coach whose
+                    // squad is too small for his team's match this week:
+                    // the week hub asks an international window on the
+                    // week's Wednesday too, alerts with text 4966, and
+                    // code −1600 opens his menu again (`FUN_00650b84` asm
+                    // 0x6523d3); the hub of a coach without a club gates
+                    // on the match alone and alerts for nothing
+                    // (`FUN_0065270d` asm 0x65292f).
+                    let (nation, club) = self
+                        .season(|s| s.manager().map(|m| (m.national_team, m.club.is_some())))
+                        .flatten()
+                        .unwrap_or((None, true));
+                    let blocked = nation.is_some_and(|nation| {
+                        let guard = self.state();
+                        guard.records.as_ref().is_some_and(|records| {
+                            if club {
+                                national::squad_blocks_turn(
+                                    records,
+                                    &self.data.calendar,
+                                    nation as i16,
+                                )
+                            } else {
+                                national::squad_blocks_clubless_turn(records, nation as i16)
+                            }
+                        })
+                    });
+                    if !blocked {
+                        return Ok(true);
+                    }
+                    if club {
+                        self.ask(Request::with(NOTICE, Args::Text(NOT_ENOUGH_PLAYERS)))?;
+                    }
+                    screen = NATIONAL_MENU;
+                }
             }
         }
     }
