@@ -358,8 +358,12 @@ const SUPERCUP: u32 = 0x3000_0000;
 /// The Intertoto's days in the calendar's first row (`FUN_004217d9`): six
 /// half-days of legs over three rounds, counted on from 1.
 const INTERTOTO: u32 = 0x2000_0000;
+/// The European cups' days in the calendar's first row
+/// (`FUN_0062d181` → `FUN_0042108d`): the code's low byte names the match.
+const EUROPEAN: u32 = 0x5000_0000;
 /// An Intertoto tie in the entrants' list: the two clubs' four bytes each,
-/// the home club's first, then six bytes of the goals played.
+/// the home club's first, then six bytes of the goals played. The
+/// champion's cup's pairings stand the same, from the start of its object.
 const INTERTOTO_TIE: usize = 0xe;
 /// England's league cup's days (`FUN_006ceeb9`), its object a cup's.
 const LEAGUE_CUP: u32 = 0x0100_0000;
@@ -599,6 +603,8 @@ const LOOK_AHEAD: usize = 63;
 const NEXT_LEAGUE: u8 = 2;
 const NEXT_CUP: u8 = 3;
 const NEXT_SUPERCUP: u8 = 4;
+/// The champion's cup's kind, the first of the international ones.
+const NEXT_EUROPE: u8 = 5;
 const NEXT_INTERTOTO: u8 = 8;
 const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 
@@ -609,8 +615,8 @@ const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 /// the opponent named once the tie stands, none before. The first row of
 /// the calendar is read before the club's own rows, so its international
 /// and European days stand for a club's league and cup rows; of their codes
-/// only the Intertoto's is built, the rest passed over — as a European
-/// cup's, the world's and the relegation's days are.
+/// the Intertoto's and the champion's cup's are built, the rest passed
+/// over — as the UEFA cup's, the world's and the relegation's days are.
 pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, today: usize) -> Option<NextMatch> {
     let country = team.country();
     for d in today + 1..=(today + LOOK_AHEAD).min(SEASON_DAYS - 1) {
@@ -620,6 +626,11 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
             if first & COMPETITION == INTERTOTO {
                 if let Some((opponent, venue)) = intertoto_tie(records, calendar, team, first) {
                     return Some(at(opponent, venue, NEXT_INTERTOTO, 0));
+                }
+            }
+            if first & COMPETITION == EUROPEAN {
+                if let Some((opponent, venue, round)) = champions_tie(records, team, first) {
+                    return Some(at(opponent, venue, NEXT_EUROPE, round));
                 }
             }
             continue;
@@ -810,6 +821,55 @@ fn intertoto_tie(records: &Records, calendar: &crate::calendar::Calendar, team: 
     None
 }
 
+/// The champion's cup tie a club plays on one of the first row's European
+/// days (`FUN_0042108d`, which first asks the object's own id check
+/// `FUN_0041bee3` and then its finder `FUN_0041e1c9`, with `FUN_00676aaf`
+/// and `FUN_00676b58` reading the tie): the code's low byte names the
+/// match — 0 and 1 the qualifier's two legs, 2 … 7 the group stage's six
+/// matchdays of sixteen ties each, 8 … 13 the second group stage's six of
+/// eight, 14 and 15 the semi-final's legs, 16 and 17 the final's and 24 the
+/// final on a neutral ground. The rounds' ties stand in the object's own
+/// run, counted by its five ends at +0xf48 … +0xf58 (the save block's
+/// +0xf28 … +0xf38): sixteen of them for the qualifier, then 96, 48, four
+/// and two. A group stage's day carries one entry per fixture, whose first
+/// side plays at home; on a knockout day the odd id is the return leg,
+/// where the entry's second side plays at home instead. The kind is 5
+/// throughout and the round 0, 2, 3, 5, 6 and 7 by the id. Not built: the
+/// UEFA cup's and the Intertoto cup's days, which the original reads when
+/// the champion's cup has nothing for the id (kinds 7 and 6), and the
+/// neutral final's marker for the ticket office.
+fn champions_tie(records: &Records, team: &crate::records::Team, code: u32) -> Option<((u8, i16), i16, u8)> {
+    let b = records.block(crate::europe_entry::CHAMPIONS)?;
+    let end = |at: usize| -> Option<i64> {
+        Some(i64::from(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?)))
+    };
+    let (qualifier, second, semi, final_, decider) = (end(0xf28)?, end(0xf2c)?, end(0xf30)?, end(0xf34)?, end(0xf38)?);
+    let id = i64::from(code & 0xff);
+    let (first, last, turned, round) = match id {
+        0 | 1 => (0, qualifier, id == 1, 0),
+        2..=7 => (qualifier + (id - 2) * 16, qualifier + (id - 1) * 16, false, 2),
+        8..=13 => (second - 48 + (id - 2) * 8, second - 48 + (id - 1) * 8, false, 3),
+        14 | 15 => (semi, final_, id == 15, 5),
+        16 | 17 => (final_, decider, id == 17, 6),
+        0x18 => (decider, decider + 1, false, 7),
+        _ => return None,
+    };
+    for n in first.max(0)..last {
+        let at = usize::try_from(n).ok()? * INTERTOTO_TIE;
+        let Some(t) = b.get(at..at + INTERTOTO_TIE) else { continue };
+        let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+        // The entry's first side plays at home, the second away; the return
+        // leg turns that round.
+        if supercup_side(&t[0..4], team) {
+            return Some((side(4), i16::from(turned), round));
+        }
+        if supercup_side(&t[4..8], team) {
+            return Some((side(0), i16::from(!turned), round));
+        }
+    }
+    None
+}
+
 /// Whether a club plays a supercup round (`FUN_006ccf10`): in the one
 /// tie; in a tournament the round's tie, or — for the third and fourth
 /// round — the first or second of the six waiting there, or a tie of an
@@ -923,8 +983,9 @@ mod tests {
     /// On the original's saves — the new season's first day, mid-season,
     /// late in the second — every played club's next match as the replica
     /// finds it from the day before the save agrees with the one the
-    /// original noted: the league's, the cup's and the supercup's (those of
-    /// the European cups not built, the clubs in no league not looked at).
+    /// original noted: the league's, the cup's, the supercup's, the
+    /// Intertoto's and the champion's cup's (those of the UEFA cup not
+    /// built, the clubs in no league not looked at).
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_next_matches_come_out_as_the_original() {
@@ -935,6 +996,7 @@ mod tests {
         let mut misses = Vec::new();
         let mut all = 0;
         let mut eight = 0;
+        let mut five = 0;
         for name in ["NewSeason000.an3", "A.an3", "S2late.an3"] {
             let n = Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
             // The saves stand before their day's matches: what they noted
@@ -944,22 +1006,27 @@ mod tests {
                 for t in 0..n.countries.team_count(usize::from(country)).max(0) as u16 {
                     let team = n.team(country, t).unwrap();
                     // Not looked at: a club in no league, and one whose next
-                    // match is a European or a world one (not built). The
-                    // Intertoto's is built, but a save stands where its
-                    // words for a tie long played are what the note of that
-                    // time left — the original notes a club again around
-                    // every match of its own — so those are compared only
-                    // while their day lies in the days looked over.
+                    // match is of a kind not built — the UEFA cup's and the
+                    // world's. The Intertoto's and the champion's cup's are
+                    // built, but a save stands where their words for a tie
+                    // long played are what the note of that time left — the
+                    // original notes a club again around every match of its
+                    // own — so those are compared only while their day lies
+                    // in the days looked over.
                     let day = team.next_day();
                     let fresh = day > 0 && day as usize > today && day as usize <= (today + LOOK_AHEAD).min(SEASON_DAYS - 1);
+                    let built = matches!(team.next_kind(), NEXT_EUROPE | NEXT_INTERTOTO) && fresh;
                     if team.next_country() == 0 && team.next_kind() == 0 || team.level() >= NO_LEAGUE
-                        || (5..=10).contains(&team.next_kind()) && !(team.next_kind() == 8 && fresh)
+                        || (5..=10).contains(&team.next_kind()) && !built
                     {
                         continue;
                     }
                     all += 1;
                     if team.next_kind() == 8 {
                         eight += 1;
+                    }
+                    if team.next_kind() == NEXT_EUROPE {
+                        five += 1;
                     }
                     let mine = next_match(&n, &data.calendar, team, today);
                     let theirs = NextMatch {
@@ -977,7 +1044,9 @@ mod tests {
         }
         // The Intertoto's words are few but there: `NewSeason000.an3` stands
         // where five clubs of the played countries note a first leg on day 3.
-        assert!(all > 400 && eight >= 5 && misses.is_empty(), "{} misses of {all} ({eight} Intertoto):\n{}", misses.len(), misses.join("\n"));
+        // The champion's cup's are more: 17 mid-season, 8 at the season's
+        // start, where its qualifying rounds and its group stage are on.
+        assert!(all > 400 && eight >= 5 && five >= 20 && misses.is_empty(), "{} misses of {all} ({eight} Intertoto, {five} European):\n{}", misses.len(), misses.join("\n"));
     }
 
     fn calendar() -> Planner {

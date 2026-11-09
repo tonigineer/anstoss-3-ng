@@ -562,7 +562,7 @@ fn books(records: &mut Records) {
 /// and groups cleared in five stretches, its round's fields and its
 /// rounds' first pairings, the main country's first league's points for a
 /// win at home and away and the word behind them.
-const CHAMPIONS: &str = "0x8e91e0";
+pub(crate) const CHAMPIONS: &str = "0x8e91e0";
 const CHAMPIONS_CLEARED: [(usize, usize); 5] = [(0, 0x922), (0x922, 0x180), (0xaa2, 0xc0), (0xb62, 0x280), (0xde2, 0x140)];
 const CHAMPIONS_FIELDS: [(usize, u32); 8] =
     [(0xf28, 0x10), (0xf2c, 0x70), (0xf30, 0xa0), (0xf34, 0xa4), (0xf38, 0xa6), (0xf24, 1), (0xf3c, 4), (0xf40, 4)];
