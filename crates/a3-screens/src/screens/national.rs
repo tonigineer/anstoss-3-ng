@@ -1,17 +1,23 @@
 //! The national team, the menu bar's sixteenth symbol: a menu of six buttons
-//! on a picture (dialog 355, `CNationalmannschaft`), and its first button's
-//! squad picker (dialog 357, `CNationalkaderZusammenstellen`; NATIONALMANNSCHAFT.md
-//! in the RE repo).
+//! on a picture (dialog 355, `CNationalmannschaft`), its first button's squad
+//! picker (dialog 357, `CNationalkaderZusammenstellen`) and its second
+//! button's search for a foreign player to talk into changing his nation
+//! (dialog 351, `CNationalSpielerSuchen`; NATIONALMANNSCHAFT.md in the RE
+//! repo).
 
 use std::collections::HashMap;
 
-use a3_core::cycle::dialogs::{LINEUP, NATIONAL_MENU, NATIONAL_SQUAD, NOTICE, QUESTION};
+use a3_core::cycle::dialogs::{
+    LINEUP, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NOTICE, QUESTION,
+};
 use a3_core::national;
 use a3_core::season::Rules;
+use a3_core::transfers;
 use a3_core::{lineup, load};
 use a3_files::rch::{Align, Dialog};
 
 use super::hub;
+use super::planner;
 use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
 use crate::controls::options::NONE;
 use crate::pointer::Target;
@@ -26,6 +32,8 @@ const CAPTION: u16 = 3608;
 const BUTTONS: u16 = 4538;
 /// The first button, "Nationalkader zusammenstellen", opening the picker.
 const PICK: usize = 0;
+/// The second, "Spieler für ein Gespräch aussuchen", opening the search.
+const SEARCH: usize = 1;
 /// The last button, "Als Nationaltrainer zurücktreten", and its three
 /// answers: refused before a match, sure?, accepted.
 const RESIGN: usize = 5;
@@ -39,6 +47,12 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     dialog.controls.retain(|c| c.id != Some(OK));
     dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
     hub::add_bar(dialog, rules);
+    // The search's caption is the dialog's own title, "ANSTOSS 3 -
+    // Spieler für Gespräch aussuchen"; nothing changes it.
+    if let Some(dialog) = dialogs.get_mut(&NATIONAL_SEARCH) {
+        let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
+        dialog.controls.insert(0, caption);
+    }
 }
 
 /// The picker's caption, its own across the top (`FUN_0051bf6e`'s caption
@@ -81,16 +95,10 @@ impl Screen for NationalMenu {
             buttons.actions = true;
             buttons.chosen = NONE;
         }
-        let has_team = cx
-            .state
-            .season
-            .as_ref()
-            .and_then(|s| s.manager())
-            .and_then(|m| m.national_team)
-            .is_some();
+        let has_team = coach_has_a_team(cx);
         let works = |target: Target| match target {
             Target::Option { control: c, item: RESIGN } => dialog.controls[c].id == Some(BUTTONS),
-            Target::Option { control: c, item: PICK } => {
+            Target::Option { control: c, item: PICK | SEARCH } => {
                 dialog.controls[c].id == Some(BUTTONS) && has_team
             }
             _ => hub::on_bar(dialog, target).is_some_and(hub::bar_works),
@@ -110,6 +118,11 @@ impl Screen for NationalMenu {
             }
             Target::Option { control: c, item: PICK } if cx.dialog.controls[c].id == Some(BUTTONS) => {
                 self.choose(cx, view)
+            }
+            Target::Option { control: c, item: SEARCH }
+                if cx.dialog.controls[c].id == Some(BUTTONS) =>
+            {
+                self.find(cx, view)
             }
             _ => Outcome::Stay,
         }
@@ -137,18 +150,22 @@ impl NationalMenu {
     /// "Nationalkader zusammenstellen" (asm 0x51e25f): the picker over the
     /// menu; only a coach with a nation has a squad to put together.
     fn choose(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
-        let has_team = cx
-            .state
-            .season
-            .as_ref()
-            .and_then(|s| s.manager())
-            .and_then(|m| m.national_team)
-            .is_some();
-        if !has_team {
+        if !coach_has_a_team(cx) {
             return Outcome::Stay;
         }
         hold(cx, view, Some(PICK));
         Outcome::Popup(Request::new(NATIONAL_SQUAD))
+    }
+
+    /// "Spieler für ein Gespräch aussuchen": the search over the menu, for
+    /// nothing else than the nation behind his team (`+0x17e6` of the
+    /// manager, the same gate the dialog's item answers to).
+    fn find(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        if !coach_has_a_team(cx) {
+            return Outcome::Stay;
+        }
+        hold(cx, view, Some(SEARCH));
+        Outcome::Popup(Request::new(NATIONAL_SEARCH))
     }
 
     /// The resignation (asm 0x51e2b2): only a manager with a nation has
@@ -169,6 +186,16 @@ impl NationalMenu {
         self.open = Open::Question;
         Outcome::Popup(Request::with(QUESTION, Args::Text(REALLY_RESIGN)))
     }
+}
+
+/// Whether the manager is a national coach at all, his team behind him.
+fn coach_has_a_team(cx: &Cx) -> bool {
+    cx.state
+        .season
+        .as_ref()
+        .and_then(|s| s.manager())
+        .and_then(|m| m.national_team)
+        .is_some()
 }
 
 /// Holds a button down, as the group draws its chosen item, or lets it go:
@@ -401,31 +428,8 @@ impl Screen for NationalSquad {
 }
 
 impl NationalSquad {
-    /// The Land combo (`FUN_0051bf6e`): every country the table of kinds
-    /// keeps (`DAT_00ae61ae`), named by its nation, chosen this team's;
-    /// its items' countries stand in `self.lands` for the handler.
     fn fill_land(&mut self, cx: &Cx, view: &mut View) {
-        let (game, dialog) = (cx.game, cx.dialog);
-        let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, LAND)) else {
-            return;
-        };
-        self.lands = (1..0x75usize)
-            .filter(|&country| records.countries.kind(country) != 0)
-            .map(|country| country as u16)
-            .collect();
-        let items: Vec<String> = self
-            .lands
-            .iter()
-            .map(|&country| game.world.nation(country).to_owned())
-            .collect();
-        let selected = self.lands.iter().position(|&country| country == self.land);
-        if let Some(combo) = view.combo_mut(c) {
-            combo.items = items;
-            combo.selected = selected;
-            combo.inks.clear();
-            combo.open = false;
-            combo.scroll = 0;
-        }
+        fill_land_combo(cx, view, LAND, &mut self.lands, self.land);
     }
 
     /// The Verein combo (`FUN_0051d25a`): the Land's clubs, its first one
@@ -663,6 +667,350 @@ impl NationalSquad {
         records.player(id).is_some_and(|r| {
             u16::from(r.nation()) == self.nation && r.retiring() & 2 == 0 && r.picks() & 2 == 0
         })
+    }
+}
+
+/// The Land combo of either national dialog (`FUN_0051bf6e`'s and
+/// `FUN_0051f097`'s fill): every country the table of kinds keeps
+/// (`DAT_00ae61ae`), named by its nation, chosen `land` (`FUN_007997be`
+/// selects by the item's country); the items' countries stand in `lands`
+/// for the handlers.
+fn fill_land_combo(cx: &Cx, view: &mut View, id: u16, lands: &mut Vec<u16>, land: u16) {
+    let (game, dialog) = (cx.game, cx.dialog);
+    let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, id)) else {
+        return;
+    };
+    *lands = (1..0x75usize)
+        .filter(|&country| records.countries.kind(country) != 0)
+        .map(|country| country as u16)
+        .collect();
+    let items: Vec<String> = lands
+        .iter()
+        .map(|&country| game.world.nation(country).to_owned())
+        .collect();
+    let selected = lands.iter().position(|&country| country == land);
+    if let Some(combo) = view.combo_mut(c) {
+        combo.items = items;
+        combo.selected = selected;
+        combo.inks.clear();
+        combo.open = false;
+        combo.scroll = 0;
+    }
+}
+
+/// The search's controls (`FUN_0051ee79`): the Land combo, the Verein
+/// list, the player list and Abbruch — the last by id, its picture is
+/// not the cancel one.
+const SEARCH_LAND: u16 = 4510;
+const SEARCH_CLUB: u16 = 4508;
+const SEARCH_PLAYERS: u16 = 4507;
+const ABBRUCH: u16 = 4509;
+/// What the player list's last column says of the talks so far
+/// (`FUN_006b8f5f`'s bits and the texts they name): the first word, the
+/// offer, his answer.
+const FIRST_WORD: u16 = 3475;
+const THE_OFFER: u16 = 3476;
+const HIS_ANSWER: u16 = 3477;
+/// The click's alerts in the original's order: taken for a talk by this
+/// coach already, he said no, the association allows no more talks.
+const PICKED_ALREADY: u16 = 3478;
+const SAID_NO: u16 = 3474;
+const NO_MORE_TALKS: u16 = 3479;
+/// The planner kind of a talk about his nation: the mode 0x11
+/// `CSummeTerminplTerminAuswahl` is called with (`FUN_0051f715`), kept
+/// as kind 0x11.
+const NATION_TALK: u8 = 0x11;
+
+/// What the search has open over itself: one of its alerts, or the
+/// planner for the talk's day.
+#[derive(Default, PartialEq)]
+enum SearchOpen {
+    #[default]
+    Nothing,
+    Notice,
+    Planner,
+}
+
+/// The coach looking for a foreign player to talk into changing his
+/// nation (`FUN_0051ee79`; NATIONALMANNSCHAFT.md §4): the lists offer a
+/// chosen club's players who are not of his team's nation — the
+/// foreigners — who have never worn a national shirt (the handle's
+/// `+0x61`, the cap count off the record's +0x266 group), are not set in
+/// their ways (`FUN_00707562`: his +0x282 manner without its 0x80 bit)
+/// and stand below id 0x4269; a row asks the planner for a day and then
+/// writes the search list.  What the talk itself says — dialog 353,
+/// `CNationalGespraech`, and the flags `FUN_006b8c87` sets — waits for
+/// the end-of-turn appointment, which the replica does not run yet.
+#[derive(Default)]
+pub struct NationalPlayerSearch {
+    /// The nation behind his team (the manager's `+0x17e6`, the dialog's
+    /// `+0x1edc`): the filter the player list runs against.
+    nation: u16,
+    /// The Land combo's country, the one whose clubs and players are
+    /// offered; the combo opens on his own team's nation.
+    land: u16,
+    /// The countries the Land combo's items stand for, in order.
+    lands: Vec<u16>,
+    /// The Verein list's number in that country (`+0x1ede`, 0 from
+    /// OnInit).
+    club: u16,
+    /// The player whose planner is open, so its answer knows whose
+    /// search entry to write.
+    picked: u16,
+    open: SearchOpen,
+}
+
+impl Screen for NationalPlayerSearch {
+    fn ids(&self) -> &[u16] {
+        &[NATIONAL_SEARCH]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        // OnInit (`FUN_0051f097`): the land at his own team's — the
+        // manager's +0x17e6, which the menu gate proved nonzero —, the
+        // club at 0, the talk table copied out for the click's gates,
+        // the Land combo filled and his country chosen in it, then the
+        // players and the Verein list.  The caption keeps its composed
+        // title; the static "Bitte wählen Sie einen Spieler aus!" stands
+        // alone.
+        self.nation = cx
+            .state
+            .season
+            .as_ref()
+            .and_then(|s| s.manager())
+            .and_then(|m| m.national_team)
+            .unwrap_or(0);
+        self.land = self.nation;
+        self.club = 0;
+        self.picked = 0;
+        self.open = SearchOpen::Nothing;
+        fill_land_combo(cx, view, SEARCH_LAND, &mut self.lands, self.land);
+        self.fill_club(cx, view);
+        self.fill_players(cx, view);
+        // Everything here answers a click; only the statics stand still.
+        mark_inert(view, cx.dialog, |_| true);
+    }
+
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        let id = |c: usize| dialog.controls[c].id;
+        match target {
+            Target::Button(c) if id(c) == Some(ABBRUCH) => Outcome::Close(Reply::Cancel),
+            // The Land combo (`FUN_0051f4a1`): its item's country, the
+            // club back to 0, Verein list and players refilled — MFC
+            // fires only on a change.
+            Target::Row { control: c, .. } if id(c) == Some(SEARCH_LAND) => {
+                let chosen = view.combo(c).and_then(|combo| combo.selected);
+                match chosen.and_then(|item| self.lands.get(item).copied()) {
+                    Some(country) if country != self.land => {
+                        self.land = country;
+                        self.club = 0;
+                        self.fill_club(cx, view);
+                        self.fill_players(cx, view);
+                    }
+                    _ => {}
+                }
+                Outcome::Stay
+            }
+            // The Verein list (`FUN_0051f591`): the row's number, the
+            // players refilled for it.
+            Target::Row { control: c, row } if id(c) == Some(SEARCH_CLUB) => {
+                let number = view.list(c).and_then(|l| l.keys.get(l.scroll + row).copied());
+                match number {
+                    Some(n) if n as u16 != self.club => {
+                        self.club = n as u16;
+                        self.fill_players(cx, view);
+                    }
+                    _ => {}
+                }
+                Outcome::Stay
+            }
+            // The player list (`FUN_0051f715`).
+            Target::Row { control: c, row } if id(c) == Some(SEARCH_PLAYERS) => {
+                let player = view.list(c).and_then(|l| l.keys.get(l.scroll + row).copied());
+                self.pick(cx, player.unwrap_or(0) as u16)
+            }
+            _ => Outcome::Stay,
+        }
+    }
+
+    /// The planner has chosen the day (`FUN_007656f6`): the planner
+    /// entry it booked names it, and the search list takes the player,
+    /// that day and this coach's id.  An alert closing answers nothing.
+    /// The MFC DAO waits — `FUN_0076330b`, `FUN_006ad59e` — stand in no
+    /// way in the single-threaded replica.  The list stands as it is:
+    /// the status column follows the talk's flags, which only the talk
+    /// itself sets, and that waits with the turn.
+    fn answer(&mut self, cx: &mut Cx, _: &mut View, reply: Reply) -> Outcome {
+        if std::mem::take(&mut self.open) != SearchOpen::Planner || reply != Reply::Ok {
+            return Outcome::Stay;
+        }
+        let (Some(records), Some(season)) = (cx.state.records.as_mut(), cx.state.season.as_ref())
+        else {
+            return Outcome::Stay;
+        };
+        let Some(slot) = records.human_slot(season.current) else {
+            return Outcome::Stay;
+        };
+        // The planner was asked for this week; the talk sits in one of
+        // its seven days.
+        let start = usize::try_from(records.globals.week_start()).unwrap_or(0);
+        let booked = records.planners.get(slot).and_then(|p| {
+            (start..start + 7).find(|&d| {
+                let a = p.day(d);
+                a.kind == NATION_TALK && a.player == self.picked
+            })
+        });
+        let Some(day) = booked else { return Outcome::Stay };
+        let coach = records.managers.get(slot).map_or(0, |m| u16::from(m.human()));
+        national::book_search(records, self.picked, day as i16, coach);
+        Outcome::Stay
+    }
+}
+
+impl NationalPlayerSearch {
+    /// The Verein list (`FUN_0051f66d`): the Land's clubs in the list's
+    /// sorted order (`FUN_007a90c1` keeps each before the first that
+    /// compares greater), one name's clubs in their number.  Then
+    /// `FUN_007a9fb0` selects `+0x1ede` as a *row* — 0 at OnInit and on
+    /// a Land change — but the list paints that row plain, no chosen bar,
+    /// until the coach clicks it himself; the players keep coming from
+    /// the number in `+0x1ede`.
+    fn fill_club(&self, cx: &Cx, view: &mut View) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, SEARCH_CLUB))
+        else {
+            return;
+        };
+        let count = records.countries.team_count(usize::from(self.land)).max(0) as usize;
+        let mut clubs: Vec<(String, usize)> = (0..count as u16)
+            .map(|number| {
+                (game.club_name(Some(records), self.land as u8, number as i16), usize::from(number))
+            })
+            .collect();
+        clubs.sort_by_key(|(name, _)| super::search::stricmp(name));
+        if let Some(list) = view.list_mut(c) {
+            list.rows = clubs.iter().map(|(name, _)| name.clone()).collect();
+            list.inks.clear();
+            list.row_icons.clear();
+            list.keys = clubs.into_iter().map(|(_, number)| number).collect();
+            list.selected = None;
+            list.scroll = 0;
+        }
+    }
+
+    /// The player list (`FUN_0051f1be`): the chosen club's foreigners,
+    /// uncapped, not set in their ways, below id 0x4269 (see the
+    /// screen).  The row, the format at 0x8859e0: name, position,
+    /// strength, the club's league — the byte at its `+0x105`, the
+    /// record's +0x12e level, plus one and capped at three —, his age, his
+    /// nation's three letters (the string table at 0xae5768, the nations'
+    /// second name in `Laender.sav`) and the state of his talks so far.
+    fn fill_players(&self, cx: &Cx, view: &mut View) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let (Some(records), Some(season), Some(c)) = (
+            cx.state.records.as_ref(),
+            cx.state.season.as_ref(),
+            control(dialog, SEARCH_PLAYERS),
+        ) else {
+            return;
+        };
+        let slot = records.human_slot(season.current).unwrap_or(0);
+        let (players, league) = match records.team(self.land, self.club) {
+            Some(team) => (team.players(), (u16::from(team.level()) + 1).min(3)),
+            None => (Vec::new(), 0),
+        };
+        let today = season.date();
+        let (mut rows, mut keys) = (Vec::new(), Vec::new());
+        for id in players {
+            let Some(record) = records.player(id) else { continue };
+            if id >= 0x4269
+                || u16::from(record.nation()) == self.nation
+                || record.kind_12_matches() != 0
+                || record.manner() & 0x80 != 0
+            {
+                continue;
+            }
+            let Some((player, _, _)) = load::any_player(records, &game.data, id) else {
+                continue;
+            };
+            let status = match national::talk_flags(records, slot, id) {
+                f if f & 4 != 0 => game.text(HIS_ANSWER).to_owned(),
+                f if f & 2 != 0 => game.text(THE_OFFER).to_owned(),
+                f if f & 1 != 0 => game.text(FIRST_WORD).to_owned(),
+                _ => String::new(),
+            };
+            rows.push(
+                [
+                    hub::name(&player),
+                    hub::abbreviation(game, player.positions[0]),
+                    player.strength.to_string(),
+                    league.to_string(),
+                    player.age(today).to_string(),
+                    game
+                        .world
+                        .nation_codes
+                        .get(usize::from(record.nation()))
+                        .map_or("", String::as_str)
+                        .to_owned(),
+                    status,
+                ]
+                .join("\t"),
+            );
+            keys.push(usize::from(id));
+        }
+        if let Some(list) = view.list_mut(c) {
+            list.rows = rows;
+            list.inks.clear();
+            list.row_icons.clear();
+            list.keys = keys;
+            list.selected = None;
+            list.scroll = 0;
+        }
+    }
+
+    /// A row of the player list (`FUN_0051f715`), in the original's
+    /// gate order; then the planner for a talk with him, mode 0x11 of
+    /// `CSummeTerminplTerminAuswahl`, booked as kind 0x11.
+    fn pick(&mut self, cx: &mut Cx, player: u16) -> Outcome {
+        if player == 0 {
+            return Outcome::Stay;
+        }
+        let (Some(records), Some(season)) = (cx.state.records.as_ref(), cx.state.season.as_ref())
+        else {
+            return Outcome::Stay;
+        };
+        let Some(slot) = records.human_slot(season.current) else {
+            return Outcome::Stay;
+        };
+        let coach = records.managers.get(slot).map_or(0, |m| u16::from(m.human()));
+        // Taken for a talk by this coach already, the alert answers
+        // (`FUN_00764ca8` over the search list).
+        if national::searched(records, coach, player) {
+            self.open = SearchOpen::Notice;
+            return Outcome::Popup(Request::with(NOTICE, Args::Text(PICKED_ALREADY)));
+        }
+        // Anywhere pending — under another coach, an extension, a
+        // negotiation (`FUN_007647b4` says free only when none of the
+        // three lists hold him): nothing happens.
+        if transfers::pending(records, player) {
+            return Outcome::Stay;
+        }
+        // He has already said no to changing his nation, his flags' 4
+        // (`FUN_006b8f5f` over the copied talk table).
+        if national::talk_flags(records, slot, player) & national::ANSWERED != 0 {
+            self.open = SearchOpen::Notice;
+            return Outcome::Popup(Request::with(NOTICE, Args::Text(SAID_NO)));
+        }
+        // The association allows no more talks: the copied count, read
+        // at the head of `FUN_00634f89`'s copy, may not reach 11.
+        if national::talk_count(records, slot) > national::TALKS_ALLOWED {
+            self.open = SearchOpen::Notice;
+            return Outcome::Popup(Request::with(NOTICE, Args::Text(NO_MORE_TALKS)));
+        }
+        self.picked = player;
+        self.open = SearchOpen::Planner;
+        Outcome::Popup(Request::with(planner::PLANNER, Args::Book(NATION_TALK, player)))
     }
 }
 

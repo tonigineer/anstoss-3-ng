@@ -10390,4 +10390,147 @@ mod tests {
         assert_eq!(view.list(club_list).unwrap().keys, want);
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// The search on a job poked into a copy of A (dialog 351): the Land
+    /// combo opens on the coach's nation, the Verein list on the first
+    /// club; the player list holds the club's foreigners — not of his
+    /// team's nation, uncapped, not set in their ways — and a row opens
+    /// the planner, whose booked day lands in the search list with the
+    /// coach's id; a second click on him answers with the alert.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_coach_books_a_talk_with_a_foreign_player() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let foreign = |records: &a3_core::records::Records, id: u16| {
+            records.player(id).is_some_and(|p| {
+                id < 0x4269
+                    && p.nation() != 14
+                    && p.kind_12_matches() == 0
+                    && p.manner() & 0x80 == 0
+            })
+        };
+        let mut land_pos = 0usize;
+        let mut club_no = 0u16;
+        let mut init_liga = 0u16;
+        let mut init: Vec<u16> = Vec::new();
+        let mut want: Vec<u16> = Vec::new();
+        let mut picked = 0u16;
+        let mut pick_row = 0usize;
+        let mut free_day = 0usize;
+        let mut booked_on = 0i16;
+        let mut coach_id = 0u16;
+        let mut entries = 0usize;
+        let root = patched(&dir, "A", "nationalsearch", |records| {
+            assert_ne!(records.countries.kind(14), 0, "save A's land 14 is no country");
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            land_pos = (1..0x75u16)
+                .filter(|&c| records.countries.kind(usize::from(c)) != 0)
+                .position(|c| c == 14)
+                .unwrap();
+            init_liga = records.team(14, 0).map_or(0, |t| (u16::from(t.level()) + 1).min(3));
+            init = records
+                .team(14, 0)
+                .map_or_else(Vec::new, |t| t.players())
+                .iter()
+                .copied()
+                .filter(|&id| foreign(records, id))
+                .collect();
+            club_no = (0..records.countries.team_count(14).max(0) as u16)
+                .find(|&n| {
+                    records
+                        .team(14, n)
+                        .is_some_and(|t| t.players().iter().any(|&id| foreign(records, id)))
+                })
+                .unwrap();
+            want = records
+                .team(14, club_no)
+                .unwrap()
+                .players()
+                .iter()
+                .copied()
+                .filter(|&id| foreign(records, id))
+                .collect();
+            pick_row = want
+                .iter()
+                .position(|&id| !a3_core::transfers::pending(records, id))
+                .unwrap();
+            picked = want[pick_row];
+            let (start, today) =
+                (records.globals.week_start(), records.globals.day());
+            free_day = (0..7)
+                .find(|&k| {
+                    records.planners.get(slot).is_some_and(|p| {
+                        p.day(start as usize + k).kind == 0 && start as usize + k >= today as usize
+                    })
+                })
+                .expect("no free day in the week");
+            booked_on = start + free_day as i16;
+            coach_id = u16::from(records.managers[slot].human());
+            entries =
+                usize::try_from(i16::from_le_bytes(records.block("0x1c53d98").unwrap()[0..2].try_into().unwrap()))
+                    .unwrap_or(0);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&351];
+        let land = crate::screens::control(dialog, 4510).unwrap();
+        let clubs = crate::screens::control(dialog, 4508).unwrap();
+        let players = crate::screens::control(dialog, 4507).unwrap();
+        let notice = crate::screens::control(&game.dialogs[&380], 4730).unwrap();
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 1\nuntil dialog 351";
+        let keys = |ids: &[u16]| ids.iter().map(|&id| usize::from(id)).collect::<Vec<usize>>();
+        // Open: the caption keeps the file's title; the combo on his own
+        // nation; the Verein list sorted by name, no row painted chosen —
+        // `FUN_007a9fb0` selects row 0 but the list draws it plain —
+        // while the players stand at the country's first club.
+        let runner = on_save(&game, "nationalsearch", open).unwrap();
+        let view = runner.host.view();
+        let caption = crate::screens::control(dialog, 9935).unwrap();
+        assert_eq!(view.text(caption), "ANSTOSS 3 - Spieler für Gespräch aussuchen");
+        assert_eq!(view.combo(land).unwrap().selected, Some(land_pos), "{}", runner.log.join("\n"));
+        let list = view.list(clubs).unwrap();
+        assert_eq!(list.selected, None);
+        let order = crate::screens::search::stricmp;
+        assert!(
+            list.rows.windows(2).all(|w| order(&w[0]) <= order(&w[1])),
+            "the Verein list sorted: {}",
+            list.rows.join(" / ")
+        );
+        let club_row = list.keys.iter().position(|&k| k == usize::from(club_no)).unwrap();
+        let plist = view.list(players).unwrap();
+        assert_eq!(plist.keys, keys(&init));
+        assert_eq!(plist.rows[0].split('\t').nth(3).unwrap(), init_liga.to_string());
+        // The Verein row moves the player list; the row keeps the file's
+        // seven columns.
+        let pick = &format!("{open}\nnow row 4508 {club_row}\n");
+        let runner = on_save(&game, "nationalsearch", pick).unwrap();
+        let list = runner.host.view().list(players).unwrap();
+        assert_eq!(list.keys, keys(&want), "the player list: {}", list.rows.join(" / "));
+        assert_eq!(list.rows[0].split('\t').count(), 7);
+        // His row opens the planner; the day booked there — and the
+        // coach — land in the search list behind the entries standing.
+        let booked =
+            &format!("{pick}now row 4507 {pick_row}\nuntil dialog 412\nnow choose 5034 {free_day}\nuntil dialog 351");
+        let runner = on_save(&game, "nationalsearch", booked).unwrap();
+        let state = runner.host.state();
+        let block = state.records.as_ref().unwrap().block("0x1c53d98").unwrap();
+        let e = 2 + entries * 6;
+        assert_eq!(i16::from_le_bytes(block[0..2].try_into().unwrap()), entries as i16 + 1);
+        assert_eq!(u16::from_le_bytes(block[e..e + 2].try_into().unwrap()), picked);
+        assert_eq!(i16::from_le_bytes(block[e + 2..e + 4].try_into().unwrap()), booked_on);
+        assert_eq!(u16::from_le_bytes(block[e + 4..e + 6].try_into().unwrap()), coach_id);
+        // The same row again answers with the week's alert, and the
+        // planner stays closed.
+        let runner = on_save(
+            &game,
+            "nationalsearch",
+            &format!("{booked}\nnow row 4507 {pick_row}\nuntil dialog 380"),
+        )
+        .unwrap();
+        assert_eq!(runner.host.view().text(notice), game.text(3478));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

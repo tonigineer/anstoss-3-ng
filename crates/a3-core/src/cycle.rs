@@ -44,6 +44,9 @@ pub mod dialogs {
     /// The coach putting together his national squad
     /// (`CNationalkaderZusammenstellen`).
     pub const NATIONAL_SQUAD: u16 = 357;
+    /// The coach looking for a foreign player to talk into changing his
+    /// nation (`CNationalSpielerSuchen`).
+    pub const NATIONAL_SEARCH: u16 = 351;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;

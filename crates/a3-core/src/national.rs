@@ -1,5 +1,6 @@
 //! Being a national coach (NATIONALMANNSCHAFT.md in the RE repo): whether
-//! the national team plays this week, and giving the job up.
+//! the national team plays this week, giving the job up, and looking for
+//! foreign players to talk into changing their nation.
 
 use crate::calendar::Calendar;
 use crate::load;
@@ -197,11 +198,153 @@ pub fn leave(records: &mut Records, slot: usize, reason: u8) {
     crate::career::left_national_team(records, slot, reason);
 }
 
+/// The talks about changing nation, as the coach's human slot keeps them
+/// in the save (`FUN_00634f89`'s source, the block standing at
+/// `DAT_00a55728` = the slot's object at `0xa55708` plus 0x20, which the
+/// save leaves out): an i16 count at the block's +0 and 20 entries of
+/// six bytes from +2 — the player, the flags and the day
+/// (`FUN_006b8b51` writes all three, today at `DAT_00b5cbd4`).  The flags
+/// say how far it came: 1 the first word ("Vorgespräch", text 3475), 2
+/// the offer ("Angebot", 3476) and 4 his answer ("Entscheidung", 3477).
+const TALKS_AT: u32 = 0xa55708;
+const TALKS_COUNT: usize = 0;
+const TALKS_FIRST: usize = 2;
+const TALK: usize = 6;
+const TALKS_MOST: usize = 0x14;
+/// His answer, whatever it was: set, the coach is sent away when he
+/// picks the player again (the click's alert 3474).
+pub const ANSWERED: u8 = 4;
+/// How many talks a coach may have on his slate before his association
+/// refuses any more (`FUN_0051f715`'s gate on the copied count, alert
+/// 3479): ten, the eleventh entry already alerts.
+pub const TALKS_ALLOWED: usize = 10;
+
+fn word(b: &[u8], at: usize) -> i16 {
+    i16::from_le_bytes([b[at], b[at + 1]])
+}
+
+fn put16(b: &mut [u8], at: usize, v: i16) {
+    b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// What has been said to `player` in the talks of the human in `slot`
+/// (`FUN_006b8f5f`): the flags of his entry over all twenty, 0 while he
+/// stands in none — the id 0 the search never lists reads 0 as well.
+pub fn talk_flags(records: &Records, slot: usize, player: u16) -> u8 {
+    if player == 0 {
+        return 0;
+    }
+    records.block(&format!("{TALKS_AT:#x}[{slot}]")).map_or(0, |b| {
+        (0..TALKS_MOST)
+            .find(|&k| word(b, TALKS_FIRST + k * TALK) as u16 == player)
+            .map_or(0, |k| b[TALKS_FIRST + k * TALK + 2])
+    })
+}
+
+/// How many talks the coach has on his slate (the count `FUN_00634f89`
+/// copies to the front of its copy, and the search's click counts).
+pub fn talk_count(records: &Records, slot: usize) -> usize {
+    records
+        .block(&format!("{TALKS_AT:#x}[{slot}]"))
+        .map_or(0, |b| usize::try_from(word(b, TALKS_COUNT)).unwrap_or(0).min(TALKS_MOST))
+}
+
+/// The players picked for those talks, shared by the human coaches
+/// (`0x1c53d98`; `FUN_007635f7`): an i16 count and up to 50 entries of
+/// six bytes — the player, the day of the talk and the coach's human id
+/// (his record's +0x1a).
+const SEARCH_AT: u32 = 0x1c53d98;
+const SEARCH: usize = 6;
+const SEARCH_MOST: usize = 0x32;
+
+/// Whether this very coach has picked `player` for a talk already
+/// (`FUN_00763518`, the click's first gate, alert 3478): an entry
+/// naming him and the coach's id after the day.
+pub fn searched(records: &Records, coach: u16, player: u16) -> bool {
+    records.block(&format!("{SEARCH_AT:#x}")).is_some_and(|b| {
+        let count = usize::try_from(word(b, 0)).unwrap_or(0).min(SEARCH_MOST);
+        (0..count).any(|k| {
+            word(b, 2 + k * SEARCH) as u16 == player && word(b, 2 + k * SEARCH + 4) as u16 == coach
+        })
+    })
+}
+
+/// `player` on `day` for the coach `coach` into the search list
+/// (`FUN_007635f7`): false when he stands in it already — under any
+/// coach — or when the list is full at 50; else the entry goes after the
+/// last and the count grows.
+pub fn book_search(records: &mut Records, player: u16, day: i16, coach: u16) -> bool {
+    let Some(b) = records.block_mut(&format!("{SEARCH_AT:#x}")) else {
+        return false;
+    };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(SEARCH_MOST);
+    if (0..count).any(|k| word(b, 2 + k * SEARCH) as u16 == player) || count >= SEARCH_MOST {
+        return false;
+    }
+    let e = 2 + count * SEARCH;
+    if b.len() < e + SEARCH {
+        return false;
+    }
+    put16(b, e, player as i16);
+    put16(b, e + 2, day);
+    put16(b, e + 4, coach as i16);
+    put16(b, 0, count as i16 + 1);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use a3_files::an3::Save;
     use std::path::PathBuf;
+
+    /// The talks' table and the search list over the original's save
+    /// (`FUN_006b8f5f`, `FUN_00763518` and `FUN_007635f7`): the flags
+    /// read from all twenty entries, counted ones or not; the search
+    /// takes a player once under any coach, remembers which coach for
+    /// its alert, and the count grows with the entry.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_search_takes_him_once_and_the_talks_read_his_flags() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves; the oracle's copy has it");
+            return;
+        }
+        let mut records = Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let country = (1..0x75u16)
+            .find(|&c| records.countries.team_count(usize::from(c)) > 0)
+            .unwrap();
+        let players = records.team(country, 0).unwrap().players();
+        let (player, other) = (players[0], players[1]);
+        // One entry, at the fifth, over a count left at 0.
+        let today = records.globals.day() as i16;
+        {
+            let b = records.block_mut(&format!("{TALKS_AT:#x}[0]")).unwrap();
+            b[TALKS_FIRST..TALKS_FIRST + TALKS_MOST * TALK].fill(0);
+            put16(b, TALKS_COUNT, 0);
+            let e = TALKS_FIRST + 5 * TALK;
+            put16(b, e, player as i16);
+            b[e + 2] = 3;
+            put16(b, e + 4, today);
+        }
+        assert_eq!(talk_flags(&records, 0, player), 3, "the scan runs over all twenty");
+        assert_eq!(talk_flags(&records, 0, other), 0);
+        assert_eq!(talk_flags(&records, 0, 0), 0, "id 0 is asked about in neither direction");
+        assert_eq!(talk_count(&records, 0), 0, "the count stands where it was");
+        // The search list: one coach's pick, then another's.
+        assert!(book_search(&mut records, player, 40, 1));
+        assert!(searched(&records, 1, player));
+        assert!(!searched(&records, 2, player), "no other coach has picked him");
+        assert!(!book_search(&mut records, player, 44, 2), "he stands in the list already");
+        assert!(book_search(&mut records, other, 41, 2));
+        let b = records.block(&format!("{SEARCH_AT:#x}")).unwrap();
+        assert_eq!(word(b, 0), 2);
+        assert_eq!((word(b, 2), word(b, 4), word(b, 6)), (player as i16, 40, 1));
+        assert_eq!((word(b, 8), word(b, 10), word(b, 12)), (other as i16, 41, 2));
+        assert!(searched(&records, 2, other));
+    }
 
     /// The picker's list over the original's save (`FUN_0051b6fe` and
     /// `FUN_0051b819`): a called-up player lands after the last one whose
