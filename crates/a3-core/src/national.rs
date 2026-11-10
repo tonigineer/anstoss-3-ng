@@ -249,6 +249,21 @@ pub fn talk_count(records: &Records, slot: usize) -> usize {
         .map_or(0, |b| usize::try_from(word(b, TALKS_COUNT)).unwrap_or(0).min(TALKS_MOST))
 }
 
+/// The talks as the overview reads them (`CEinbuergerungsgespraeche`'s
+/// fill, `FUN_0048dad5`, over all twenty of `FUN_00634f89`'s copy): the
+/// entries that hold a player, in the save's order — the id 0 of the
+/// free ones stands for no talk — with each one's flags.
+pub fn talks(records: &Records, slot: usize) -> Vec<(u16, u8)> {
+    records.block(&format!("{TALKS_AT:#x}[{slot}]")).map_or_else(Vec::new, |b| {
+        (0..TALKS_MOST)
+            .filter_map(|k| {
+                let id = word(b, TALKS_FIRST + k * TALK) as u16;
+                (id != 0).then(|| (id, b[TALKS_FIRST + k * TALK + 2]))
+            })
+            .collect()
+    })
+}
+
 /// The players picked for those talks, shared by the human coaches
 /// (`0x1c53d98`; `FUN_007635f7`): an i16 count and up to 50 entries of
 /// six bytes — the player, the day of the talk and the coach's human id

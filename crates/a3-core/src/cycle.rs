@@ -47,6 +47,8 @@ pub mod dialogs {
     /// The coach looking for a foreign player to talk into changing his
     /// nation (`CNationalSpielerSuchen`).
     pub const NATIONAL_SEARCH: u16 = 351;
+    /// The overview of his naturalization talks (`CEinbuergerungsgespraeche`).
+    pub const NATIONAL_TALKS: u16 = 471;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;

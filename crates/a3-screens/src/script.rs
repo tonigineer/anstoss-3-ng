@@ -10533,4 +10533,73 @@ mod tests {
         assert_eq!(runner.host.view().text(notice), game.text(3478));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The talks' overview (471) over a copy of A with the job poked and
+    /// two talks written into the coach's table: its button held down
+    /// under the dialog, one row per talk in the table's order — the
+    /// player's name, his nation's three letters, his club and how far
+    /// the talk came — and OK letting the button go.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_talks_overview_lists_the_coach_s_talks() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let root = patched(&dir, "A", "nationaltalks", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            let team = records.team(14, 0).expect("A has a first German club");
+            let (first, second) = (team.players()[0], team.players()[1]);
+            let b = records.block_mut("0xa55708[0]").unwrap();
+            b[0..2].copy_from_slice(&2i16.to_le_bytes());
+            b[2..4].copy_from_slice(&first.to_le_bytes());
+            b[4] = 1;
+            b[8..10].copy_from_slice(&second.to_le_bytes());
+            b[10] = 6;
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 2\nuntil dialog 471";
+        let runner = on_save(&game, "nationaltalks", open).unwrap();
+        let dialog = &game.dialogs[&471];
+        let view = runner.host.view();
+        let caption = crate::screens::control(dialog, 9935).unwrap();
+        assert_eq!(view.text(caption), "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche");
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let team = records.team(14, 0).unwrap();
+        let (first, second) = (team.players()[0], team.players()[1]);
+        let row = |id: u16, status: u16| {
+            let r = records.player(id).unwrap();
+            let [country, number] = r.club();
+            [
+                records.known_as(id).unwrap(),
+                game.world.nation_codes[usize::from(r.nation())].clone(),
+                game.club_name(Some(records), country, i16::from(number)),
+                game.text(status).to_owned(),
+            ]
+            .join("\t")
+        };
+        let list = view.list(crate::screens::control(dialog, 6031).unwrap()).unwrap();
+        assert_eq!(
+            list.rows,
+            [row(first, 3475), row(second, 3477)],
+            "the talks' rows: {}",
+            list.rows.join(" / ")
+        );
+        assert_eq!(list.keys, [usize::from(first), usize::from(second)]);
+        // The third button stays held down while the overview stands over
+        // the menu, as the menu clears it only when the dialog closes.
+        let buttons = crate::screens::control(&game.dialogs[&355], 4538).unwrap();
+        let menu = runner.host.views().find(|v| v.id == 355).unwrap();
+        assert_eq!(menu.options(buttons).unwrap().chosen, 2, "held down under the overview");
+        let closed =
+            on_save(&game, "nationaltalks", &format!("{open}\nnow ok\nuntil dialog 355")).unwrap();
+        assert_eq!(
+            closed.host.view().options(buttons).unwrap().chosen,
+            crate::controls::options::NONE
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

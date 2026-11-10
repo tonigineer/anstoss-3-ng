@@ -2,13 +2,14 @@
 //! on a picture (dialog 355, `CNationalmannschaft`), its first button's squad
 //! picker (dialog 357, `CNationalkaderZusammenstellen`) and its second
 //! button's search for a foreign player to talk into changing his nation
-//! (dialog 351, `CNationalSpielerSuchen`; NATIONALMANNSCHAFT.md in the RE
-//! repo).
+//! (dialog 351, `CNationalSpielerSuchen`) and its third button's overview
+//! of the talks so far (dialog 471, `CEinbuergerungsgespraeche`;
+//! NATIONALMANNSCHAFT.md in the RE repo).
 
 use std::collections::HashMap;
 
 use a3_core::cycle::dialogs::{
-    LINEUP, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NOTICE, QUESTION,
+    LINEUP, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NATIONAL_TALKS, NOTICE, QUESTION,
 };
 use a3_core::national;
 use a3_core::season::Rules;
@@ -34,6 +35,9 @@ const BUTTONS: u16 = 4538;
 const PICK: usize = 0;
 /// The second, "Spieler für ein Gespräch aussuchen", opening the search.
 const SEARCH: usize = 1;
+/// The third, "Infos über Einbürgerungsgespräche", opening the talks'
+/// overview.
+const TALKS: usize = 2;
 /// The last button, "Als Nationaltrainer zurücktreten", and its three
 /// answers: refused before a match, sure?, accepted.
 const RESIGN: usize = 5;
@@ -47,11 +51,15 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     dialog.controls.retain(|c| c.id != Some(OK));
     dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
     hub::add_bar(dialog, rules);
-    // The search's caption is the dialog's own title, "ANSTOSS 3 -
-    // Spieler für Gespräch aussuchen"; nothing changes it.
-    if let Some(dialog) = dialogs.get_mut(&NATIONAL_SEARCH) {
-        let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
-        dialog.controls.insert(0, caption);
+    // The search's and the overview's captions are the dialogs' own
+    // titles, "ANSTOSS 3 - Spieler für Gespräch aussuchen" and
+    // "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche"; nothing changes
+    // either.
+    for id in [NATIONAL_SEARCH, NATIONAL_TALKS] {
+        if let Some(dialog) = dialogs.get_mut(&id) {
+            let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
+            dialog.controls.insert(0, caption);
+        }
     }
 }
 
@@ -97,7 +105,9 @@ impl Screen for NationalMenu {
         }
         let has_team = coach_has_a_team(cx);
         let works = |target: Target| match target {
-            Target::Option { control: c, item: RESIGN } => dialog.controls[c].id == Some(BUTTONS),
+            Target::Option { control: c, item: RESIGN | TALKS } => {
+                dialog.controls[c].id == Some(BUTTONS)
+            }
             Target::Option { control: c, item: PICK | SEARCH } => {
                 dialog.controls[c].id == Some(BUTTONS) && has_team
             }
@@ -123,6 +133,11 @@ impl Screen for NationalMenu {
                 if cx.dialog.controls[c].id == Some(BUTTONS) =>
             {
                 self.find(cx, view)
+            }
+            Target::Option { control: c, item: TALKS }
+                if cx.dialog.controls[c].id == Some(BUTTONS) =>
+            {
+                self.overview(cx, view)
             }
             _ => Outcome::Stay,
         }
@@ -166,6 +181,16 @@ impl NationalMenu {
         }
         hold(cx, view, Some(SEARCH));
         Outcome::Popup(Request::new(NATIONAL_SEARCH))
+    }
+
+    /// "Infos über Einbürgerungsgespräche": the overview of the talks on
+    /// his slate.
+    /// Along with the successes the one button that opens for any coach,
+    /// with a nation or without (asm 0x51e2c0; the dialog takes his id
+    /// from the manager's +0x1a).
+    fn overview(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        hold(cx, view, Some(TALKS));
+        Outcome::Popup(Request::new(NATIONAL_TALKS))
     }
 
     /// The resignation (asm 0x51e2b2): only a manager with a nation has
@@ -1011,6 +1036,89 @@ impl NationalPlayerSearch {
         self.picked = player;
         self.open = SearchOpen::Planner;
         Outcome::Popup(Request::with(planner::PLANNER, Args::Book(NATION_TALK, player)))
+    }
+}
+
+/// The talks' list, control 0x178f (`CListBoxSpielerInfo`).
+const TALKS_LIST: u16 = 6031;
+
+/// The overview of the talks so far (`CEinbuergerungsgespraeche`, dialog
+/// 471): rows over the coach's talk entries, each the player's name
+/// (`FUN_006feb4d`), his nation's three letters (the table at 0xae5768),
+/// his club's name (`FUN_0063e52f` from the club's league and number, 200
+/// standing for the national team) and how far the talk came: the first
+/// word, the offer, his answer (texts 3475, 3476, 3477).  The class has
+/// no handler but OK's: a row stands chosen and nothing answers it.
+#[derive(Default)]
+pub struct NationalTalks;
+
+impl Screen for NationalTalks {
+    fn ids(&self) -> &[u16] {
+        &[NATIONAL_TALKS]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        fill_talks(cx, view);
+        mark_inert(view, cx.dialog, |_| true);
+    }
+
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
+        match target {
+            Target::Button(c) if crate::controls::button::is_ok(&cx.dialog.controls[c]) => {
+                Outcome::Close(Reply::Ok)
+            }
+            _ => Outcome::Stay,
+        }
+    }
+}
+
+/// The rows, in the save's order — the entries whose player stands 0 are
+/// no talk and stand in no list (`FUN_0048dad5`; `FUN_007a90c1` appends,
+/// the box not sorted, and its item keeps the player's id).
+fn fill_talks(cx: &Cx, view: &mut View) {
+    let (game, dialog) = (cx.game, cx.dialog);
+    let (Some(records), Some(season), Some(c)) = (
+        cx.state.records.as_ref(),
+        cx.state.season.as_ref(),
+        control(dialog, TALKS_LIST),
+    ) else {
+        return;
+    };
+    let slot = records.human_slot(season.current).unwrap_or(0);
+    let (mut rows, mut keys) = (Vec::new(), Vec::new());
+    for (id, flags) in national::talks(records, slot) {
+        let Some(record) = records.player(id) else { continue };
+        let name = records.known_as(id).unwrap_or_default();
+        let nation = game
+            .world
+            .nation_codes
+            .get(usize::from(record.nation()))
+            .map_or("", String::as_str)
+            .to_owned();
+        let [country, number] = record.club();
+        let status = match flags {
+            f if f & 4 != 0 => HIS_ANSWER,
+            f if f & 2 != 0 => THE_OFFER,
+            _ => FIRST_WORD,
+        };
+        rows.push(
+            [
+                name,
+                nation,
+                game.club_name(Some(records), country, i16::from(number)),
+                game.text(status).to_owned(),
+            ]
+            .join("\t"),
+        );
+        keys.push(usize::from(id));
+    }
+    if let Some(list) = view.list_mut(c) {
+        list.rows = rows;
+        list.inks.clear();
+        list.row_icons.clear();
+        list.keys = keys;
+        list.selected = None;
+        list.scroll = 0;
     }
 }
 
