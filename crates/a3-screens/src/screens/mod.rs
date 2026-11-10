@@ -197,6 +197,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
         Box::new(national::NationalMenu::default()),
+        Box::new(national::NationalSquad::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),
@@ -347,6 +348,7 @@ pub fn compose(game: &mut Game) {
     merchandise::compose(&mut game.dialogs);
     illegal::compose(&mut game.dialogs);
     national::compose(&mut game.dialogs, &game.data.rules);
+    national::compose_picker(&mut game.dialogs);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);

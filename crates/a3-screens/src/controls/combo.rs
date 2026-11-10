@@ -192,8 +192,10 @@ impl ComboState {
         self.scroll = (self.scroll as i32 + rows).clamp(0, last as i32) as usize;
     }
 
-    /// The field: the chosen text, and its arrow held while the list is
-    /// down.
+    /// The field: the chosen text in the plain colour — the rows' own
+    /// colours only show in the dropped list; the field's come from the
+    /// columns' styles (`FUN_00798de7`, `FUN_007a756f`) —, and its arrow
+    /// held while the list is down.
     pub(crate) fn draw(&self, frame: &mut RgbaImage, paint: &Paint) {
         let r = paint.control.rect;
         if self.open {
@@ -209,7 +211,7 @@ impl ComboState {
             // The text stops short of the arrow (410's place field, 98
             // pixels: "Bitte auswählen" loses its last letter).
             let right = r.max.x as i32 - ARROW as i32 - FIELD_MARGIN;
-            draw_text(font, frame, paint.control, at, 0, text, right, self.ink(s));
+            draw_text(font, frame, paint.control, at, 0, text, right, TEXT);
         }
     }
 

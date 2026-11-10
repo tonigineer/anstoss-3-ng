@@ -57,18 +57,26 @@ pub fn plays_this_week(records: &Records, nation: i16) -> bool {
         || (week < next && i32::from(next) < i32::from(week) + 7)
 }
 
-/// How many of the national squad are fit (`FUN_00650b84` asm 0x652426
-/// and `FUN_0065270d` asm 0x6529cb: the club's squad list at its +0xe2 —
-/// record 0x112 and 0x1f2 — one counted while his days of injury at his
-/// +0x2c stand below a week).
-pub fn fit_squad(records: &Records, nation: i16) -> usize {
+/// The squad the team block keeps: its count at +0x112 and the ids at
+/// +0x1f2, the loaded club's list at its +0xe2 and +0xb50.
+pub fn squad_ids(records: &Records, nation: i16) -> Vec<u16> {
     let Some(team) = team_block(records, nation) else {
-        return 0;
+        return Vec::new();
     };
     let count = i16::from_le_bytes([team[NATIONAL_COUNT], team[NATIONAL_COUNT + 1]]).max(0) as usize;
     (0..count)
         .filter_map(|k| team.get(NATIONAL_SQUAD + 2 * k..NATIONAL_SQUAD + 2 * k + 2))
         .map(|w| u16::from_le_bytes([w[0], w[1]]))
+        .collect()
+}
+
+/// How many of the national squad are fit (`FUN_00650b84` asm 0x652426
+/// and `FUN_0065270d` asm 0x6529cb: the club's squad list at its +0xe2 —
+/// record 0x112 and 0x1f2 — one counted while his days of injury at his
+/// +0x2c stand below a week).
+pub fn fit_squad(records: &Records, nation: i16) -> usize {
+    squad_ids(records, nation)
+        .into_iter()
         .filter(|&player| {
             records
                 .player(player)

@@ -41,6 +41,9 @@ pub mod dialogs {
     pub const CLUB: u16 = 304;
     pub const NATIONAL_TEAM: u16 = 352;
     pub const NATIONAL_MENU: u16 = 355;
+    /// The coach putting together his national squad
+    /// (`CNationalkaderZusammenstellen`).
+    pub const NATIONAL_SQUAD: u16 = 357;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;
