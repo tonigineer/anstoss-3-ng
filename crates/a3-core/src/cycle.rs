@@ -52,6 +52,9 @@ pub mod dialogs {
     /// The coach arranging his team's friendlies in the international
     /// windows (`CNationalFreundschaftsspiel`).
     pub const NATIONAL_FRIENDLY: u16 = 354;
+    /// The successes of every nation's teams at the big tournaments
+    /// (`CInfoNationalteam`).
+    pub const NATIONAL_INFO: u16 = 472;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;

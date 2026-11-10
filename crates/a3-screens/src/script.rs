@@ -10816,4 +10816,100 @@ mod tests {
         assert_eq!(&rec[0x3c..0x42], &[3, 0, 200, 0, 0, 0], "the picked candidate stands booked");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The infos on the national teams (472) over a copy of A with the job
+    /// poked: the combo holds the lands 1 to 115 and stands on the
+    /// coach's own nation, that land's big flag stands under the header,
+    /// and the list is empty — the results table `0xa7c260` no save block
+    /// covers and nothing writes stands zero, so no land has a tournament
+    /// booked (the original screen c1-item4-erfolge looks the same).  A
+    /// combo row moves flag and rows together; the fifth button is held
+    /// under the menu until OK lets it go.  A coach whose nation number
+    /// stands outside the combo's 1 to 115 still opens the infos with
+    /// nothing chosen: land 0's empty rows and the 76th name's catch-all
+    /// flag stand, the original's `DAT_00b5cbb0`.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_infos_show_the_nations_teams() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let installed = game();
+        if on_save(&installed, "A", "").is_none() {
+            return;
+        }
+        let root = patched(&dir, "A", "nationalinfo", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let flag = |name: &str| crate::controls::bitmap::Picture {
+            source: crate::controls::bitmap::PictureSource::Archive(format!("gross/{name}.bmp")),
+            part: None,
+            black_clear: false,
+        };
+        let dialog = &game.dialogs[&472];
+        let st = |id: u16| crate::screens::control(dialog, id).unwrap();
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 4\nuntil dialog 472";
+        let base = on_save(&game, "nationalinfo", open).unwrap();
+        let view = base.host.view();
+        let caption = crate::screens::control(dialog, 9935).unwrap();
+        assert_eq!(view.text(caption), "ANSTOSS 3 - Infos über Nationalteams");
+        // The combo over the lands 1 to 115, chosen to his own nation 14.
+        let combo = view.combo(st(6028)).unwrap();
+        assert_eq!(combo.items.len(), 115, "the lands 1 to 115");
+        assert_eq!(combo.items[13], game.world.nation(14));
+        assert_eq!(combo.selected, Some(13), "{}", base.log.join("\n"));
+        // The land's big flag, and no row anywhere: the results table
+        // stands zero in every save.
+        assert_eq!(
+            view.controls[st(6029)].state.as_bitmap().unwrap().picture,
+            Some(flag(&game.data.nation_flags[14]))
+        );
+        let list = view.list(st(6030)).unwrap();
+        assert!(list.rows.is_empty() && list.keys.is_empty(), "the list stands empty");
+        // The fifth button stands held while the infos are up.
+        let buttons = crate::screens::control(&game.dialogs[&355], 4538).unwrap();
+        assert_eq!(
+            base.host.views().find(|v| v.id == 355).unwrap().options(buttons).unwrap().chosen,
+            4,
+            "held down under the infos"
+        );
+        // A combo row moves flag and rows together.
+        let runner = on_save(&game, "nationalinfo", &format!("{open}\nnow row 6028 2")).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.combo(st(6028)).unwrap().selected, Some(2));
+        assert_eq!(
+            view.controls[st(6029)].state.as_bitmap().unwrap().picture,
+            Some(flag(&game.data.nation_flags[3]))
+        );
+        assert!(view.list(st(6030)).unwrap().rows.is_empty());
+        // OK lets the button go.
+        let closed =
+            on_save(&game, "nationalinfo", &format!("{open}\nnow ok\nuntil dialog 355")).unwrap();
+        assert_eq!(
+            closed.host.view().options(buttons).unwrap().chosen,
+            crate::controls::options::NONE
+        );
+        // A coach whose nation number stands outside the combo's 1 to
+        // 115 sees nothing chosen; land 0's empty rows and the 76th
+        // name's catch-all flag stand, as the original with land 0 from
+        // `DAT_00b5cbb0`.
+        let far = patched(&dir, "A", "nationalinfo2", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 200i16);
+        });
+        let mut other = Game::load(&far).unwrap();
+        compose(&mut other);
+        let runner = on_save(&other, "nationalinfo2", open).unwrap();
+        let view = runner.host.view();
+        let os = |id: u16| crate::screens::control(&other.dialogs[&472], id).unwrap();
+        assert_eq!(view.combo(os(6028)).unwrap().selected, None, "{}", runner.log.join("\n"));
+        assert_eq!(
+            view.controls[os(6029)].state.as_bitmap().unwrap().picture,
+            Some(flag(&other.data.nation_flags[76]))
+        );
+        assert!(view.list(os(6030)).unwrap().rows.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&far);
+    }
 }

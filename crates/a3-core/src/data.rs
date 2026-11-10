@@ -25,6 +25,12 @@ pub struct Data {
     pub rules: Rules,
     /// The advance sales' tables.
     pub presale: PresaleTables,
+    /// The big flags' names by land (`FUN_0069608b`'s table at
+    /// `0x8a4890`, 117 of them): the info dialog on the national teams
+    /// shows `gross/<name>.bmp` from the flags' archive; lands with no
+    /// flag of their own carry the catch-all "Wel", land 0 and 76
+    /// among them.
+    pub nation_flags: Vec<String>,
 }
 
 impl Data {
@@ -38,6 +44,7 @@ impl Data {
             calendar: Calendar::load(&exe, &world)?,
             rules: Rules::load(&exe)?,
             presale: PresaleTables::load(&exe)?,
+            nation_flags: crate::national::flag_names(&exe)?,
             world,
         })
     }

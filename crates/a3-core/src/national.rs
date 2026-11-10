@@ -496,6 +496,87 @@ pub fn international_pairs(records: &Records, entry: usize, column: usize) -> Ve
         .collect()
 }
 
+/// The successes at the big tournaments (`CInfoNationalteam`'s table,
+/// which its `OnInit` copies out with a 0x5418-byte `memcpy`): 117
+/// records of 0xb8 bytes at `0xa7c260` — the row count, the year
+/// counter at +2 (shown as its +1, stepping by 2 for a country with
+/// national teams and by 4 without), ten result ids at +4 and ten
+/// coach names of sixteen bytes at +0x18.  Nothing in the exe writes
+/// the table, and no save block reaches it — save A's last two blocks
+/// end at 0xa7c21c, just short — so it stands zero and the dialog's
+/// list stays empty for every land (screen c1-item4-erfolge); the walk
+/// is ported for the day the tournaments themselves are simulated.
+const RESULTS_AT: u32 = 0xa7c260;
+const RESULTS_MOST: usize = 117;
+const RESULT_RECORD: usize = 0xb8;
+const RESULT_ROWS: usize = 10;
+/// The two contests' texts ("Europameisterschaft", "Weltmeisterschaft")
+/// and the first of the seven result texts, "nicht qualifiziert" to
+/// "Finale gewonnen": the record's ids count up from it (4190..4196).
+pub const EUROPEAN_CUP: u16 = 4188;
+pub const WORLD_CUP: u16 = 4189;
+pub const FIRST_RESULT: u16 = 4190;
+
+/// One tournament a land's team took part in, as the info dialog reads
+/// it into a row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Success {
+    pub year: i32,
+    pub contest: u16,
+    pub result: u16,
+    pub coach: String,
+}
+
+/// `land`'s tournament rows, newest first (`FUN_004cb3b2`): the slots
+/// walked down from the counted one.  With national teams behind the
+/// land (`DAT_0089e0b8[land]`), a row is a Weltmeisterschaft when the
+/// counter leaves 0 or 1 mod 4 (`FUN_004cb372`) and an
+/// Europameisterschaft else, and the counter steps by 2; without,
+/// every row is a Weltmeisterschaft and it steps by 4.
+pub fn successes(records: &Records, land: i16) -> Vec<Success> {
+    let (Some(all), Ok(n)) = (records.block(&format!("{RESULTS_AT:#x}")), usize::try_from(land))
+    else {
+        return Vec::new();
+    };
+    if n >= RESULTS_MOST {
+        return Vec::new();
+    }
+    all.get(n * RESULT_RECORD..n * RESULT_RECORD + RESULT_RECORD)
+        .map_or_else(Vec::new, |r| rows(r, records.countries.has_teams(n)))
+}
+
+/// The big flags' names by land (`FUN_0069608b`'s pointer table at
+/// `0x8a4890`, 117 of them): the info dialog loads
+/// `gross/<name>.bmp` from the flags' archive, and the land it falls
+/// back to outside 1..=116 is the 76th, the catch-all "Wel".
+pub fn flag_names(exe: &a3_files::exe::Exe) -> std::io::Result<Vec<String>> {
+    (0..117u32)
+        .map(|n| {
+            let at = a3_files::cpr::u32_at(exe.bytes(0x8a4890 + 4 * n, 4)?, 0)?;
+            let raw = exe.bytes(at, 40)?;
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            Ok(a3_files::sav::cp1252(&raw[..end]))
+        })
+        .collect()
+}
+
+/// The walk of one record, as the dialog's filler runs it.
+fn rows(record: &[u8], has_team: bool) -> Vec<Success> {
+    let count = usize::try_from(word(record, 0)).unwrap_or(0).min(RESULT_ROWS);
+    let mut counter = word(record, 2);
+    let mut out = Vec::new();
+    for slot in (0..count).rev() {
+        let contest = if !has_team || counter.rem_euclid(4) <= 1 { WORLD_CUP } else { EUROPEAN_CUP };
+        let result = FIRST_RESULT + u16::try_from(word(record, 4 + slot * 2)).unwrap_or(0);
+        let coach = a3_files::sav::cp1252(
+            record[0x18 + slot * 0x10..].split(|&b| b == 0).next().unwrap_or_default(),
+        );
+        out.push(Success { year: i32::from(counter) + 1, contest, result, coach });
+        counter -= if has_team { 2 } else { 4 };
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +793,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The walk of `FUN_004cb3b2` over a crafted record: rows newest
+    /// first, the contest by the counter's remainder mod 4 and its step,
+    /// the result ids counting up from 4190 and the coaches cut at their
+    /// NUL — and, without national teams behind the land, every row a
+    /// Weltmeisterschaft with the counter leaping by 4.
+    #[test]
+    fn the_walk_reads_the_rows_newest_first() {
+        let mut record = [0u8; RESULT_RECORD];
+        record[0..2].copy_from_slice(&3i16.to_le_bytes());
+        record[2..4].copy_from_slice(&2004i16.to_le_bytes());
+        for (slot, id) in [(2, 0i16), (1, 5), (0, 6)] {
+            record[4 + slot * 2..6 + slot * 2].copy_from_slice(&id.to_le_bytes());
+        }
+        for (slot, name) in [(2, "Völler"), (1, "Löw"), (0, "Klinsmann")] {
+            let at = 0x18 + slot * 0x10;
+            let bytes: Vec<u8> = name
+                .chars()
+                .map(|c| a3_files::bitmap_font::to_cp1252(c).unwrap_or(b'?'))
+                .collect();
+            record[at..at + bytes.len()].copy_from_slice(&bytes);
+        }
+        let named = rows(&record, true);
+        assert_eq!(
+            named,
+            [
+                Success { year: 2005, contest: WORLD_CUP, result: FIRST_RESULT, coach: "Völler".into() },
+                Success { year: 2003, contest: EUROPEAN_CUP, result: FIRST_RESULT + 5, coach: "Löw".into() },
+                Success { year: 2001, contest: WORLD_CUP, result: FIRST_RESULT + 6, coach: "Klinsmann".into() },
+            ]
+        );
+        let once = {
+            let mut r = [0u8; RESULT_RECORD];
+            r[0..2].copy_from_slice(&2i16.to_le_bytes());
+            r[2..4].copy_from_slice(&2006i16.to_le_bytes());
+            rows(&r, false)
+        };
+        assert_eq!(
+            once,
+            [
+                Success { year: 2007, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
+                Success { year: 2003, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
+            ]
+        );
     }
 }

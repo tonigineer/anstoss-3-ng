@@ -3,15 +3,17 @@
 //! picker (dialog 357, `CNationalkaderZusammenstellen`), its second button's
 //! search for a foreign player to talk into changing his nation (dialog 351,
 //! `CNationalSpielerSuchen`), its third button's overview of the talks so far
-//! (dialog 471, `CEinbuergerungsgespraeche`) and its fourth button's
-//! arranging of friendlies on the international days (dialog 354,
-//! `CNationalFreundschaftsspiel`; NATIONALMANNSCHAFT.md in the RE repo).
+//! (dialog 471, `CEinbuergerungsgespraeche`), its fourth button's arranging
+//! of friendlies on the international days (dialog 354,
+//! `CNationalFreundschaftsspiel`) and its fifth button's infos on the
+//! nations' tournament successes (dialog 472, `CInfoNationalteam`;
+//! NATIONALMANNSCHAFT.md in the RE repo).
 
 use std::collections::HashMap;
 
 use a3_core::cycle::dialogs::{
-    LINEUP, NATIONAL_FRIENDLY, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NATIONAL_TALKS,
-    NOTICE, QUESTION,
+    LINEUP, NATIONAL_FRIENDLY, NATIONAL_INFO, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD,
+    NATIONAL_TALKS, NOTICE, QUESTION,
 };
 use a3_core::national;
 use a3_core::season::Rules;
@@ -43,6 +45,8 @@ const SEARCH: usize = 1;
 const TALKS: usize = 2;
 /// The fourth, "Freundschaftsspiele", opening the arranger.
 const FRIENDLY: usize = 3;
+/// The fifth, "Infos über Nationalteams", opening the successes.
+const INFOS: usize = 4;
 /// The last button, "Als Nationaltrainer zurücktreten", and its three
 /// answers: refused before a match, sure?, accepted.
 const RESIGN: usize = 5;
@@ -56,11 +60,12 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     dialog.controls.retain(|c| c.id != Some(OK));
     dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
     hub::add_bar(dialog, rules);
-    // The search's, the overview's and the arranger's captions are the
-    // dialogs' own titles, "ANSTOSS 3 - Spieler für Gespräch aussuchen",
-    // "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche" and "ANSTOSS 3 -
-    // Freundschaftsspiel vereinbaren"; nothing changes in them either.
-    for id in [NATIONAL_SEARCH, NATIONAL_TALKS, NATIONAL_FRIENDLY] {
+    // The search's, the overview's, the arranger's and the infos' captions
+    // are the dialogs' own titles, "ANSTOSS 3 - Spieler für Gespräch
+    // aussuchen", "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche",
+    // "ANSTOSS 3 - Freundschaftsspiel vereinbaren" and "ANSTOSS 3 - Infos
+    // über Nationalteams"; nothing changes in them either.
+    for id in [NATIONAL_SEARCH, NATIONAL_TALKS, NATIONAL_FRIENDLY, NATIONAL_INFO] {
         if let Some(dialog) = dialogs.get_mut(&id) {
             let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
             dialog.controls.insert(0, caption);
@@ -110,7 +115,7 @@ impl Screen for NationalMenu {
         }
         let has_team = coach_has_a_team(cx);
         let works = |target: Target| match target {
-            Target::Option { control: c, item: RESIGN | TALKS } => {
+            Target::Option { control: c, item: RESIGN | TALKS | INFOS } => {
                 dialog.controls[c].id == Some(BUTTONS)
             }
             Target::Option { control: c, item: PICK | SEARCH | FRIENDLY } => {
@@ -148,6 +153,11 @@ impl Screen for NationalMenu {
                 if cx.dialog.controls[c].id == Some(BUTTONS) =>
             {
                 self.arrange(cx, view)
+            }
+            Target::Option { control: c, item: INFOS }
+                if cx.dialog.controls[c].id == Some(BUTTONS) =>
+            {
+                self.successes(cx, view)
             }
             _ => Outcome::Stay,
         }
@@ -212,6 +222,15 @@ impl NationalMenu {
     fn overview(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
         hold(cx, view, Some(TALKS));
         Outcome::Popup(Request::new(NATIONAL_TALKS))
+    }
+
+    /// "Infos über Nationalteams": the nations' tournament successes.
+    /// With the talks' overview the one button that opens for any coach,
+    /// with a nation behind him or without (the chain at asm 0x51e02b);
+    /// the dialog reads his own land from the manager's `+0x17e6`.
+    fn successes(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        hold(cx, view, Some(INFOS));
+        Outcome::Popup(Request::new(NATIONAL_INFO))
     }
 
     /// The resignation (asm 0x51e2b2): only a manager with a nation has
@@ -1140,6 +1159,134 @@ fn fill_talks(cx: &Cx, view: &mut View) {
         list.keys = keys;
         list.selected = None;
         list.scroll = 0;
+    }
+}
+
+/// The infos dialog's Land combo, its flag and its list of rows
+/// (controls 6028, 6029 and 6030).
+const INFO_LAND: u16 = 6028;
+const INFO_FLAG: u16 = 6029;
+const INFO_LIST: u16 = 6030;
+
+/// The infos on the national teams (`CInfoNationalteam`, dialog 472):
+/// a combo of the lands 1 to 115, chosen to the coach's own nation when
+/// he has one — without, nothing is chosen and the rows come from land
+/// 0 (`DAT_00b5cbb0`, a global never written) — the land's big flag
+/// `gross/<name>.bmp` under the header "Wettbewerb / Erfolg / Trainer"
+/// and rows of its tournaments, "%s %d\t%s\t%s" over contest and year,
+/// result text and coach, newest first (`FUN_004cb3b2`).  The results
+/// table stands zero — no code writes it and no save block covers it —
+/// so the list is empty for every land (screen c1-item4-erfolge); the
+/// combo still moves flag and rows together, and no row answers a click.
+#[derive(Default)]
+pub struct NationalTeamInfo {
+    /// The lands the combo's items stand for, in its order.
+    lands: Vec<u16>,
+}
+
+impl Screen for NationalTeamInfo {
+    fn ids(&self) -> &[u16] {
+        &[NATIONAL_INFO]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        // OnInit (`FUN_004cb1c8`): the results table copied out (it
+        // stands zero), the texts 4188..4196 fetched and the combo
+        // filled with the lands 1 to 115 — chosen to the coach's
+        // nation when it is one of them, and its rows and flag shown;
+        // else nothing is chosen and land 0's empty rows stand.
+        let (game, dialog) = (cx.game, cx.dialog);
+        self.lands = (1..0x74u16).collect();
+        let nation = cx
+            .state
+            .season
+            .as_ref()
+            .and_then(|s| s.manager())
+            .and_then(|m| m.national_team);
+        let chosen = nation.and_then(|n| self.lands.iter().position(|&l| l == n));
+        let items: Vec<String> = self.lands.iter().map(|&l| game.world.nation(l).to_owned()).collect();
+        if let Some(c) = control(dialog, INFO_LAND)
+            && let Some(combo) = view.combo_mut(c)
+        {
+            combo.items = items;
+            combo.selected = chosen;
+            combo.inks.clear();
+            combo.open = false;
+            combo.scroll = 0;
+        }
+        self.show(cx, view, chosen.map_or(0, |item| self.lands[item]));
+        // Everything here answers a click; only the header's statics
+        // stand still.
+        mark_inert(view, cx.dialog, |_| true);
+    }
+
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        match target {
+            Target::Button(c) if crate::controls::button::is_ok(&dialog.controls[c]) => {
+                Outcome::Close(Reply::Ok)
+            }
+            // The Land combo (`OnSelChange_IDC_INFO_NAT_COMBO_LAND`):
+            // its item's land refills rows and flag at once; MFC fires
+            // only on a change.
+            Target::Row { control: c, .. } if dialog.controls[c].id == Some(INFO_LAND) => {
+                if let Some(land) = view
+                    .combo(c)
+                    .and_then(|combo| combo.selected)
+                    .and_then(|item| self.lands.get(item).copied())
+                {
+                    self.show(cx, view, land);
+                }
+                Outcome::Stay
+            }
+            _ => Outcome::Stay,
+        }
+    }
+}
+
+impl NationalTeamInfo {
+    /// The rows of `land` and its big flag: `gross/<name>.bmp` by the
+    /// table at 0x8a4890, falling back to the 76th name, the catch-all
+    /// "Wel", below land 1 and above 116; a land whose big flag the
+    /// archive does not hold shows no picture.
+    fn show(&self, cx: &Cx, view: &mut View, land: u16) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        if let Some(c) = control(dialog, INFO_LIST)
+            && let Some(list) = view.list_mut(c)
+        {
+            list.rows = cx
+                .state
+                .records
+                .as_ref()
+                .map_or_else(Vec::new, |records| national::successes(records, land as i16))
+                .iter()
+                .map(|row| {
+                    [
+                        format!("{} {}", game.text(row.contest), row.year),
+                        game.text(row.result).to_owned(),
+                        row.coach.clone(),
+                    ]
+                    .join("\t")
+                })
+                .collect();
+            list.inks.clear();
+            list.row_icons.clear();
+            list.keys.clear();
+            list.selected = None;
+            list.scroll = 0;
+        }
+        let flag = (1..=0x74).contains(&land).then_some(land).unwrap_or(0x4c);
+        let name = game.data.nation_flags.get(usize::from(flag)).cloned().unwrap_or_default();
+        if let Some(c) = control(dialog, INFO_FLAG) {
+            view.set_picture(
+                c,
+                Some(Picture {
+                    source: PictureSource::Archive(format!("gross/{name}.bmp")),
+                    part: None,
+                    black_clear: false,
+                }),
+            );
+        }
     }
 }
 
