@@ -200,6 +200,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(national::NationalSquad::default()),
         Box::new(national::NationalPlayerSearch::default()),
         Box::new(national::NationalTalks::default()),
+        Box::new(national::NationalFriendlies::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),

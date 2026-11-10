@@ -49,6 +49,9 @@ pub mod dialogs {
     pub const NATIONAL_SEARCH: u16 = 351;
     /// The overview of his naturalization talks (`CEinbuergerungsgespraeche`).
     pub const NATIONAL_TALKS: u16 = 471;
+    /// The coach arranging his team's friendlies in the international
+    /// windows (`CNationalFreundschaftsspiel`).
+    pub const NATIONAL_FRIENDLY: u16 = 354;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;

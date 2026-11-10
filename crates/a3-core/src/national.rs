@@ -1,6 +1,7 @@
 //! Being a national coach (NATIONALMANNSCHAFT.md in the RE repo): whether
-//! the national team plays this week, giving the job up, and looking for
-//! foreign players to talk into changing their nation.
+//! the national team plays this week, giving the job up, looking for
+//! foreign players to talk into changing their nation, and arranging his
+//! team's friendlies in the international windows.
 
 use crate::calendar::Calendar;
 use crate::load;
@@ -307,6 +308,194 @@ pub fn book_search(records: &mut Records, player: u16, day: i16, coach: u16) -> 
     true
 }
 
+/// The friendlies the coach arranges (`CNationalFreundschaftsspiel`):
+/// three slots, one per friendly day of the year.
+pub const FRIENDLY_SLOTS: usize = 3;
+/// The national coaches' friendly records: the `(coach - 1)`-th of the
+/// four blocks at `0xa55978`, the coach's number read off his team's
+/// block (`FUN_0063b3c2`, `FUN_0063b488` and `FUN_0063b598` all stop at a
+/// 0 there).  The block's data holds three slots of three six-byte
+/// candidates from +0, a slot every `0x12` (what `FUN_0063b3c2` copies);
+/// the entry booked per slot at +0x36, which `FUN_0063b510` writes back
+/// on OK; and the played scores as u32 at +0x44, four past the slot.
+const FRIENDLY_RECORDS: u32 = 0xa55978;
+const FRIENDLY_CANDIDATES: usize = 0x0;
+const FRIENDLY_CAND_SLOT: usize = 0x12;
+const FRIENDLY_BOOKED: usize = 0x36;
+const FRIENDLY_SCORES: usize = 0x44;
+const FRIENDLY_PICK: usize = 6;
+/// What a slot's score holds while it was not played (`FUN_0063b598`):
+/// 0xff in its low byte.
+const NO_SCORE: u8 = 0xff;
+
+/// One candidate or booked friendly, the six bytes the record keeps
+/// (`FUN_0063b3c2` and `FUN_0063b488` copy them whole): the land at byte
+/// 0 — 0 for no opponent —, the team behind the name at +2, 200 for the
+/// national team, and two bytes at +4 the dialog never reads.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct FriendlyPick(pub [u8; FRIENDLY_PICK]);
+
+impl FriendlyPick {
+    /// The land the opponent plays for, 0 for no one.
+    pub fn land(&self) -> u8 {
+        self.0[0]
+    }
+
+    /// His team's number behind the name, 200 the national team.
+    pub fn team(&self) -> i16 {
+        i16::from_le_bytes([self.0[2], self.0[3]])
+    }
+}
+
+fn friendly_picks(b: &[u8], at: usize) -> [FriendlyPick; FRIENDLY_SLOTS] {
+    let mut picks = [FriendlyPick::default(); FRIENDLY_SLOTS];
+    for (k, pick) in picks.iter_mut().enumerate() {
+        let at = at + k * FRIENDLY_PICK;
+        if let Some(bytes) = b.get(at..at + FRIENDLY_PICK) {
+            pick.0.copy_from_slice(bytes);
+        }
+    }
+    picks
+}
+
+/// The coach's number in his team's block (`COACH`, read by the record
+/// copy's gates): 1 to 4, 0 where the save names no coach.
+pub fn coach_number(records: &Records, nation: i16) -> u8 {
+    team_block(records, nation).map_or(0, |team| team[COACH])
+}
+
+/// The coach's friendly record, if a coach is named and the save keeps
+/// the block.
+fn friendly_record(records: &Records, nation: i16) -> Option<&[u8]> {
+    let coach = usize::from(coach_number(records, nation));
+    (coach != 0)
+        .then(|| records.block(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)))
+        .flatten()
+}
+
+/// The candidates the dialog offers its three slots (`FUN_0063b3c2`):
+/// three six-byte picks per slot out of the record — none for a coach
+/// the record does not name.
+pub fn friendly_candidates(records: &Records, nation: i16) -> [[FriendlyPick; FRIENDLY_SLOTS]; FRIENDLY_SLOTS] {
+    let mut slots = [[FriendlyPick::default(); FRIENDLY_SLOTS]; FRIENDLY_SLOTS];
+    if let Some(b) = friendly_record(records, nation) {
+        for (k, slot) in slots.iter_mut().enumerate() {
+            *slot = friendly_picks(b, FRIENDLY_CANDIDATES + k * FRIENDLY_CAND_SLOT);
+        }
+    }
+    slots
+}
+
+/// What stands booked per slot today (`FUN_0063b488`'s copy).
+pub fn friendly_booked(records: &Records, nation: i16) -> [FriendlyPick; FRIENDLY_SLOTS] {
+    friendly_record(records, nation).map_or([FriendlyPick::default(); FRIENDLY_SLOTS], |b| friendly_picks(b, FRIENDLY_BOOKED))
+}
+
+/// OK's write-back (`FUN_0063b510`): the three entries as the dialog
+/// holds them, into the record's +0x36 — even one the coach spun away
+/// from, which the dialog only cleared on screen.
+pub fn set_friendly_booked(records: &mut Records, nation: i16, booked: &[FriendlyPick; FRIENDLY_SLOTS]) {
+    let coach = usize::from(coach_number(records, nation));
+    if coach == 0 {
+        return;
+    }
+    let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) else {
+        return;
+    };
+    for (k, pick) in booked.iter().enumerate() {
+        let at = FRIENDLY_BOOKED + k * FRIENDLY_PICK;
+        if at + FRIENDLY_PICK <= b.len() {
+            b[at..at + FRIENDLY_PICK].copy_from_slice(&pick.0);
+        }
+    }
+}
+
+/// The slot's score once played (`FUN_0063b598`): none while its low
+/// byte stands 0xff or the record names no coach; else the two bytes.
+pub fn friendly_score(records: &Records, nation: i16, slot: usize) -> Option<(u8, u8)> {
+    let at = FRIENDLY_SCORES + 4 * (slot + 1);
+    let raw = friendly_record(records, nation)?.get(at..at + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()))?;
+    (raw as u8 != NO_SCORE).then(|| (raw as u8, (raw >> 8) as u8))
+}
+
+/// The three friendly dates of the year (`FUN_0062ab93`): the first
+/// three days of the calendar's international row whose flag is the
+/// friendly flag, in their order.
+pub fn friendly_dates(calendar: &Calendar) -> [usize; FRIENDLY_SLOTS] {
+    let mut days = [0; FRIENDLY_SLOTS];
+    let mut found = 0;
+    for day in 0..crate::calendar::DAYS {
+        if found == FRIENDLY_SLOTS {
+            break;
+        }
+        if calendar.entry(INTERNATIONAL_ROW, day) & 0x7f00_0000 == 0x0400_0000 {
+            days[found] = day;
+            found += 1;
+        }
+    }
+    days
+}
+
+/// The days still to come holding an international window
+/// (`FUN_0062abfe`): from the day after today to the year's end, those
+/// whose flag is one of the window flags — at most eight — kept as the
+/// row has them, its low six bits the friendly slot or the match.
+pub fn upcoming_days(calendar: &Calendar, today: usize) -> Vec<(i16, u32)> {
+    ((today + 1)..crate::calendar::DAYS)
+        .filter_map(|day| {
+            let flag = calendar.entry(INTERNATIONAL_ROW, day);
+            WINDOW_FLAGS.contains(&(flag & 0x7f00_0000)).then(|| (day as i16, flag))
+        })
+        .take(8)
+        .collect()
+}
+
+/// The international dates the save keeps (`0x1ba07c0`): six entries of
+/// `0xda` bytes each, a count of nations at +0 (at most 0x40) and those
+/// nations as u16 from +2; the played and scheduled pairings from +0x9e,
+/// ten six-byte columns of three pairs — every byte an index into the
+/// entry's nations (`FUN_006b8149`).
+const DATE_ENTRIES: u32 = 0x1ba07c0;
+const DATE_ENTRY: usize = 0xda;
+const DATE_NATIONS: usize = 2;
+const DATE_PAIRS: usize = 0x9e;
+const DATE_ENTRY_MOST: usize = 6;
+const DATE_NATIONS_MOST: usize = 0x40;
+
+/// The index of the date entry naming `nation` (`OnInit`'s scan of the
+/// six), none when no entry holds it.
+pub fn date_entry(records: &Records, nation: i16) -> Option<usize> {
+    records.block(&format!("{DATE_ENTRIES:#x}")).and_then(|b| {
+        (0..DATE_ENTRY_MOST).find(|&idx| {
+            let Some(e) = b.get(idx * DATE_ENTRY..idx * DATE_ENTRY + DATE_ENTRY) else {
+                return false;
+            };
+            let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+            (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+        })
+    })
+}
+
+/// The pairings in one column of the entry's pair rows (`FUN_006b8149`):
+/// its three pairs of nations, a pair dropped when an index points past
+/// the entry's count.
+pub fn international_pairs(records: &Records, entry: usize, column: usize) -> Vec<(i16, i16)> {
+    let Some(all) = records.block(&format!("{DATE_ENTRIES:#x}")) else {
+        return Vec::new();
+    };
+    let Some(e) = all.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY) else {
+        return Vec::new();
+    };
+    let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+    (0..3)
+        .filter_map(|k| {
+            let at = DATE_PAIRS + column * 6 + k * 2;
+            let (a, b) = (usize::from(*e.get(at)?), usize::from(*e.get(at + 1)?));
+            (a < count && b < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * b)))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +626,91 @@ mod tests {
         assert_eq!(i16::from_le_bytes([team[NATIONAL_COUNT], team[NATIONAL_COUNT + 1]]), squad.len() as i16);
         assert_eq!(team[at..at + 2].to_vec(), stale);
         assert_eq!(squad_ids(&records, country as i16), squad);
+    }
+
+    /// The friendly record of a coach poked into the save
+    /// (`FUN_0063b3c2`, `FUN_0063b488`, `FUN_0063b510` and
+    /// `FUN_0063b598`): three candidates per slot and what stands
+    /// booked read from their offsets; the score only past its 0xff; the
+    /// write-back lands where `FUN_0063b510` puts it; a nation without a
+    /// coach reads nothing anywhere.  The date entries' pairs come out of
+    /// the raw bytes of `0x1ba07c0` as `FUN_006b8149` reads them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_friendly_record_holds_candidates_booked_and_scores() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves; the oracle's copy has it");
+            return;
+        }
+        let mut records = Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let nation = (1..0x75i16)
+            .find(|&n| team_block(&records, n).is_some())
+            .unwrap();
+        records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")).unwrap()[COACH] = 2;
+        {
+            let b = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[1]")).unwrap();
+            for k in 0..FRIENDLY_SLOTS {
+                for p in 0..FRIENDLY_SLOTS {
+                    let at = FRIENDLY_CANDIDATES + k * FRIENDLY_CAND_SLOT + p * FRIENDLY_PICK;
+                    b[at] = (p + 1) as u8;
+                    b[at + 2] = 200;
+                }
+                let at = FRIENDLY_BOOKED + k * FRIENDLY_PICK;
+                b[at..at + FRIENDLY_PICK].fill(0);
+            }
+            b[FRIENDLY_BOOKED] = 3;
+            b[FRIENDLY_BOOKED + 2] = 200;
+            b[FRIENDLY_SCORES + 4] = 0xff;
+            b[FRIENDLY_SCORES + 8] = 3;
+            b[FRIENDLY_SCORES + 9] = 1;
+            b[FRIENDLY_SCORES + 12] = 0xff;
+        }
+        let cands = friendly_candidates(&records, nation);
+        assert_eq!(cands[0][2].land(), 3);
+        assert_eq!(cands[2][0].team(), 200);
+        let booked = friendly_booked(&records, nation);
+        assert_eq!((booked[0].land(), booked[0].team()), (3, 200));
+        assert_eq!(booked[1], FriendlyPick::default(), "the free slots stand at 0");
+        assert_eq!(friendly_score(&records, nation, 0), None, "0xff is no score");
+        assert_eq!(friendly_score(&records, nation, 1), Some((3, 1)));
+        assert_eq!(friendly_score(&records, nation, 2), None);
+        // The write-back of a spun-away pick, which the original still
+        // books: the second slot takes the third candidate.
+        let mut booked = friendly_booked(&records, nation);
+        booked[1] = cands[1][2];
+        set_friendly_booked(&mut records, nation, &booked);
+        assert_eq!(&records.block(&format!("{FRIENDLY_RECORDS:#x}[1]")).unwrap()[FRIENDLY_BOOKED + FRIENDLY_PICK..FRIENDLY_BOOKED + 2 * FRIENDLY_PICK], &cands[1][2].0);
+        assert_eq!(friendly_booked(&records, nation)[1], cands[1][2]);
+        // No coach, no record.
+        records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")).unwrap()[COACH] = 0;
+        assert_eq!(friendly_booked(&records, nation), [FriendlyPick::default(); FRIENDLY_SLOTS]);
+        assert_eq!(friendly_candidates(&records, nation)[0], [FriendlyPick::default(); FRIENDLY_SLOTS]);
+        assert_eq!(friendly_score(&records, nation, 1), None);
+        // The date entries: an entry naming a nation, and its pairs by
+        // their bytes.
+        if let Some(b) = records.block(&format!("{DATE_ENTRIES:#x}")) {
+            let entry = (0..DATE_ENTRY_MOST).find(|&idx| {
+                let e = &b[idx * DATE_ENTRY..idx * DATE_ENTRY + DATE_ENTRY];
+                let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+                (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+            });
+            assert_eq!(date_entry(&records, nation), entry, "the scan finds the same entry");
+            if let Some(entry) = entry {
+                let e = &b[entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY];
+                let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+                for column in 0..10 {
+                    let want: Vec<(i16, i16)> = (0..3)
+                        .filter_map(|k| {
+                            let at = DATE_PAIRS + column * 6 + k * 2;
+                            let (a, c) = (usize::from(e[at]), usize::from(e[at + 1]));
+                            (a < count && c < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * c)))
+                        })
+                        .collect();
+                    assert_eq!(international_pairs(&records, entry, column), want, "column {column}");
+                }
+            }
+        }
     }
 }

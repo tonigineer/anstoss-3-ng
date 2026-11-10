@@ -1,15 +1,17 @@
 //! The national team, the menu bar's sixteenth symbol: a menu of six buttons
 //! on a picture (dialog 355, `CNationalmannschaft`), its first button's squad
-//! picker (dialog 357, `CNationalkaderZusammenstellen`) and its second
-//! button's search for a foreign player to talk into changing his nation
-//! (dialog 351, `CNationalSpielerSuchen`) and its third button's overview
-//! of the talks so far (dialog 471, `CEinbuergerungsgespraeche`;
-//! NATIONALMANNSCHAFT.md in the RE repo).
+//! picker (dialog 357, `CNationalkaderZusammenstellen`), its second button's
+//! search for a foreign player to talk into changing his nation (dialog 351,
+//! `CNationalSpielerSuchen`), its third button's overview of the talks so far
+//! (dialog 471, `CEinbuergerungsgespraeche`) and its fourth button's
+//! arranging of friendlies on the international days (dialog 354,
+//! `CNationalFreundschaftsspiel`; NATIONALMANNSCHAFT.md in the RE repo).
 
 use std::collections::HashMap;
 
 use a3_core::cycle::dialogs::{
-    LINEUP, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NATIONAL_TALKS, NOTICE, QUESTION,
+    LINEUP, NATIONAL_FRIENDLY, NATIONAL_MENU, NATIONAL_SEARCH, NATIONAL_SQUAD, NATIONAL_TALKS,
+    NOTICE, QUESTION,
 };
 use a3_core::national;
 use a3_core::season::Rules;
@@ -20,6 +22,7 @@ use a3_files::rch::{Align, Dialog};
 use super::hub;
 use super::planner;
 use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, set};
+use crate::controls::bitmap::{Picture, PictureSource};
 use crate::controls::options::NONE;
 use crate::pointer::Target;
 use crate::view::View;
@@ -38,6 +41,8 @@ const SEARCH: usize = 1;
 /// The third, "Infos über Einbürgerungsgespräche", opening the talks'
 /// overview.
 const TALKS: usize = 2;
+/// The fourth, "Freundschaftsspiele", opening the arranger.
+const FRIENDLY: usize = 3;
 /// The last button, "Als Nationaltrainer zurücktreten", and its three
 /// answers: refused before a match, sure?, accepted.
 const RESIGN: usize = 5;
@@ -51,11 +56,11 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     dialog.controls.retain(|c| c.id != Some(OK));
     dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
     hub::add_bar(dialog, rules);
-    // The search's and the overview's captions are the dialogs' own
-    // titles, "ANSTOSS 3 - Spieler für Gespräch aussuchen" and
-    // "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche"; nothing changes
-    // either.
-    for id in [NATIONAL_SEARCH, NATIONAL_TALKS] {
+    // The search's, the overview's and the arranger's captions are the
+    // dialogs' own titles, "ANSTOSS 3 - Spieler für Gespräch aussuchen",
+    // "ANSTOSS 3 - Übersicht der Einbürgerungsgespräche" and "ANSTOSS 3 -
+    // Freundschaftsspiel vereinbaren"; nothing changes in them either.
+    for id in [NATIONAL_SEARCH, NATIONAL_TALKS, NATIONAL_FRIENDLY] {
         if let Some(dialog) = dialogs.get_mut(&id) {
             let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
             dialog.controls.insert(0, caption);
@@ -108,7 +113,7 @@ impl Screen for NationalMenu {
             Target::Option { control: c, item: RESIGN | TALKS } => {
                 dialog.controls[c].id == Some(BUTTONS)
             }
-            Target::Option { control: c, item: PICK | SEARCH } => {
+            Target::Option { control: c, item: PICK | SEARCH | FRIENDLY } => {
                 dialog.controls[c].id == Some(BUTTONS) && has_team
             }
             _ => hub::on_bar(dialog, target).is_some_and(hub::bar_works),
@@ -138,6 +143,11 @@ impl Screen for NationalMenu {
                 if cx.dialog.controls[c].id == Some(BUTTONS) =>
             {
                 self.overview(cx, view)
+            }
+            Target::Option { control: c, item: FRIENDLY }
+                if cx.dialog.controls[c].id == Some(BUTTONS) =>
+            {
+                self.arrange(cx, view)
             }
             _ => Outcome::Stay,
         }
@@ -181,6 +191,17 @@ impl NationalMenu {
         }
         hold(cx, view, Some(SEARCH));
         Outcome::Popup(Request::new(NATIONAL_SEARCH))
+    }
+
+    /// "Freundschaftsspiele": the arranger over the menu, for nothing
+    /// else than the nation behind his team — like the picker and the
+    /// search, only a coach with a nation has friendlies to arrange.
+    fn arrange(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        if !coach_has_a_team(cx) {
+            return Outcome::Stay;
+        }
+        hold(cx, view, Some(FRIENDLY));
+        Outcome::Popup(Request::new(NATIONAL_FRIENDLY))
     }
 
     /// "Infos über Einbürgerungsgespräche": the overview of the talks on
@@ -1119,6 +1140,292 @@ fn fill_talks(cx: &Cx, view: &mut View) {
         list.keys = keys;
         list.selected = None;
         list.scroll = 0;
+    }
+}
+
+/// The arranger's three slots: the opponent's name and flag, the date and
+/// the spinner to pick between the candidates, and the score once the day
+/// went by (dialog 354).
+const FRIENDLY_NAMES: [u16; national::FRIENDLY_SLOTS] = [4524, 4525, 4526];
+const FRIENDLY_FLAGS: [u16; national::FRIENDLY_SLOTS] = [4521, 4522, 4523];
+const FRIENDLY_DATES: [u16; national::FRIENDLY_SLOTS] = [4527, 4528, 4529];
+const FRIENDLY_SPINS: [u16; national::FRIENDLY_SLOTS] = [4530, 4531, 4532];
+const FRIENDLY_RESULTS: [u16; national::FRIENDLY_SLOTS] = [4533, 4534, 4535];
+/// The list of the games still to come, date, opponent and kind.
+const FRIENDLY_LIST: u16 = 4537;
+/// What the list's last column says of a window's match and of the
+/// friendly the coach arranged (texts 3604 and 3605).
+const WINDOW_MATCH: u16 = 3604;
+const ARRANGED_FRIENDLY: u16 = 3605;
+/// The national team behind the number 200 in a land, what the list names
+/// for a window's opponent.
+const NATIONAL_OPPONENT: i16 = 200;
+
+/// The coach arranging his team's friendlies (`CNationalFreundschaftsspiel`,
+/// dialog 354): three dates, the first three friendly days of the
+/// international row, each with three candidates from the coach's record
+/// to spin between — the free choice at position 3 the dialog starts on
+/// while the day is more than four days off.  What stands booked shows its
+/// name and flag; a played day shows its score and answers no spinner any
+/// more.  The list below names the window's matches from the save's date
+/// entry and, below each friendly day still open, the candidate the
+/// spinner holds.  OK writes the three booked entries into the record
+/// (`FUN_0051a2c4`); no row answers a click.
+#[derive(Default)]
+pub struct NationalFriendlies {
+    nation: u16,
+    dates: [i16; national::FRIENDLY_SLOTS],
+    upcoming: Vec<(i16, u32)>,
+    entry: Option<usize>,
+    booked: [national::FriendlyPick; national::FRIENDLY_SLOTS],
+    candidates: [[national::FriendlyPick; national::FRIENDLY_SLOTS]; national::FRIENDLY_SLOTS],
+    /// Per slot: the spinner's position, or −1 once the slot is frozen.
+    state: [i8; national::FRIENDLY_SLOTS],
+}
+
+impl Screen for NationalFriendlies {
+    fn ids(&self) -> &[u16] {
+        &[NATIONAL_FRIENDLY]
+    }
+
+    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        self.nation = cx
+            .state
+            .season
+            .as_ref()
+            .and_then(|s| s.manager())
+            .and_then(|m| m.national_team)
+            .unwrap_or(0);
+        self.state = [-1; national::FRIENDLY_SLOTS];
+        let nation = self.nation as i16;
+        let year = cx.state.season.as_ref().map_or(0, |s| s.year);
+        let records = cx.state.records.as_ref();
+        let today = records.map_or(0, |r| usize::from(r.globals.day()));
+        self.dates = national::friendly_dates(&game.calendar).map(|d| d as i16);
+        self.upcoming = records.map_or_else(Vec::new, |_| national::upcoming_days(&game.calendar, today));
+        self.entry = records.and_then(|r| national::date_entry(r, nation));
+        if self.entry.is_none() {
+            // Without a date entry for his nation the dialog keeps only
+            // the friendly days of its copy of the window rows.
+            self.upcoming.retain(|&(_, flag)| flag & 0x7f00_0000 == 0x0400_0000);
+        }
+        self.candidates =
+            records.map_or(<[[national::FriendlyPick; national::FRIENDLY_SLOTS]; national::FRIENDLY_SLOTS]>::default(), |r| national::friendly_candidates(r, nation));
+        self.booked = records.map_or(<[national::FriendlyPick; national::FRIENDLY_SLOTS]>::default(), |r| national::friendly_booked(r, nation));
+        // `OnInit`: the results start blank; each slot's spinner gets its
+        // range 0 to 3, the free choice included.
+        for k in 0..national::FRIENDLY_SLOTS {
+            let day = usize::try_from(self.dates[k]).unwrap_or(0);
+            set(view, dialog, FRIENDLY_DATES[k], hub::date_text(game, a3_core::calendar::date(year, day)));
+            set(view, dialog, FRIENDLY_RESULTS[k], String::new());
+            if let Some(c) = control(dialog, FRIENDLY_SPINS[k])
+                && let Some(v) = view.value_mut(c)
+            {
+                v.range = (0, 3);
+            }
+            let mut state: i8 = -1;
+            if self.booked[k].land() == 0 {
+                set(view, dialog, FRIENDLY_NAMES[k], String::new());
+                if let Some(c) = control(dialog, FRIENDLY_FLAGS[k]) {
+                    view.set_picture(c, None);
+                    view.controls[c].hidden = true;
+                }
+                if day > today + 4 {
+                    state = 3;
+                    if let Some(c) = control(dialog, FRIENDLY_SPINS[k]) {
+                        view.controls[c].hidden = false;
+                        if let Some(v) = view.value_mut(c) {
+                            v.set(3);
+                        }
+                    }
+                } else if let Some(c) = control(dialog, FRIENDLY_SPINS[k]) {
+                    view.controls[c].hidden = true;
+                }
+            } else {
+                self.show_slot(cx, view, k);
+                state = 0;
+                for p in 0..national::FRIENDLY_SLOTS {
+                    if self.booked[k].land() == self.candidates[k][p].land() {
+                        state = i8::try_from(p).unwrap_or(3);
+                        if let Some(c) = control(dialog, FRIENDLY_SPINS[k])
+                            && let Some(v) = view.value_mut(c)
+                        {
+                            v.set(p as i32);
+                        }
+                    }
+                }
+                match records.and_then(|r| national::friendly_score(r, nation, k)) {
+                    Some((a, b)) => {
+                        set(view, dialog, FRIENDLY_RESULTS[k], format!("{a}:{b}"));
+                        if let Some(c) = control(dialog, FRIENDLY_SPINS[k]) {
+                            view.controls[c].hidden = true;
+                        }
+                        state = -1;
+                    }
+                    None => {
+                        if day <= today + 4
+                            && let Some(c) = control(dialog, FRIENDLY_SPINS[k])
+                        {
+                            view.controls[c].hidden = true;
+                            state = -1;
+                        }
+                    }
+                }
+            }
+            self.state[k] = state;
+        }
+        self.fill_list(cx, view);
+        mark_inert(view, dialog, |target| match target {
+            Target::Button(c) => crate::controls::button::is_ok(&dialog.controls[c]),
+            Target::Spin { control: c, .. } => {
+                dialog.controls[c].id.is_some_and(|id| FRIENDLY_SPINS.contains(&id))
+            }
+            _ => false,
+        });
+    }
+
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        match target {
+            // OK (`FUN_0051a2c4`): the three entries the dialog holds go
+            // into the record — even a slot spun to the free choice,
+            // whose display went blank while what stood booked stayed.
+            Target::Button(c) if crate::controls::button::is_ok(&dialog.controls[c]) => {
+                if let Some(records) = cx.state.records.as_mut() {
+                    national::set_friendly_booked(records, self.nation as i16, &self.booked);
+                }
+                Outcome::Close(Reply::Ok)
+            }
+            // A spinner (`FUN_0051a9e8`), its value moved already: a
+            // frozen slot answers nothing; below the free choice the
+            // candidate under the position stands booked and shows; at
+            // it the slot clears its display.  Either way the list comes
+            // up anew.
+            Target::Spin { control: c, .. } => {
+                let Some(k) = dialog.controls[c]
+                    .id
+                    .and_then(|id| FRIENDLY_SPINS.iter().position(|&s| s == id))
+                else {
+                    return Outcome::Stay;
+                };
+                if self.state[k] < 0 {
+                    return Outcome::Stay;
+                }
+                let pos = view.value(c).map_or(3, |v| v.value);
+                self.state[k] = i8::try_from(pos).unwrap_or(3);
+                if (0..national::FRIENDLY_SLOTS as i32).contains(&pos) {
+                    self.booked[k] = self.candidates[k][pos as usize];
+                    self.show_slot(cx, view, k);
+                } else {
+                    self.clear_slot(cx, view, k);
+                }
+                self.fill_list(cx, view);
+                Outcome::Stay
+            }
+            _ => Outcome::Stay,
+        }
+    }
+}
+
+impl NationalFriendlies {
+    /// The booked entry of slot `k` on show (`FUN_0051a40b`): its name
+    /// behind land and number, its flag picture, the bitmap visible.
+    fn show_slot(&self, cx: &Cx, view: &mut View, k: usize) {
+        let pick = self.booked[k];
+        let name = cx.state.records.as_ref().map_or_else(String::new, |r| {
+            cx.game.club_name(Some(r), pick.land(), pick.team())
+        });
+        set(view, cx.dialog, FRIENDLY_NAMES[k], name);
+        if let Some(c) = control(cx.dialog, FRIENDLY_FLAGS[k]) {
+            view.set_picture(c, Some(flag_picture(pick.land())));
+            view.controls[c].hidden = false;
+        }
+    }
+
+    /// The slot's display cleared (`FUN_0051a2f9`): no name, the image
+    /// emptied, the bitmap hidden — the booked entry itself stays, as in
+    /// the original, and OK still writes it.
+    fn clear_slot(&self, cx: &Cx, view: &mut View, k: usize) {
+        set(view, cx.dialog, FRIENDLY_NAMES[k], String::new());
+        if let Some(c) = control(cx.dialog, FRIENDLY_FLAGS[k]) {
+            view.set_picture(c, None);
+            view.controls[c].hidden = true;
+        }
+    }
+
+    /// The list of games still to come (`FUN_0051a508`) over the window
+    /// days: a match row for each of the entry's pairings holding his
+    /// nation, and under a friendly day a row only while the slot's
+    /// spinner holds a candidate — naming that candidate, not what was
+    /// booked before.  Without a date entry for his nation the list ends
+    /// at the first window's match.
+    fn fill_list(&self, cx: &Cx, view: &mut View) {
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(c) = control(dialog, FRIENDLY_LIST) else { return };
+        let year = cx.state.season.as_ref().map_or(0, |s| s.year);
+        let (records, parity) =
+            cx.state.records.as_ref().map_or((None, 0), |r| (Some(r), usize::from(r.globals.start_year()) & 1));
+        let nation = self.nation as i16;
+        let mut rows: Vec<String> = Vec::new();
+        for &(day, flag) in &self.upcoming {
+            let date = hub::date_text(game, a3_core::calendar::date(year, usize::try_from(day).unwrap_or(0)));
+            if flag & 0x7f00_0000 == 0x0800_0000 {
+                let Some(entry) = self.entry else { break };
+                let column = (flag & 0x3f) as usize + 5 * parity;
+                let opponent = records
+                    .map_or_else(Vec::new, |r| national::international_pairs(r, entry, column))
+                    .into_iter()
+                    .find(|&(a, b)| a == nation || b == nation)
+                    .map(|(a, b)| if a == nation { b } else { a });
+                if let Some(opponent) = opponent {
+                    rows.push(
+                        [
+                            date,
+                            game.club_name(records, opponent as u8, NATIONAL_OPPONENT),
+                            game.text(WINDOW_MATCH).to_owned(),
+                        ]
+                        .join("\t"),
+                    );
+                }
+            } else {
+                let slot = (flag & 0x3f) as usize;
+                let state = self.state.get(slot).copied().unwrap_or(-1);
+                if (0..national::FRIENDLY_SLOTS as i8).contains(&state) {
+                    let pick = self.candidates[slot][state as usize];
+                    rows.push(
+                        [
+                            date,
+                            game.club_name(records, pick.land(), pick.team()),
+                            game.text(ARRANGED_FRIENDLY).to_owned(),
+                        ]
+                        .join("\t"),
+                    );
+                }
+            }
+        }
+        if let Some(list) = view.list_mut(c) {
+            // Three columns, all left, starting at 0, 100 and 210, no
+            // widths (`FUN_007a941f` over `DAT_008855c0` and 0x8855cc).
+            list.tabs = vec![0.0, 100.0, 210.0];
+            list.aligns = vec![Some((Align::Left, 0.0)); 3];
+            list.rows = rows;
+            list.inks.clear();
+            list.row_icons.clear();
+            list.keys.clear();
+            list.selected = None;
+            list.scroll = 0;
+        }
+    }
+}
+
+/// A flag's picture (`FUN_00696030`).
+fn flag_picture(nation: u8) -> Picture {
+    let n = nation.clamp(1, 0x74);
+    Picture {
+        source: PictureSource::Archive(format!("klein/Flag{n:02}.bmp")),
+        part: None,
+        black_clear: false,
     }
 }
 

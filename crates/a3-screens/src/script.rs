@@ -10602,4 +10602,218 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The friendlies arranger (dialog 354) over a copy of A with the job
+    /// poked, a coach number of 1 on nation 14 and the first coach's
+    /// record filled: three candidates per slot with land 1, 2 and 3 and
+    /// the number 200 behind them, the third booked at the first slot and
+    /// played 2:1.  The dates stand on the row's three friendly days
+    /// (the exe's fixed international row at 0x8914e0); the booked slot
+    /// shows name, flag and score with its spinner hidden at the
+    /// candidate under it, the free ones stand at the free choice 3.  The
+    /// list holds the window matches whose pairing from A's date entry
+    /// names nation 14, and no friendly row for a slot without a
+    /// candidate under its spinner.  A spinner books the candidate under
+    /// it and brings that day's row; spun back to the free choice the
+    /// display clears, yet OK still writes him — the original's quirk.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_national_coach_arranges_his_friendlies() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let root = patched(&dir, "A", "nationalfriendly", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            records.block_mut("0xa9d660[14]").unwrap()[0x88] = 1;
+            let rec = records.block_mut("0xa55978[0]").unwrap();
+            for k in 0..3usize {
+                for p in 0..3usize {
+                    let at = k * 0x12 + p * 6;
+                    rec[at] = (p + 1) as u8;
+                    rec[at + 2] = 200;
+                }
+                rec[0x36 + k * 6..0x3c + k * 6].fill(0);
+            }
+            rec[0x36] = 3;
+            rec[0x38] = 200;
+            rec[0x48] = 2;
+            rec[0x49] = 1;
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&354];
+        let st = |id: u16| crate::screens::control(dialog, id).unwrap();
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 3\nuntil dialog 354";
+        let base = on_save(&game, "nationalfriendly", open).unwrap();
+        let view = base.host.view();
+        let state = base.host.state();
+        let records = state.records.as_ref().unwrap();
+        let year = state.season.as_ref().unwrap().year;
+        let land = |n: u8| game.club_name(Some(records), n, 200);
+        let day_text = |day: usize| {
+            crate::screens::hub::date_text(&game, a3_core::calendar::date(year, day))
+        };
+        for (k, &day) in a3_core::national::friendly_dates(&game.calendar).iter().enumerate() {
+            assert_eq!(view.text(st(4527 + k as u16)), day_text(day), "date {k}");
+        }
+        assert_eq!(view.text(st(4524)), land(3), "the booked slot shows its candidate");
+        assert_eq!(view.text(st(4533)), "2:1");
+        for id in [4525, 4526, 4534, 4535] {
+            assert_eq!(view.text(st(id)), "");
+        }
+        let hidden = |id: u16| view.controls[st(id)].hidden;
+        assert!(hidden(4522) && hidden(4523) && hidden(4530), "the played day answers no more");
+        assert!(!hidden(4521) && !hidden(4531) && !hidden(4532));
+        assert_eq!(view.value(st(4530)).unwrap().value, 2, "the candidate the booking stands under");
+        assert_eq!((view.value(st(4531)).unwrap().value, view.value(st(4532)).unwrap().value), (3, 3));
+        assert_eq!(view.value(st(4531)).unwrap().range, (0, 3));
+        // The rows as the original's list function draws them, straight
+        // from the raw save bytes: the eight window days after today from
+        // the international row, the matches whose pairing in A's date
+        // entry names nation 14, and under a friendly day the candidate
+        // its spinner holds (land and number as poked, candidate `p` of
+        // any slot standing for land `p + 1`).
+        let b = records.block("0x1ba07c0").unwrap();
+        let w16 = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+        let entry = (0..6).find(|&idx| {
+            let e = idx * 0xda;
+            let count = usize::from(w16(b, e).min(0x40));
+            (0..count).any(|k| w16(b, e + 2 + 2 * k) == 14)
+        });
+        assert!(entry.is_some(), "A's date entries name nation 14");
+        let entry = entry.unwrap() * 0xda;
+        let count = usize::from(w16(b, entry).min(0x40));
+        let parity = usize::from(records.globals.start_year() & 1);
+        let today = usize::from(records.globals.day());
+        let mut window: Vec<(usize, u32)> = Vec::new();
+        for day in today + 1..a3_core::calendar::DAYS {
+            let flag = game.calendar.entry(0, day);
+            if matches!(flag & 0x7f00_0000, 0x0400_0000 | 0x0800_0000) {
+                window.push((day, flag));
+                if window.len() == 8 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(window.len(), 8, "A's year holds eight window days");
+        let rows_with = |states: [i8; 3]| -> Vec<String> {
+            window
+                .iter()
+                .filter_map(|&(day, flag)| {
+                    if flag & 0x7f00_0000 == 0x0800_0000 {
+                        let column = (flag & 0x3f) as usize + 5 * parity;
+                        let opponent = (0..3).find_map(|k| {
+                            let at = entry + 0x9e + column * 6 + k * 2;
+                            let (x, y) = (usize::from(b[at]), usize::from(b[at + 1]));
+                            if x >= count || y >= count {
+                                return None;
+                            }
+                            let (na, nb) =
+                                (w16(b, entry + 2 + 2 * x) as i16, w16(b, entry + 2 + 2 * y) as i16);
+                            if na == 14 {
+                                Some(nb)
+                            } else if nb == 14 {
+                                Some(na)
+                            } else {
+                                None
+                            }
+                        })?;
+                        Some(
+                            [
+                                day_text(day),
+                                game.club_name(Some(records), opponent as u8, 200),
+                                game.text(3604).to_owned(),
+                            ]
+                            .join("\t"),
+                        )
+                    } else {
+                        let state = *states.get((flag & 0x3f) as usize)?;
+                        if !(0..3).contains(&state) {
+                            return None;
+                        }
+                        Some(
+                            [
+                                day_text(day),
+                                game.club_name(Some(records), (state + 1) as u8, 200),
+                                game.text(3605).to_owned(),
+                            ]
+                            .join("\t"),
+                        )
+                    }
+                })
+                .collect()
+        };
+        let list = view.list(st(4537)).unwrap();
+        assert_eq!(list.rows, rows_with([-1, 3, 3]), "the list: {}", list.rows.join(" / "));
+        assert_eq!(list.tabs, [0.0, 100.0, 210.0]);
+        // The fourth button stands held while the arranger is up.
+        let buttons = crate::screens::control(&game.dialogs[&355], 4538).unwrap();
+        assert_eq!(
+            base.host.views().find(|v| v.id == 355).unwrap().options(buttons).unwrap().chosen,
+            3,
+            "held down under the arranger"
+        );
+        // The second slot's spinner books the candidate under it and the
+        // day's friendly row comes in.
+        let runner =
+            on_save(&game, "nationalfriendly", &format!("{open}\nnow spin 4531 down")).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.value(st(4531)).unwrap().value, 2);
+        assert_eq!(view.text(st(4525)), land(3));
+        assert!(!view.controls[st(4522)].hidden);
+        assert_eq!(view.list(st(4537)).unwrap().rows, rows_with([-1, 2, 3]));
+        // Three steps down at the third slot reach the first candidate,
+        // up again to the free choice the display clears.
+        let down = "now spin 4532 down\nnow spin 4532 down\nnow spin 4532 down";
+        let runner = on_save(&game, "nationalfriendly", &format!("{open}\n{down}")).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.value(st(4532)).unwrap().value, 0);
+        assert_eq!(view.text(st(4526)), land(1));
+        assert!(!view.controls[st(4523)].hidden);
+        assert_eq!(view.list(st(4537)).unwrap().rows, rows_with([-1, 3, 0]));
+        let up = &format!("{down}\nnow spin 4532 up\nnow spin 4532 up\nnow spin 4532 up");
+        let runner = on_save(&game, "nationalfriendly", &format!("{open}\n{up}")).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.value(st(4532)).unwrap().value, 3);
+        assert_eq!(view.text(st(4526)), "");
+        assert!(view.controls[st(4523)].hidden);
+        assert_eq!(
+            view.list(st(4537)).unwrap().rows,
+            rows_with([-1, 3, 3]),
+            "the free choice shows no friendly row"
+        );
+        // OK writes all three as the dialog holds them: a slot spun back
+        // to the free choice keeps the candidate it last stood under (the
+        // original only cleared the display), and the menu button lets go
+        // with the dialog.
+        let runner =
+            on_save(&game, "nationalfriendly", &format!("{open}\n{up}\nnow ok\nuntil dialog 355"))
+                .unwrap();
+        let state = runner.host.state();
+        let rec = state.records.as_ref().unwrap().block("0xa55978[0]").unwrap();
+        assert_eq!(&rec[0x36..0x3c], &[3, 0, 200, 0, 0, 0], "the played slot stays as it was");
+        assert_eq!(&rec[0x3c..0x42], [0, 0, 0, 0, 0, 0], "an untouched slot keeps its empty entry");
+        assert_eq!(
+            &rec[0x36 + 2 * 6..0x3c + 2 * 6],
+            &[3, 0, 200, 0, 0, 0],
+            "the last candidate under the spun-away spinner still books"
+        );
+        assert_eq!(
+            runner.host.view().options(buttons).unwrap().chosen,
+            crate::controls::options::NONE
+        );
+        // A slot spun to a candidate and confirmed stands booked there.
+        let runner = on_save(
+            &game,
+            "nationalfriendly",
+            &format!("{open}\nnow spin 4531 down\nnow ok\nuntil dialog 355"),
+        )
+        .unwrap();
+        let state = runner.host.state();
+        let rec = state.records.as_ref().unwrap().block("0xa55978[0]").unwrap();
+        assert_eq!(&rec[0x3c..0x42], &[3, 0, 200, 0, 0, 0], "the picked candidate stands booked");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
