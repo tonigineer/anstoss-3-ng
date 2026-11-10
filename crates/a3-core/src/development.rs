@@ -420,7 +420,18 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
     }
     let count = today / 7 * 2 + i32::from(today % 7 >= 4);
     let Ok(count) = u16::try_from(count) else { return };
+    // The shop draws only where the counter ticks over: the original
+    // redrew and settled right after its increment, so a game resumed
+    // mid-half-week, whose save has the new count already, draws
+    // nothing (`FUN_006da3a9`).
+    let fresh = count > records.globals.half_weeks();
     records.globals.set_half_weeks(count);
+    // Every second half week the betting shop redraws its quotas and
+    // settles the matchday just behind (`FUN_0078107b`, `FUN_007811c5`).
+    if fresh && count % 2 == 0 {
+        crate::betting::redraw_quotas(records, random);
+        crate::betting::settle_matchday(records, random);
+    }
     if count == WINTER_BREAK {
         develop_played(records, true, random);
     }

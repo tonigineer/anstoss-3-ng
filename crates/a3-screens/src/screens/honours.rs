@@ -25,6 +25,7 @@ use crate::view::View;
 pub mod abilities;
 pub mod beliebtheit;
 pub mod betting;
+pub mod betting_report;
 pub mod confidence;
 pub mod market;
 pub mod pay;

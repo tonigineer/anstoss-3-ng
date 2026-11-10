@@ -948,6 +948,13 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         if let Some(slot) = block.get_mut(crowd_at..crowd_at + 4) {
             slot.copy_from_slice(&crowd.to_le_bytes());
         }
+        // The matchday's total goals stand for the betting shop's goals'
+        // tip to guess at (`FUN_007811c5` reads the field at +0x18).
+        let goals: i16 = scored.iter().map(|g| i16::from(g[0]) + i16::from(g[1])).sum();
+        let at = crate::opponent::LEAGUE_FIELDS + 0x18;
+        if let Some(slot) = block.get_mut(at..at + 2) {
+            slot.copy_from_slice(&goals.to_le_bytes());
+        }
     }
     let nat = u8::try_from(nation).unwrap_or(0);
     for ((((home, _, _), (&team, (att, money, cap))), &away), &result) in
@@ -1054,6 +1061,11 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
     // What the goals leave on the players of both sides.
     for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {
         mark_match(records, nation, level, md, home, away, result[0], result[1], random);
+    }
+    // Every offered Toto match keeps its result, wherever it stands in
+    // the offer, so the settlement can pay the tips (`FUN_0078017d`).
+    for (&[hg, ag, _, _], (&home, &away)) in scored.iter().zip(homes.iter().zip(&aways)) {
+        crate::betting::matchday_result(records, (nat, home), (nat, away), (hg, ag));
     }
     // The human's year calendar keeps the matchday's result: the season's
     // booking named the fixture on the day's entry — kind 6, the matchday
@@ -1198,6 +1210,19 @@ fn mark_match(
                     last,
                     u8::try_from(team).unwrap_or(0),
                 );
+            }
+            // The league's first scorer of the season stands for the
+            // Toto's scorer tip, once and in the low leagues only
+            // (`FUN_00692045` writes the field at +0x1a04).
+            if level < 6 {
+                if let Some(name) = League::block_name(records, nation, level)
+                    && let Some(b) = records.block_mut(&name)
+                {
+                    let at = crate::opponent::LEAGUE_FIELDS + 0x1a04;
+                    if b.get(at..at + 2).is_some_and(|f| f == [0, 0]) {
+                        b[at..at + 2].copy_from_slice(&id.to_le_bytes());
+                    }
+                }
             }
         }
         // The side's substitutions: one to three of the strongest waiting

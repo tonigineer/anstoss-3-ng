@@ -68,6 +68,10 @@ pub mod dialogs {
     pub const TOURNAMENT_RESULT: u16 = 299;
     /// A hall's results, for a human taking part.
     pub const HALL_RESULT: u16 = 94;
+    /// The betting shop's report of the matchday just paid
+    /// (`CWettauswertung`); it comes up for every human the settlement
+    /// left a section marked for (`FUN_0077f1b8` kind 1).
+    pub const BET_REPORT: u16 = 409;
     pub const QUESTION: u16 = 384;
     pub const WAIT: u16 = 381;
     pub const OFFICE: u16 = 483;
@@ -995,6 +999,32 @@ impl Cycle {
                     }
                 }
                 self.open_events_on(walked)?;
+                // The betting shop's report of the matchday just paid
+                // opens for every human the settlement marked a section
+                // for (`FUN_0077f1b8` kind 1), on the half week the
+                // settlement ran.
+                if walked % 7 == 0 {
+                    let report = {
+                        let mut guard = self.state();
+                        let state = &mut *guard;
+                        match (state.records.as_ref(), state.season.as_ref()) {
+                            (Some(records), Some(season)) => (0..season.managers.len())
+                                .filter(|&m| season.managers[m].club.is_some())
+                                .filter_map(|m| {
+                                    records
+                                        .human_slot(m)
+                                        .filter(|&h| crate::betting::report_open(records, h))
+                                        .map(|_| m)
+                                })
+                                .collect::<Vec<usize>>(),
+                            _ => Vec::new(),
+                        }
+                    };
+                    for manager in report {
+                        self.season(|s| s.current = manager);
+                        self.ask(Request::with(BET_REPORT, Args::None))?;
+                    }
+                }
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;

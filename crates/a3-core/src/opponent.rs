@@ -440,8 +440,12 @@ pub fn open_leagues(records: &mut Records) {
                     usize::from(i16_at(0x1a) > 0) + 1,
                 )
             };
-            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x18) {
-                s.copy_from_slice(&0i16.to_le_bytes());
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x1a) {
+                s.copy_from_slice(&[0, 0, 0, 0]);
+            }
+            // The Toto's first scorer of the season goes with it too.
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x1a04..LEAGUE_FIELDS + 0x1a06) {
+                s.copy_from_slice(&0u16.to_le_bytes());
             }
             for home in 0..teams {
                 for away in 0..(teams * rounds).min(RESULT_ROW / 4) {
