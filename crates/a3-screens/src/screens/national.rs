@@ -230,17 +230,26 @@ const INFO: u16 = 6358;
 /// "Sie haben noch Platz für %s Spieler." filled with the free slots.
 const SQUAD_ONE_LEFT: u16 = 3493;
 const SQUAD_FULL: u16 = 3494;
-const SQUAD_MOST: usize = 0x16;
 const BLACK: [u8; 3] = [0, 0, 0];
 const RED: [u8; 3] = [255, 0, 0];
 
 /// The coach's squad, held in the picker until OK writes it back.
 #[derive(Default)]
 pub struct NationalSquad {
-    /// The Land combo's nation (`+0x4344`), the club's nation byte.
+    /// The national club's nation byte (its `+0x104`): the coach's own
+    /// land, what the squad and both lists filter on and OK writes back
+    /// to — unchanged by the Land combo.
     nation: u16,
+    /// The Land combo's country (`+0x4344`), the one whose clubs and
+    /// players the search offers.
+    land: u16,
+    /// The countries the Land combo's items stand for, in order — the
+    /// fill gives every item its country as its data (`FUN_0051bf6e`).
+    lands: Vec<u16>,
     /// The Verein combo's number in that country (`+0x4346`).
     club: u16,
+    /// The squad being put together, seeded from the team block.
+    squad: Vec<u16>,
 }
 
 impl Screen for NationalSquad {
@@ -257,12 +266,27 @@ impl Screen for NationalSquad {
             .and_then(|s| s.manager())
             .and_then(|m| m.national_team)
             .unwrap_or(0);
+        // The Land combo starts at the national club's own land
+        // (`FUN_0051bf6e`'s `+0x4344`), the Verein at its first club.
+        self.land = self.nation;
         self.club = 0;
+        self.squad = cx
+            .state
+            .records
+            .as_ref()
+            .map_or_else(Vec::new, |records| national::squad_ids(records, self.nation as i16));
         set(view, dialog, CAPTION_ID, picker_title(cx, self.nation));
         for id in [POSITIONS, INFO] {
             if let Some(options) = control(dialog, id).and_then(|c| view.options_mut(c)) {
-                options.actions = true;
-                options.chosen = NONE;
+                // Both groups are `CMyHighButton`s: they hold their
+                // chosen item — the class starts it at 0, `+0x2e8` —
+                // and a click on the chosen one lets it go again.  The
+                // dialog's own fields start at 1 and −1 (`+0x4348`,
+                // `+0x4350`) while both groups show item 0 chosen, so
+                // the info picture needs two clicks for the other view.
+                options.actions = false;
+                options.toggle = true;
+                options.chosen = 0;
             }
         }
         self.fill_land(cx, view);
@@ -270,35 +294,131 @@ impl Screen for NationalSquad {
         self.fill_bests(cx, view);
         self.fill_squad(cx, view);
         self.fill_search(cx, view);
-        mark_inert(view, dialog, |_| false);
+        mark_inert(view, dialog, |target| match target {
+            Target::Button(c) => crate::controls::button::is_ok(&dialog.controls[c]),
+            Target::Option { control: c, .. } => {
+                matches!(dialog.controls[c].id, Some(POSITIONS) | Some(INFO))
+            }
+            _ => true,
+        });
     }
 
-    /// Nothing clicks yet: OK writes the squad back and the combos search
-    /// only once the picking lands.
-    fn input(&mut self, _: &mut Cx, _: &mut View, _: Target, _: bool) -> Outcome {
-        Outcome::Stay
+    /// The picking (`CNationalkaderZusammenstellen`'s handlers): rows
+    /// call up and send home, the combos move the search, the two groups
+    /// re-fill, and OK writes the squad into the team's block — the copy
+    /// the menu runs over the closed dialog (`FUN_0063df96`).  What the
+    /// menu runs besides, the shirt numbers of `FUN_006d9a04`, burns the
+    /// game's random and writes the national shirt byte at a record's
+    /// +0x224 the replica keeps nowhere; it stays unported with the
+    /// national match itself.
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        let id = |c: usize| dialog.controls[c].id;
+        match target {
+            Target::Button(c) if crate::controls::button::is_ok(&dialog.controls[c]) => {
+                if let Some(records) = cx.state.records.as_mut() {
+                    national::set_squad(records, self.nation as i16, &self.squad);
+                }
+                return Outcome::Close(Reply::Ok);
+            }
+            // A squad row sends its player home only (`FUN_0051d16c`);
+            // a bests or club row lets him in or out (`FUN_0051c981`,
+            // `FUN_0051d6d4`); any change refills squad, bests and club
+            // list, as all three handlers do.
+            Target::Row { control: c, row }
+                if matches!(id(c), Some(SQUAD_LIST) | Some(BESTS_LIST) | Some(CLUB_LIST)) =>
+            {
+                let Some(player) = view.list(c).and_then(|l| l.keys.get(l.scroll + row).copied())
+                else {
+                    return Outcome::Stay;
+                };
+                let player = player as u16;
+                if player == 0 {
+                    return Outcome::Stay;
+                }
+                let changed = if id(c) == Some(SQUAD_LIST) || self.squad.contains(&player) {
+                    national::send_home(&mut self.squad, player)
+                } else {
+                    cx.state
+                        .records
+                        .as_ref()
+                        .is_some_and(|records| national::call_up(&mut self.squad, records, player))
+                };
+                if changed {
+                    self.fill_squad(cx, view);
+                    self.fill_bests(cx, view);
+                    self.fill_search(cx, view);
+                }
+                Outcome::Stay
+            }
+            // The Land combo (`FUN_0051d1fc`): its item's country, the
+            // club back to the first, Verein and club list refilled —
+            // squad and bests stay, and MFC fires only on a change.
+            Target::Row { control: c, .. } if id(c) == Some(LAND) => {
+                let chosen = view.combo(c).and_then(|combo| combo.selected);
+                match chosen.and_then(|item| self.lands.get(item).copied()) {
+                    Some(country) if country != self.land => {
+                        self.land = country;
+                        self.club = 0;
+                        self.fill_verein(cx, view);
+                        self.fill_search(cx, view);
+                    }
+                    _ => {}
+                }
+                Outcome::Stay
+            }
+            // The Verein combo (`FUN_0051d374`): its item's number, the
+            // club list refilled.
+            Target::Row { control: c, .. } if id(c) == Some(VEREIN) => {
+                let chosen = view.combo(c).and_then(|combo| combo.selected);
+                match chosen {
+                    Some(item) if item as u16 != self.club => {
+                        self.club = item as u16;
+                        self.fill_search(cx, view);
+                    }
+                    _ => {}
+                }
+                Outcome::Stay
+            }
+            // The position group (`FUN_0051c948`): its chosen item plus
+            // one, nothing chosen read as 0, is what the bests re-fill
+            // takes — the group stands on the control, and the list is
+            // empty whichever it is; only its table is unported.
+            Target::Option { control: c, .. } if id(c) == Some(POSITIONS) => {
+                self.fill_bests(cx, view);
+                Outcome::Stay
+            }
+            // The info picture (`FUN_0051d7ca`): its chosen item is the
+            // squad list's column mode and nothing chosen its first
+            // view; the list re-fills whichever the click left.
+            Target::Option { control: c, .. } if id(c) == Some(INFO) => {
+                self.fill_squad(cx, view);
+                Outcome::Stay
+            }
+            _ => Outcome::Stay,
+        }
     }
 }
 
 impl NationalSquad {
     /// The Land combo (`FUN_0051bf6e`): every country the table of kinds
-    /// keeps (`DAT_00ae61ae`), named by its nation, chosen this team's.
-    fn fill_land(&self, cx: &Cx, view: &mut View) {
+    /// keeps (`DAT_00ae61ae`), named by its nation, chosen this team's;
+    /// its items' countries stand in `self.lands` for the handler.
+    fn fill_land(&mut self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
         let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, LAND)) else {
             return;
         };
-        let mut items = Vec::new();
-        let mut selected = None;
-        for country in 1..0x75usize {
-            if records.countries.kind(country) == 0 {
-                continue;
-            }
-            if country as u16 == self.nation {
-                selected = Some(items.len());
-            }
-            items.push(game.world.nation(country as u16).to_owned());
-        }
+        self.lands = (1..0x75usize)
+            .filter(|&country| records.countries.kind(country) != 0)
+            .map(|country| country as u16)
+            .collect();
+        let items: Vec<String> = self
+            .lands
+            .iter()
+            .map(|&country| game.world.nation(country).to_owned())
+            .collect();
+        let selected = self.lands.iter().position(|&country| country == self.land);
         if let Some(combo) = view.combo_mut(c) {
             combo.items = items;
             combo.selected = selected;
@@ -308,21 +428,22 @@ impl NationalSquad {
         }
     }
 
-    /// The Verein combo (`FUN_0051d25a`): the country's clubs; a club's row
-    /// is red while it plays someone of the nation it may call up
-    /// (`FUN_0051d5fa`: his own country, not retiring, not already booked).
+    /// The Verein combo (`FUN_0051d25a`): the Land's clubs, its first one
+    /// chosen; a club's row is red while it plays someone the national
+    /// club may call up (`FUN_0051d5fa`: the national club's own nation,
+    /// not retiring, not already booked — the Land only picks the clubs).
     fn fill_verein(&self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
         let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, VEREIN)) else {
             return;
         };
-        let count = records.countries.team_count(usize::from(self.nation)).max(0) as usize;
+        let count = records.countries.team_count(usize::from(self.land)).max(0) as usize;
         let mut items = Vec::new();
         let mut inks = Vec::new();
         for number in 0..count as u16 {
-            items.push(game.club_name(Some(records), self.nation as u8, number as i16));
+            items.push(game.club_name(Some(records), self.land as u8, number as i16));
             let calls = records
-                .team(self.nation, number)
+                .team(self.land, number)
                 .is_some_and(|team| team.players().iter().any(|&id| self.pickable(records, id)));
             inks.push(Some(if calls { RED } else { BLACK }));
         }
@@ -335,9 +456,13 @@ impl NationalSquad {
         }
     }
 
-    /// The bests list (`FUN_0051c33f`) stays empty: its table, `DAT_00a55e76`
-    /// at the coach's own `0x9c0`, is filled by a process the replica does
-    /// not have.
+    /// The bests list (`FUN_0051c33f`) stays empty: the group's number —
+    /// `+0x4348`, the position control's chosen item plus one, what the
+    /// handlers pass every re-fill — picks the block from a copy of the
+    /// coach's own `0x9c0` bytes at `DAT_00a55e76`, 1 to 4 any other
+    /// value zeroing that copy (`FUN_0069d359`); the table itself is
+    /// filled by a process the replica does not have, so every value
+    /// leaves the list empty and the click only moves the highlight.
     fn fill_bests(&self, cx: &Cx, view: &mut View) {
         let Some(c) = control(cx.dialog, BESTS_LIST) else { return };
         if let Some(list) = view.list_mut(c) {
@@ -350,12 +475,18 @@ impl NationalSquad {
         }
     }
 
-    /// The squad list (`FUN_0051ca6c`): his name, position, strength, form,
-    /// expected strength, age and weeks out — the days he is out by, plus
-    /// six, in whole weeks; the abilities in its three icon columns.  A
-    /// player of the unknown and guessed strength classes
+    /// The squad list (`FUN_0051ca6c`), in whichever of its two views the
+    /// info picture left it — its chosen item is the original's `+0x4350`
+    /// and nothing chosen the first view.  The first: his name, position,
+    /// strength, form, expected strength, age and weeks out — the days he
+    /// is out by, plus six, in whole weeks; the abilities in its three
+    /// icon columns.  A player of the unknown and guessed strength classes
     /// shows "?" for his strength, and one of the unknown class shows an
-    /// expected strength of 1.0; the others take `FUN_006a144e`.
+    /// expected strength of 1.0; the others take `FUN_006a144e`.  The
+    /// second, the format at 0x88585c: name, position, strength, the club
+    /// he plays for — the country and number at his +0x220 and +0x221 —
+    /// and the grade of his last match, twice it in the low four bits of
+    /// his +0x273 over 2.0, a dash from 0x88585a where there is none.
     fn fill_squad(&self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
         let (Some(records), Some(season), Some(c)) = (
@@ -365,12 +496,18 @@ impl NationalSquad {
         ) else {
             return;
         };
+        // The info picture's chosen item, `FUN_007a71f7`'s GetCurSel of
+        // the group behind `+0x4350`; −1, nothing chosen, the first view.
+        let mode = control(dialog, INFO).map_or(-1, |c| match view.chosen(c) {
+            NONE => -1,
+            item => item as i32,
+        });
         let slots = crate::controls::list::icon_slots(&dialog.controls[c]);
         let pitch = &game.rules.pitch;
         let today = season.date();
         let (mut rows, mut inks, mut icons, mut keys) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for id in national::squad_ids(records, self.nation as i16) {
+        for &id in &self.squad {
             let (Some(record), Some((player, fitness, status))) =
                 (records.player(id), load::any_player(records, &game.data, id))
             else {
@@ -378,46 +515,86 @@ impl NationalSquad {
             };
             let class = record.picks() >> 6;
             let strength = if matches!(class, 1 | 3) { "?".to_owned() } else { player.strength.to_string() };
-            let expected =
-                if class == 1 { 10 } else { pitch.strength_at(&player, fitness, player.positions[0]) };
-            rows.push(
-                [
-                    hub::name(&player),
-                    hub::abbreviation(game, player.positions[0]),
-                    strength,
-                    lineup::form(fitness).to_string(),
-                    hub::tenths(expected),
-                    player.age(today).to_string(),
-                    if status.injured < 1 {
-                        String::new()
-                    } else {
-                        ((status.injured + 6) / 7).to_string()
-                    },
-                ]
-                .join("\t"),
-            );
             inks.push(Some(BLACK));
-            icons.push(slots.iter().copied().zip(pitch.ability_icons(&player)).collect());
             keys.push(usize::from(id));
+            if mode < 0 {
+                let expected = if class == 1 {
+                    10
+                } else {
+                    pitch.strength_at(&player, fitness, player.positions[0])
+                };
+                rows.push(
+                    [
+                        hub::name(&player),
+                        hub::abbreviation(game, player.positions[0]),
+                        strength,
+                        lineup::form(fitness).to_string(),
+                        hub::tenths(expected),
+                        player.age(today).to_string(),
+                        if status.injured < 1 {
+                            String::new()
+                        } else {
+                            ((status.injured + 6) / 7).to_string()
+                        },
+                    ]
+                    .join("\t"),
+                );
+                icons.push(slots.iter().copied().zip(pitch.ability_icons(&player)).collect());
+            } else {
+                // The second view draws no icons and wants the club and
+                // the grade in place of form, age and weeks.
+                let [country, number] = record.club();
+                let grade = record.grade() & 0xf;
+                rows.push(
+                    [
+                        hub::name(&player),
+                        hub::abbreviation(game, player.positions[0]),
+                        strength,
+                        game.club_name(Some(records), country, number.into()),
+                        if grade == 0 {
+                            "-".to_owned()
+                        } else {
+                            hub::tenths(5 * i32::from(grade))
+                        },
+                    ]
+                    .join("\t"),
+                );
+            }
         }
         let filled = keys.len();
         if let Some(list) = view.list_mut(c) {
-            // The screen hands the list new columns as it fills it (`FUN_0051ca6c`
-            // calling `FUN_007a941f` with eight columns from `DAT_008856d0` and
-            // `DAT_008856f0`): the position starts at 105, not the dialog's 100,
-            // and the strength stands right-aligned at 130 in a width of 20, not
-            // centred in 30.  The other view would pass `DAT_00885710` and
-            // `DAT_00885724`, five columns for a non-national trainer.
-            list.tabs = vec![0.0, 105.0, 130.0, 165.0, 195.0, 235.0, 335.0];
-            list.aligns = vec![
-                Some((Align::Left, 0.0)),
-                Some((Align::Centre, 25.0)),
-                Some((Align::Right, 20.0)),
-                Some((Align::Right, 20.0)),
-                Some((Align::Right, 30.0)),
-                Some((Align::Centre, 30.0)),
-                Some((Align::Centre, 30.0)),
-            ];
+            if mode < 0 {
+                // The screen hands the list new columns as it fills it
+                // (`FUN_0051ca6c` calling `FUN_007a941f` with eight
+                // columns from `DAT_008856d0` and `DAT_008856f0`): the
+                // position starts at 105, not the dialog's 100, and the
+                // strength stands right-aligned at 130 in a width of 20,
+                // not centred in 30.
+                list.tabs = vec![0.0, 105.0, 130.0, 165.0, 195.0, 235.0, 335.0];
+                list.aligns = vec![
+                    Some((Align::Left, 0.0)),
+                    Some((Align::Centre, 25.0)),
+                    Some((Align::Right, 20.0)),
+                    Some((Align::Right, 20.0)),
+                    Some((Align::Right, 30.0)),
+                    Some((Align::Centre, 30.0)),
+                    Some((Align::Centre, 30.0)),
+                ];
+            } else {
+                // The second view's five columns: the widths stand as
+                // `DAT_00885724` reads them — 0, 25, 20, 20 and open for
+                // the grade — but where they start, the original reads
+                // from a runtime table whose entries are not in the file
+                // (`DAT_00885710`); they stand where the first view's do.
+                list.tabs = vec![0.0, 105.0, 130.0, 165.0, 195.0];
+                list.aligns = vec![
+                    Some((Align::Left, 0.0)),
+                    Some((Align::Centre, 25.0)),
+                    Some((Align::Right, 20.0)),
+                    Some((Align::Left, 20.0)),
+                    Some((Align::Left, 0.0)),
+                ];
+            }
             list.rows = rows;
             list.inks = inks;
             list.row_icons = icons;
@@ -425,30 +602,32 @@ impl NationalSquad {
             list.selected = None;
             list.scroll = 0;
         }
-        let free = if filled == SQUAD_MOST {
+        let free = if filled == national::SQUAD_MOST {
             game.text(SQUAD_FULL).to_owned()
-        } else if filled == SQUAD_MOST - 1 {
+        } else if filled == national::SQUAD_MOST - 1 {
             game.text(SQUAD_ONE_LEFT).to_owned()
         } else {
             let template = control(dialog, FREE_SLOTS)
                 .map_or(String::new(), |c| dialog.controls[c].text.clone());
-            template.replacen("%s", &(SQUAD_MOST - filled).to_string(), 1)
+            template.replacen("%s", &(national::SQUAD_MOST - filled).to_string(), 1)
         };
         set(view, dialog, FREE_SLOTS, free);
     }
 
     /// The list under the two combos (`FUN_0051d3be`): the chosen club's
-    /// players of the nation it may call up, red while they are in the
-    /// squad; name, position and expected strength, no icons.
+    /// players of the nation the coach may call up, red while they stand
+    /// in the squad he is putting together; name, position and expected
+    /// strength, no icons.  The club follows the Land combo (`+0x4344`);
+    /// the filter — the nation byte at the player's `+0x24`, equal to the
+    /// national club's own — follows the coach, not the combo.
     fn fill_search(&self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
         let (Some(records), Some(c)) = (cx.state.records.as_ref(), control(dialog, CLUB_LIST)) else {
             return;
         };
-        let squad = national::squad_ids(records, self.nation as i16);
         let pitch = &game.rules.pitch;
         let (mut rows, mut inks, mut keys) = (Vec::new(), Vec::new(), Vec::new());
-        if let Some(team) = records.team(self.nation, self.club) {
+        if let Some(team) = records.team(self.land, self.club) {
             for id in team.players() {
                 if !self.pickable(records, id) {
                     continue;
@@ -464,7 +643,7 @@ impl NationalSquad {
                     ]
                     .join("\t"),
                 );
-                inks.push(Some(if squad.contains(&id) { RED } else { BLACK }));
+                inks.push(Some(if self.squad.contains(&id) { RED } else { BLACK }));
                 keys.push(usize::from(id));
             }
         }

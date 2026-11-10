@@ -10210,4 +10210,184 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// The picker on a job poked into a copy of A: its squad list holds
+    /// the block's players, a squad row sends one home and OK writes the
+    /// list back; the Verein combo opens a club's list — its players of
+    /// the coach's nation, red while the squad holds them — and a row
+    /// there calls him up, inserted by main position; the Land combo
+    /// moves the search to the other country's clubs, and the position
+    /// group and the info picture stand on their controls — the picture
+    /// needs its two clicks for the list's second view (name, position,
+    /// strength, club and the grade of the last match).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_coach_calls_up_and_sends_home_in_the_picker() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let pickable = |records: &a3_core::records::Records, id: u16| {
+            records.player(id).is_some_and(|p| {
+                p.nation() == 14 && p.retiring() & 2 == 0 && p.picks() & 2 == 0
+            })
+        };
+        let position = |records: &a3_core::records::Records, id: u16| {
+            records.player(id).map_or(0, |p| p.positions()[0])
+        };
+        let mut seeds = [0u16; 2];
+        let mut add = 0u16;
+        let mut club_no = 0u16;
+        let mut add_row = 0usize;
+        let mut expect: Vec<u16> = Vec::new();
+        let mut shown: Vec<u16> = Vec::new();
+        let root = patched(&dir, "A", "nationalpick", |records| {
+            let slot = records.human_slot(0).unwrap();
+            records.managers[slot].put(0x1f72, 14i16);
+            // A club of the coach's land with three players he may call
+            // up: two seeded into the block in position order, one to
+            // call from the club's list.
+            club_no = (0..records.countries.team_count(14).max(0) as u16)
+                .find(|&n| {
+                    records.team(14, n).is_some_and(|t| {
+                        t.players().iter().filter(|&&id| pickable(records, id)).count() >= 3
+                    })
+                })
+                .unwrap();
+            let team = records.team(14, club_no).unwrap().players();
+            shown = team.iter().copied().filter(|&id| pickable(records, id)).collect();
+            let mut ranked = shown.clone();
+            ranked.sort_by_key(|&id| (usize::from(position(records, id)), usize::from(id)));
+            seeds = [ranked[0], ranked[1]];
+            add = shown.iter().copied().find(|&id| id != seeds[0] && id != seeds[1]).unwrap();
+            add_row = shown.iter().position(|&id| id == add).unwrap();
+            expect = seeds.to_vec();
+            a3_core::national::call_up(&mut expect, records, add);
+            let team = records.block_mut("0xa9d660[14]").unwrap();
+            team[0xf2..0xf4].copy_from_slice(&2u16.to_le_bytes());
+            for (k, &id) in seeds.iter().enumerate() {
+                team[0x1d2 + 2 * k..0x1d4 + 2 * k].copy_from_slice(&id.to_le_bytes());
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 0\nuntil dialog 357";
+        let dialog = &game.dialogs[&357];
+        let squad_list = crate::screens::control(dialog, 4556).unwrap();
+        let club_list = crate::screens::control(dialog, 4553).unwrap();
+        // Open: the block's two stand in the list, the free slots count
+        // from 22.
+        let runner = on_save(&game, "nationalpick", open).unwrap();
+        let view = runner.host.view();
+        let keys: Vec<usize> = seeds.iter().map(|&id| usize::from(id)).collect();
+        assert_eq!(view.list(squad_list).unwrap().keys, keys, "{}", runner.log.join("\n"));
+        let free = crate::screens::control(dialog, 4559).unwrap();
+        assert!(view.text(free).contains("20"), "{}", view.text(free));
+        // The club's list: the pickable players in the club's own order,
+        // the seeded ones red.
+        let runner = on_save(&game, "nationalpick", &format!("{open}\nnow row 4555 {club_no}")).unwrap();
+        let list = runner.host.view().list(club_list).unwrap();
+        let shown_keys: Vec<usize> = shown.iter().map(|&id| usize::from(id)).collect();
+        assert_eq!(list.keys, shown_keys, "the club list: {}", list.rows.join(" / "));
+        let inks: Vec<Option<[u8; 3]>> = shown
+            .iter()
+            .map(|&id| Some(if seeds.contains(&id) { [255, 0, 0] } else { [0, 0, 0] }))
+            .collect();
+        assert_eq!(list.inks, inks);
+        // A club row calls him up at the place the insert by main
+        // position gives him.
+        let pick = &format!("{open}\nnow row 4555 {club_no}\nnow row 4553 {add_row}");
+        let runner = on_save(&game, "nationalpick", pick).unwrap();
+        let expect_keys: Vec<usize> = expect.iter().map(|&id| usize::from(id)).collect();
+        assert_eq!(runner.host.view().list(squad_list).unwrap().keys, expect_keys);
+        // OK writes the squad into the team's block.
+        let runner = on_save(&game, "nationalpick", &format!("{pick}\nnow ok\nuntil dialog 355")).unwrap();
+        let state = runner.host.state();
+        let team = state.records.as_ref().unwrap().block("0xa9d660[14]").unwrap();
+        assert_eq!(i16::from_le_bytes([team[0xf2], team[0xf3]]), 3);
+        let ids: Vec<u16> = (0..3)
+            .map(|k| u16::from_le_bytes([team[0x1d2 + 2 * k], team[0x1d2 + 2 * k + 1]]))
+            .collect();
+        assert_eq!(ids, expect);
+        // A squad row sends its player home; OK writes the one left.
+        let runner = on_save(
+            &game,
+            "nationalpick",
+            &format!("{open}\nnow row 4556 0\nnow ok\nuntil dialog 355"),
+        )
+        .unwrap();
+        let state = runner.host.state();
+        let team = state.records.as_ref().unwrap().block("0xa9d660[14]").unwrap();
+        assert_eq!(i16::from_le_bytes([team[0xf2], team[0xf3]]), 1);
+        assert_eq!(u16::from_le_bytes([team[0x1d2], team[0x1d3]]), seeds[1]);
+        // The info picture: its first click lets the group go (the class
+        // starts it chosen while the dialog's mode is not), the second
+        // draws the club and the grade in place of form, age and weeks.
+        let info = crate::screens::control(dialog, 6358).unwrap();
+        let runner = on_save(&game, "nationalpick", &format!("{open}\nnow choose 6358 0")).unwrap();
+        assert_eq!(
+            runner.host.view().options(info).unwrap().chosen,
+            crate::controls::options::NONE,
+            "the first click did not let the picture go"
+        );
+        assert_eq!(runner.host.view().list(squad_list).unwrap().rows[0].split('\t').count(), 7);
+        let runner = on_save(
+            &game,
+            "nationalpick",
+            &format!("{open}\nnow choose 6358 0\nnow choose 6358 0"),
+        )
+        .unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.options(info).unwrap().chosen, 0);
+        let list = view.list(squad_list).unwrap();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        for (row, &key) in list.rows.iter().zip(&list.keys) {
+            let cols: Vec<&str> = row.split('\t').collect();
+            assert_eq!(cols.len(), 5, "{row}");
+            let player = records.player(key as u16).unwrap();
+            let [country, number] = player.club();
+            assert_eq!(cols[3], game.club_name(Some(records), country, i16::from(number)));
+            let grade = player.grade() & 0xf;
+            assert_eq!(
+                cols[4],
+                if grade == 0 { "-".to_owned() } else { format!("{:.1}", (5 * grade) as f32 / 10.0) }
+            );
+        }
+        // The position group stands chosen while the bests list — whose
+        // table the replica does not have — stays empty.
+        let positions = crate::screens::control(dialog, 4775).unwrap();
+        let bests = crate::screens::control(dialog, 4558).unwrap();
+        let runner = on_save(&game, "nationalpick", &format!("{open}\nnow choose 4775 1")).unwrap();
+        let view = runner.host.view();
+        assert_eq!(view.options(positions).unwrap().chosen, 1);
+        assert!(view.list(bests).unwrap().rows.is_empty());
+        // The Land combo moves the Verein list and the club list to the
+        // other country's first club.
+        let lands: Vec<u16> = (1..0x75u16)
+            .filter(|&c| {
+                runner.host.state().records.as_ref().unwrap().countries.kind(usize::from(c)) != 0
+            })
+            .collect();
+        let land = crate::screens::control(dialog, 4554).unwrap();
+        let verein = crate::screens::control(dialog, 4555).unwrap();
+        let runner = on_save(&game, "nationalpick", &format!("{open}\nnow row 4554 1")).unwrap();
+        let view = runner.host.view();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(view.combo(land).unwrap().selected, Some(1));
+        let items: Vec<String> = (0..records.countries.team_count(usize::from(lands[1])).max(0) as u16)
+            .map(|n| game.club_name(Some(records), lands[1] as u8, n as i16))
+            .collect();
+        assert_eq!(view.combo(verein).unwrap().items, items, "the Verein list did not follow the Land");
+        let want: Vec<usize> = records
+            .team(lands[1], 0)
+            .map_or_else(Vec::new, |t| t.players())
+            .iter()
+            .copied()
+            .filter(|&id| pickable(records, id))
+            .map(|id| usize::from(id))
+            .collect();
+        assert_eq!(view.list(club_list).unwrap().keys, want);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
