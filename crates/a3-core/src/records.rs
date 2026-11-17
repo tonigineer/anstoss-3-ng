@@ -1027,6 +1027,11 @@ record! {
     /// the list), the screen his turn starts on in bits 6 and 7, the
     /// short-term training as pictures in bit 8.
     0x212c => options, set_options: u32;
+    /// How often his reports of other humans' players to the association
+    /// were followed up (`f_2130`, raised to two at most by
+    /// `FUN_006a662d`): from three on the doping screen refuses another
+    /// (`FUN_006a660b`, `FUN_00517588`).
+    0x2130 => doping_reports, set_doping_reports: i16;
     /// The transfer list's filters: the least strength shown, the
     /// leagues or country, all, new or the club's own players
     /// (TRANSFERLISTE.md).

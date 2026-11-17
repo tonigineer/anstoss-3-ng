@@ -11210,4 +11210,73 @@ mod tests {
         assert!(first == second, "the replay's records differ");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Probe1 with a second human at the next club: the doping screen's
+    /// report button opens dialog 509 with one box, his name on it, the
+    /// other two disabled; ticking it reports him, ticking again takes it
+    /// back. With three reports followed up the button only alerts (5002).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn doping_reports_another_human() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.parent().unwrap().join("saves-kept/Probe1.an3").exists()
+            && !dir.join("saves/Probe1.an3").exists()
+        {
+            eprintln!("no Probe1 among the saves");
+            return;
+        }
+        let second = |reports: i16| {
+            move |records: &mut a3_core::records::Records| {
+                records.globals.set_slots([1, 1, 0, 0]);
+                let team = records.managers[0].team();
+                records.managers[1].set_team(team + 1);
+                let (status, country) = (records.managers[0].status(), records.managers[0].country());
+                records.managers[1].set_status(status);
+                records.managers[1].set_country(country);
+                records.managers[1].set_human(2);
+                records.managers[0].set_doping_reports(reports);
+                let club = records.team_mut(country, team + 1).unwrap();
+                club.set_humans([2, 2]);
+                club.set_human(2);
+            }
+        };
+        let root = patched(&dir, "Probe1", "doping-two", second(0));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now choose 5266 6\nuntil dialog 151\nnow press 4929\nuntil dialog 394\n\
+                    now press 5485\nuntil dialog 509";
+        let runner = on_save(&game, "doping-two", open).unwrap();
+        let dialog = &game.dialogs[&509];
+        let view = runner.host.view();
+        let name = {
+            let state = runner.host.state();
+            let m = &state.records.as_ref().unwrap().managers[1];
+            format!("{} {}", m.first_name(), m.last_name())
+        };
+        let first = view.options(control(dialog, 6421).unwrap()).unwrap();
+        assert_eq!(first.labels[0], name);
+        assert_eq!(first.selected(), None);
+        for id in [6422, 6423] {
+            assert_eq!(view.options(control(dialog, id).unwrap()).unwrap().dimmed, vec![true]);
+        }
+        drop(runner);
+        let tick = format!("{open}\nnow choose 6421 0");
+        let runner = on_save(&game, "doping-two", &tick).unwrap();
+        assert!(runner.host.state().season.as_ref().unwrap().reported[0][1]);
+        drop(runner);
+        let again = format!("{tick}\nnow choose 6421 0\nnow press 1\nuntil dialog 394\nnow press 5485\nuntil dialog 509");
+        let runner = on_save(&game, "doping-two", &again).unwrap();
+        assert!(!runner.host.state().season.as_ref().unwrap().reported[0][1]);
+        drop(runner);
+        let _ = std::fs::remove_dir_all(&root);
+        let root = patched(&dir, "Probe1", "doping-three", second(3));
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let refused = "now choose 5266 6\nuntil dialog 151\nnow press 4929\nuntil dialog 394\n\
+                       now press 5485\nuntil dialog 380";
+        let runner = on_save(&game, "doping-three", refused).unwrap();
+        assert_eq!(notice_text(&game, &runner), game.text(5002));
+        drop(runner);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -138,3 +138,10 @@ mod tests {
         assert_eq!(risk(5_000_000, false), 40);
     }
 }
+
+/// Whether a manager may report other humans' players once more: not
+/// from three followed-up reports on (`FUN_00517588` against
+/// `FUN_006a660b`, the manager's `f_2130`).
+pub fn may_report(reports: i16) -> bool {
+    reports < 3
+}

@@ -447,6 +447,11 @@ pub struct Season {
     /// player event is not met twice while it stands here. No save keeps
     /// it, so a load starts it empty.
     pub recent_events: Vec<i32>,
+    /// Which humans each human has reported to the association for
+    /// doping, by their numbers less one: reporter, then reported
+    /// (`DAT_00a2e016`, a row of 0x28 bytes per reporter). No save
+    /// keeps it, so a load starts it clear.
+    pub reported: [[bool; crate::records::MANAGERS]; crate::records::MANAGERS],
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -847,6 +852,7 @@ impl Season {
             tournament_screens: Vec::new(),
             halls: Vec::new(),
             recent_events: Vec::new(),
+            reported: Default::default(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {
