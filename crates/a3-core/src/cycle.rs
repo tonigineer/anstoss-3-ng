@@ -1406,6 +1406,31 @@ impl Cycle {
         (true, left)
     }
 
+    /// The day's poaching talks, before the planners' pump
+    /// (`FUN_0076cb3e` from the day loop `FUN_0064f981`): its first step
+    /// zeroes the day's messages (`FUN_0076fac0`), then every poaching
+    /// appointment of the day leaves the list, and a human buyer's talk
+    /// puts "Verhandlung" and the manager's name in the week's message
+    /// (`FUN_0076aca0`, text 5048 via `FUN_0064f456`). Its message 0xa6
+    /// would open the talk itself (`FUN_0076ad3b`,
+    /// `CVerhandlungAbwerbeversuch`), not built yet.
+    fn poaching_talks(&self) {
+        let mut state = self.state();
+        let state = &mut *state;
+        let Some(season) = state.season.as_mut() else { return };
+        season.planner_message = None;
+        let Some(records) = state.records.as_mut() else { return };
+        let Ok(day) = i16::try_from(season.day) else { return };
+        for (_player, human) in crate::transfers::poaching_day(records, day) {
+            let slot = usize::from(human) - 1;
+            let n = (0..season.managers.len()).find(|&n| records.human_slot(n) == Some(slot));
+            if let Some(manager) = n.and_then(|n| season.managers.get(n)) {
+                season.planner_message =
+                    Some((CONTRACT_TALK_TEXT, manager.last_name.clone()));
+            }
+        }
+    }
+
     /// What the managers booked for today in their planners with a player
     /// still in their squads, manager by manager (`FUN_0072fd53`): a talk
     /// opens in its manager's turn (`FUN_0048ddbe`); a sick visit happens
@@ -1416,6 +1441,7 @@ impl Cycle {
     /// manager with one stays on the week screen.
     fn appointments(&self) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
+        self.poaching_talks();
         for n in 0..managers {
             let booked = {
                 let mut state = self.state();
@@ -1425,9 +1451,6 @@ impl Cycle {
                     return Ok(());
                 };
                 season.current = n;
-                if n == 0 {
-                    season.planner_message = None;
-                }
                 let manager = &season.managers[n];
                 let last_name = manager.last_name.clone();
                 let club = manager.club;

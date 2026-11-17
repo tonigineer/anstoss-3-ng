@@ -591,3 +591,84 @@ pub fn unwatch_at_club(records: &mut Records, club: (u8, i16), id: u16) {
         unwatch(records, slot, id);
     }
 }
+
+/// An appointment taken off the list, the player's first (`FUN_00761aa6`):
+/// the entries after it move up.
+pub fn cancel_talk(records: &mut Records, player: u16) {
+    let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(MOST_TALKS);
+    let Some(k) = (0..count).find(|&k| word(b, TALKS_FIRST + k * TALK + TALK_PLAYER) as u16 == player)
+    else {
+        return;
+    };
+    let from = TALKS_FIRST + (k + 1) * TALK;
+    let end = (TALKS_FIRST + count * TALK).min(b.len());
+    if from < end {
+        b.copy_within(from..end, from - TALK);
+    }
+    put16(b, 0, count as i16 - 1);
+}
+
+/// The day's poaching talks (`FUN_0076cb3e`'s first loop): every kind-2
+/// appointment of the day (`FUN_00761d61`) leaves the list; unless the
+/// first pre-season stands still (`FUN_005ef56c`), one whose second club
+/// (+0x12/+0x14) has a human manager (`FUN_0067764c`) and names a player
+/// (0 < id < 0x426e) is his talk of the day (`FUN_0076aca0`). The talks,
+/// as player and the manager's number from 1.
+pub fn poaching_day(records: &mut Records, day: i16) -> Vec<(u16, u8)> {
+    let still = crate::tournament::still(records, day);
+    let mut talks = Vec::new();
+    while let Some(t) =
+        appointments(records).into_iter().find(|t| t.day == day && t.kind == POACHING)
+    {
+        let human = t
+            .clubs
+            .get(1)
+            .and_then(|&(country, number)| records.team(u16::from(country), number as u16))
+            .map_or(0, |team| team.human());
+        if !still && human != 0 && (1..0x426e).contains(&t.player) {
+            talks.push((t.player, human));
+        }
+        cancel_talk(records, t.player);
+    }
+    talks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A poaching talk booked on save A beside its nine appointments, for
+    /// the human club and a player of no other: on its day it leaves the
+    /// list and is that manager's talk, the rest stay.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_poaching_talks_leave_the_list_on_their_day() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let first = appointments(&records).remove(0);
+        let human = records.teams.iter().find(|t| t.human() != 0).unwrap();
+        let buyer = (human.country(), i16::from(human.number()));
+        let player = (1..0x426e).find(|&p| !appointments(&records).iter().any(|t| t.player == p)).unwrap();
+        let day = records.globals.day() as i16 + 1;
+        assert!(book(&mut records, POACHING, day, player, first.clubs[0], buyer, [0; TERMS]));
+        let before = appointments(&records);
+        let today: Vec<_> = before.iter().filter(|t| t.day == day && t.kind == POACHING).collect();
+        let talks = poaching_day(&mut records, day);
+        let after = appointments(&records);
+        assert_eq!(after.len(), before.len() - today.len());
+        assert!(!after.iter().any(|t| t.day == day && t.kind == POACHING));
+        let humans: Vec<_> = today
+            .iter()
+            .filter(|t| {
+                t.clubs.get(1).and_then(|&(c, n)| records.team(u16::from(c), n as u16))
+                    .is_some_and(|team| team.human() != 0)
+            })
+            .map(|t| t.player)
+            .collect();
+        assert_eq!(talks.iter().map(|t| t.0).collect::<Vec<_>>(), humans);
+        assert_eq!(humans, vec![player]);
+    }
+}
