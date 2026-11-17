@@ -1597,6 +1597,7 @@ impl Cycle {
             crate::transfers::purchase_talk_day(
                 records,
                 &mut season.random,
+                (&self.data.rules.contract, &self.data.rules.value),
                 &self.data.world.nation_kinds,
                 day,
                 &mut told,

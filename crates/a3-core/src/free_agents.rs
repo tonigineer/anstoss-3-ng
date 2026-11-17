@@ -226,7 +226,7 @@ fn table(records: &Records, country: u16, level: u8) -> Table {
 
 /// The years of his fresh terms (`FUN_0076d3ac`): by his age, the young
 /// and able drawn up to five.
-fn fresh_years(p: &Player, age: i32, random: &mut Random) -> i8 {
+pub(crate) fn fresh_years(p: &Player, age: i32, random: &mut Random) -> i8 {
     match age {
         ..23 if p.strength() > 3 => match random.below(3) {
             0 => 5,

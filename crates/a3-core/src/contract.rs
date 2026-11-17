@@ -30,6 +30,10 @@ const YEARS_AT: u32 = 0x8a7934;
 const YEAR_CLASSES: usize = 3;
 const MONTHS_AT: u32 = 0x89e220;
 const MONTHS: usize = 13;
+/// The countries `FUN_0076e55c` marks (0x89dfc8, one byte for each of
+/// 0x75; meaning not traced): a seller there gets less.
+const MARKED_AT: u32 = 0x89dfc8;
+const COUNTRIES: usize = 0x75;
 /// What contentment adds to the will to stay, by its level (the table at
 /// 0x8819b4).
 const CONTENT: [i32; 4] = [15, 0, -15, -35];
@@ -62,6 +66,7 @@ pub struct ContractTables {
     weights: Vec<[f64; 4]>,
     years: Vec<[f32; 4]>,
     months: Vec<u8>,
+    marked: Vec<u8>,
 }
 
 impl ContractTables {
@@ -93,7 +98,13 @@ impl ContractTables {
             weights: weights.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
             years: years.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
             months: exe.bytes(MONTHS_AT, MONTHS)?.to_vec(),
+            marked: exe.bytes(MARKED_AT, COUNTRIES)?.to_vec(),
         })
+    }
+
+    /// Whether a country is marked at 0x89dfc8.
+    pub fn marked_country(&self, country: u8) -> bool {
+        self.marked.get(usize::from(country)).is_some_and(|&m| m != 0)
     }
 }
 

@@ -185,6 +185,8 @@ pub struct Appointment {
     pub clubs: Vec<(u8, i16)>,
     /// Each club's weight in the talk (+0x11 + 6k).
     pub weights: Vec<u8>,
+    /// Each club's participant status (+0x10 + 6k, meaning not traced).
+    pub statuses: Vec<u8>,
     /// The contract the talk is on (+0x38).
     pub terms: [u8; TERMS],
 }
@@ -219,6 +221,9 @@ pub fn appointments(records: &Records) -> Vec<Appointment> {
                     .collect(),
                 weights: (0..n)
                     .map(|i| b.get(e + CLUB_AT + i * CLUB + 5).copied().unwrap_or(0))
+                    .collect(),
+                statuses: (0..n)
+                    .map(|i| b.get(e + CLUB_AT + i * CLUB + 4).copied().unwrap_or(0))
                     .collect(),
                 terms: b
                     .get(e + TALK_TERMS..e + TALK_TERMS + TERMS)
@@ -851,6 +856,275 @@ pub struct PurchaseTalk {
     pub seller: Side,
     pub bidders: Vec<Side>,
     pub opening: Opening,
+    /// The seller's frame and each bidder's, in the bidders' order.
+    pub asking: Asking,
+    pub offers: Vec<Asking>,
+}
+
+/// A club's frame in a purchase talk (`0x1c5bf60` + 0x5c per club, the
+/// seller's first, filled by `FUN_00767acd`, `FUN_0076e55c` and
+/// `FUN_0076d44d` from asm 0x768af8 and, for each bidder, 0x768c65): the
+/// salary the player would take there, in thousands, and the terms the
+/// club opens on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Asking {
+    /// The club's human manager (+0x00, club +0x8b), 0 for the computer.
+    pub manager: u8,
+    /// Its league level as the talk weighs it (+0x50, the seller's at most
+    /// 2 and `DAT_01c5c250`; a bidder's by `FUN_006755b8`).
+    pub level: u8,
+    /// The least and the most salary he would talk about (+0x48, +0x4c).
+    pub least: i32,
+    pub most: i32,
+    /// His mood's weight (+0x52: the seller's from table 0x8819b4 by
+    /// `FUN_00770877`, a bidder's 0).
+    pub mood: i16,
+    /// A bidder's copy of the opening's remark flags (+0x58, -0x3c).
+    pub remarks: u8,
+    /// A bidder's participant status (+0x44, the appointment's +0x10 + 6k,
+    /// meaning not traced); 0 for the seller.
+    pub status: u8,
+    /// The terms the club opens on (+0x2c … +0x3f, laid out as
+    /// [`terms`]: salary, appearance bonus, …, years at 12, flags at 14).
+    pub terms: [u8; TERMS],
+}
+
+impl Asking {
+    pub fn salary(&self) -> u16 {
+        u16::from_le_bytes([self.terms[0], self.terms[1]])
+    }
+    pub fn appearance(&self) -> u16 {
+        u16::from_le_bytes([self.terms[2], self.terms[3]])
+    }
+    pub fn years(&self) -> i8 {
+        self.terms[12] as i8
+    }
+    pub fn flags(&self) -> u16 {
+        u16::from_le_bytes([self.terms[14], self.terms[15]])
+    }
+}
+
+/// +0x3a's bits: drawn at even odds (meaning not traced), and "ab
+/// sofort" (the season young and a human club or a bidder of status, and
+/// R+0x162 set).
+pub const ASKING_DRAWN: u16 = 0x2000;
+pub const ASKING_AT_ONCE: u16 = 0x20;
+/// `FUN_00770877`'s levels to +0x52 (table 0x8819b4).
+const MOOD_WEIGHTS: [i16; 4] = [15, 0, -15, -35];
+/// The salary's unit (`DAT_00a3b3e4`).
+const SALARY_UNIT: f64 = 1000.0;
+/// What `FUN_0076e55c` and `FUN_0076d44d` take of his demand, and the
+/// most by the club's level (0x80e748; 0x835110 first league, 0x835118
+/// below).
+const LEAST_SHARE: f64 = 0.8;
+const MOST_SHARE: [f64; 2] = [1.75, 1.65];
+/// `FUN_0076e55c`'s bounds on the seller's money (`DAT_00a3b308`, 3 Mio)
+/// and its steps on the bidder's (`DAT_00a3b2c0` … `DAT_00a3b348`, then
+/// the negative ones), from the most down, in the game's money.
+const SELLER_DEEP: i64 = 3_000_000;
+const BIDDER_STEPS: [(i64, f32); 10] = [
+    (20_000_000, 1.8),
+    (16_000_000, 1.7),
+    (12_000_000, 1.6),
+    (8_000_000, 1.5),
+    (5_000_000, 1.4),
+    (2_000_000, 1.2),
+    (500_000, 1.05),
+    (-2_000_000, 0.95),
+    (-5_000_000, 0.9),
+    (-10_000_000, 0.8),
+];
+const BIDDER_POOR: f32 = 0.7;
+/// `FUN_00708b80`'s pick value above which a buyer pays more.
+const WANTED: i32 = 0x78;
+/// The squad beyond which each man takes a fiftieth off.
+const SQUAD_EASE: i32 = 0x12;
+
+/// How much more or less a club pays him than his own (`FUN_0076e55c`'s
+/// factor): 1 at his own club; else by the seller's money (0.85 deep in
+/// debt, 0.95 in debt), more for a man the pick values above 120, for a
+/// position the buyer lacks (0.2) or has once (0.1), less for each man of
+/// a squad beyond 18, then times the buyer's money's step, less 0.4 from a
+/// seller of a marked country (0x89dfc8), 0.15 out five weeks or more
+/// (0.05 a week), 0.6 banned, and never under 0.2.
+fn bargain_factor(
+    records: &Records,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    p: &crate::records::Player,
+    seller: &crate::records::Team,
+    club: &crate::records::Team,
+) -> f32 {
+    if (seller.country(), seller.number()) == (club.country(), club.number()) {
+        return 1.0;
+    }
+    let prices = records.globals.fund_prices();
+    let money = crate::finances::figure(seller, prices);
+    let mut f: f32 = if money < -SELLER_DEEP {
+        0.85
+    } else if money < 0 {
+        0.95
+    } else {
+        1.0
+    };
+    // FUN_00708b80: the pick's percent weighed by his form.
+    let position = p.positions()[0];
+    let percent = tables.1.pick_percent(p.good(), p.traits(), position == 1);
+    let share = (f64::from(crate::statistics::form_today(p)) * 1.5 + 85.0) / 100.0;
+    if (f64::from(percent + 100) * share) as i32 > WANTED {
+        f += 0.1;
+    }
+    // Club +0xbf0[position]: his position's men in the buyer's squad.
+    let same = club
+        .players()
+        .into_iter()
+        .filter(|&id| records.player(id).is_some_and(|q| q.positions()[0] == position))
+        .count();
+    match same {
+        0 => f += 0.2,
+        1 => f += 0.1,
+        _ => {}
+    }
+    let squad = i32::from(club.player_count() as i16);
+    if squad > SQUAD_EASE {
+        f = (f64::from(f) - f64::from(squad - SQUAD_EASE) / 50.0) as f32;
+    }
+    let money = crate::finances::figure(club, prices);
+    f *= BIDDER_STEPS.iter().find(|&&(above, _)| money > above).map_or(BIDDER_POOR, |&(_, s)| s);
+    if tables.0.marked_country(seller.country()) {
+        f -= 0.4;
+    }
+    let out = crate::load::days_to(&records.globals, p.injured_to());
+    if out >= 0x23 {
+        f -= 0.15;
+    } else if out >= 7 {
+        f -= 0.05;
+    }
+    if crate::load::days_to(&records.globals, p.long_to()) != 0 {
+        f -= 0.6;
+    }
+    f.max(0.2)
+}
+
+/// One club's frame (`FUN_00768638` asm 0x768af8–0x768b9f for the
+/// seller, 0x768c80–0x768da1 for a bidder): the bounds of
+/// `FUN_0076e55c` — the least 0.8 of his demand (`FUN_00708012`), in
+/// thousands, times the factor only when that is under 1, the most 1.75
+/// or 1.65 of it by the club's league — and the terms of
+/// `FUN_0076d44d`: a salary of 0.8 of his demand and an appearance bonus
+/// of five of it per matchday, each spread 90 to 110 per cent, the years
+/// (`FUN_0076d3ac`), the even draw, "ab sofort". The first bidder of
+/// the appointment opens on the terms booked with it, unless their
+/// salary is 0. (A human bidder also counts at the seller's club
+/// +0xe04[manager], whose place in the save is not traced.)
+fn club_asking(
+    records: &Records,
+    random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    t: &Appointment,
+    k: usize,
+    remarks: u8,
+    day: i16,
+) -> Option<Asking> {
+    let seller = t.clubs[0];
+    let side = *t.clubs.get(k)?;
+    let seller_team = records.team(u16::from(seller.0), seller.1 as u16)?;
+    let team = records.team(u16::from(side.0), side.1 as u16)?;
+    let p = records.player(t.player)?;
+    let manager = team.humans()[1];
+    let level = if k == 0 {
+        team.level().min(2)
+    } else {
+        // FUN_006755b8: the main country's leagues, the rest as its first.
+        let main = records.globals.main_country();
+        match team.level() {
+            l if i16::from(side.0) != main => if l > 0 { 0 } else { l },
+            l if main == 0x10 => l.min(3),
+            l => l.min(2),
+        }
+    };
+    let age = crate::free_agents::age(records, p);
+    let star = records.globals.stars().get(usize::from(p.positions()[0])) == Some(&t.player);
+    let signee = crate::contract::Signee::of(
+        p,
+        age,
+        crate::statistics::form_today(p),
+        tables.1,
+        star,
+        records.globals.start_year(),
+    );
+    let demand = f64::from(tables.0.demand(&signee));
+    let factor = bargain_factor(records, tables, p, seller_team, team);
+    let v = f64::from((demand / SALARY_UNIT) as f32);
+    let least = if factor < 1.0 { v * f64::from(factor) * LEAST_SHARE } else { v * LEAST_SHARE } as i32;
+    let most = (v * MOST_SHARE[usize::from(team.level() > 0)]) as i32;
+    let mood = if k == 0 {
+        let content = if t.player < 0x4269 {
+            crate::mood::content_level(crate::mood::parts(p))
+        } else {
+            1
+        };
+        MOOD_WEIGHTS[content]
+    } else {
+        0
+    };
+    let status = if k == 0 { 0 } else { t.statuses.get(k).copied().unwrap_or(0) };
+    let mut asking = Asking {
+        manager,
+        level,
+        least,
+        most,
+        mood,
+        remarks: if k == 0 { 0 } else { remarks },
+        status,
+        terms: [0; TERMS],
+    };
+    if k == 1 {
+        asking.terms = t.terms;
+    }
+    if k != 1 || asking.salary() == 0 {
+        asking.terms = opening_terms(records, random, p, age, demand, seller_team, &asking, day);
+    }
+    Some(asking)
+}
+
+/// `FUN_0076d44d`'s terms.
+#[allow(clippy::too_many_arguments)]
+fn opening_terms(
+    records: &Records,
+    random: &mut crate::random::Random,
+    p: &crate::records::Player,
+    age: i32,
+    demand: f64,
+    seller: &crate::records::Team,
+    asking: &Asking,
+    day: i16,
+) -> [u8; TERMS] {
+    let a = f64::from((demand * LEAST_SHARE) as f32);
+    let salary = (a / SALARY_UNIT) as i32 as u16;
+    let matchdays = match crate::statistics::league_length(records, seller) {
+        ..1 => 0x22,
+        n => i32::from(n),
+    };
+    let appearance = (i32::from(salary) * 5 / matchdays) as u16;
+    let salary = ((random.below(21) + 90) * u32::from(salary) / 100) as u16;
+    let appearance = ((random.below(21) + 90) * u32::from(appearance) / 100) as u16;
+    let years = crate::free_agents::fresh_years(p, age, random);
+    let mut flags = 0;
+    if random.below(2) != 0 {
+        flags |= ASKING_DRAWN;
+    }
+    if day <= LATE_SEASON && (asking.manager != 0 || asking.status != 0) {
+        flags |= ASKING_AT_ONCE;
+    }
+    if p.get::<u8>(0x162) == 0 {
+        flags &= !ASKING_AT_ONCE;
+    }
+    let mut t = [0; TERMS];
+    t[0..2].copy_from_slice(&salary.to_le_bytes());
+    t[2..4].copy_from_slice(&appearance.to_le_bytes());
+    t[12] = years as u8;
+    t[14..16].copy_from_slice(&flags.to_le_bytes());
+    t
 }
 
 /// How a purchase talk opens (`FUN_00768638` from asm 0x7687af to
@@ -981,12 +1255,14 @@ const LATE_SEASON: i16 = 0xd8;
 /// in 50 000s) is set, the season is not past day 216 and the club can
 /// invest less (`FUN_00767b6a`, a human told by `FUN_00768497`), or when
 /// its squad is full (`FUN_00767c78`, told by `FUN_0076851f`); the
-/// seller is skipped (`FUN_006782aa`). The bargaining that follows (from
-/// asm 0x768c65) is not built. Afterwards a listing whose terms read
+/// seller is skipped (`FUN_006782aa`); before them the seller's frame,
+/// and each bidder left gets his own ([`Asking`]). The bargaining that
+/// follows (from asm 0x768da1) is not built. Afterwards a listing whose terms read
 /// [`POACHED`] (E+0xd = 3) leaves the transfer list (`FUN_0075a71f`).
 pub fn purchase_talk_day(
     records: &mut Records,
     random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
     nation_kinds: &[u8],
     day: i16,
     told: &mut Vec<Dropout>,
@@ -995,7 +1271,7 @@ pub fn purchase_talk_day(
     while let Some(t) =
         appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)
     {
-        if let Some(talk) = purchase_bidders(records, random, nation_kinds, &t, day, told) {
+        if let Some(talk) = purchase_bidders(records, random, tables, nation_kinds, &t, day, told) {
             talks.push(talk);
         }
         if listings(records).iter().any(|l| l.id == t.player && l.terms == POACHED) {
@@ -1010,6 +1286,7 @@ pub fn purchase_talk_day(
 fn purchase_bidders(
     records: &mut Records,
     random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
     nation_kinds: &[u8],
     t: &Appointment,
     day: i16,
@@ -1021,12 +1298,14 @@ fn purchase_bidders(
         return None;
     }
     let opening = purchase_opening(records, random, t, nation_kinds)?;
+    let asking = club_asking(records, random, tables, t, 0, 0, day)?;
     let player = records.player(t.player)?;
     let fee = i64::from(player.fixed_fee()) * RELEASE_UNIT;
     let prices = records.globals.fund_prices();
     let agreed = records.agreed();
     let mut bidders = Vec::new();
-    for &club in t.clubs.iter().filter(|&&c| c != seller) {
+    let mut offers = Vec::new();
+    for (k, &club) in t.clubs.iter().enumerate().skip(1).filter(|&(_, &c)| c != seller) {
         let Some(team) = records.team(u16::from(club.0), club.1 as u16) else { continue };
         let affords = fee == 0
             || day > LATE_SEASON
@@ -1036,11 +1315,12 @@ fn purchase_bidders(
             if team.human() != 0 {
                 told.push(Dropout { player: t.player, club, squad_full: affords });
             }
-        } else {
+        } else if let Some(offer) = club_asking(records, random, tables, t, k, opening.flags, day) {
             bidders.push(club);
+            offers.push(offer);
         }
     }
-    (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders, opening })
+    (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders, opening, asking, offers })
 }
 
 #[cfg(test)]
@@ -1078,6 +1358,84 @@ mod tests {
             replay.below(draw);
             assert_eq!(random, replay);
         }
+    }
+
+    /// The selling clubs' frames of save A's day-64 purchase talks: each
+    /// man's salary between 0.8 of his demand and 1.65 or 1.75 of it, the
+    /// club's opening terms spread from that least, the draws in
+    /// `FUN_0076d44d`'s order; Union (Nsoki's) has its human manager.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_day_64_sellers_ask_from_the_players_demand() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let rules = crate::season::Rules::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let tables = (&rules.contract, &rules.value);
+        let talks: Vec<_> =
+            appointments(&records).into_iter().filter(|t| t.day == 64 && t.kind == PURCHASE).collect();
+        let mut managers = Vec::new();
+        for t in &talks {
+            let mut random = crate::random::Random::from_state(12345, 67890);
+            let a = club_asking(&records, &mut random, tables, t, 0, 0, 64).unwrap();
+            let p = records.player(t.player).unwrap();
+            let age = crate::free_agents::age(&records, p);
+            let star = records.globals.stars().get(usize::from(p.positions()[0])) == Some(&t.player);
+            let form = crate::statistics::form_today(p);
+            let signee = crate::contract::Signee::of(p, age, form, tables.1, star, records.globals.start_year());
+            let demand = tables.0.demand(&signee);
+            assert!(demand > 0);
+            assert_eq!(a.least, demand * 4 / 5 / 1000);
+            assert!(a.most > a.least);
+            let base = (f64::from(demand) * 0.8 / 1000.0) as u32;
+            let mut replay = crate::random::Random::from_state(12345, 67890);
+            let spread = replay.below(21) + 90;
+            assert_eq!(u32::from(a.salary()), spread * base / 100);
+            replay.below(21);
+            assert_eq!(a.years(), crate::free_agents::fresh_years(p, age, &mut replay));
+            assert_eq!(a.flags() & ASKING_DRAWN != 0, replay.below(2) != 0);
+            assert_eq!(random, replay);
+            managers.push(a.manager);
+        }
+        assert!(managers[0] != 0 && managers[1] == 0, "{managers:?}");
+    }
+
+    /// Save A's day-64 purchase talks with their bidders' frames: one for
+    /// each bidder left, none asking more at the least than the seller
+    /// (the factor only lowers it), each most 1.75 or 1.65 of the demand,
+    /// the first bidder on the terms booked with the talk when they hold
+    /// a salary.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_day_64_bidders_get_their_own_frames() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let rules = crate::season::Rules::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let booked: Vec<_> =
+            appointments(&records).into_iter().filter(|t| t.day == 64 && t.kind == PURCHASE).collect();
+        let mut random = crate::random::Random::from_state(7, 9);
+        let talks = purchase_talk_day(&mut records, &mut random, (&rules.contract, &rules.value), &[], 64, &mut Vec::new());
+        assert!(talks.iter().any(|t| !t.offers.is_empty()));
+        let mut lowered = 0;
+        for talk in &talks {
+            assert_eq!(talk.offers.len(), talk.bidders.len());
+            let t = booked.iter().find(|t| t.player == talk.player).unwrap();
+            for (offer, club) in talk.offers.iter().zip(&talk.bidders) {
+                assert!(offer.least <= talk.asking.least, "{offer:?} {:?}", talk.asking);
+                assert!(offer.most > offer.least && offer.mood == 0);
+                assert_eq!(offer.remarks, talk.opening.flags);
+                if offer.least < talk.asking.least {
+                    lowered += 1;
+                }
+                if t.clubs.get(1) == Some(club) && u16::from_le_bytes([t.terms[0], t.terms[1]]) != 0 {
+                    assert_eq!(offer.terms, t.terms);
+                }
+            }
+        }
+        assert!(lowered > 0);
     }
 
     /// A poaching talk booked on save A beside its nine appointments, for
@@ -1234,6 +1592,7 @@ mod tests {
         use a3_files::an3::Save;
         let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let rules = crate::season::Rules::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
         let human = {
             let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
             let t = records.teams.iter().find(|t| t.human() != 0).unwrap();
@@ -1256,7 +1615,8 @@ mod tests {
             let before = appointments(&records);
             let today = before.iter().filter(|t| t.day == day && t.kind == PURCHASE).count();
             let mut told = Vec::new();
-            let talks = purchase_talk_day(&mut records, &mut crate::random::Random::from_state(1, 1), &[], day, &mut told);
+            let mut random = crate::random::Random::from_state(1, 1);
+            let talks = purchase_talk_day(&mut records, &mut random, (&rules.contract, &rules.value), &[], day, &mut told);
             let after = appointments(&records);
             assert_eq!(after.len(), before.len() - today);
             assert!(!after.iter().any(|t| t.day == day && t.kind == PURCHASE));
