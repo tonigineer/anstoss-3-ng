@@ -300,36 +300,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             crate::honours::cup_final(records, nation, &tie);
         }
     }
-    // The cup's gate belongs to both clubs: each books half of the played
-    // match's money at +0x234 (`FUN_0078b26c`, the branch whose record kind
-    // answers to the cup). Where the home club has a human's manager and the
-    // visitor has none, the manager keeps his cup share (the getter
-    // `FUN_0069c962` reads the manager's +0x1a4) of the visitor's half back
-    // for the black cash box (`FUN_0069c869` adds it), at most all of it and
-    // never below nought; the visitor books the rest of the half.
-    for (hc, hn, ac, an, money) in gates {
-        let half = money / 2;
-        let kept = match (human_slot(records, hc, hn), human_slot(records, ac, an)) {
-            (Some(i), None) => records.managers.get(i).map_or(0, |m| {
-                ((half as f32 as f64 * f64::from(m.cup_share_kept())) as i32).max(0)
-            }),
-            _ => 0,
-        };
-        if kept > 0
-            && let Some(m) = human_slot(records, hc, hn).and_then(|i| records.managers.get_mut(i))
-        {
-            m.set_black_cash(m.black_cash().wrapping_add(kept));
-        }
-        for (country, number, money) in [
-            (hc, hn, half),
-            (ac, an, half - kept),
-        ] {
-            if let Some(t) = records.team_mut(u16::from(country), number) {
-                let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
-                t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
-            }
-        }
-    }
+    book_cup_gates(records, &gates, entry);
     // What the ties leave on the men who played them.
     for &(hc, hn, ac, an, hg, ag) in &marks {
         mark_cup(records, hc, hn, ac, an, hg, ag, random);
@@ -517,8 +488,9 @@ const LAST_FINAL_DAY: usize = 0xb5df90;
 /// first two ties to the third and fourth against the first and second
 /// of the six, from those to the final's home and away side. The human's
 /// year calendar takes the score and his next tie, and the final decided
-/// goes into the country's list of finals. (The gates and the players'
-/// marks are not built.)
+/// goes into the country's list of finals. The supercup's gate books
+/// nothing on the clubs: `FUN_0078b26c`'s branch for its code 0x30 only
+/// fills the match's record. (The players' marks are not built.)
 fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
     let Some(row) = calendar.row(nation, 0) else { return };
@@ -655,6 +627,44 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
     }
 }
 
+/// A cup tie's gate on the clubs' season's cup takings (club +0x234),
+/// as `FUN_0078b26c` books the cup's and England's league cup's alike
+/// (codes 0x40 and 0x01): a single game that decides (0x80000 without
+/// the second game's bit) belongs to both clubs, each booking half; where
+/// the home club has a human's manager and the visitor has none, the
+/// manager keeps his cup share (the getter `FUN_0069c962` reads the
+/// manager's +0x1a4) of the visitor's half back for the black cash box
+/// (`FUN_0069c869` adds it), at most all of it and never below nought,
+/// and the visitor books the rest. A leg, a first game a replay may
+/// follow or a replay leaves the whole gate with the home club.
+fn book_cup_gates(records: &mut Records, gates: &[(u8, u16, u8, u16, i32)], code: u32) {
+    let shared = code & (CUP_SECOND | CUP_DECIDES) == CUP_DECIDES;
+    for &(hc, hn, ac, an, money) in gates {
+        let mut books = vec![(hc, hn, money)];
+        if shared {
+            let half = money / 2;
+            let kept = match (human_slot(records, hc, hn), human_slot(records, ac, an)) {
+                (Some(i), None) => records.managers.get(i).map_or(0, |m| {
+                    ((half as f32 as f64 * f64::from(m.cup_share_kept())) as i32).max(0)
+                }),
+                _ => 0,
+            };
+            if kept > 0
+                && let Some(m) = human_slot(records, hc, hn).and_then(|i| records.managers.get_mut(i))
+            {
+                m.set_black_cash(m.black_cash().wrapping_add(kept));
+            }
+            books = vec![(hc, hn, half), (ac, an, half - kept)];
+        }
+        for (country, number, money) in books {
+            if let Some(t) = records.team_mut(u16::from(country), number) {
+                let old = t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM);
+                t.put::<i32>(BOOKED_CUP + CLUB_TO_TEAM, old.wrapping_add(money));
+            }
+        }
+    }
+}
+
 /// England's league cup days on its first league row, coded 0x01 with the
 /// round low: rounds over two legs (the second turned, the code's high
 /// bit) and single games that decide (0x80000).
@@ -667,8 +677,9 @@ const ENGLAND: u16 = 0x10;
 /// by their sum and the away goals); once the round stands decided its
 /// winners and the entrants the next round takes in beside them are
 /// shuffled and paired anew there, the home side drawn too, and the
-/// block's last drawn round follows. (The gates, the players' marks and
-/// the premiums are not built.)
+/// block's last drawn round follows. The home clubs book their gates as
+/// the cup's ([`book_cup_gates`]). (The players' marks and the premiums
+/// are not built.)
 fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::cup_draw::{ENTRANTS_AT, LEAGUE_CUP, joining};
     if nation != ENGLAND {
@@ -690,6 +701,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         records.team(u16::from(country), number).map(|team| team.strengths()).filter(|s| *s != [0; 4]).unwrap_or(EVEN)
     };
     let mut results: Vec<(usize, [u8; PAIRING])> = Vec::new();
+    let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     for q in start..start + count {
         let at = PAIRINGS + q * PAIRING;
         let Some(tie) = block.get(at..at + PAIRING) else { continue };
@@ -701,6 +713,15 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         let (home, away) = if turned { (held(b.0, b.1), held(a.0, a.1)) } else { (held(a.0, a.1), held(b.0, b.1)) };
         let (hg, _) = goals(home, away, HOME_EDGE, random);
         let (ag, _) = goals(away, home, -HOME_EDGE, random);
+        // The home club's gate, a crowd as at the cup's.
+        let ((hc, hn), (ac, an)) = if turned { (b, a) } else { (a, b) };
+        if let Some(t) = records.team(u16::from(hc), hn) {
+            let att = attendance(t, capacity(records, u16::from(hc), hn), random);
+            let money = tickets::booked_gate(records, t, att, 0);
+            if money != 0 {
+                gates.push((hc, hn, ac, an, money));
+            }
+        }
         // The tie's own sides' goals.
         let (mut first, mut second) = if turned { (ag, hg) } else { (hg, ag) };
         let mut flags = CUP_RESULT;
@@ -748,6 +769,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     if results.is_empty() {
         return;
     }
+    book_cup_gates(records, &gates, code);
     let Some(b) = records.block_mut(LEAGUE_CUP) else { return };
     for (q, tie) in &results {
         let at = PAIRINGS + q * PAIRING;
@@ -1646,9 +1668,18 @@ mod supercup_tests {
         let row = data.calendar.row(ENGLAND, 0).unwrap();
         let days: Vec<usize> = (0..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE).collect();
         assert!(days.len() >= 8, "{days:?}");
+        let booked = |records: &Records| -> i64 {
+            records.teams.iter().filter(|t| u16::from(t.country()) == ENGLAND).map(|t| i64::from(t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM))).sum()
+        };
+        let before = booked(&records);
         for &d in &days {
+            let was = booked(&records);
             league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+            if data.calendar.entry(row, d) & 0x3f != 0 {
+                assert!(booked(&records) > was, "day {d} books its gates on the cup takings");
+            }
         }
+        assert!(booked(&records) > before);
         let b = records.block(LEAGUE_CUP).unwrap();
         let mode = usize::from(u16::from_le_bytes([b[4], b[5]]));
         for round in 1..=6 {
