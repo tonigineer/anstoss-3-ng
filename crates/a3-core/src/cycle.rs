@@ -1484,6 +1484,7 @@ impl Cycle {
         // not built, so a talk ends with its bidders known.
         if let Ok(day) = i16::try_from(season.day) {
             crate::transfers::loan_day(records, day);
+            crate::transfers::purchase_talk_day(records, day);
         }
         Ok(())
     }

@@ -797,6 +797,76 @@ pub fn loan_day(records: &mut Records, day: i16) -> Vec<LoanTalk> {
     talks
 }
 
+/// A purchase talk on its day, as far as it gets before the clubs
+/// bargain: the player, the selling club and the clubs still bidding.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PurchaseTalk {
+    pub player: u16,
+    pub seller: Side,
+    pub bidders: Vec<Side>,
+}
+
+/// The release fee's unit (`DAT_00a3b3bc`).
+const RELEASE_UNIT: i64 = 50_000;
+/// Past this day of the season a release fee bars no bidder
+/// (`FUN_0075827a`: `DAT_00b5cbd4` > 0xd8).
+const LATE_SEASON: i16 = 0xd8;
+
+/// The day's purchase talks (`FUN_0076cb3e`'s last loop: kind 3 →
+/// `FUN_00768638`, the entry removed either way). The talk ends at once
+/// when the player has left the selling club (`FUN_006968c4`) or the
+/// transfer list (`FUN_0075974f`); else each other club of the
+/// appointment drops out when the player's release fee (L+0x8e, R+0x156,
+/// in 50 000s) is set, the season is not past day 216 and the club can
+/// invest less (`FUN_00767b6a`, a human told by `FUN_00768497`), or when
+/// its squad is full (`FUN_00767c78`, told by `FUN_0076851f`); the
+/// seller is skipped (`FUN_006782aa`). The bargaining that follows (from
+/// asm 0x768c65) is not built. Afterwards a listing whose terms read
+/// [`POACHED`] (E+0xd = 3) leaves the transfer list (`FUN_0075a71f`).
+pub fn purchase_talk_day(records: &mut Records, day: i16) -> Vec<PurchaseTalk> {
+    let mut talks = Vec::new();
+    while let Some(t) =
+        appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)
+    {
+        if let Some(talk) = purchase_bidders(records, &t, day) {
+            talks.push(talk);
+        }
+        if listings(records).iter().any(|l| l.id == t.player && l.terms == POACHED) {
+            take_off(records, t.player);
+        }
+        cancel_talk(records, t.player);
+    }
+    talks
+}
+
+/// `FUN_00768638` up to its bargaining: who still bids.
+fn purchase_bidders(records: &Records, t: &Appointment, day: i16) -> Option<PurchaseTalk> {
+    let &seller = t.clubs.first()?;
+    let player = records.player(t.player)?;
+    if t.player == 0 || (player.club()[0], i16::from(player.club()[1])) != seller {
+        return None;
+    }
+    listings(records).into_iter().find(|l| l.id == t.player)?;
+    let fee = i64::from(player.fixed_fee()) * RELEASE_UNIT;
+    let prices = records.globals.fund_prices();
+    let agreed = records.agreed();
+    let bidders: Vec<Side> = t
+        .clubs
+        .iter()
+        .copied()
+        .filter(|&c| c != seller)
+        .filter(|&(country, number)| {
+            records.team(u16::from(country), number as u16).is_some_and(|team| {
+                let affords = fee == 0
+                    || day > LATE_SEASON
+                    || crate::finances::Balance::of(team, prices, &agreed).investable() >= fee;
+                affords && team.player_count() < FULL_SQUAD
+            })
+        })
+        .collect();
+    (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,4 +994,46 @@ mod tests {
         assert_eq!(talk.bidders, vec![human]);
         assert_eq!(run(i32::MAX), None);
     }
+    /// A purchase booked on save A for the human club with a listed player
+    /// of another: on its day it leaves the list; the human club bids with
+    /// no release fee and drops out when the fee is beyond it.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_purchase_talks_leave_the_list_on_their_day() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let human = {
+            let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+            let t = records.teams.iter().find(|t| t.human() != 0).unwrap();
+            (t.country(), i16::from(t.number()))
+        };
+        let run = |fee: u16| {
+            let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+            let l = listings(&records)
+                .into_iter()
+                .find(|l| {
+                    (l.country, l.number as i16) != human
+                        && l.terms != POACHED
+                        && !appointments(&records).iter().any(|t| t.player == l.id)
+                })
+                .unwrap();
+            records.player_mut(l.id).unwrap().set_fixed_fee(fee);
+            let seller = (l.country, l.number as i16);
+            let day = records.globals.day() as i16 + 1;
+            assert!(book(&mut records, PURCHASE, day, l.id, seller, human, [0; TERMS]));
+            let before = appointments(&records);
+            let today = before.iter().filter(|t| t.day == day && t.kind == PURCHASE).count();
+            let talks = purchase_talk_day(&mut records, day);
+            let after = appointments(&records);
+            assert_eq!(after.len(), before.len() - today);
+            assert!(!after.iter().any(|t| t.day == day && t.kind == PURCHASE));
+            assert!(listings(&records).iter().any(|x| x.id == l.id));
+            talks.into_iter().find(|t| t.player == l.id)
+        };
+        let talk = run(0).expect("no purchase talk");
+        assert_eq!(talk.bidders, vec![human]);
+        assert_eq!(run(u16::MAX), None);
+    }
+
 }
