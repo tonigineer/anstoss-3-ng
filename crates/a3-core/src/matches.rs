@@ -82,6 +82,17 @@ const CUP_PLAYED: u8 = 0x08;
 const CUP_RESULT: u8 = 0x20;
 const CUP_EXTRA: u8 = 0x80;
 const CUP_SHOOT: u8 = 0x40;
+/// The second game of a tie stands played (`FUN_006cc255` sets 0x30).
+const CUP_SECOND_PLAYED: u8 = 0x10;
+/// A cup day's code: the second game of its tie, the venue turned — a
+/// second leg, or with 0x200000 England's replay of a level first game;
+/// a first game that decides (0x80000), or one a replay follows when it
+/// ends level (0x100000). Spain's and Italy's rounds go over two legs,
+/// Germany's are single games.
+const CUP_SECOND: u32 = 0x8000_0000;
+const CUP_REPLAY: u32 = 0x0020_0000;
+const CUP_REPLAYABLE: u32 = 0x0010_0000;
+const CUP_DECIDES: u32 = 0x0008_0000;
 /// The cup's last round, its final: the sixth, whatever the mode, one
 /// pairing behind the mode's last row. The original tests the same with
 /// `FUN_006d12a8`, which asks the round against the rounds table's sixth.
@@ -103,10 +114,13 @@ const YEAR_RESULT: u8 = 0x20;
 const YEAR_CUP: u8 = 0x08;
 
 /// Play the country's cup round when the day is one: every drawn and still
-/// open pairing is scored single-leg, the home side with its edge; a tie
-/// runs to extra time, whose goals join the score, and from there to a
-/// shootout, which only names the winner in the byte at +0xd, 0 the home
-/// side. Once the round's last game is played its winners are shuffled
+/// open pairing is scored, the home side with its edge — a single game
+/// or a second leg runs a tie to extra time, whose goals join the score,
+/// and from there to a shootout, which only names the winner in the byte
+/// at +0xd, 0 the tie's home side. A first leg only stands (+8/+9, flag
+/// 0x20); the second, its venue turned, stores its goals at +0xa/+0xb and
+/// decides on the sum, then the away goals; England's level first game
+/// waits for its replay. Once the round's last game is played its winners are shuffled
 /// and paired anew — the home side drawn too — where the next round's row
 /// says, and the block's last drawn round (the byte at +0x28) follows.
 /// Each home club books its gate: a crowd as in the league, the money on
@@ -134,62 +148,109 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
     // The scores drawn before the block is written, as in the leagues, the
     // sides they mark, and the gate money the home clubs book with them.
-    let mut scored: Vec<(usize, [u8; 4])> = Vec::new();
+    let turned = entry & CUP_SECOND != 0;
+    let replay = turned && entry & CUP_REPLAY != 0;
+    let replayable = !turned && entry & CUP_REPLAYABLE != 0;
+    let decides = entry & CUP_DECIDES != 0 || turned;
+    let mut scored: Vec<(usize, [u8; PAIRING])> = Vec::new();
     let mut marks: Vec<(u8, u16, u8, u16, u8, u8)> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     let mut through: Vec<(u8, u16)> = Vec::new();
     let mut beaten: Vec<(u8, u16)> = Vec::new();
     for q in start..start + count {
+        // A first game finds its pairing open; a second leg or a replay
+        // its first game played and nothing decided yet.
         let Some(p) = records
             .block(&name)
             .and_then(|cup| cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING))
-            .filter(|p| p[0] != 0 && p[0xc] & CUP_RESULT == 0)
+            .filter(|p| p[0] != 0 && p[4] != 0)
+            .filter(|p| if turned { p[0xc] & CUP_RESULT != 0 && p[0xc] & (CUP_PLAYED | CUP_SECOND_PLAYED) == 0 } else { p[0xc] & CUP_RESULT == 0 })
         else {
             continue;
         };
+        let mut tie: [u8; PAIRING] = p.try_into().unwrap_or([0; PAIRING]);
         let held = |country: u8, at: usize| {
             records
                 .team(u16::from(country), u16_at(p, at))
                 .map(|team| team.strengths())
+                .filter(|s| *s != [0; 4])
                 .unwrap_or(EVEN)
         };
-        let home = held(p[0], 2);
-        let home = if home == [0; 4] { EVEN } else { home };
-        let away = held(p[4], 6);
-        let away = if away == [0; 4] { EVEN } else { away };
+        // The second game turns the venue round (`FUN_006cc1c6`): the
+        // tie's away side at home.
+        let (h, a) = if turned { (4, 0) } else { (0, 4) };
+        let (home, away) = (held(p[h], h + 2), held(p[a], a + 2));
         let (mut hg, _) = goals(home, away, HOME_EDGE, random);
         let (mut ag, _) = goals(away, home, -HOME_EDGE, random);
-        let mut flags = CUP_PLAYED | CUP_RESULT;
-        let mut won = hg.cmp(&ag);
-        if hg == ag {
-            flags |= CUP_EXTRA;
-            let (et, _) = goals(home, away, 0, random);
-            let (at, _) = goals(away, home, 0, random);
-            hg = hg.saturating_add(et / 2 + u8::from(et % 2 != 0));
-            ag = ag.saturating_add(at / 2 + u8::from(at % 2 != 0));
-            won = hg.cmp(&ag);
-            if hg == ag {
-                flags |= CUP_SHOOT;
-                let sum = |s: &[i16; 4]| s.iter().map(|&v| i32::from(v)).sum::<i32>().max(1);
-                let (hs, as_) = (sum(&home), sum(&away));
-                won = if i32::try_from(random.below((hs + as_) as u32)).unwrap_or(0) < hs {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Less
-                };
+        // The result as `FUN_006cc255` stores it, in the tie's own sides:
+        // a first leg only stands, a game that decides names the winner —
+        // two legs by their sum, then the away goals (`FUN_00677ed4`); a
+        // game a replay may follow decides only when it is not level.
+        let own = |hg: u8, ag: u8| if turned { (ag, hg) } else { (hg, ag) };
+        let sum = |f: u8, s2: u8| {
+            if turned && !replay {
+                (u16::from(tie[8]) + u16::from(f), u16::from(tie[9]) + u16::from(s2))
+            } else {
+                (u16::from(f), u16::from(s2))
             }
+        };
+        let mut flags = CUP_RESULT;
+        let mut winner = None;
+        let (first, second) = own(hg, ag);
+        if replayable && first != second {
+            flags |= CUP_PLAYED;
+            winner = Some(u8::from(first < second));
+        } else if decides {
+            flags |= CUP_PLAYED;
+            let (ta, tb) = sum(first, second);
+            let mut won = ta.cmp(&tb);
+            if won == std::cmp::Ordering::Equal && turned && !replay {
+                // The tie's away side scored its away goals in the first
+                // leg, its home side in this one.
+                won = u16::from(first).cmp(&u16::from(tie[9]));
+            }
+            if won == std::cmp::Ordering::Equal {
+                flags |= CUP_EXTRA;
+                let (et, _) = goals(home, away, 0, random);
+                let (at, _) = goals(away, home, 0, random);
+                hg = hg.saturating_add(et / 2 + u8::from(et % 2 != 0));
+                ag = ag.saturating_add(at / 2 + u8::from(at % 2 != 0));
+                let (f, s2) = own(hg, ag);
+                let (ta, tb) = sum(f, s2);
+                won = ta.cmp(&tb);
+                if won == std::cmp::Ordering::Equal {
+                    flags |= CUP_SHOOT;
+                    let total = |s: &[i16; 4]| s.iter().map(|&v| i32::from(v)).sum::<i32>().max(1);
+                    let (hs, as_) = (total(&home), total(&away));
+                    let home_wins = i32::try_from(random.below((hs + as_) as u32)).unwrap_or(0) < hs;
+                    won = if home_wins != turned { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+                }
+            }
+            winner = Some(u8::from(won == std::cmp::Ordering::Less));
         }
-        let winner = u8::from(won == std::cmp::Ordering::Less);
-        scored.push((q, [hg, ag, flags, winner]));
-        marks.push((p[0], u16_at(p, 2), p[4], u16_at(p, 6), hg, ag));
-        let at = usize::from(winner != 0);
-        through.push((p[at * 4], u16_at(p, at * 4 + 2)));
-        beaten.push((p[(1 - at) * 4], u16_at(p, (1 - at) * 4 + 2)));
+        let (first, second) = own(hg, ag);
+        if turned {
+            tie[0xa] = first;
+            tie[0xb] = second;
+            tie[0xc] |= flags | CUP_SECOND_PLAYED;
+        } else {
+            tie[8] = first;
+            tie[9] = second;
+            tie[0xc] = flags;
+        }
+        tie[0xd] = winner.unwrap_or(0);
+        scored.push((q, tie));
+        marks.push((p[h], u16_at(p, h + 2), p[a], u16_at(p, a + 2), hg, ag));
+        if let Some(w) = winner {
+            let at = usize::from(w);
+            through.push((p[at * 4], u16_at(p, at * 4 + 2)));
+            beaten.push((p[(1 - at) * 4], u16_at(p, (1 - at) * 4 + 2)));
+        }
         // The home club's gate: a crowd as in the league, and the money it
         // brings — the played match's reckoning (FUN_0078b26c) at a mark
         // no cup round holds, which leaves it as it is.
-        let (country, number) = (p[0], u16_at(p, 2));
-        let (an, away_id) = (p[4], u16_at(p, 6));
+        let (country, number) = (p[h], u16_at(p, h + 2));
+        let (an, away_id) = (p[a], u16_at(p, a + 2));
         let mut crowd = 0;
         if let Some(t) = records.team(u16::from(country), number) {
             let cap = capacity(records, u16::from(country), number);
@@ -221,13 +282,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         );
     }
     if let Some(cup) = records.block_mut(&name) {
-        for (q, [hg, ag, flags, winner]) in scored {
+        for (q, tie) in scored {
             let at = PAIRINGS + q * PAIRING;
-            if let Some(p) = cup.get_mut(at + 8..at + 10) {
-                p.copy_from_slice(&[hg, ag]);
-            }
-            if let Some(p) = cup.get_mut(at + 0xc..at + 0xe) {
-                p.copy_from_slice(&[flags, winner]);
+            if let Some(p) = cup.get_mut(at..at + PAIRING) {
+                p.copy_from_slice(&tie);
             }
         }
     }
@@ -333,7 +391,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             if p[0] == 0 {
                 continue;
             }
-            if p[0xc] & CUP_RESULT == 0 {
+            if p[0xc] & CUP_PLAYED == 0 {
                 return false;
             }
             let at = usize::from(p[0xd] != 0);
@@ -374,12 +432,15 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // The next round's day on the country's first row carries the human's
     // new tie — both clubs, the home one as venue again — while the club
     // gone from the cup sees its entry fall away to nothing.
-    let Some(next_day) = (0..PLANNER_DAYS).find(|&d| {
-        let entry = calendar.entry(row, d);
-        entry & 0x7f00_0000 == CUP_CODE && usize::try_from(entry & 0xffff).unwrap_or(0) == round + 1
-    }) else {
+    // A round over two legs has two days, the second's venue turned (a
+    // replay's day stays as it is, the first game not yet played).
+    let next_days: Vec<(usize, u32)> = (0..PLANNER_DAYS)
+        .map(|d| (d, calendar.entry(row, d)))
+        .filter(|&(_, entry)| entry & 0x7f00_0000 == CUP_CODE && entry & CUP_REPLAY == 0 && usize::try_from(entry & 0xffff).unwrap_or(0) == round + 1)
+        .collect();
+    if next_days.is_empty() {
         return;
-    };
+    }
     let mut ties: Vec<(usize, (u8, u16, u8, u16))> = Vec::new();
     for j in 0..pairs {
         let Some(p) = records.block(&name).and_then(|cup| {
@@ -401,29 +462,30 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         let Some(cal) = records.calendars.get_mut(slot) else {
             continue;
         };
-        let Some((_, tie)) = ties.iter().find(|(s, _)| *s == slot) else {
-            cal.set_entry(next_day, [0; PLANNER_ENTRY]);
-            continue;
-        };
-        let (hc, hn, ac, an) = *tie;
-        let mut e = cal.entry(next_day);
-        if e[0] != YEAR_MATCH {
-            e = [0; PLANNER_ENTRY];
-            e[0] = YEAR_MATCH;
-            e[1] = 1;
-            let code = CUP_CODE | u32::try_from(round + 1).unwrap_or(0);
-            e[4..8].copy_from_slice(&code.to_le_bytes());
+        for &(next_day, code) in &next_days {
+            let Some((_, tie)) = ties.iter().find(|(s, _)| *s == slot) else {
+                cal.set_entry(next_day, [0; PLANNER_ENTRY]);
+                continue;
+            };
+            let (hc, hn, ac, an) = if code & CUP_SECOND != 0 { (tie.2, tie.3, tie.0, tie.1) } else { *tie };
+            let mut e = cal.entry(next_day);
+            if e[0] != YEAR_MATCH {
+                e = [0; PLANNER_ENTRY];
+                e[0] = YEAR_MATCH;
+                e[1] = 1;
+                e[4..8].copy_from_slice(&code.to_le_bytes());
+            }
+            e[YEAR_HOME] = hc;
+            e[YEAR_HOME + 2..YEAR_HOME + 4].copy_from_slice(&hn.to_le_bytes());
+            e[YEAR_AWAY] = ac;
+            e[YEAR_AWAY + 2..YEAR_AWAY + 4].copy_from_slice(&an.to_le_bytes());
+            e[YEAR_VENUE] = hc;
+            e[YEAR_VENUE + 2..YEAR_VENUE + 4].copy_from_slice(&hn.to_le_bytes());
+            e[YEAR_GOALS] = 0;
+            e[YEAR_GOALS + 1] = 0;
+            e[YEAR_FLAGS] = 0;
+            cal.set_entry(next_day, e);
         }
-        e[YEAR_HOME] = hc;
-        e[YEAR_HOME + 2..YEAR_HOME + 4].copy_from_slice(&hn.to_le_bytes());
-        e[YEAR_AWAY] = ac;
-        e[YEAR_AWAY + 2..YEAR_AWAY + 4].copy_from_slice(&an.to_le_bytes());
-        e[YEAR_VENUE] = hc;
-        e[YEAR_VENUE + 2..YEAR_VENUE + 4].copy_from_slice(&hn.to_le_bytes());
-        e[YEAR_GOALS] = 0;
-        e[YEAR_GOALS + 1] = 0;
-        e[YEAR_FLAGS] = 0;
-        cal.set_entry(next_day, e);
     }
 }
 
@@ -1667,5 +1729,60 @@ mod crowd_tests {
                 "the league's list carries the day's gate {gate}"
             );
         }
+    }
+}
+#[cfg(test)]
+mod two_legs_tests {
+    use super::*;
+
+    /// Italy's cup over its first round's two days from the original's
+    /// new season: the first leg leaves every tie standing open, the
+    /// second, played at the other ground, decides each on the sum of
+    /// the legs and then the away goals (`FUN_00677ed4`), and the winners
+    /// are drawn into the next round.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_two_legged_cup_round_decides_on_the_sum() {
+        use a3_files::an3::Save;
+        const ITALY: u16 = 28;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut random = Random::new(11);
+        let row = data.calendar.row(ITALY, 0).unwrap();
+        let days: Vec<usize> = (0..364)
+            .filter(|&d| data.calendar.entry(row, d) & 0x7f00_00ff == CUP_CODE | 1)
+            .collect();
+        assert_eq!(days.len(), 2, "{days:?}");
+        assert_ne!(data.calendar.entry(row, days[1]) & CUP_SECOND, 0);
+        let slot = records.countries.slot(usize::from(ITALY));
+        let name = format!("{CUPS_AT:#x}[{slot}]");
+        let mode = usize::from(records.block(&name).unwrap()[0x24 - 0x20]).min(5);
+        let (start, count) = cup_pairings(mode, 1).unwrap();
+        let ties = |r: &Records| -> Vec<Vec<u8>> {
+            let b = r.block(&name).unwrap();
+            (start..start + count).map(|q| b[PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING].to_vec()).filter(|p| p[0] != 0).collect()
+        };
+        let drawn = ties(&records);
+        assert!(!drawn.is_empty(), "the first round drawn");
+        cup_day(&mut records, ITALY, &data.calendar, days[0], &mut random);
+        for p in ties(&records) {
+            assert_eq!(p[0xc] & (CUP_RESULT | CUP_PLAYED | CUP_SECOND_PLAYED), CUP_RESULT, "the first leg only stands");
+        }
+        cup_day(&mut records, ITALY, &data.calendar, days[1], &mut random);
+        for p in ties(&records) {
+            assert_eq!(p[0xc] & 0x38, 0x38, "the second leg decides");
+            if p[0xc] & CUP_EXTRA != 0 {
+                continue;
+            }
+            let (a, b) = (u16::from(p[8]) + u16::from(p[0xa]), u16::from(p[9]) + u16::from(p[0xb]));
+            // Level on the sum: the away goals, B's in the first leg
+            // against A's in the second.
+            let b_wins = if a != b { b > a } else { p[9] > p[0xa] };
+            assert_eq!(p[0xd], u8::from(b_wins), "{p:?}");
+        }
+        let b = records.block(&name).unwrap();
+        assert_eq!(b[0x28 - 0x20], 2, "the second round drawn");
     }
 }
