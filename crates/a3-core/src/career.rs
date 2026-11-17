@@ -138,6 +138,48 @@ pub fn left_national_team(records: &mut Records, slot: usize, reason: u8) {
     row[0x14..0x18].fill(0);
 }
 
+/// The career's counts of endings: by dismissal (reasons 0 and 3, the
+/// personal page's "Entlassen") and by stepping down (reason 4, "Selbst
+/// gegangen").
+const DISMISSED: usize = 0x1ba;
+const STEPPED_DOWN: usize = 0x1bc;
+
+/// The human in `slot` leaves his club for `reason` (`FUN_006fddfe`, from
+/// `FUN_006da0fe` at a career's end with reason 4). First the season's
+/// youth and service marks go into his honour marks (`FUN_006dd39a`:
+/// object +0xc8 and +0xcc into +0xd4). Then his last club station gets
+/// today's date, the reason, the manager's two running figures (object
+/// +0xe0, +0xe2) and the sum of his nine marks (`FUN_006dd9f1`); a
+/// dismissal (0 or 3) or a step down (4) counts at the record's head.
+/// Without a station the record stays as it is.
+pub fn left_club(records: &mut Records, slot: usize, reason: u8) {
+    let Some(m) = records.managers.get_mut(slot) else { return };
+    m.set_honour_marks(m.honour_marks().wrapping_add(m.youth_marks()).wrapping_add(m.service_marks()));
+    m.set_youth_marks(0);
+    m.set_service_marks(0);
+    let figures = m.station_figures();
+    let marks: i32 = {
+        let m = &records.managers[slot];
+        crate::evaluation::marks(records, m, slot + 1).iter().fold(0i32, |a, &b| a.wrapping_add(b))
+    };
+    let [day, month, year] = records.globals.date();
+    let Some(car) = records.career_mut(slot) else { return };
+    let Some(last) = usize::from(car[CLUB_STATIONS]).checked_sub(1) else { return };
+    let Some(row) = car.get_mut(CLUBS_AT + last * STATION..CLUBS_AT + (last + 1) * STATION) else { return };
+    row[8] = day as u8;
+    row[9] = month as u8;
+    row[0xa..0xc].copy_from_slice(&year.to_le_bytes());
+    row[0xc] = reason;
+    row[0xe..0x10].copy_from_slice(&figures[0].to_le_bytes());
+    row[0x10..0x12].copy_from_slice(&figures[1].to_le_bytes());
+    row[0x14..0x18].copy_from_slice(&marks.to_le_bytes());
+    match reason {
+        0 | 3 => bump(car, DISMISSED),
+        4 => bump(car, STEPPED_DOWN),
+        _ => {}
+    }
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -322,6 +364,49 @@ mod tests {
         assert_eq!(ours.managers[slot].titles(), titles, "only a championship lifts it");
         promotions(&mut ours);
         assert_eq!(word(ours.career(slot).unwrap(), 0x16), 2);
+    }
+
+    /// The kept day-63 save's human steps down from his club: his one club
+    /// station is closed with today's date, reason 4, his two running
+    /// figures and the sum of his nine marks, taken after the season's
+    /// youth and service marks went into his honour marks; the count of
+    /// stepping down goes up, nothing else in the record moves. A
+    /// dismissal (reason 3) counts on the other counter.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn leaving_the_club_closes_his_station() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let mut ours = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let slot = ours.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let before = ours.career(slot).unwrap().to_vec();
+        assert_eq!(before[CLUB_STATIONS], 1, "one club station");
+        let m = &mut ours.managers[slot];
+        m.set_youth_marks(7);
+        m.set_service_marks(11);
+        let honour = m.honour_marks();
+        m.set_station_figures([0x123, -5]);
+        left_club(&mut ours, slot, 4);
+        let m = &ours.managers[slot];
+        assert_eq!((m.youth_marks(), m.service_marks(), m.honour_marks()), (0, 0, honour + 18));
+        let sum: i32 = crate::evaluation::marks(&ours, m, slot + 1).iter().sum();
+        let car = ours.career(slot).unwrap().to_vec();
+        let row = &car[CLUBS_AT..CLUBS_AT + STATION];
+        let [d, mo, y] = ours.globals.date();
+        assert_eq!((row[8], row[9], u16::from_le_bytes([row[0xa], row[0xb]])), (d as u8, mo as u8, y));
+        assert_eq!(row[0xc], 4);
+        assert_eq!(i16::from_le_bytes([row[0xe], row[0xf]]), 0x123);
+        assert_eq!(i16::from_le_bytes([row[0x10], row[0x11]]), -5);
+        assert_eq!(i32::from_le_bytes(row[0x14..0x18].try_into().unwrap()), sum);
+        assert_eq!(word(&car, STEPPED_DOWN), word(&before, STEPPED_DOWN) + 1);
+        still_the_same(&before, &car, &[STEPPED_DOWN..STEPPED_DOWN + 2, CLUBS_AT + 8..CLUBS_AT + 0x18]);
+        left_club(&mut ours, slot, 3);
+        let car = ours.career(slot).unwrap();
+        assert_eq!(word(car, DISMISSED), word(&before, DISMISSED) + 1);
+        assert_eq!(car[CLUBS_AT + 0xc], 3);
     }
 
     /// Only the bytes in `touched` differ.

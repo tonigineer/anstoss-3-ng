@@ -1077,6 +1077,9 @@ record! {
     /// The two counts of titles the highscore lists add up (the manager
     /// object's +0xdc and +0xde, `FUN_00656e9b`).
     0x210 => titles, set_titles: [i16; 2];
+    /// Two running figures the stations' rows carry when he leaves a club
+    /// (the manager object's +0xe0 and +0xe2, `FUN_006fddfe`), never shown.
+    0x214 => station_figures, set_station_figures: [i16; 2];
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
