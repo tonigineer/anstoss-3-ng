@@ -11056,4 +11056,78 @@ mod tests {
         let cancel = "now press 4153\nuntil dialog 381";
         runner.run(&Script::parse(cancel).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
     }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_poaching_talk_is_haggled_till_he_agrees_or_breaks_off() {
+        use a3_core::transfers;
+        let game = game();
+        let dialog = &game.dialogs[&319];
+        // Once with the salary and bonuses cut to nothing, once on the
+        // offer as it stands, which a well paid player takes at once.
+        for cut in [true, false] {
+            let Some(mut runner) = on_save(&game, "Probe1", "") else { return };
+            let player = {
+                let mut state = runner.host.state();
+                let records = state.records.as_mut().unwrap();
+                let manager = records.humans().next().unwrap();
+                let own = (manager.country() as u8, manager.team() as i16);
+                let player = (1..0x4269)
+                    .find(|&p| {
+                        records.player(p).is_some_and(|r| {
+                            let c = r.club();
+                            c[1] != 0
+                                && (c[0], i16::from(c[1])) != own
+                                && r.salary() > 0
+                                && r.strength() >= 8
+                                && game.world.slot_of(c[0].into()).is_some()
+                        }) && transfers::talk_day(records, p).is_none()
+                    })
+                    .unwrap();
+                let his = records.player(player).map(|r| r.club()).unwrap();
+                let day = records.globals.day() as i16 + 1;
+                assert!(transfers::book(records, transfers::POACHING, day, player, (his[0], i16::from(his[1])), own, [0; transfers::TERMS]));
+                player
+            };
+            let mut then = "on 302 click bar 18\non 384 press 4741\non 2 wait\nnow click bar 18\nuntil dialog 319".to_owned();
+            for _ in 0..if cut { 300 } else { 0 } {
+                then.push_str("\nnow spin 4133 down\nnow spin 4134 down\nnow spin 4135 down");
+            }
+            runner.run(&Script::parse(&then).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            let face = |runner: &Runner| {
+                let view = runner.host.view();
+                match &view.controls[crate::screens::control(dialog, 4152).unwrap()].state {
+                    crate::controls::ControlState::Anim(a) => (a.frames.first().copied(), a.frame),
+                    _ => (None, 0),
+                }
+            };
+            assert_eq!(face(&runner), (Some(1680), 0));
+            let mut presses = 0;
+            while runner.dialog() == Some(319) {
+                runner.run(&Script::parse("now press 4154").unwrap()).unwrap();
+                presses += 1;
+                assert!(presses <= 7);
+                if runner.dialog() == Some(319) {
+                    assert!(face(&runner).1 > 0);
+                }
+            }
+            assert_eq!(runner.dialog(), Some(380));
+            let name = runner.host.state().records.as_ref().unwrap().known_as(player).unwrap();
+            let text = runner.host.view().text(crate::screens::control(&game.dialogs[&380], 4730).unwrap()).to_owned();
+            assert!(text.contains(&name), "{text}");
+            let agreed = !text.contains(game.text(0x104a).split("%s").nth(1).unwrap().trim());
+            assert_eq!(agreed, !cut, "{text} after {presses}");
+            assert!(!text.contains("v2"), "{text}");
+            // The talk ends; the day goes on.
+            let on = "now press 4731\nuntil dialog 381";
+            runner.run(&Script::parse(on).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            if !agreed {
+                let state = runner.host.state();
+                let records = state.records.as_ref().unwrap();
+                let r = records.player(player).unwrap();
+                let left = i32::from(r.contract() & 0xfff) > i32::from(records.globals.start_year());
+                assert_eq!(r.flags() & 0x2000 != 0, left);
+            }
+        }
+    }
 }

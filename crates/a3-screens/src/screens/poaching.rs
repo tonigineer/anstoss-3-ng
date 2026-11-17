@@ -2,9 +2,10 @@
 //! `IDD_VERTRAGSVERLAENGERUNG_SPIELER_STANDARD`): another club's player and
 //! the manager's club, his contract as it stands and the manager's offer
 //! beside it, which starts as the same terms (`FUN_0076ad3b`). The offer's
-//! spins and toggles change it; "Verhandeln" comes with the negotiation —
-//! as does the fill disabling "ab sofort" (6004) when he may not come at
-//! once (L+0x98 0).
+//! spins and toggles change it; "Verhandeln" weighs it against his will to
+//! leave, his face growing angrier as his patience runs out, till he agrees
+//! or breaks the talk off. Still to come: the fill disabling "ab sofort"
+//! (6004) when he may not come at once (L+0x98 0).
 
 use a3_core::cycle::dialogs::POACHING_TALK;
 use a3_core::transfers::TERMS;
@@ -25,6 +26,22 @@ const CREST: u16 = 4125;
 const YEARS_LABEL: u16 = 4139;
 /// "Abbrechen" (`OnClicked_IDC_VVERL_STD_ABBRECHEN`).
 const CANCEL: u16 = 4153;
+/// "Verhandeln" (`OnClicked_IDC_VVERL_STD_VERHANDELN_005b8ae8`), the face
+/// (`0x1038`, +0x17a0) and its frames (`DAT_0089f7d0`), the frame for each
+/// patience left (`DAT_0088c56c`, the last also his agreement's).
+const HAGGLE: u16 = 4154;
+const FACE: u16 = 4152;
+const FACE_FRAMES: std::ops::RangeInclusive<u16> = 1680..=1739;
+const FACE_BY_PATIENCE: [usize; 8] = [59, 50, 41, 33, 25, 17, 8, 0];
+/// The notices' title ("ANSTOSS 3 - Spielerwechsel"), his breaking off
+/// (`FUN_005b7469`), his agreement to come at once or next season.
+const MOVE_TITLE: u16 = 0x1049;
+const BROKEN_OFF: u16 = 0x104a;
+const AGREED_AT_ONCE: u16 = 0x104f;
+const AGREED_NEXT_SEASON: u16 = 0x1050;
+/// The reason his breaking off gives him (`FUN_004b7a57` →
+/// `FUN_00770800(0x2000)`) while he has a contract.
+const BROKE_OFF_REASON: u32 = 0x2000;
 /// The offer's spins (`OnVScroll_005b8fb4`): the signing fee, salary,
 /// appearance and goal bonus, release clause, with the step tables
 /// (`DAT_0088ca10` …) and maxima (`DAT_008913a8` …) they run on; and the
@@ -105,6 +122,11 @@ pub struct PoachingTalk {
     pub offer: [u8; TERMS],
     /// The manager's club's league (+0x1db8 → +0x105).
     level: u8,
+    /// The player, his patience left (+0x1dac), and how the talk ends once
+    /// its notice is taken in.
+    player: u16,
+    patience: i16,
+    ending: Option<Reply>,
 }
 
 impl Screen for PoachingTalk {
@@ -116,7 +138,14 @@ impl Screen for PoachingTalk {
     fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
         let Args::Record(id) = args else { return };
         let (game, dialog) = (cx.game, cx.dialog);
-        let works = |id: u16| id == CANCEL || id == WHEN || id == LEAGUE_TOGGLE || TOGGLES.iter().any(|t| t.0 == id);
+        self.player = id;
+        self.patience = a3_core::contract::POACHING_PATIENCE;
+        self.ending = None;
+        if let Some(face) = control(dialog, FACE).and_then(|f| view.anim_mut(f)) {
+            face.frames = FACE_FRAMES.collect();
+            face.frame = FACE_BY_PATIENCE[usize::try_from(self.patience).unwrap_or(0).min(7)];
+        }
+        let works = |id: u16| id == CANCEL || id == HAGGLE || id == WHEN || id == LEAGUE_TOGGLE || TOGGLES.iter().any(|t| t.0 == id);
         mark_inert(view, dialog, |t| matches!(t, Target::Button(c) if dialog.controls[c].id.is_some_and(works)));
         let (Some(records), Some(season)) = (cx.state.records.as_ref(), cx.state.season.as_ref()) else {
             return;
@@ -189,6 +218,7 @@ impl Screen for PoachingTalk {
         let put = |offer: &mut [u8; TERMS], f: u16| offer[14..16].copy_from_slice(&f.to_le_bytes());
         match target {
             Target::Button(c) if id(c) == CANCEL => return Outcome::Close(Reply::Cancel),
+            Target::Button(c) if id(c) == HAGGLE => return self.haggle(cx, view),
             // `FUN_005b90a3` … `FUN_005b926e`: the spin's position to its
             // amount (`FUN_005c69c9`).
             Target::Spin { control: c, .. } => {
@@ -236,6 +266,98 @@ impl Screen for PoachingTalk {
         fill_column(cx, view, &OFFER, &offer);
         Outcome::Stay
     }
+
+    /// The agreement's or the breaking off's notice taken in: the dialog
+    /// ends, with OK on an agreement (`FUN_007a0d0e`, else `FUN_007a0d23`).
+    fn answer(&mut self, _: &mut Cx, _: &mut View, _: Reply) -> Outcome {
+        self.ending.take().map_or(Outcome::Stay, Outcome::Close)
+    }
+}
+
+impl PoachingTalk {
+    /// One "Verhandeln" (`FUN_005b8ae8`): the offer's value
+    /// (`FUN_00709c52`) against his will; agreed, the notice and the
+    /// dialog's OK; else his patience shrinks, and run out, he breaks the
+    /// talk off (`FUN_005b9708`).
+    fn haggle(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        let Some((will, floor, value)) = reckon(cx, self.player, &self.offer) else { return Outcome::Stay };
+        let face = |view: &mut View, frame: usize| {
+            if let Some(face) = control(cx.dialog, FACE).and_then(|f| view.anim_mut(f)) {
+                face.frame = frame;
+            }
+        };
+        let player = self.player;
+        let Some(patience) = a3_core::contract::haggle(value, will, floor, self.patience) else {
+            face(view, FACE_BY_PATIENCE[7]);
+            let flags = u16::from_le_bytes([self.offer[14], self.offer[15]]);
+            let day = cx.state.records.as_ref().map_or(0, |r| r.globals.day() as i16);
+            let at_once = flags & AT_ONCE_FLAG != 0 && day < LAST_DAY_AT_ONCE;
+            let text = if at_once { AGREED_AT_ONCE } else { AGREED_NEXT_SEASON };
+            self.ending = Some(Reply::Ok);
+            return Outcome::Popup(Request::with(NOTICE, Args::PlayerMove { title: MOVE_TITLE, text, player }));
+        };
+        self.patience = patience;
+        face(view, FACE_BY_PATIENCE[usize::try_from(patience).unwrap_or(0).min(7)]);
+        if patience >= 1 {
+            return Outcome::Stay;
+        }
+        // `FUN_004b7a57`: with a contract left he holds it against the
+        // club. (Its marks at +0xba, 0x100 early in a last year, else
+        // 0x200, are not ported.)
+        let mood = &cx.game.rules.discipline.mood;
+        if let Some(records) = cx.state.records.as_mut() {
+            let start = i32::from(records.globals.start_year());
+            if let Some(r) = records.player_mut(player)
+                && i32::from(r.contract() & 0xfff) > start
+            {
+                mood.set_reasons(r, BROKE_OFF_REASON);
+            }
+        }
+        self.ending = Some(Reply::Cancel);
+        Outcome::Popup(Request::with(NOTICE, Args::PlayerMove { title: MOVE_TITLE, text: BROKEN_OFF, player }))
+    }
+}
+
+/// What the talk weighs: his will to leave and his contentment, his
+/// floor, and the offer's value at the manager's club (`FUN_00709c52`).
+fn reckon(cx: &Cx, player: u16, offer: &[u8; TERMS]) -> Option<((i32, i32), u8, i32)> {
+    use a3_core::contract::{Club, Signee, Terms};
+    let records = cx.state.records.as_ref()?;
+    let season = cx.state.season.as_ref()?;
+    let r = records.player(player)?;
+    let [day, month, year] = records.globals.date();
+    let today = chrono::NaiveDate::from_ymd_opt(i32::from(year), u32::from(month), u32::from(day))?;
+    let position = r.positions()[0];
+    let star = records.globals.stars().get(usize::from(position)) == Some(&player);
+    let p = Signee::of(
+        r,
+        a3_core::statistics::age_on(r, today),
+        a3_core::statistics::form_today(r),
+        &cx.game.rules.value,
+        star,
+        records.globals.start_year(),
+    );
+    let m = records.managers.get(records.human_slot(season.current)?)?;
+    let team = records.team(m.country(), m.team())?;
+    let squad: Vec<_> = team
+        .players()
+        .into_iter()
+        .filter_map(|id| records.player(id).map(|q| (id, q.positions()[0], q.strength())))
+        .collect();
+    let (matchdays, played) = a3_core::tickets::league_days(records, team);
+    let club = Club { level: team.level(), squad: &squad, matchdays, played, month: usize::from(month) };
+    let word = |at: usize| u16::from_le_bytes([offer[at], offer[at + 1]]);
+    let terms = Terms {
+        salary: word(0),
+        appearance: word(2),
+        goal: word(4),
+        fee: word(6),
+        years: offer[12] as i8,
+        flags: word(14),
+    };
+    let signing = u32::from_le_bytes([offer[8], offer[9], offer[10], offer[11]]) as i32;
+    let value = cx.game.rules.contract.offer_value(&p, &club, &terms, signing);
+    Some((a3_core::contract::poaching_will(&p, &club), offer[17], value))
 }
 
 /// A column's texts and checks from its terms (`FUN_005b84d5`).

@@ -375,6 +375,13 @@ pub enum Args {
     Texts(u16, u16),
     /// A text by its id, with a player's name for its `%s`.
     TextFor(u16, u16),
+    /// A notice with its own title, its text with a player's name for its
+    /// `%s` and his club's phrases (`v1` … `V20`), by ids.
+    PlayerMove {
+        title: u16,
+        text: u16,
+        player: u16,
+    },
     /// A text by its id, with the date of a day of the season for its
     /// `%s`.
     TextForDate(u16, usize),
