@@ -321,6 +321,38 @@ pub fn dissolve_deposits(records: &mut Records, club: (u8, u16)) {
     crate::finances::dissolve_all(team, prices);
 }
 
+/// The table of the human clubs rebuilt (`FUN_00635503`, from
+/// `FUN_006da0fe` after [`dissolve_deposits`]): the 32 bytes at
+/// `DAT_00b5cbe2` cleared and, walking the humans in their order
+/// (`FUN_006a421a`, "GetMitspielerNachReihenfolge", up to `DAT_00b5cbce`),
+/// one eight-byte entry for each who stands at a club (+0x1e not nought):
+/// the country's byte, the club's number (+0x20) and the manager's number
+/// (+0x1a) twice; their count at `DAT_00b5cc02`.
+pub fn rebuild_human_clubs(records: &mut Records) {
+    const LIST: usize = 0xb5cbe2;
+    const COUNT: usize = 0xb5cc02;
+    let order = records.globals.order();
+    let humans = usize::from(records.globals.humans()).min(order.len());
+    let mut list = [0u8; 32];
+    let mut count = 0usize;
+    for &human in &order[..humans] {
+        let Some(m) = usize::try_from(human - 1).ok().and_then(|i| records.managers.get(i)) else { continue };
+        if m.country() == 0 || count >= 4 {
+            continue;
+        }
+        let e = &mut list[count * 8..count * 8 + 8];
+        e[0] = m.country() as u8;
+        e[2..4].copy_from_slice(&m.team().to_le_bytes());
+        // The manager's number: the record read from a save leaves +0x1a
+        // at nought, so his number in the order stands in for it.
+        e[4..6].copy_from_slice(&human.to_le_bytes());
+        e[6..8].copy_from_slice(&human.to_le_bytes());
+        count += 1;
+    }
+    records.globals.put(LIST, list);
+    records.globals.put::<i16>(COUNT, count as i16);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -386,6 +418,33 @@ fn bump(car: &mut [u8], at: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kept saves' own table of the human clubs comes back byte for
+    /// byte when rebuilt; with the human at no club it empties.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_human_clubs_table_is_rebuilt_as_the_game_keeps_it() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        for name in ["A", "A2", "S2c", "S2late3", "SeasonEnd364", "NewSeason000"] {
+            let mut records = Records::from_save(Save::read(&keeps.join(format!("{name}.an3"))).unwrap()).unwrap();
+            let kept: [u8; 32] = records.globals.get(0xb5cbe2);
+            let count: i16 = records.globals.get(0xb5cc02);
+            assert!(count > 0, "{name}: a human at a club");
+            rebuild_human_clubs(&mut records);
+            assert_eq!(records.globals.get::<[u8; 32]>(0xb5cbe2), kept, "{name}: the table");
+            assert_eq!(records.globals.get::<i16>(0xb5cc02), count, "{name}: the count");
+            for m in &mut records.managers {
+                m.set_country(0);
+            }
+            rebuild_human_clubs(&mut records);
+            assert_eq!(records.globals.get::<[u8; 32]>(0xb5cbe2), [0; 32]);
+            assert_eq!(records.globals.get::<i16>(0xb5cc02), 0);
+        }
+    }
 
     /// The kept day-63 save's human manager: a championship, a cup, the
     /// finalist's part of it and a supercup land in his own record — the

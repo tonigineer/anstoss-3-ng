@@ -1486,7 +1486,8 @@ impl Cycle {
                 // and what leaving costs him (`FUN_006d9f70`), and the
                 // club and its players let go (`FUN_006d9fa1`), and his
                 // contract's end with his flat sold (`FUN_006da008`),
-                // and the club's deposits dissolved (`FUN_005e0147`).
+                // and the club's deposits dissolved (`FUN_005e0147`), and
+                // the table of the human clubs rebuilt (`FUN_00635503`).
                 let manager = &records.managers[slot];
                 if manager.country() != 0 {
                     let club = (manager.country() as u8, manager.team());
@@ -1497,6 +1498,7 @@ impl Cycle {
                     crate::career::release_club(records, &mut season.clubs, &self.data.world, (club.0, club.1 as u16));
                     crate::career::end_contract(records, slot, true);
                     crate::career::dissolve_deposits(records, (club.0, club.1 as u16));
+                    crate::career::rebuild_human_clubs(records);
                 }
                 leave(records, slot);
             }
