@@ -3433,7 +3433,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3877,7 +3877,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -8829,7 +8829,7 @@ mod tests {
         // Its OK, and the week played: Anna alone is left, in the slots,
         // the order and the count — and with no one else to play, the next
         // week's turn is hers, in the dressing room (`FUN_0064e40f`).
-        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\nuntil dialog 302");
+        let week = format!("{yes}\nnow ok\non 2 wait\non 381 wait\non 25 ok\nuntil dialog 302");
         let runner = on_save(&game, "Karriereende", &week).unwrap();
         let screens: Vec<&str> =
             runner.log.iter().filter_map(|l| l.strip_prefix("screen ")).collect();
@@ -9876,7 +9876,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\nrepeat 14 days";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9920,7 +9920,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok";
+                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -10911,5 +10911,78 @@ mod tests {
         assert!(view.list(os(6030)).unwrap().rows.is_empty());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&far);
+    }
+
+    /// The week start of day 70 after save A's week: 25 for all humans
+    /// by itself, before the turn; a click on a listed player's talk on a
+    /// free day → 376 with Union alone, ticked; its OK joins Union after
+    /// the first participant and the planner's day, and 25 fills again
+    /// with the row red (TERMINE-BEOBACHTUNG.md §2.6, e0–e2x1).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_start_shows_the_talks_and_lets_the_humans_join() {
+        use a3_core::transfers;
+        // The replica's week books no talks of the computer clubs and runs
+        // none: Zetterer's role goes to Enríquez (7610, Alavés, day 68),
+        // moved to the Thursday of the new week.
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "week-start-talks", |records| {
+            let b = records.block_mut("0x1c54000").unwrap();
+            let e = (0..9)
+                .map(|k| 4 + k * 0x4c)
+                .find(|&e| b[e + 6..e + 8] == 7610u16.to_le_bytes())
+                .unwrap();
+            b[e + 2..e + 4].copy_from_slice(&74i16.to_le_bytes());
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+                    until dialog 25";
+        let runner = on_save(&game, "week-start-talks", week).unwrap();
+        let list = control(&game.dialogs[&25], 1313).unwrap();
+        let keys: Vec<u16> =
+            runner.host.view().list(list).unwrap().keys.iter().map(|&k| k as u16).collect();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.globals.day(), 70, "{}", runner.log.join("\n"));
+        assert_eq!(records.globals.week_start(), 70);
+        let union = a3_core::statistics::human_clubs(records)[0];
+        let listed = transfers::listings(records);
+        let talks = transfers::appointments(records);
+        let row = keys
+            .iter()
+            .position(|&id| {
+                let talk = talks.iter().find(|t| t.player == id).unwrap();
+                listed.iter().any(|e| e.id == id && e.kind == transfers::SALE)
+                    && (70..84).contains(&talk.day)
+                    && !talk.clubs.contains(&union)
+                    && records.planners[0].day(talk.day as usize).kind == 0
+            })
+            .unwrap_or_else(|| panic!("{talks:?} {keys:?}"));
+        let id = keys[row];
+        let day = transfers::talk_day(records, id).unwrap();
+        drop(state);
+        let join = format!("{week}\nnow row 1313 {row}\nuntil dialog 376");
+        let runner = on_save(&game, "week-start-talks", &join).unwrap();
+        let boxes = |id| control(&game.dialogs[&376], id).unwrap();
+        let view = runner.host.view();
+        let first = view.check(boxes(4716)).unwrap();
+        assert_eq!((first.text.as_str(), first.checked), ("1.FC Union Berlin", true));
+        assert!(view.controls[boxes(4717)].hidden);
+        let ok = format!("{join}\nnow press 4721\nuntil dialog 25");
+        let runner = on_save(&game, "week-start-talks", &ok).unwrap();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let talk = transfers::appointments(records).into_iter().find(|t| t.player == id).unwrap();
+        assert_eq!(talk.clubs[2], union, "{talk:?}");
+        let booked = records.planners[0].day(day as usize);
+        assert_eq!((booked.kind, booked.player), (0x0e, id));
+        let view = runner.host.view();
+        let rows = view.list(list).unwrap();
+        let shown = rows.keys.iter().position(|&k| k as u16 == id).unwrap();
+        assert_eq!(rows.inks[shown], Some([255, 0, 0]));
+        assert_eq!(rows.selected, None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

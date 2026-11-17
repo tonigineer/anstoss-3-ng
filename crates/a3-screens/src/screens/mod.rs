@@ -267,6 +267,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(market::WorldsBest),
         Box::new(market::Appointments::default()),
         Box::new(market::LoanTerms),
+        Box::new(market::JoinTalks),
         Box::new(market::WatchList::default()),
         Box::new(market::WatchedPlayer::default()),
         Box::new(talk::TalkScreen::default()),

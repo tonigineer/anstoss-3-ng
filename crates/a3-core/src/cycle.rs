@@ -185,6 +185,9 @@ pub mod dialogs {
     pub const APPOINTMENTS: u16 = 25;
     pub const WATCH_LIST: u16 = 27;
     pub const WATCHED_PLAYER: u16 = 28;
+    /// Which human clubs join a talk from the week-start form of 25
+    /// (`CAnVerhandlungenTeilnehmen`).
+    pub const JOIN_TALKS: u16 = 376;
     /// The balance sheet's deposits, its loans, a loan paid back, the
     /// bank's refusal.
     pub const INVESTMENTS: u16 = 16;
@@ -347,6 +350,18 @@ pub enum Args {
     Player(usize),
     /// A player of the game, by his record's id.
     Record(u16),
+    /// A player of the game, and the club (country, number) a popup about
+    /// him is for: its caption ends in the club's name.
+    RecordAt(u16, u8, i16),
+    /// A notice's text for a club, its caption "ANSTOSS 3 - Achtung! -
+    /// <club>" (`FUN_0043e49f`).
+    TextAtClub(u16, u8, i16),
+    /// The week's appointments as the week start shows them, for all
+    /// humans at once (25 with +0xd94 set).
+    WeekStart,
+    /// The human clubs that may join a talk (376): up to four, by country
+    /// and number.
+    JoinClubs { clubs: [(u8, i16); 4], count: u8 },
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -420,6 +435,9 @@ pub enum Args {
         fair_fee: i32,
         option: i32,
         fair_option: i32,
+        /// The club the terms are shown for from the week-start form,
+        /// whose name the caption ends in.
+        club: Option<(u8, i16)>,
     },
     /// The builder's offer (text 4812): its price, the weeks and the weeks
     /// it comes to, and the cost in all.
@@ -802,6 +820,20 @@ impl Cycle {
             self.statement()?;
             if wait {
                 self.ask(Request::new(WAIT))?;
+                // The week's appointments for all humans, before the
+                // turns: the week block queues code 0x88 behind the
+                // autosave's when the appointments hold any, with the
+                // preparation 5 or from day 42 (`FUN_006da3a9` at
+                // 0x6da86a, `FUN_00762149`); the start dialog opens 25
+                // with +0xd94 set (`FUN_0047c449`). Its option byte
+                // `DAT_00b5d142` is taken at its default, 1.
+                let due = self.state().records.as_ref().is_some_and(|r| {
+                    (r.globals.preparation() == NORMAL_PREPARATION || r.globals.day() >= 42)
+                        && !crate::transfers::appointments(r).is_empty()
+                });
+                if due {
+                    self.ask(Request::with(APPOINTMENTS, Args::WeekStart))?;
+                }
             }
             wait = true;
             for manager in self.turns() {

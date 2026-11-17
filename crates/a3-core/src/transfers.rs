@@ -393,6 +393,32 @@ pub fn join(records: &mut Records, player: u16, buyer: Side) -> bool {
     true
 }
 
+/// A human club joins the player's appointment from the week-start form
+/// of 25 (`FUN_007651de(L, club, day − WS, kind, 0x0e)`): its planner
+/// busy that day → nothing; else the join (`FUN_00762691`, its result
+/// ignored) and the planner's day as a negotiation of the transfer list.
+/// The kind is not read. Whether the planner was free.
+pub fn join_from_week_start(records: &mut Records, player: u16, club: Side, day: i16) -> bool {
+    let Some(slot) = records
+        .team(u16::from(club.0), club.1 as u16)
+        .and_then(|t| usize::from(t.human()).checked_sub(1))
+    else {
+        return false;
+    };
+    let Ok(at) = usize::try_from(day) else { return false };
+    if records.planners.get(slot).is_none_or(|p| p.day(at).kind != 0) {
+        return false;
+    }
+    join(records, player, club);
+    if let Some(planner) = records.planners.get_mut(slot) {
+        planner.book(at, crate::records::Appointment { kind: LIST_TALK_DAY, flag: 1, player, club: 0 });
+    }
+    true
+}
+
+/// The planner's kind of a negotiation booked from the transfer list.
+pub const LIST_TALK_DAY: u8 = 0x0e;
+
 /// How many of this week's appointments a club sits at (`FUN_00761f7a`):
 /// from the week's first day to its last.
 pub fn talks_in_week(records: &Records, club: Side) -> usize {

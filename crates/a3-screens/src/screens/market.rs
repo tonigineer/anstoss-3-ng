@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use a3_core::cycle::dialogs::{
-    APPOINTMENTS, CURRENT_SQUAD, NOTICE, QUESTION, TRANSFER_LIST, WATCH_LIST, WATCHED_PLAYER,
+    APPOINTMENTS, CURRENT_SQUAD, JOIN_TALKS, NO_DATE, NOTICE, QUESTION, TRANSFER_LIST, WATCH_LIST, WATCHED_PLAYER,
     WORLDS_BEST,
 };
 use a3_core::cycle::{Negotiation, Request};
@@ -737,7 +737,32 @@ pub struct Appointments {
     menu_player: Option<u16>,
     /// The player whose loan's terms are shown.
     loan: Option<u16>,
+    /// The week-start form for all humans (+0xd94): no club of its own.
+    week_start: bool,
+    /// The talk 376 is asked about: the player and his listing.
+    asked: Option<(u16, Listing)>,
+    /// The clubs ticked in 376, going through `FUN_0047cffd` in turn.
+    joining: Option<Joining>,
 }
+
+/// A talk joined from the week-start form: the player, his listing, the
+/// day of his appointment, the ticked clubs still to go, and the club
+/// whose loan terms are shown.
+struct Joining {
+    player: u16,
+    listing: Listing,
+    day: i16,
+    clubs: std::collections::VecDeque<transfers::Side>,
+    loan_for: Option<transfers::Side>,
+}
+
+/// The week-start form's notices when nobody may join: two humans or
+/// more, the one human's day taken, no human with a club among one
+/// manager or several.
+const NOBODY_FREE: u16 = 3854;
+const YOU_NOT_FREE: u16 = 3855;
+const YOU_NO_CLUB: u16 = 3856;
+const NOBODY_CLUB: u16 = 3857;
 
 const TALKS_LIST: u16 = 1313;
 const TALKS_CAPTION: u16 = 9938;
@@ -771,20 +796,19 @@ pub(crate) fn swap_sort<T>(rows: &mut [T], before: impl Fn(&T, &T) -> bool) {
     }
 }
 
-impl Screen for Appointments {
-    fn ids(&self) -> &[u16] {
-        &[APPOINTMENTS]
-    }
-
-    /// The rows (`FUN_0047c6f7`); the dialog file's caption.
-    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+impl Appointments {
+    /// The rows (`FUN_0047c6f7`): scroll and selection reset. Red where
+    /// the club's player is talked about (not in the week-start form), a
+    /// human club takes part, or — in the week-start form — the player is
+    /// a human club's.
+    fn fill(&self, cx: &Cx, view: &mut View) {
         let (game, dialog) = (cx.game, cx.dialog);
-        self.menu_player = None;
-        set(view, dialog, TALKS_CAPTION, dialog.title.clone());
         let Some(records) = cx.state.records.as_ref() else { return };
         let late = records.globals.day() > LATE;
         let year = i32::from(records.globals.start_year());
-        let own = own_team(cx).map(|(_, t)| (t.country(), i16::from(t.number())));
+        let own = own_team(cx)
+            .filter(|_| !self.week_start)
+            .map(|(_, t)| (t.country(), i16::from(t.number())));
         let humans = human_clubs(records);
         let position = |id: u16| records.player(id).map_or(0, |r| r.positions()[0]);
         let mut talks = transfers::appointments(records);
@@ -828,7 +852,8 @@ impl Screen for Appointments {
                 day,
             ]);
             rows.push(columns.join("\t"));
-            let ours = own == Some((country, number));
+            let ours = own == Some((country, number))
+                || (self.week_start && humans.contains(&(country, number)));
             let human = talk.clubs.iter().any(|c| humans.contains(c));
             inks.push(Some(if ours || human { OWN_INK } else { OTHER_INK }));
             keys.push(usize::from(talk.player));
@@ -840,7 +865,158 @@ impl Screen for Appointments {
             list.scroll = 0;
             list.selected = None;
         }
-        mark_inert(view, dialog, |_| true);
+    }
+}
+
+impl Appointments {
+    /// A row clicked in the week-start form (`FUN_0047d95b`): the human
+    /// clubs that may join, none → why not; a player with no appointment
+    /// → nothing; else 376 to tick them.
+    fn ask_who(&mut self, cx: &Cx, listing: Listing) -> Outcome {
+        let Some(records) = cx.state.records.as_ref() else { return Outcome::Stay };
+        let id = listing.id;
+        let clubs = joinable(records, id);
+        if clubs.is_empty() {
+            let humans = a3_core::statistics::human_clubs(records);
+            let text = match humans.as_slice() {
+                [_, _, ..] => NOBODY_FREE,
+                // `FUN_005a897f`: in the player's first appointment.
+                [one] => {
+                    let talks = transfers::appointments(records);
+                    let first = talks.iter().find(|t| t.player == id);
+                    if first.is_some_and(|t| t.clubs.contains(one)) {
+                        ALREADY_IN
+                    } else {
+                        YOU_NOT_FREE
+                    }
+                }
+                [] if records.globals.humans() == 1 => YOU_NO_CLUB,
+                [] => NOBODY_CLUB,
+            };
+            return Outcome::Popup(Request::with(NOTICE, Args::Text(text)));
+        }
+        if transfers::talk_day(records, id).is_none() {
+            return Outcome::Stay;
+        }
+        let mut list = [(0, 0); 4];
+        for (slot, &club) in list.iter_mut().zip(&clubs) {
+            *slot = club;
+        }
+        self.asked = Some((id, listing));
+        let args = Args::JoinClubs { clubs: list, count: clubs.len().min(4) as u8 };
+        Outcome::Popup(Request::with(JOIN_TALKS, args))
+    }
+
+    /// The ticked clubs in turn (`FUN_0047cffd`), each stopping at its
+    /// popup; after the last 25 fills again.
+    fn go_on(&mut self, cx: &mut Cx, view: &mut View) -> Outcome {
+        while let Some(joining) = self.joining.as_mut() {
+            let Some(club) = joining.clubs.pop_front() else {
+                self.joining = None;
+                self.fill(cx, view);
+                break;
+            };
+            let (player, listing, day) = (joining.player, joining.listing, joining.day);
+            match join_one(cx, player, &listing, club, day) {
+                Joined::Done => {}
+                Joined::Popup(outcome) => return outcome,
+                Joined::Terms(outcome) => {
+                    joining.loan_for = Some(club);
+                    return outcome;
+                }
+            }
+        }
+        Outcome::Stay
+    }
+}
+
+/// What one ticked club's join came to.
+enum Joined {
+    Done,
+    Popup(Outcome),
+    Terms(Outcome),
+}
+
+/// The human clubs that may join a player's appointment
+/// (`FUN_0047dd6a`), in the globals' order: fewer than three talks this
+/// week and, when he has a day, their planner free on it. The test of the
+/// player's own club sets a flag nothing reads, so it is listed too.
+fn joinable(records: &Records, id: u16) -> Vec<transfers::Side> {
+    let day = transfers::talk_day(records, id);
+    a3_core::statistics::human_clubs(records)
+        .into_iter()
+        .filter(|&club| transfers::talks_in_week(records, club) < TALKS_A_WEEK)
+        .filter(|&club| {
+            let Some(day) = day.and_then(|d| usize::try_from(d).ok()) else { return true };
+            let slot = records
+                .team(u16::from(club.0), club.1 as u16)
+                .and_then(|t| usize::from(t.human()).checked_sub(1));
+            slot.and_then(|s| records.planners.get(s)).is_some_and(|p| p.day(day).kind == 0)
+        })
+        .take(4)
+        .collect()
+}
+
+/// One ticked club joins (`FUN_0047cffd`), as far as the replica can tell
+/// the checks (not 267 nor 263): a fixed release fee beyond its credit
+/// till the late days → 3071, captioned with the club; three talks this
+/// week → 262; already at the table → 2350, captioned; a sale's fee
+/// beyond what it can invest → 4073; else the join within the fortnight,
+/// with no 412. A loan shows its terms first.
+fn join_one(cx: &mut Cx, id: u16, listing: &Listing, club: transfers::Side, day: i16) -> Joined {
+    let popup = |args| Joined::Popup(Outcome::Popup(Request::with(NOTICE, args)));
+    let Some(records) = cx.state.records.as_ref() else { return Joined::Done };
+    let Some(r) = records.player(id) else { return Joined::Done };
+    let money = investable_of(records, club);
+    if r.fixed_fee() != 0
+        && records.globals.day() <= LATE
+        && i64::from(r.fixed_fee()) * FEE_UNIT > money
+    {
+        return popup(Args::TextAtClub(NO_CREDIT, club.0, club.1));
+    }
+    if transfers::talks_in_week(records, club) >= TALKS_A_WEEK {
+        let args = Args::RecordAt(id, club.0, club.1);
+        return Joined::Popup(Outcome::Popup(Request::with(NO_DATE, args)));
+    }
+    let talks = transfers::appointments(records);
+    if talks.iter().any(|t| t.player == id && t.clubs.contains(&club)) {
+        return popup(Args::TextAtClub(ALREADY_IN, club.0, club.1));
+    }
+    match listing.kind {
+        SALE => {
+            let fee = if listing.terms == FREE_TRANSFER { 0 } else { transfer_fee(cx, id) };
+            if fee > money {
+                return popup(Args::Text(CREDIT_REFUSED));
+            }
+            let start = records.globals.week_start();
+            if (0..FORTNIGHT).contains(&(day - start))
+                && let Some(records) = cx.state.records.as_mut()
+            {
+                transfers::join_from_week_start(records, id, club, day);
+            }
+            Joined::Done
+        }
+        LOAN | LOAN_WITH_OPTION => match loan_terms(cx, id, listing, Some(club)) {
+            Some((terms, _)) => Joined::Terms(terms),
+            None => Joined::Done,
+        },
+        _ => Joined::Done,
+    }
+}
+
+impl Screen for Appointments {
+    fn ids(&self) -> &[u16] {
+        &[APPOINTMENTS]
+    }
+
+    /// The rows (`FUN_0047c6f7`); the dialog file's caption.
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        self.menu_player = None;
+        self.week_start = args == Args::WeekStart;
+        (self.asked, self.joining) = (None, None);
+        set(view, cx.dialog, TALKS_CAPTION, cx.dialog.title.clone());
+        self.fill(cx, view);
+        mark_inert(view, cx.dialog, |_| true);
     }
 
     fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
@@ -872,6 +1048,9 @@ impl Screen for Appointments {
                 else {
                     return Outcome::Stay;
                 };
+                if self.week_start {
+                    return self.ask_who(cx, listing);
+                }
                 if let Some(text) = refusal(cx, id, Checks::Credit) {
                     return Outcome::Popup(Request::with(NOTICE, Args::Text(text)));
                 }
@@ -884,8 +1063,37 @@ impl Screen for Appointments {
     }
 
     /// A loan's terms OKed: its credit, then its appointment; the list
-    /// stays as it is.
-    fn answer(&mut self, cx: &mut Cx, _: &mut View, reply: Reply) -> Outcome {
+    /// stays as it is. In the week-start form 376's ticks, and each club's
+    /// popup answered, go on to the next club.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, reply: Reply) -> Outcome {
+        if let Some((player, listing)) = self.asked.take() {
+            let Reply::Choice(ticks) = reply else { return Outcome::Stay };
+            let (Some(records), Some(day)) =
+                (cx.state.records.as_ref(), cx.state.records.as_ref().and_then(|r| transfers::talk_day(r, player)))
+            else {
+                return Outcome::Stay;
+            };
+            let clubs = joinable(records, player)
+                .into_iter()
+                .enumerate()
+                .filter(|(k, _)| ticks & 1 << k != 0)
+                .map(|(_, c)| c)
+                .collect();
+            self.joining = Some(Joining { player, listing, day, clubs, loan_for: None });
+            return self.go_on(cx, view);
+        }
+        if let Some(joining) = self.joining.as_mut() {
+            if let Some(club) = joining.loan_for.take()
+                && reply == Reply::Ok
+            {
+                let (player, listing, day) = (joining.player, joining.listing, joining.day);
+                if let Some(outcome) = loan_joined(cx, player, &listing, club, day) {
+                    return outcome;
+                }
+                self.fill(cx, view);
+            }
+            return self.go_on(cx, view);
+        }
         if let Some(id) = self.loan.take()
             && reply == Reply::Ok
             && let Some(outcome) = loan_accepted(cx, id)
@@ -1305,7 +1513,7 @@ pub(crate) fn negotiate(cx: &Cx, id: u16, terms: bool, chosen: bool) -> Outcome 
 fn purchase(cx: &Cx, id: u16, listing: &Listing) -> Option<Outcome> {
     let notice = |text: u16| Some(Outcome::Popup(Request::with(NOTICE, Args::Text(text))));
     if listing.kind != SALE {
-        return loan_terms(cx, id, listing).map(|(terms, _)| terms);
+        return loan_terms(cx, id, listing, None).map(|(terms, _)| terms);
     }
     let fee = if listing.terms == FREE_TRANSFER { 0 } else { transfer_fee(cx, id) };
     if fee > investable(cx) {
@@ -1366,7 +1574,12 @@ fn talk(cx: &Cx, id: u16, kind: i16) -> Option<Outcome> {
 /// A listed loan's terms (`FUN_00622f7d`, then 290 or 289): the fees asked
 /// beside the fair ones; and what its credit is tested against, the fair
 /// fee.
-fn loan_terms(cx: &Cx, id: u16, listing: &Listing) -> Option<(Outcome, i32)> {
+fn loan_terms(
+    cx: &Cx,
+    id: u16,
+    listing: &Listing,
+    club: Option<transfers::Side>,
+) -> Option<(Outcome, i32)> {
     let game = cx.game;
     let records = cx.state.records.as_ref()?;
     let today = cx.state.season.as_ref()?.date();
@@ -1383,6 +1596,7 @@ fn loan_terms(cx: &Cx, id: u16, listing: &Listing) -> Option<(Outcome, i32)> {
             fair_fee: prices.fee,
             option: 0,
             fair_option: 0,
+            club,
         };
         (LOAN_TERMS, args, prices.fee)
     } else {
@@ -1392,6 +1606,7 @@ fn loan_terms(cx: &Cx, id: u16, listing: &Listing) -> Option<(Outcome, i32)> {
             fair_fee: prices.with_option,
             option: listing.option,
             fair_option: prices.option,
+            club,
         };
         (OPTION_TERMS, args, prices.with_option)
     };
@@ -1403,11 +1618,32 @@ fn loan_terms(cx: &Cx, id: u16, listing: &Listing) -> Option<(Outcome, i32)> {
 fn loan_accepted(cx: &Cx, id: u16) -> Option<Outcome> {
     let records = cx.state.records.as_ref()?;
     let listing = transfers::listings(records).into_iter().find(|e| e.id == id)?;
-    let (_, cost) = loan_terms(cx, id, &listing)?;
+    let (_, cost) = loan_terms(cx, id, &listing, None)?;
     if cost > 0 && investable(cx) <= i64::from(cost) {
         return Some(Outcome::Popup(Request::with(NOTICE, Args::Text(CREDIT_REFUSED))));
     }
     talk(cx, id, transfers::LOAN_TALK)
+}
+
+/// A loan's terms OKed in the week-start form for a club
+/// (`FUN_00622eb9`): beyond its credit → 4073; else the join within the
+/// fortnight, kind 4. None when the list is to fill again.
+fn loan_joined(
+    cx: &mut Cx,
+    id: u16,
+    listing: &Listing,
+    club: transfers::Side,
+    day: i16,
+) -> Option<Outcome> {
+    let (_, cost) = loan_terms(cx, id, listing, Some(club))?;
+    let records = cx.state.records.as_mut()?;
+    if cost > 0 && investable_of(records, club) <= i64::from(cost) {
+        return Some(Outcome::Popup(Request::with(NOTICE, Args::Text(CREDIT_REFUSED))));
+    }
+    if (0..FORTNIGHT).contains(&(day - records.globals.week_start())) {
+        transfers::join_from_week_start(records, id, club, day);
+    }
+    None
 }
 
 /// Whether an outcome opens a loan's terms.
@@ -1444,7 +1680,15 @@ impl Screen for LoanTerms {
     /// `0x5a9f70`, `0x5a9a9d`.
     fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
         let (game, dialog) = (cx.game, cx.dialog);
-        let Args::LoanTerms { player, fee, fair_fee, option, fair_option } = args else { return };
+        let Args::LoanTerms { player, fee, fair_fee, option, fair_option, club } = args else {
+            return;
+        };
+        // From the week-start form the caption names the club
+        // (`FUN_0043e49f`, "%s - %s").
+        if let Some((country, number)) = club {
+            let name = game.club_name(cx.state.records.as_ref(), country, number);
+            set(view, dialog, TALKS_CAPTION, format!("{} - {name}", dialog.title));
+        }
         let Some(&(_, [name, fee_label, fee_figure, option_label, option_figure])) =
             TERMS_LINES.iter().find(|(id, _)| *id == view.id)
         else {
@@ -1486,6 +1730,60 @@ impl Screen for LoanTerms {
     }
 }
 
+/// Who joins a talk from the week-start form (dialog 376
+/// `CAnVerhandlungenTeilnehmen`; LEIHE-TEILNAHME.md §2.5): a box for
+/// each club that may, labelled with its name, the rest hidden; a single
+/// club's ticked. Only its OK closes it, answering the ticks.
+#[derive(Default)]
+pub struct JoinTalks;
+
+const JOIN_BOXES: [u16; 4] = [4716, 4717, 4718, 4719];
+const JOIN_OK: u16 = 4721;
+
+impl Screen for JoinTalks {
+    fn ids(&self) -> &[u16] {
+        &[JOIN_TALKS]
+    }
+
+    /// `0x44482f`.
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
+        let dialog = cx.dialog;
+        let Args::JoinClubs { clubs, count } = args else { return };
+        let records = cx.state.records.as_ref();
+        for (k, &id) in JOIN_BOXES.iter().enumerate() {
+            let Some(c) = control(dialog, id) else { continue };
+            if k >= usize::from(count) {
+                view.controls[c].hidden = true;
+                continue;
+            }
+            let (country, number) = clubs[k];
+            let name = cx.game.club_name(records, country, number);
+            if let Some(check) = view.check_mut(c) {
+                check.text = name;
+                check.checked = count == 1;
+            }
+        }
+        mark_inert(view, dialog, |_| true);
+    }
+
+    /// `0x444a45`: the boxes' states, as bits from the first.
+    fn input(&mut self, cx: &mut Cx, view: &mut View, target: Target, _: bool) -> Outcome {
+        let dialog = cx.dialog;
+        let Target::Button(b) = target else { return Outcome::Stay };
+        if dialog.controls[b].id != Some(JOIN_OK) {
+            return Outcome::Stay;
+        }
+        let ticks = JOIN_BOXES
+            .iter()
+            .enumerate()
+            .filter(|&(_, &id)| {
+                control(dialog, id).and_then(|c| view.check(c)).is_some_and(|c| c.checked)
+            })
+            .fold(0, |bits, (k, _)| bits | 1 << k);
+        Outcome::Close(Reply::Choice(ticks))
+    }
+}
+
 /// What a listed player costs (`FUN_0070a393`): nothing with no contract
 /// left, or one ending this season once its late days have come; else the
 /// fixed release fee or his market value.
@@ -1513,6 +1811,13 @@ fn transfer_fee(cx: &Cx, id: u16) -> i64 {
 /// What the club can invest (`FUN_00622bd9`).
 fn investable(cx: &Cx) -> i64 {
     own_team(cx).map_or(0, |(records, team)| {
+        Figures::of(team, records.globals.fund_prices(), &records.agreed()).investable()
+    })
+}
+
+/// What a club, by country and number, can invest (`FUN_00622bd9`).
+fn investable_of(records: &Records, (country, number): transfers::Side) -> i64 {
+    records.team(u16::from(country), number as u16).map_or(0, |team| {
         Figures::of(team, records.globals.fund_prices(), &records.agreed()).investable()
     })
 }
