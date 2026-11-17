@@ -4,6 +4,7 @@
 
 pub mod adpcm;
 pub mod an3;
+pub mod avi;
 pub mod bitmap_font;
 pub mod cpr;
 pub mod exe;
