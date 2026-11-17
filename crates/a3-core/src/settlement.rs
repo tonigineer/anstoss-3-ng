@@ -493,10 +493,10 @@ fn number_squad(records: &mut Records, squad: &[usize], random: &mut Random) {
 /// keeps what the season made (`FUN_0042b2fc` walks the countries'
 /// clubs, `FUN_0042b424` reaches `FUN_0042b589`, and there
 /// `FUN_00672839` clears), and the clubs the walk plans get their
-/// season's sums and grades again (`plan_season`). What the original sets
-/// back up beside — the ticket sales target (`FUN_0067324c`), the drawn
-/// sums and the class template's money — the replica has not built, so
-/// its clubs stand at nought there. The cycle reaches this from
+/// season's sums and grades again (`plan_season`), every club its drawn
+/// +0x1a4 (`clear_drawn`) and a planned one its season tickets' target
+/// (`ticket_target`). The class template's money the replica has not
+/// built, so its clubs stand at nought there. The cycle reaches this from
 /// [`open_season`].
 pub fn clear_bookings(records: &mut Records, random: &mut Random) {
     let second = records.globals.seasons() > 1;
@@ -510,6 +510,8 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
         plan_staff(records, i);
+        let skill = manager_skill(records, &records.teams[i]);
+        clear_drawn(&mut records.teams[i], skill, random);
         if records.teams[i].humans()[1] == 0 {
             let carried = players_carried_on(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], 0x17c, carried);
@@ -541,6 +543,8 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
             sign_boards(&mut records.teams[i], system, random);
             sign_shirt(&mut records.teams[i], system, random);
             sign_television(&mut records.teams[i], system, random);
+            let target = ticket_target(records, &records.teams[i], system, capacity);
+            put::<i32>(&mut records.teams[i], SEASON_TICKETS, target);
         }
     }
 }
@@ -706,11 +710,26 @@ fn manager_skill(records: &Records, team: &Team) -> i64 {
     records.persons.get(usize::from(id)).map_or(0, |p| i64::from(p.get::<i8>(SKILL_AT)))
 }
 
-fn drawn_figure(team: &Team, skill: i64) -> i32 {
+/// The figure as `FUN_0042b489` returns it, not yet kept within bounds.
+fn raw_figure(team: &Team, skill: i64) -> i32 {
     let (first, per_skill, per_million) = DRAWN_ROWS[usize::from(team.level().min(2))];
     let millions = club::<i64>(team, CASH_AT) / 1_000_000;
-    let v = (millions.wrapping_mul(per_million) + first + skill * per_skill).wrapping_mul(1000) as i32;
-    v.clamp(DRAWN_LEAST, DRAWN_MOST)
+    (millions.wrapping_mul(per_million) + first + skill * per_skill).wrapping_mul(1000) as i32
+}
+
+fn drawn_figure(team: &Team, skill: i64) -> i32 {
+    raw_figure(team, skill).clamp(DRAWN_LEAST, DRAWN_MOST)
+}
+
+/// The sum the clearing itself draws at +0x1a4 for every club
+/// (`FUN_00672839`, before the stadium's draws; a planned club has it
+/// drawn again by the walk): the figure (`FUN_0042b489`, unbounded) down
+/// to fifty thousands (`FUN_0067575a`), 50 000 more on a draw of two, at
+/// least 50 000.
+fn clear_drawn(team: &mut Team, skill: i64, random: &mut Random) {
+    let figure = raw_figure(team, skill) / DRAWN_LEAST * DRAWN_LEAST;
+    let v = figure.wrapping_add(random.below(2) as i32 * DRAWN_LEAST);
+    put::<i32>(team, 0x1a4, v.max(DRAWN_LEAST));
 }
 
 fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
@@ -1377,6 +1396,83 @@ fn plan_club(team: &mut Team, system: usize) {
     let (a, b) = (club::<i32>(team, 0x138), club::<i32>(team, 0x13c));
     put::<i32>(team, 0x240, a);
     put::<i32>(team, 0x244, b);
+}
+
+/// The season tickets a planned club means to sell, which the walk sets
+/// at +0x124 (`FUN_0067324c` in `FUN_0042b589`, after the prices): its
+/// league's row of `DAT_008a0248` (from `DAT_0089dd50` by the cup
+/// system; 100 from the tenth level) times eight less the credit class
+/// (+0xec); by the discount +0x490 four fifths and a hundredth for each
+/// from twenty on, else two fifths and three hundredths each; a hundred
+/// and the league's oddness less the squad's rank (+0x107) in
+/// hundredths; 135 % for the title (flag 1), 120 % for the cup (2), 110 %
+/// (0x10), 115 % for promotion (4), 110 % for 0x1000 or 0x4000; five
+/// hundredths more for each of the board's verdict (+0x10e, signed); then
+/// the four classes' shares — twice the club's class (+0x11e0) and 3, 30
+/// and 10, the standing rest of a hundred — weighed by their prices
+/// against the reference ones (`FUN_0078aa63`), their sum in tenths kept
+/// within nought and fifteen, times it in tenths; at most what the
+/// stadium lets (`FUN_00719204`: +0x492 hundredths of its places, or the
+/// licence's spectators where bit 4 of +0x101 stands).
+const SEASON_TICKETS: usize = 0x124;
+const TICKET_BASES: [i32; 24] = [2000, 800, 150, 150, 150, 150, 2000, 800, 200, 100, 2000, 800, 4000, 800, 4000, 800, 3000, 2000, 1000, 1000, 1000, 4000, 2000, 0];
+const NO_LEAGUE_TICKETS: i32 = 100;
+const TICKET_DISCOUNT_AT: usize = 0x490;
+const SQUAD_RANK_AT: usize = 0x130;
+const TICKET_PRICES: [usize; 4] = [0x49c, 0x4a6, 0x4b0, 0x4ba];
+
+fn ticket_target(records: &Records, team: &Team, system: usize, capacity: i32) -> i32 {
+    let level = usize::from(team.level());
+    let mut t = if level < 10 {
+        let row = PLAN_ROWS_START.get(system).copied().unwrap_or(0) + level;
+        TICKET_BASES.get(row).copied().unwrap_or(0).wrapping_mul(8 - i32::from(team.credit_class()))
+    } else {
+        NO_LEAGUE_TICKETS
+    };
+    let discount = i32::from(club::<i16>(team, TICKET_DISCOUNT_AT));
+    t = if discount >= 20 { t.wrapping_mul(discount + 80) / 100 } else { t.wrapping_mul(discount * 3 + 40) / 100 };
+    let n = league_teams(records, team);
+    t = t.wrapping_mul(100 + n % 2 - i32::from(team.get::<u8>(SQUAD_RANK_AT))) / 100;
+    let flags = team.get::<u16>(FLAGS_AT);
+    for (bit, pct) in [(1u16, 135), (2, 120)] {
+        if flags & bit != 0 {
+            t = t.wrapping_mul(pct) / 100;
+        }
+    }
+    if flags & 0x10 != 0 {
+        t = t.wrapping_mul(11) / 10;
+    }
+    if flags & 4 != 0 {
+        t = t.wrapping_mul(115) / 100;
+    }
+    if flags & 0x5000 != 0 {
+        t = t.wrapping_mul(110) / 100;
+    }
+    t = t.wrapping_mul(i32::from(team.get::<i8>(VERDICT_AT)) * 5 + 100) / 100;
+    let class = i32::from(team.get::<u8>(CLUB_CLASS));
+    let price = |k: usize| club::<i16>(team, TICKET_PRICES[k]);
+    let [box_ref, side_ref, behind_ref, stand_ref] = crate::tickets::REFERENCE_PRICES;
+    let c = f64::from(class * 2);
+    let boxes = (c + 3.0) as f32;
+    let side = (c + 30.0) as f32;
+    let behind = (c + 10.0) as f32;
+    let standing = (100.0 - f64::from(boxes) - f64::from(behind) - f64::from(side)) as f32;
+    let w = |v: f32, k: usize, r: i32| (f64::from(crate::tickets::weight(price(k), r)) * f64::from(v)) as f32;
+    let (boxes, side, behind, standing) = (w(boxes, 3, box_ref), w(side, 2, side_ref), w(behind, 1, behind_ref), w(standing, 0, stand_ref));
+    let mut f = ((((f64::from(boxes) + f64::from(side)) + f64::from(behind)) + f64::from(standing)) / 10.0) as f32;
+    if f < 0.0 {
+        f = 0.0;
+    }
+    if f > 15.0 {
+        f = 15.0;
+    }
+    let t = crate::tickets::ftol(f64::from(t) * f64::from(f) / 10.0);
+    let room = if crate::licence::conditions(team) & crate::licence::SPECTATORS != 0 {
+        crate::licence::most_spectators(team)
+    } else {
+        i32::from(club::<i16>(team, FIFTY_AT)).wrapping_mul(capacity) / 100
+    };
+    t.min(room)
 }
 
 /// The clearing of one club (`FUN_00672839`, reached through
@@ -3369,6 +3465,36 @@ mod tests {
         assert!(kept > 1000 && same * 100 >= kept * 95, "{same} of {kept} kept as the original");
     }
 
+    /// The season tickets' target comes out as the original's: on its
+    /// first new-season day every planned club's +0x124 is what its
+    /// league, prices, rank, flags and stadium give.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_tickets_are_targeted_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let team = &theirs.teams[i];
+            let country = i16::from(team.country());
+            if country == 0 || !theirs.globals.played(country) || !planned(team) {
+                continue;
+            }
+            let system = usize::from(theirs.countries.cup_system(usize::from(team.country())));
+            let capacity = theirs
+                .block(&format!("{STADIUMS}[{i}]"))
+                .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
+                .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            assert_eq!(ticket_target(&theirs, team, system, capacity), club::<i32>(team, SEASON_TICKETS), "{i} season tickets");
+            count += 1;
+        }
+        assert!(count > 100, "{count} planned clubs");
+    }
+
     /// The team bonuses come out as the original's: on its first
     /// new-season day every computer club, the fields put to nought, is
     /// planned back to its rows and bonuses, and its season's expected
@@ -3408,6 +3534,13 @@ mod tests {
                     club::<i32>(&t, 0x1b0) == want
                 });
                 assert!(found, "{i}: amateur stadium {want}, skill {skill}");
+                let want = club::<i32>(&theirs.teams[i], 0x1a4);
+                let found = (0..40).any(|seed| {
+                    let mut t = team.clone();
+                    clear_drawn(&mut t, skill, &mut Random::new(seed));
+                    club::<i32>(&t, 0x1a4) == want
+                });
+                assert!(found, "{i}: amateur drawn {want}, skill {skill}");
             }
             plan_bonuses(&mut team, system);
             // The expected bonuses by the +0x5c4 the season's end left.
