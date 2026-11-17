@@ -11036,7 +11036,22 @@ mod tests {
         assert_eq!(text(4139), "Laufzeit");
         assert!(text(4151).contains("Alter: "), "{}", text(4151));
         assert!(!text(4149).is_empty());
+        let salary = r.salary();
         drop(state);
+        // The offer's spins step on the game's tables, its toggles flip:
+        // salary one step up, the signing fee to 2 (1.000s), "Stammspieler"
+        // and the league.
+        let edit = "now spin 4133 up\nnow spin 6008 up\nnow spin 6008 up\nnow press 4144\nnow press 6010\n\
+                    now spin 4142 up";
+        runner.run(&Script::parse(edit).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let view = runner.host.view();
+        let text = |id| view.text(crate::screens::control(dialog, id).unwrap()).to_owned();
+        let step = match salary { ..50 => 1, 50..100 => 2, 100..300 => 5, 300..1000 => 10, 1000..3000 => 20, 3000..6000 => 50, 6000..10000 => 100, _ => 200 };
+        let up = (i64::from(salary) / step * step + step).min(20000);
+        assert_eq!(text(4130), money(up * 1000));
+        assert_eq!(text(6007), money(2000));
+        assert_ne!(text(4144), text(4143));
+        assert_ne!(text(6010), game.text(4086));
         // "Abbrechen" ends the talk without an agreement.
         let cancel = "now press 4153\nuntil dialog 381";
         runner.run(&Script::parse(cancel).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
