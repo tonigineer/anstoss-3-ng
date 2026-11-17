@@ -466,6 +466,21 @@ pub fn end_trials(
 ) {
     for (country, number) in crate::statistics::human_clubs(records) {
         let Ok(number) = u16::try_from(number) else { continue };
+        end_club_trials(records, clubs, world, country, number, all);
+    }
+}
+
+/// [`end_trials`] for one club (`FUN_0074ceb1`), `all` sending everyone
+/// on trial back at once (`FUN_0074d27f(club, 1)`).
+pub fn end_club_trials(
+    records: &mut Records,
+    clubs: &mut std::collections::BTreeMap<(usize, usize), ClubState>,
+    world: &crate::world::World,
+    country: u8,
+    number: u16,
+    all: bool,
+) {
+    {
         let key = clubs.keys().copied().find(|&(slot, index)| {
             index == usize::from(number) && world.country(slot).is_some_and(|c| c.nation == u16::from(country))
         });

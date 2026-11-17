@@ -212,6 +212,57 @@ pub fn leaving_costs(records: &mut Records, slot: usize, club: (u8, u16)) {
     m.set_nerves((m.nerves() - 8).clamp(0, 100));
 }
 
+/// The club and its players let go when the human in `slot` ends his
+/// career (`FUN_006d9fa1`, from `FUN_006da0fe` after [`leaving_costs`]):
+/// the club's trainer and manager numbers (club +0x8a, +0x8b; team +0xa8)
+/// go to nought (`FUN_00409fe7`, `FUN_0040a05d`), and with both gone its
+/// extra data's first byte and its human slot (team +0xb5, `FUN_0063a513`
+/// → `FUN_0063a548`). Its week's book of abilities ends (`FUN_006436b3`).
+/// Each squad player loses his suspension (L+0x66 bit 4 = R+0x26b,
+/// `FUN_0074d7e6`), the line-ups' always and never (L+0xb6 = R+0x271 bits
+/// 4 and 5, `FUN_00706ddb(0)`, `FUN_00706d66(0)`), R+0x26f bit 6 and the
+/// trainer's grievances 0x100, 0x1000 and 0x4000 (`FUN_007717eb`,
+/// `FUN_00770942`), his contentment with the trainer raised to a hundred
+/// when it stands below (`FUN_007008b9`, `FUN_00700846`). Last, everyone
+/// on trial goes back at once (`FUN_0074d27f(club, 1)`).
+pub fn release_club(
+    records: &mut Records,
+    clubs: &mut std::collections::BTreeMap<(usize, usize), crate::season::ClubState>,
+    world: &crate::world::World,
+    club: (u8, u16),
+) {
+    const SUSPENDED: u8 = 0x10;
+    const PICKS: u8 = 0x30;
+    const RETIRING_BIT: u8 = 0x40;
+    const GRIEVANCES: u32 = 0x100 | 0x1000 | 0x4000;
+    let (country, number) = club;
+    let Some(team) = records.team_mut(u16::from(country), number) else { return };
+    let human = team.human();
+    team.set_humans([0, 0]);
+    if human != 0 {
+        team.set_human(0);
+    }
+    let squad = team.players();
+    if let Some(extra) = usize::from(human).checked_sub(1).and_then(|i| records.extras.get_mut(i)) {
+        extra.put(0x20, 0u8);
+    }
+    records.clear_abilities_week(human);
+    for id in squad {
+        let Some(p) = records.player_mut(id) else { continue };
+        p.set_away_kind(p.away_kind() & !SUSPENDED);
+        p.set_picks(p.picks() & !PICKS);
+        p.set_retiring(p.retiring() & !RETIRING_BIT);
+        crate::mood::clear_reasons(p, GRIEVANCES);
+        if crate::mood::parts(p)[0] < 100 {
+            let mut parts = p.contentment();
+            parts[0] = 100;
+            p.set_contentment(parts);
+            p.set_morale(crate::mood::morale(p));
+        }
+    }
+    crate::youth::end_club_trials(records, clubs, world, country, number, true);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -475,6 +526,44 @@ mod tests {
         ours.managers[slot].set_nerves(5);
         leaving_costs(&mut ours, slot, club);
         assert_eq!((ours.managers[slot].standing_marks(), ours.managers[slot].nerves()), (marks - 50, 0));
+    }
+
+    /// The kept save A's human ends his career: his club has no human left
+    /// in it, its slot and extra data free, and a suspended, always-picked
+    /// player with the trainer's grievances and his trust in him low gets
+    /// his suspension, pick and grievances lifted and his trust back to a
+    /// hundred.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn ending_the_career_releases_the_club_and_its_players() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut ours = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let slot = ours.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let m = &ours.managers[slot];
+        let club = (m.country() as u8, m.team() as u16);
+        let human = ours.team(club.0.into(), club.1).unwrap().human();
+        assert_eq!(usize::from(human), slot + 1);
+        let id = ours.team(club.0.into(), club.1).unwrap().players()[0];
+        let p = ours.player_mut(id).unwrap();
+        p.set_away_kind(p.away_kind() | 0x10);
+        p.set_picks(p.picks() | 0x20);
+        p.set_flags(p.flags() | 0x100 | 0x4000 | 0x4);
+        let mut parts = p.contentment();
+        parts[0] = 70;
+        p.set_contentment(parts);
+        let mut clubs = std::collections::BTreeMap::new();
+        release_club(&mut ours, &mut clubs, &data.world, club);
+        let t = ours.team(club.0.into(), club.1).unwrap();
+        assert_eq!((t.humans(), t.human()), ([0, 0], 0));
+        assert_eq!(ours.extras[slot].get::<u8>(0x20), 0);
+        let p = ours.player(id).unwrap();
+        assert_eq!((p.away_kind() & 0x10, p.picks() & 0x30), (0, 0));
+        assert_eq!(p.flags() & (0x100 | 0x1000 | 0x4000 | 0x4), 0x4, "only the trainer's three go");
+        assert_eq!(p.contentment()[0], 100);
+        assert_eq!(p.morale(), crate::mood::morale(p));
     }
 
     /// Only the bytes in `touched` differ.

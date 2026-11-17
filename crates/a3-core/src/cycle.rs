@@ -1483,7 +1483,8 @@ impl Cycle {
                 // 0x80)`, only with a club, manager +0x1e): so far the
                 // notice of it (`FUN_005dfec7`) and the end of his last
                 // club station in his career (`FUN_006fddfe`, reason 4)
-                // and what leaving costs him (`FUN_006d9f70`).
+                // and what leaving costs him (`FUN_006d9f70`), and the
+                // club and its players let go (`FUN_006d9fa1`).
                 let manager = &records.managers[slot];
                 if manager.country() != 0 {
                     let club = (manager.country() as u8, manager.team());
@@ -1491,6 +1492,7 @@ impl Cycle {
                     season.notices.post(notice);
                     crate::career::left_club(records, slot, 4);
                     crate::career::leaving_costs(records, slot, (club.0, club.1 as u16));
+                    crate::career::release_club(records, &mut season.clubs, &self.data.world, (club.0, club.1 as u16));
                 }
                 leave(records, slot);
             }
