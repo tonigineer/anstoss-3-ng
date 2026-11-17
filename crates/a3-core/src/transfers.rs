@@ -728,6 +728,69 @@ pub fn after_poaching(
 /// A listing's terms after a poaching talk the player agreed to.
 pub const POACHED: u8 = 3;
 
+/// A loan talk on its day, as far as it gets before the clubs bargain:
+/// the player, the lending club and the clubs still bidding, in the
+/// appointment's order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LoanTalk {
+    pub player: u16,
+    pub lender: Side,
+    pub bidders: Vec<Side>,
+}
+
+/// A squad this big takes no one more on loan (`FUN_00767c78`: club
+/// +0xe2 < 0x22).
+const FULL_SQUAD: u16 = 34;
+
+/// The day's loan talks (`FUN_0076cb3e`'s last loop: kind 4 →
+/// `FUN_00681ae6`, the entry removed either way). The talk ends at once
+/// when the player has left the lending club (`FUN_006968c4`) or the
+/// transfer list (`FUN_007597a4`); else each other club of the
+/// appointment (`FUN_006782aa` skips the lender) drops out when it can
+/// invest less than the loan's fee E+0x10 (`FUN_00681a9f`, a human told
+/// by `FUN_00768497`) or its squad is full (`FUN_00767c78`, told by
+/// `FUN_0076851f`), and with nobody left (asm 0x681e64) nothing more
+/// happens. Past day 216 the original counts the squad with next season's
+/// comings and goings (`FUN_0070ffef`), not ported: the squad as it
+/// stands.
+pub fn loan_day(records: &mut Records, day: i16) -> Vec<LoanTalk> {
+    let mut talks = Vec::new();
+    while let Some(t) =
+        appointments(records).into_iter().find(|t| t.day == day && t.kind == LOAN_TALK)
+    {
+        cancel_talk(records, t.player);
+        let Some(&lender) = t.clubs.first() else { continue };
+        let with_lender = records
+            .player(t.player)
+            .is_some_and(|r| t.player != 0 && (r.club()[0], i16::from(r.club()[1])) == lender);
+        let Some(listing) = listings(records).into_iter().find(|l| l.id == t.player) else {
+            continue;
+        };
+        if !with_lender {
+            continue;
+        }
+        let prices = records.globals.fund_prices();
+        let agreed = records.agreed();
+        let bidders: Vec<Side> = t
+            .clubs
+            .iter()
+            .copied()
+            .filter(|&c| c != lender)
+            .filter(|&(country, number)| {
+                records.team(u16::from(country), number as u16).is_some_and(|team| {
+                    let investable =
+                        crate::finances::Balance::of(team, prices, &agreed).investable();
+                    investable >= i64::from(listing.fee as u32) && team.player_count() < FULL_SQUAD
+                })
+            })
+            .collect();
+        if !bidders.is_empty() {
+            talks.push(LoanTalk { player: t.player, lender, bidders });
+        }
+    }
+    talks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,5 +874,48 @@ mod tests {
         assert_eq!(&b[e..e + TERMS], &talk.terms);
         assert_eq!(after_poaching(&mut records, &mut random, &talk, buyer), None);
         assert_eq!(appointments(&records).len(), before + 1);
+    }
+
+    /// A loan talk booked on save A for the human club with a listed
+    /// player of another: on its day it leaves the list, the rest stay;
+    /// the human club bids when it can pay the fee, and drops out when
+    /// the fee is beyond it.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_loan_talks_leave_the_list_on_their_day() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let human = {
+            let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+            let t = records.teams.iter().find(|t| t.human() != 0).unwrap();
+            (t.country(), i16::from(t.number()))
+        };
+        let run = |fee: i32| {
+            let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+            let l = listings(&records)
+                .into_iter()
+                .find(|l| {
+                    (l.country, l.number as i16) != human
+                        && !appointments(&records).iter().any(|t| t.player == l.id)
+                })
+                .unwrap();
+            let k = listings(&records).iter().position(|x| x.id == l.id).unwrap();
+            let b = records.block_mut(&list_name()).unwrap();
+            b[LIST_FIRST + k * LIST_ENTRY + 0x10..][..4].copy_from_slice(&fee.to_le_bytes());
+            let lender = (l.country, l.number as i16);
+            let day = records.globals.day() as i16 + 1;
+            assert!(book(&mut records, LOAN_TALK, day, l.id, lender, human, [0; TERMS]));
+            let before = appointments(&records);
+            let today = before.iter().filter(|t| t.day == day && t.kind == LOAN_TALK).count();
+            let talks = loan_day(&mut records, day);
+            let after = appointments(&records);
+            assert_eq!(after.len(), before.len() - today);
+            assert!(!after.iter().any(|t| t.day == day && t.kind == LOAN_TALK));
+            talks.into_iter().find(|t| t.player == l.id)
+        };
+        let talk = run(1000).expect("no loan talk");
+        assert_eq!(talk.bidders, vec![human]);
+        assert_eq!(run(i32::MAX), None);
     }
 }
