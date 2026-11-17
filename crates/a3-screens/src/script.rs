@@ -8865,6 +8865,11 @@ mod tests {
         assert_eq!(records.globals.order(), [2, -1, -1, -1]);
         // The national team let him go too (`FUN_006b9872`).
         assert_eq!(records.managers[0].national_team(), 0);
+        // His club noted the departure for the dismissal dialog
+        // (`FUN_005dfec7`): number 1, kind 3, reason 4, to be shown.
+        let due = season.notices.clone().due(i16::MAX);
+        let noted: Vec<_> = due.iter().map(|n| (n.manager, n.kind, n.reason, n.shown)).collect();
+        assert_eq!(noted, [(1, 3, 4, 0x80)]);
         assert_eq!(season.day % 7, 0, "a week's first day");
         drop(state);
         let caption = control(&game.dialogs[&302], 9920).unwrap();

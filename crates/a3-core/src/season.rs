@@ -455,6 +455,9 @@ pub struct Season {
     /// The newspaper's headlines waiting for the next day
     /// (`DAT_01c6ac60`). No save keeps them.
     pub headlines: crate::headlines::Queue,
+    /// The departures the clubs noted, waiting for their day
+    /// (`DAT_00a2ea68`). No save keeps them.
+    pub notices: crate::goodbye::Notices,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -862,6 +865,7 @@ impl Season {
             recent_events: Vec::new(),
             reported: Default::default(),
             headlines: Default::default(),
+            notices: Default::default(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

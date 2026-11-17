@@ -1430,8 +1430,8 @@ impl Cycle {
     /// engaged him for next season and the other humans' +0x1b0 naming him
     /// let go of him (`FUN_006a40ce`), his club no longer followed as a
     /// human's. The national team lets him go first (`FUN_006b9872`,
-    /// reason 0); his club's own goodbye (`FUN_006da1ac`, reason 4) is not
-    /// built. Whether a career
+    /// reason 0); of his club's own goodbye (`FUN_006da1ac`, reason 4)
+    /// only its notice is built (`FUN_005dfec7`). Whether a career
     /// ended, and whether a human is left.
     fn careers_end(&self) -> (bool, bool) {
         let mut guard = self.state();
@@ -1479,6 +1479,15 @@ impl Cycle {
             for &(slot, _) in &slots {
                 let Some(slot) = slot else { continue };
                 crate::national::leave(records, slot, 0);
+                // His club's goodbye (`FUN_006da1ac(manager, club, 1, 4,
+                // 0x80)`, only with a club, manager +0x1e): so far the
+                // notice of it (`FUN_005dfec7`).
+                let manager = &records.managers[slot];
+                if manager.country() != 0 {
+                    let club = (manager.country() as u8, manager.team());
+                    let notice = crate::goodbye::notice(records, slot, club, 4, 3, 0x80, 0);
+                    season.notices.post(notice);
+                }
                 leave(records, slot);
             }
         }

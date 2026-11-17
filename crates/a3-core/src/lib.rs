@@ -27,6 +27,7 @@ pub mod finances;
 pub mod free_agents;
 pub mod friendly;
 pub mod forecast;
+pub mod goodbye;
 pub mod grounds;
 pub mod hall;
 pub mod highscore;
