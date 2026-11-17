@@ -1479,9 +1479,9 @@ impl Cycle {
                 crate::transfers::after_poaching(records, &mut season.random, &talk, buyer);
             }
         }
-        // The day's last loop: the loan talks leave the list; the clubs'
-        // bargaining that follows (`FUN_00682814`, the human's 0x9b) is
-        // not built, so a talk ends with its bidders known.
+        // The day's last loop: the loan talks leave the list and a loan no
+        // human bids for finds its computer club (`FUN_00682814`); the
+        // move itself and the human's bargaining (0x9b) are not built.
         if let Ok(day) = i16::try_from(season.day) {
             crate::transfers::loan_day(records, day);
             crate::transfers::purchase_talk_day(records, day);

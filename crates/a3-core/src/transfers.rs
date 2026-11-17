@@ -183,6 +183,8 @@ pub struct Appointment {
     pub day: i16,
     pub player: u16,
     pub clubs: Vec<(u8, i16)>,
+    /// Each club's weight in the talk (+0x11 + 6k).
+    pub weights: Vec<u8>,
     /// The contract the talk is on (+0x38).
     pub terms: [u8; TERMS],
 }
@@ -214,6 +216,9 @@ pub fn appointments(records: &Records) -> Vec<Appointment> {
                         let at = e + CLUB_AT + i * CLUB;
                         (b.get(at).copied().unwrap_or(0), word(b, at + 2))
                     })
+                    .collect(),
+                weights: (0..n)
+                    .map(|i| b.get(e + CLUB_AT + i * CLUB + 5).copied().unwrap_or(0))
                     .collect(),
                 terms: b
                     .get(e + TALK_TERMS..e + TALK_TERMS + TERMS)
@@ -734,14 +739,37 @@ pub fn after_poaching(
 /// A listing's terms after a poaching talk the player agreed to.
 pub const POACHED: u8 = 3;
 
-/// A loan talk on its day, as far as it gets before the clubs bargain:
-/// the player, the lending club and the clubs still bidding, in the
-/// appointment's order.
+/// A loan talk on its day: the player, the lending club, the clubs still
+/// bidding, in the appointment's order, and, when none of them has a
+/// human manager, the computer club that gets him.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LoanTalk {
     pub player: u16,
     pub lender: Side,
     pub bidders: Vec<Side>,
+    pub winner: Option<Side>,
+}
+
+/// Who gets a loan no human bids for (`FUN_00682814`): of the bidders
+/// with squad room (`FUN_00767c78`) the one with the highest weight in
+/// the appointment (+0x11 + 6k), the first on a tie. The move itself
+/// (`FUN_0070d5ef` on the entry's terms +0x44, fee E+0x10, option E+0x14,
+/// kind E+0xc) and the lender's news (`FUN_00681a52`) are not built.
+fn loan_winner(records: &Records, t: &Appointment, bidders: &[Side]) -> Option<Side> {
+    let human = |&(country, number): &Side| {
+        records.team(u16::from(country), number as u16).is_some_and(|team| team.human() != 0)
+    };
+    if bidders.iter().any(human) {
+        return None;
+    }
+    let mut best: Option<(u8, Side)> = None;
+    for (k, &club) in t.clubs.iter().enumerate().skip(1) {
+        let weight = t.weights.get(k).copied().unwrap_or(0);
+        if bidders.contains(&club) && best.is_none_or(|(w, _)| weight > w) {
+            best = Some((weight, club));
+        }
+    }
+    best.map(|(_, club)| club)
 }
 
 /// A squad this big takes no one more on loan (`FUN_00767c78`: club
@@ -791,7 +819,8 @@ pub fn loan_day(records: &mut Records, day: i16) -> Vec<LoanTalk> {
             })
             .collect();
         if !bidders.is_empty() {
-            talks.push(LoanTalk { player: t.player, lender, bidders });
+            let winner = loan_winner(records, &t, &bidders);
+            talks.push(LoanTalk { player: t.player, lender, bidders, winner });
         }
     }
     talks
@@ -967,7 +996,7 @@ mod tests {
             let t = records.teams.iter().find(|t| t.human() != 0).unwrap();
             (t.country(), i16::from(t.number()))
         };
-        let run = |fee: i32| {
+        let run = |fee: i32, computer: bool| {
             let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
             let l = listings(&records)
                 .into_iter()
@@ -976,12 +1005,30 @@ mod tests {
                         && !appointments(&records).iter().any(|t| t.player == l.id)
                 })
                 .unwrap();
+            let prices = records.globals.fund_prices();
+            let agreed = records.agreed();
+            let bidder = if computer {
+                records
+                    .teams
+                    .iter()
+                    .find(|t| {
+                        t.human() == 0
+                            && (t.country(), t.number()) != (l.country, l.number as u8)
+                            && t.player_count() < FULL_SQUAD
+                            && crate::finances::Balance::of(t, prices, &agreed).investable()
+                                >= i64::from(fee)
+                    })
+                    .map(|t| (t.country(), i16::from(t.number())))
+                    .unwrap()
+            } else {
+                human
+            };
             let k = listings(&records).iter().position(|x| x.id == l.id).unwrap();
             let b = records.block_mut(&list_name()).unwrap();
             b[LIST_FIRST + k * LIST_ENTRY + 0x10..][..4].copy_from_slice(&fee.to_le_bytes());
             let lender = (l.country, l.number as i16);
             let day = records.globals.day() as i16 + 1;
-            assert!(book(&mut records, LOAN_TALK, day, l.id, lender, human, [0; TERMS]));
+            assert!(book(&mut records, LOAN_TALK, day, l.id, lender, bidder, [0; TERMS]));
             let before = appointments(&records);
             let today = before.iter().filter(|t| t.day == day && t.kind == LOAN_TALK).count();
             let talks = loan_day(&mut records, day);
@@ -990,9 +1037,12 @@ mod tests {
             assert!(!after.iter().any(|t| t.day == day && t.kind == LOAN_TALK));
             talks.into_iter().find(|t| t.player == l.id)
         };
-        let talk = run(1000).expect("no loan talk");
+        let talk = run(1000, false).expect("no loan talk");
         assert_eq!(talk.bidders, vec![human]);
-        assert_eq!(run(i32::MAX), None);
+        assert_eq!(talk.winner, None);
+        assert_eq!(run(i32::MAX, false), None);
+        let talk = run(1000, true).expect("no computer loan talk");
+        assert_eq!(talk.winner, Some(talk.bidders[0]));
     }
     /// A purchase booked on save A for the human club with a listed player
     /// of another: on its day it leaves the list; the human club bids with
