@@ -417,6 +417,8 @@ pub struct Season {
     /// text of its kind ("Einzelgespräch", "Krankenbesuch") and the last
     /// name of the manager who had it (`IDC_ABLAUF_WOCHE_MELDUNG`).
     pub planner_message: Option<(u16, String)>,
+    /// The human managers' talks of the day, by slot (`0x1c5b9e8`).
+    pub day_talks: [crate::transfers::DayTalk; 4],
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -835,6 +837,7 @@ impl Season {
             expected,
             clubs: BTreeMap::new(),
             planner_message: None,
+            day_talks: Default::default(),
             before_match: false,
             random,
             donations: Vec::new(),

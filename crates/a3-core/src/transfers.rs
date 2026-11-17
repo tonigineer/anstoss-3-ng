@@ -634,6 +634,100 @@ pub fn poaching_day(records: &mut Records, day: i16) -> Vec<(u16, u8)> {
     talks
 }
 
+/// A human manager's talk of the day (`0x1c5b9c8 + (n − 1)·0x44`, from
+/// +0x20; `FUN_0076abc4` reads it, `FUN_0076ac2e` writes it, and the day
+/// run zeroes all of them first, `FUN_0076fac0`): the player, how the
+/// talk ended (+0x28) and the contract it ended on (+0x30, 20 bytes).
+/// Not saved.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct DayTalk {
+    pub player: u16,
+    pub kind: i32,
+    pub terms: [u8; TERMS],
+}
+
+/// A poaching talk the player agreed to (`FUN_0076ad3b` writes it on the
+/// dialog's OK).
+pub const AGREED: i32 = 3;
+
+/// Purchase talks with the player's club go on one of these days of the
+/// next week, a row drawn (`0x8abbdc`, 3 rows of 5, + 7 from the week's
+/// start).
+const PURCHASE_DAYS: [[i16; 5]; 3] = [[5, 4, 2, 1, 3], [2, 5, 4, 1, 3], [4, 2, 5, 1, 3]];
+
+/// How many appointments a club sits at from `first` to six days on
+/// (`FUN_00761f7a`).
+fn talks_from(records: &Records, club: Side, first: i16) -> usize {
+    appointments(records)
+        .iter()
+        .filter(|t| (first..=first + 6).contains(&t.day))
+        .map(|t| t.clubs.iter().filter(|&&c| c == club).count())
+        .sum()
+}
+
+/// Whether a club has three talks in the next week already
+/// (`FUN_00764a80`).
+fn next_week_full(records: &Records, club: Side) -> bool {
+    talks_from(records, club, records.globals.week_start() + 7) >= 3
+}
+
+/// Whether a club is busy on a day (`FUN_00764ad0(club, day − WS)`): a
+/// human club's planner holds something then, or it sits at a talk.
+fn busy(records: &Records, club: Side, day: i16) -> bool {
+    let slot = records
+        .team(u16::from(club.0), club.1 as u16)
+        .and_then(|t| usize::from(t.human()).checked_sub(1));
+    if let Some(slot) = slot
+        && records.planners.get(slot).is_some_and(|p| p.day(usize::try_from(day).unwrap_or(0)).kind != 0)
+    {
+        return true;
+    }
+    talks_on(records, club, day)
+}
+
+/// The day of the next week, from its first, for a purchase talk between
+/// the buyer and the player's club (`FUN_007586d3`): 0 when either has
+/// three talks that week; else the first of a drawn row free for both,
+/// 0 if none is.
+fn purchase_day(records: &Records, random: &mut crate::random::Random, his: Side, buyer: Side) -> i16 {
+    if next_week_full(records, buyer) || next_week_full(records, his) {
+        return 0;
+    }
+    let start = records.globals.week_start();
+    let row = random.below(3) as usize;
+    PURCHASE_DAYS[row]
+        .into_iter()
+        .find(|&d| !busy(records, his, start + d + 7) && !busy(records, buyer, start + d + 7))
+        .unwrap_or(0)
+}
+
+/// After the day's talks, a manager's agreed poaching talk
+/// (`FUN_0076aeb8`): the player goes on the transfer list for sale with
+/// terms 3 (`FUN_0075a3cc(L, 0)` → `FUN_00758e88` → `FUN_00758b34(L, 1,
+/// 3, 0, 0)`); if he was not there already, the buyer meets his club for
+/// the fee in the next week (`FUN_0076254d`, kind 3, on the contract
+/// agreed). The day booked, if one was.
+pub fn after_poaching(
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    talk: &DayTalk,
+    buyer: Side,
+) -> Option<i16> {
+    if talk.player == 0 || talk.kind != AGREED {
+        return None;
+    }
+    let his = records.player(talk.player).map(|r| r.club())?;
+    let his = (his[0], i16::from(his[1]));
+    if !list_for_terms(records, talk.player, POACHED) {
+        return None;
+    }
+    let day = records.globals.week_start() + 7 + purchase_day(records, random, his, buyer);
+    book(records, PURCHASE, day, talk.player, his, buyer, talk.terms).then_some(day)
+}
+
+/// A listing's terms after a poaching talk the player agreed to.
+pub const POACHED: u8 = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,5 +764,52 @@ mod tests {
             .collect();
         assert_eq!(talks.iter().map(|t| t.0).collect::<Vec<_>>(), humans);
         assert_eq!(humans, vec![player]);
+    }
+
+    /// A poaching talk the player agreed to on save A: he goes on the list
+    /// with terms 3, and the human club meets his club next week on one of
+    /// the table's days, on the contract agreed; a second time he is
+    /// listed already, and nothing more is booked.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn an_agreed_poaching_talk_books_the_purchase_talk() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let human = records.teams.iter().find(|t| t.human() != 0).unwrap();
+        let buyer = (human.country(), i16::from(human.number()));
+        let listed: Vec<u16> = listings(&records).iter().map(|l| l.id).collect();
+        let player = (1..0x4269)
+            .find(|&p| {
+                records.player(p).is_some_and(|r| {
+                    let c = r.club();
+                    c[1] != 0 && (c[0], i16::from(c[1])) != buyer
+                })
+                    && !listed.contains(&p)
+                    && !appointments(&records).iter().any(|t| t.player == p)
+            })
+            .unwrap();
+        let his = records.player(player).unwrap().club();
+        let mut talk = DayTalk { player, kind: 0, terms: terms(&records, player) };
+        talk.terms[4] = 7;
+        let mut random = crate::random::Random::from_state(1, 1);
+        assert_eq!(after_poaching(&mut records, &mut random, &talk, buyer), None);
+        talk.kind = AGREED;
+        let before = appointments(&records).len();
+        let day = after_poaching(&mut records, &mut random, &talk, buyer).expect("no talk booked");
+        let start = records.globals.week_start();
+        assert!((start + 7..=start + 12).contains(&day), "day {day} not next week");
+        assert_eq!(listed_terms(&records, player), Some(POACHED));
+        let all = appointments(&records);
+        assert_eq!(all.len(), before + 1);
+        let t = all.last().unwrap();
+        assert_eq!((t.kind, t.day, t.player), (PURCHASE, day, player));
+        assert_eq!(t.clubs, vec![(his[0], i16::from(his[1])), buyer]);
+        let b = records.block(&format!("{TALKS_AT:#x}")).unwrap();
+        let e = TALKS_FIRST + (all.len() - 1) * TALK + TALK_TERMS;
+        assert_eq!(&b[e..e + TERMS], &talk.terms);
+        assert_eq!(after_poaching(&mut records, &mut random, &talk, buyer), None);
+        assert_eq!(appointments(&records).len(), before + 1);
     }
 }

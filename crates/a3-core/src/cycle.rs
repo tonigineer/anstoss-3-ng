@@ -1408,25 +1408,43 @@ impl Cycle {
 
     /// The day's poaching talks, before the planners' pump
     /// (`FUN_0076cb3e` from the day loop `FUN_0064f981`): its first step
-    /// zeroes the day's messages (`FUN_0076fac0`), then every poaching
-    /// appointment of the day leaves the list, and a human buyer's talk
-    /// puts "Verhandlung" and the manager's name in the week's message
+    /// zeroes the day's messages and talks (`FUN_0076fac0`), then every
+    /// poaching appointment of the day leaves the list, and a human
+    /// buyer's talk puts "Verhandlung" and the manager's name in the
+    /// week's message and the player in his talk of the day
     /// (`FUN_0076aca0`, text 5048 via `FUN_0064f456`). Its message 0xa6
     /// would open the talk itself (`FUN_0076ad3b`,
-    /// `CVerhandlungAbwerbeversuch`), not built yet.
+    /// `CVerhandlungAbwerbeversuch`), not built yet; after the day's
+    /// messages, managers 1 to 4 in turn act on a talk agreed
+    /// (`FUN_0076aeb8`).
     fn poaching_talks(&self) {
         let mut state = self.state();
         let state = &mut *state;
         let Some(season) = state.season.as_mut() else { return };
         season.planner_message = None;
+        season.day_talks = Default::default();
         let Some(records) = state.records.as_mut() else { return };
         let Ok(day) = i16::try_from(season.day) else { return };
-        for (_player, human) in crate::transfers::poaching_day(records, day) {
+        for (player, human) in crate::transfers::poaching_day(records, day) {
             let slot = usize::from(human) - 1;
+            if let Some(talk) = season.day_talks.get_mut(slot) {
+                talk.player = player;
+            }
             let n = (0..season.managers.len()).find(|&n| records.human_slot(n) == Some(slot));
             if let Some(manager) = n.and_then(|n| season.managers.get(n)) {
                 season.planner_message =
                     Some((CONTRACT_TALK_TEXT, manager.last_name.clone()));
+            }
+        }
+        for slot in 0..season.day_talks.len() {
+            let buyer = records
+                .teams
+                .iter()
+                .find(|t| usize::from(t.human()) == slot + 1)
+                .map(|t| (t.country(), i16::from(t.number())));
+            if let Some(buyer) = buyer {
+                let talk = season.day_talks[slot].clone();
+                crate::transfers::after_poaching(records, &mut season.random, &talk, buyer);
             }
         }
     }
