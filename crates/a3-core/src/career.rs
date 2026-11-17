@@ -263,6 +263,54 @@ pub fn release_club(
     crate::youth::end_club_trials(records, clubs, world, country, number, true);
 }
 
+/// The contract's end when the human in `slot` leaves his club
+/// (`FUN_006da008(manager, club, flag, 3)`, from `FUN_006da0fe` after
+/// [`release_club`]). With `counted` (the career's end passes 1): a club
+/// in one of the countries played besides the main one (manager +0x1e
+/// among `DAT_00b5cbb4`, `FUN_00676c5d`) takes one off the object's
+/// +0x17c9 while it stands above nought, and +0x17ce counts one more
+/// (the object's block +0x17bc is the record's +0x19ac). His flat
+/// (the private block's +0xc, rec+0x1d0, levels 1 to 7) is sold for 70 %
+/// of its price (`DAT_00886584[level]` × `0.7f` at `0x83113c`, cut by
+/// `ftol`) into his fortune (+0x98, rec+0x118), its level back to nought
+/// (`FUN_006a5d6e`, `FUN_006a5d9f`). Then the club goes: +0x1c to +0x22
+/// nought, the record's +0x26 and the object's +0x17dc bits 6 to 8
+/// (rec+0x1f1c, `FUN_006a6370(0)`), and +0xa4 (rec+0x19a).
+pub fn end_contract(records: &mut Records, slot: usize, counted: bool) {
+    const ABROAD_AT: usize = 0x19ac + 0xd;
+    const ENDS_AT: usize = 0x19ac + 0x12;
+    const FLAT_AT: usize = 0x1c4 + 0xc;
+    const FLAT_PRICES: [i32; 8] = [4531, 200_000, 400_000, 600_000, 1_000_000, 1_500_000, 3_000_000, 10_000_000];
+    const SOLD_FOR: f32 = 0.7;
+    const CLUB_AT: usize = 0x1c;
+    const PLAYING_AT: usize = 0x26;
+    const STATE_BITS_AT: usize = 0x1f1c;
+    const STATE_BITS: u32 = 0x1c0;
+    const STATION_AT: usize = 0x19a;
+    let more: Vec<i16> = {
+        let g = &records.globals;
+        let n = usize::try_from(g.more_count()).unwrap_or(0);
+        g.more_countries().iter().take(n).copied().collect()
+    };
+    let Some(m) = records.managers.get_mut(slot) else { return };
+    if counted {
+        if more.contains(&(m.country() as i16)) && m.get::<u8>(ABROAD_AT) != 0 {
+            m.put(ABROAD_AT, m.get::<u8>(ABROAD_AT) - 1);
+        }
+        m.put(ENDS_AT, m.get::<u8>(ENDS_AT).wrapping_add(1));
+    }
+    let flat = m.get::<u8>(FLAT_AT);
+    if (1..8).contains(&flat) {
+        let sold = (f64::from(FLAT_PRICES[usize::from(flat)]) * f64::from(SOLD_FOR)).trunc() as i32;
+        m.set_cash(m.cash().wrapping_add(sold));
+        m.put(FLAT_AT, 0u8);
+    }
+    m.put(CLUB_AT, [0u8; 7]);
+    m.put(PLAYING_AT, 0u8);
+    m.put(STATE_BITS_AT, m.get::<u32>(STATE_BITS_AT) & !STATE_BITS);
+    m.put(STATION_AT, 0u8);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -564,6 +612,30 @@ mod tests {
         assert_eq!(p.flags() & (0x100 | 0x1000 | 0x4000 | 0x4), 0x4, "only the trainer's three go");
         assert_eq!(p.contentment()[0], 100);
         assert_eq!(p.morale(), crate::mood::morale(p));
+    }
+
+    /// The kept save A's human ends his career with a flat at level 1:
+    /// he gets 139,999 for it (200,000 × 0.7f, cut), the flat goes, his
+    /// club fields are nought and his career count of ends one more.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn ending_the_contract_sells_the_flat_and_clears_the_club() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut ours = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let slot = ours.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let m = &mut ours.managers[slot];
+        assert_ne!(m.country(), 0);
+        m.put(0x1d0, 1u8);
+        let (cash, ends) = (m.cash(), m.get::<u8>(0x19be));
+        let before = m.bytes().to_vec();
+        end_contract(&mut ours, slot, true);
+        let m = &ours.managers[slot];
+        assert_eq!(m.cash(), cash + 139_999);
+        assert_eq!((m.get::<u8>(0x1d0), m.country(), m.team(), m.status()), (0, 0, 0, 0));
+        assert_eq!(m.get::<u8>(0x19be), ends + 1);
+        still_the_same(&before, m.bytes(), &[0x1c..0x23, 0x26..0x27, 0x118..0x11c, 0x19a..0x19b, 0x1d0..0x1d1, 0x19b9..0x19ba, 0x19be..0x19bf, 0x1f1c..0x1f1d]);
     }
 
     /// Only the bytes in `touched` differ.
