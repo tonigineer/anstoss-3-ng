@@ -788,6 +788,18 @@ pub fn dissolve(team: &mut Team, deposit: &Deposit) {
     team.put(deposit_at(deposit.slot, DEPOSIT_IN_USE), 0u8);
 }
 
+/// Every deposit in use with a partner dissolved, as when its club's
+/// manager ends his career (`FUN_00648847`, from `FUN_005e0147(club, 3)`
+/// with bit 2): the six slots at +0x3d8 whose +0x13 bit 0 is set and whose
+/// partner (+0x12) is not nought, each through [`dissolve`].
+pub fn dissolve_all(team: &mut Team, fund_prices: [i32; 5]) {
+    for deposit in deposits_of(team, fund_prices) {
+        if deposit.partner != 0 {
+            dissolve(team, &deposit);
+        }
+    }
+}
+
 /// The day of the quarter the bank counts from: thirty days a month
 /// (`FUN_00676a74`).
 pub fn bank_day(day: u16, month: u16) -> i16 {
@@ -1373,6 +1385,25 @@ mod season_tests {
         assert_eq!(team.get::<i64>(at(deposit + 8)), 442_500);
         assert_eq!((team.get::<i16>(at(deposit + 0x10)), team.get::<i16>(at(deposit + 0x14))), (1000, 0));
         assert_eq!(deposits(&team, [FUND_START; 5]), 442_500, "worth the same at the new prices");
+    }
+
+    /// A career's end dissolves the deposits with a partner: a gain is
+    /// other income, a deposit with partner nought stays (`FUN_00648847`).
+    #[test]
+    fn a_career_end_dissolves_the_partnered_deposits() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        for (k, partner) in [(0, 2u8), (1, 0)] {
+            let d = 0x3d8 + ENTRY * k;
+            team.put::<u8>(at(d + 0x13), 1);
+            team.put::<u8>(at(d + 0x12), partner);
+            team.put::<i64>(at(d), 300_000);
+            team.put::<i64>(at(d + 8), 300_000);
+            team.put::<i16>(at(d + 0x10), 1000);
+        }
+        dissolve_all(&mut team, [1000, 1000, 1200, 1000, 1000]);
+        assert_eq!(team.get::<i32>(at(GAINS)), 60_000);
+        assert_eq!(team.get::<u8>(at(0x3d8 + 0x13)), 0);
+        assert_eq!(team.get::<u8>(at(0x3d8 + ENTRY + 0x13)), 1, "no partner, kept");
     }
 
     /// Over the original's pair (SeasonEnd364 → NewSeason000): its new

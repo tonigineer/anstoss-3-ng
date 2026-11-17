@@ -311,6 +311,16 @@ pub fn end_contract(records: &mut Records, slot: usize, counted: bool) {
     m.put(STATION_AT, 0u8);
 }
 
+/// The club's deposits dissolved when the human leaves it at his career's
+/// end (`FUN_005e0147(club, 3)`, from `FUN_006da0fe` after
+/// [`end_contract`]): bit 2 of the flags sends it to `FUN_00648847`,
+/// [`crate::finances::dissolve_all`] at the funds' prices of the day.
+pub fn dissolve_deposits(records: &mut Records, club: (u8, u16)) {
+    let prices = records.globals.fund_prices();
+    let Some(team) = records.team_mut(u16::from(club.0), club.1) else { return };
+    crate::finances::dissolve_all(team, prices);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
