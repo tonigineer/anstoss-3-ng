@@ -1482,13 +1482,15 @@ impl Cycle {
                 // His club's goodbye (`FUN_006da1ac(manager, club, 1, 4,
                 // 0x80)`, only with a club, manager +0x1e): so far the
                 // notice of it (`FUN_005dfec7`) and the end of his last
-                // club station in his career (`FUN_006fddfe`, reason 4).
+                // club station in his career (`FUN_006fddfe`, reason 4)
+                // and what leaving costs him (`FUN_006d9f70`).
                 let manager = &records.managers[slot];
                 if manager.country() != 0 {
                     let club = (manager.country() as u8, manager.team());
                     let notice = crate::goodbye::notice(records, slot, club, 4, 3, 0x80, 0);
                     season.notices.post(notice);
                     crate::career::left_club(records, slot, 4);
+                    crate::career::leaving_costs(records, slot, (club.0, club.1 as u16));
                 }
                 leave(records, slot);
             }

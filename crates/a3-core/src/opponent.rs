@@ -201,6 +201,11 @@ impl<'a> League<'a> {
         usize::try_from(self.i16_at(0)).unwrap_or(0)
     }
 
+    /// How many go down at its season's end (G+0x20).
+    pub fn relegations(&self) -> i16 {
+        self.i16_at(0x20)
+    }
+
     /// Its matchdays in all (G+2).
     pub fn matchdays(&self) -> usize {
         self.rows()

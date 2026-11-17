@@ -976,6 +976,9 @@ record! {
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
+    /// His nerves, 0 to 100 (the manager object's +0x32, `FUN_006be903`
+    /// clamps them; the personal page's 5568).
+    0x11e => nerves, set_nerves: i16;
     /// His years as a trainer ("Trainerjahre", the manager object's +0x38).
     0x124 => trainer_years, set_trainer_years: i16;
     /// The black cash box (the manager object's +0xec …, `FUN_006a426b`

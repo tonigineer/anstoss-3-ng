@@ -180,6 +180,38 @@ pub fn left_club(records: &mut Records, slot: usize, reason: u8) {
     }
 }
 
+/// Whether a club stands in its league's relegation places
+/// (`FUN_00677d72`): a club of a followed country (not the list's end,
+/// `;`) in one of its leagues, placed below the league's size less its
+/// relegations (the league's G+0 and G+0x20).
+fn going_down(records: &Records, club: (u8, u16)) -> bool {
+    const NO_COUNTRY: u8 = b';';
+    let Some(team) = records.team(club.0.into(), club.1) else { return false };
+    let (country, level) = (team.country(), team.level());
+    if !records.globals.played(country.into()) || country == NO_COUNTRY {
+        return false;
+    }
+    if i16::from(level) >= records.countries.leagues(country.into()) {
+        return false;
+    }
+    let Some(league) = crate::opponent::League::of(records, country.into(), level) else { return false };
+    (league.teams() as i16).wrapping_sub(league.relegations()) < i16::from(team.table_place())
+}
+
+/// What leaving `club` costs the human in `slot` (`FUN_006d9f70`, from
+/// `FUN_006da0fe` after his last station is closed): 40 of his standing
+/// marks (the manager object's +0xd8, `FUN_006dd8f3`) when the club stands
+/// in the relegation places, else 10, and 8 of his nerves (`FUN_006be82b`,
+/// clamped to 0..100 by `FUN_006be903`). `FUN_0070ddbf` then takes a
+/// player-manager out of the club's squad and clears his +0x26; the
+/// replica keeps no player-manager in a squad, so that part is not built.
+pub fn leaving_costs(records: &mut Records, slot: usize, club: (u8, u16)) {
+    let by = if going_down(records, club) { 40 } else { 10 };
+    let Some(m) = records.managers.get_mut(slot) else { return };
+    m.set_standing_marks(m.standing_marks().wrapping_sub(by));
+    m.set_nerves((m.nerves() - 8).clamp(0, 100));
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -407,6 +439,42 @@ mod tests {
         let car = ours.career(slot).unwrap();
         assert_eq!(word(car, DISMISSED), word(&before, DISMISSED) + 1);
         assert_eq!(car[CLUBS_AT + 0xc], 3);
+    }
+
+    /// The kept day-63 save's human leaves his club: 10 standing marks
+    /// and 8 nerves go, 40 marks once his club stands in the relegation
+    /// places; the nerves stop at nought.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn leaving_the_club_costs_standing_and_nerves() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let mut ours = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let slot = ours.globals.slots().iter().position(|&s| s > 0).unwrap();
+        let m = &ours.managers[slot];
+        let club = (m.country() as u8, m.team() as u16);
+        let league = {
+            let t = ours.team(club.0.into(), club.1).unwrap();
+            crate::opponent::League::of(&ours, t.country().into(), t.level()).unwrap()
+        };
+        let (teams, down) = (league.teams() as u8, league.relegations() as u8);
+        assert!(down > 0, "the league sends some down");
+        let set_place = |r: &mut Records, place: u8| {
+            let t = r.teams.iter_mut().find(|t| (t.country(), t.number() as u16) == club).unwrap();
+            t.set_table_place(place);
+        };
+        set_place(&mut ours, teams - down);
+        ours.managers[slot].set_nerves(50);
+        let marks = ours.managers[slot].standing_marks();
+        leaving_costs(&mut ours, slot, club);
+        assert_eq!((ours.managers[slot].standing_marks(), ours.managers[slot].nerves()), (marks - 10, 42));
+        set_place(&mut ours, teams - down + 1);
+        ours.managers[slot].set_nerves(5);
+        leaving_costs(&mut ours, slot, club);
+        assert_eq!((ours.managers[slot].standing_marks(), ours.managers[slot].nerves()), (marks - 50, 0));
     }
 
     /// Only the bytes in `touched` differ.
