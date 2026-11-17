@@ -89,18 +89,18 @@ const PROMISE_OLD: [i8; 5] = [-2, -2, -2, -2, -2];
 const THOUSAND: i32 = 1000;
 const FEE_UNIT: i64 = 10_000;
 
-fn today(records: &Records) -> Option<NaiveDate> {
+pub(crate) fn today(records: &Records) -> Option<NaiveDate> {
     let [day, month, year] = records.globals.date();
     NaiveDate::from_ymd_opt(i32::from(year), u32::from(month), u32::from(day))
 }
 
-fn age(records: &Records, p: &Player) -> i32 {
+pub(crate) fn age(records: &Records, p: &Player) -> i32 {
     today(records).map_or(0, |d| crate::statistics::age_on(p, d))
 }
 
 /// The years his contract has left in the closing season, as his object
 /// holds them: none once run out.
-fn years_left(records: &Records, p: &Player) -> i32 {
+pub(crate) fn years_left(records: &Records, p: &Player) -> i32 {
     (i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year())).max(0)
 }
 

@@ -1594,7 +1594,13 @@ impl Cycle {
         let mut told = Vec::new();
         if let Ok(day) = i16::try_from(season.day) {
             crate::transfers::loan_day(records, day, &mut told);
-            crate::transfers::purchase_talk_day(records, day, &mut told);
+            crate::transfers::purchase_talk_day(
+                records,
+                &mut season.random,
+                &self.data.world.nation_kinds,
+                day,
+                &mut told,
+            );
         }
         drop(guard);
         for d in told {

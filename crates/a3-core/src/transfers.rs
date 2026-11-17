@@ -850,6 +850,121 @@ pub struct PurchaseTalk {
     pub player: u16,
     pub seller: Side,
     pub bidders: Vec<Side>,
+    pub opening: Opening,
+}
+
+/// How a purchase talk opens (`FUN_00768638` from asm 0x7687af to
+/// 0x768af8), before its bidders are looked at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Opening {
+    /// His partner's stance on the move (`DAT_01c5c1f8`, 0 to 6): 0 none
+    /// or content, 2 against it, 3 wants money, 4 and 5 two moods of the
+    /// wife, by his id's parity, 6 his nation's kind 3.
+    pub stance: u8,
+    /// His remark's flags (-0x3c: 2 his wife came along, 4 too young to
+    /// leave) and its text (-0x1a, 0x5c7 to 0x5ca, 0 none).
+    pub flags: u8,
+    pub remark: u16,
+    /// The share the talk opens on (`DAT_01c5c254`): 50 with his contract
+    /// run out, else 100.
+    pub share: u8,
+    /// Whether the seller lets him go (-0x28).
+    pub released: bool,
+}
+
+/// R+0x1ca's traits (L+0x12) the opening reads: wants money
+/// ("Geldgeier"), and a family man (meaning by its use).
+const GREEDY: u16 = 0x40;
+const FAMILY: u16 = 0x200;
+/// R+0x15e's bit 0x40 (L+0x96), which keeps a computer seller's player
+/// unreleased (meaning not traced).
+const KEPT: u16 = 0x40;
+/// The listing's terms (E+0xd) that release him: 1 and 2.
+const RELEASING_TERMS: [u8; 2] = [1, 2];
+
+/// The partner's stance bits R+0x27f bits 4 and 5 (`FUN_00705dbe`,
+/// written by `FUN_00705de5`, clamped to 0..2).
+fn stance_bits(p: &crate::records::Player) -> u8 {
+    p.problems() >> 4 & 3
+}
+
+fn set_stance_bits(p: &mut crate::records::Player, value: u8) {
+    p.set_problems(p.problems() & 0xcf | value.min(2) << 4);
+}
+
+/// `FUN_00768638`'s opening, asm 0x7687af–0x768af8: the partner's stance
+/// (a wife at ease, R+0x27e kind 3 and standing 0, by his traits; else a
+/// strong man's partner turns against it three times in ten), a nation
+/// of kind 3 (`DAT_00ae5678`) overruling; then the remark — a wife who
+/// came along at even odds, a man under 25 who would rather stay, any
+/// other one in a hundred; the share; whether the seller lets him go.
+pub fn purchase_opening(
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    t: &Appointment,
+    nation_kinds: &[u8],
+) -> Option<Opening> {
+    let &seller = t.clubs.first()?;
+    let today = crate::free_agents::today(records);
+    let listing = listings(records).into_iter().find(|l| l.id == t.player)?;
+    let start_year = records.globals.start_year();
+    let seller_human = records
+        .team(u16::from(seller.0), seller.1 as u16)
+        .is_some_and(|team| team.human() != 0);
+    let p = records.player_mut(t.player)?;
+    let mut stance = stance_bits(p);
+    let married = p.partner() & 3 == 3;
+    let strong = p.strength() > 10;
+    let traits = p.traits()[1];
+    if married && p.partner() >> 2 & 7 == 0 {
+        set_stance_bits(p, 1);
+        stance = if strong && traits & GREEDY != 0 {
+            3
+        } else if traits & FAMILY != 0 {
+            if t.player % 2 == 0 { 5 } else { 4 }
+        } else {
+            0
+        };
+    } else if strong && random.below(100) < 30 {
+        set_stance_bits(p, 2);
+        stance = 2;
+    } else if stance == 1 {
+        set_stance_bits(p, 0);
+        stance = 0;
+    }
+    if nation_kinds.get(usize::from(p.nation())) == Some(&3) {
+        set_stance_bits(p, 0);
+        stance = 6;
+    }
+    let (mut flags, mut remark) = (0, 0);
+    let bits = stance_bits(p);
+    if married && bits == 1 && random.below(2) != 0 {
+        flags |= 2;
+        remark = 0x5c7;
+        stance = 3;
+    } else if bits == 2 {
+        // The original's third case (under 20, ten league matches, a
+        // talent) lies under the first and is never reached.
+        if today.is_some_and(|d| crate::statistics::age_on(p, d) < 25) {
+            flags |= 4;
+            remark = 0x5c8;
+        } else if random.below(100) == 0 {
+            remark = 0x5ca;
+        }
+    }
+    let p = records.player(t.player)?;
+    let years = (i32::from(p.contract() & 0xfff) - i32::from(start_year)).max(0);
+    let share = if years == 0 { 50 } else { 100 };
+    // Every way through asm 0x7689f5–0x768a82 lands on 0 but a contract
+    // run out.
+    let mut released = RELEASING_TERMS.contains(&listing.terms) || years == 0;
+    if !released && !seller_human && p.terms() & KEPT == 0 {
+        released = true;
+    }
+    if t.clubs.iter().skip(1).any(|&c| c == seller) {
+        released = false;
+    }
+    Some(Opening { stance, flags, remark, share, released })
 }
 
 /// The release fee's unit (`DAT_00a3b3bc`).
@@ -871,6 +986,8 @@ const LATE_SEASON: i16 = 0xd8;
 /// [`POACHED`] (E+0xd = 3) leaves the transfer list (`FUN_0075a71f`).
 pub fn purchase_talk_day(
     records: &mut Records,
+    random: &mut crate::random::Random,
+    nation_kinds: &[u8],
     day: i16,
     told: &mut Vec<Dropout>,
 ) -> Vec<PurchaseTalk> {
@@ -878,7 +995,7 @@ pub fn purchase_talk_day(
     while let Some(t) =
         appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)
     {
-        if let Some(talk) = purchase_bidders(records, &t, day, told) {
+        if let Some(talk) = purchase_bidders(records, random, nation_kinds, &t, day, told) {
             talks.push(talk);
         }
         if listings(records).iter().any(|l| l.id == t.player && l.terms == POACHED) {
@@ -891,7 +1008,9 @@ pub fn purchase_talk_day(
 
 /// `FUN_00768638` up to its bargaining: who still bids.
 fn purchase_bidders(
-    records: &Records,
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    nation_kinds: &[u8],
     t: &Appointment,
     day: i16,
     told: &mut Vec<Dropout>,
@@ -901,7 +1020,8 @@ fn purchase_bidders(
     if t.player == 0 || (player.club()[0], i16::from(player.club()[1])) != seller {
         return None;
     }
-    listings(records).into_iter().find(|l| l.id == t.player)?;
+    let opening = purchase_opening(records, random, t, nation_kinds)?;
+    let player = records.player(t.player)?;
     let fee = i64::from(player.fixed_fee()) * RELEASE_UNIT;
     let prices = records.globals.fund_prices();
     let agreed = records.agreed();
@@ -920,12 +1040,45 @@ fn purchase_bidders(
             bidders.push(club);
         }
     }
-    (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders })
+    (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders, opening })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two purchase talks save A books for day 64 open as
+    /// `FUN_00768638`'s first block has them: Nsoki (3262) and Young
+    /// (2168), each partner's stance written back to R+0x27f and the
+    /// draws taken only where the rule draws.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_day_64_purchase_talks_open_by_the_partners_stance() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let world = crate::world::World::load(&dir.join("Data.a3")).unwrap();
+        let talks: Vec<_> =
+            appointments(&records).into_iter().filter(|t| t.day == 64 && t.kind == PURCHASE).collect();
+        assert_eq!(talks.iter().map(|t| t.player).collect::<Vec<_>>(), [3262, 2168]);
+        // Nsoki's wife is at ease with it (R+0x27e 0x83) and came along at
+        // the even draw; Young, no strong man, has his partner's old 2
+        // against it and, at 25 or more, the one-in-a-hundred draw.
+        let expected = [
+            (Opening { stance: 3, flags: 2, remark: 0x5c7, share: 100, released: true }, 1, 2),
+            (Opening { stance: 2, flags: 0, remark: 0, share: 100, released: true }, 2, 100),
+        ];
+        for (t, (opening, bits, draw)) in talks.iter().zip(expected) {
+            let mut random = crate::random::Random::from_state(12345, 67890);
+            let o = purchase_opening(&mut records, &mut random, t, &world.nation_kinds).unwrap();
+            assert_eq!(o, opening);
+            assert_eq!(stance_bits(records.player(t.player).unwrap()), bits);
+            let mut replay = crate::random::Random::from_state(12345, 67890);
+            replay.below(draw);
+            assert_eq!(random, replay);
+        }
+    }
 
     /// A poaching talk booked on save A beside its nine appointments, for
     /// the human club and a player of no other: on its day it leaves the
@@ -1103,7 +1256,7 @@ mod tests {
             let before = appointments(&records);
             let today = before.iter().filter(|t| t.day == day && t.kind == PURCHASE).count();
             let mut told = Vec::new();
-            let talks = purchase_talk_day(&mut records, day, &mut told);
+            let talks = purchase_talk_day(&mut records, &mut crate::random::Random::from_state(1, 1), &[], day, &mut told);
             let after = appointments(&records);
             assert_eq!(after.len(), before.len() - today);
             assert!(!after.iter().any(|t| t.day == day && t.kind == PURCHASE));

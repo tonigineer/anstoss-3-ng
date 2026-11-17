@@ -129,6 +129,9 @@ pub struct World {
     /// Nation names by code, and their three letters ("DEU").
     pub nations: Vec<String>,
     pub nation_codes: Vec<String>,
+    /// Each nation's second number in `Laender.sav`, its low four bits
+    /// (`DAT_00ae5678`, filled by `FUN_00685c70`).
+    pub nation_kinds: Vec<u8>,
     /// By slot; the bonus slot is empty when no bonus country is installed.
     pub countries: Vec<Option<Country>>,
     /// Nations whose clubs `Internat.sav` brings in for the European cups.
@@ -210,6 +213,7 @@ impl World {
             .collect();
         let text = |n: &Section, i: usize| n.text(i).unwrap_or_default().to_owned();
         let nation_codes = nations.iter().map(|n| text(n, 2)).collect();
+        let nation_kinds = nations.iter().map(|n| (n.number(1).unwrap_or(0) & 0xf) as u8).collect();
         let nations = nations.iter().map(|n| text(n, 0)).collect();
         let countries =
             (0..SLOTS).map(|slot| Country::load(dir, slot)).collect::<io::Result<Vec<_>>>()?;
@@ -223,7 +227,7 @@ impl World {
             .ok()
             .and_then(|kleinig| kleinig.child("MISC")?.number(0))
             .map_or(DEFAULT_START_YEAR, |year| year as i32);
-        Ok(Self { nations, nation_codes, countries, internationals, start_year })
+        Ok(Self { nations, nation_codes, nation_kinds, countries, internationals, start_year })
     }
 
     pub fn nation(&self, code: u16) -> &str {
