@@ -1790,9 +1790,10 @@ fn insert_crowd(rows: &mut [u8], row: [u8; 0x18]) {
 /// `FUN_0072540e` — which finds the league's list at `DAT_00af5d74` by the
 /// record's country and level bytes — and, always, to `FUN_0072544d` for
 /// the international list at `DAT_00af723c`. The record's family at +0x20
-/// decides the first of these: under `0x3f000000` it stands (league,
-/// Europe's `0x02/04/08`, supercup's `0x30`), and the domestic cup's `0x40`
-/// does not — `into_league` carries that. A record settled a second time
+/// decides the first of these: masked with `0x7f000000` it is compared
+/// against `0x3f` (0x712962), so only the league's family nought reaches
+/// the league's list — cup, league cup, supercup and Europe's games go to
+/// the international one alone. `into_league` carries that. A record settled a second time
 /// (its +0x24 no nought) never enters at all; the replica settles every
 /// match once.
 pub fn book_crowd(

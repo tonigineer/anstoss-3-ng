@@ -261,25 +261,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             }
             crowd = att;
         }
-        // The cup tie's crowd goes into the international list only: the
-        // domestic cup's family stands over the gate the original puts
-        // before the league's list (record +0x20 under `0x3f000000`), and
-        // the single leg leaves the row's second result nought.
-        statistics::book_crowd(
-            records,
-            false,
-            u16::from(country),
-            0,
-            (country, number),
-            statistics::Crowd {
-                attendance: u32::try_from(crowd.max(0)).unwrap_or(0),
-                home: (country, number as i16),
-                away: (an, away_id as i16),
-                goals: [hg, ag],
-                second: [0, 0],
-                flags: 0,
-            },
-        );
+        book_tie_crowd(records, (country, number), (an, away_id), [hg, ag], crowd);
     }
     if let Some(cup) = records.block_mut(&name) {
         for (q, tie) in scored {
@@ -522,6 +504,11 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
     let (home, away) = (held(sides[0].0, sides[0].1), held(sides[1].0, sides[1].1));
     let (mut hg, _) = goals(home, away, HOME_EDGE, random);
     let (mut ag, _) = goals(away, home, -HOME_EDGE, random);
+    // The home side's crowd, drawn as at the cup's; the supercup books
+    // no money for it, only its row in the international list.
+    let crowd = records
+        .team(u16::from(sides[0].0), sides[0].1)
+        .map_or(0, |t| attendance(t, capacity(records, u16::from(sides[0].0), sides[0].1), random));
     // The tie's own sides' goals: the first leg's as played, the
     // second's turned back.
     let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
@@ -558,6 +545,7 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
         }
         winner = Some(u8::from(won == std::cmp::Ordering::Less));
     }
+    book_tie_crowd(records, sides[0], sides[1], [hg, ag], crowd);
     let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
     if let Some(b) = records.block_mut(&name) {
         if let Some(t) = b.get_mut(tie_at..tie_at + TIE) {
@@ -702,6 +690,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     };
     let mut results: Vec<(usize, [u8; PAIRING])> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
+    let mut crowds = Vec::new();
     for q in start..start + count {
         let at = PAIRINGS + q * PAIRING;
         let Some(tie) = block.get(at..at + PAIRING) else { continue };
@@ -721,6 +710,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
             if money != 0 {
                 gates.push((hc, hn, ac, an, money));
             }
+            crowds.push(((hc, hn), (ac, an), [hg, ag], att));
         }
         // The tie's own sides' goals.
         let (mut first, mut second) = if turned { (ag, hg) } else { (hg, ag) };
@@ -770,6 +760,9 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
         return;
     }
     book_cup_gates(records, &gates, code);
+    for (home, away, score, att) in crowds {
+        book_tie_crowd(records, home, away, score, att);
+    }
     let Some(b) = records.block_mut(LEAGUE_CUP) else { return };
     for (q, tie) in &results {
         let at = PAIRINGS + q * PAIRING;
@@ -829,6 +822,30 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     if let Some(d) = b.get_mut(0x28 - 0x20) {
         *d = u8::try_from(round + 1).unwrap_or(u8::MAX);
     }
+}
+
+/// A tie's crowd into the biggest-attendance lists — the cup's, the
+/// supercup's and England's league cup's alike: only the international
+/// one, as the settlement (`FUN_007108d3` at 0x71295c) masks the record's
+/// family at +0x20 with `0x7f000000` and compares it against `0x3f`, so
+/// that only the league's family nought reaches the league's list. The
+/// row's ground is the home club's and its second result stays nought.
+fn book_tie_crowd(records: &mut Records, home: (u8, u16), away: (u8, u16), score: [u8; 2], att: i32) {
+    statistics::book_crowd(
+        records,
+        false,
+        u16::from(home.0),
+        0,
+        home,
+        statistics::Crowd {
+            attendance: u32::try_from(att.max(0)).unwrap_or(0),
+            home: (home.0, home.1 as i16),
+            away: (away.0, away.1 as i16),
+            goals: score,
+            second: [0, 0],
+            flags: 0,
+        },
+    );
 }
 
 fn human_slot(records: &Records, country: u8, number: u16) -> Option<usize> {
@@ -1708,6 +1725,41 @@ mod supercup_tests {
 #[cfg(test)]
 mod crowd_tests {
     use super::*;
+
+    /// England's league cup crowds from A's day on rank in the international list alone:
+    /// rows of English home grounds join it over the season's ties, the
+    /// list stays descending, and England's league lists never move, as
+    /// the family gate lets only the league's matches reach those.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn league_cup_crowds_rank_internationally_only() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut random = Random::new(9);
+        let row = data.calendar.row(ENGLAND, 0).unwrap();
+        let leagues: Vec<Vec<statistics::Crowd>> = (0..4).map(|l| statistics::crowds(&records, ENGLAND, l)).collect();
+        // An emptied international list, so every crowd ranks in.
+        records.block_mut("0xaf723c").unwrap().fill(0);
+        let today = usize::from(records.globals.day());
+        for d in (today..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE) {
+            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+        }
+        let after = statistics::international_crowds(&records);
+        let atts: Vec<u32> = after.iter().map(|c| c.attendance).collect();
+        let mut sorted = atts.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(atts, sorted, "the list stands descending");
+        assert!(
+            after.iter().all(|c| u16::from(c.home.0) == ENGLAND && c.attendance > 0),
+            "the league cup's crowds fill it: {after:?}"
+        );
+        for (l, was) in leagues.iter().enumerate() {
+            assert_eq!(&statistics::crowds(&records, ENGLAND, l as u8), was, "league {l} untouched");
+        }
+    }
 
     /// One league matchday's gates rank into both biggest-attendance
     /// lists: every gate better than the international list's weakest
