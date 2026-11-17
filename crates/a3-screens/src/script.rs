@@ -11145,4 +11145,69 @@ mod tests {
             }
         }
     }
+
+    /// Hot seat: A with a second human under contract at the next club
+    /// plays its whole season and on into the next, each manager ending
+    /// his turns with the whistle and pressing his season-end statement
+    /// away; the same turns on the same save replay identically — the
+    /// records and the season alike (PLAN P8's gate).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_two_manager_season_replays_identically() {
+        // The season end's statement, one for each human (the first is
+        // pressed away above).
+        const TURNS: usize = 1;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.parent().unwrap().join("saves-kept/A.an3").exists() && !dir.join("saves/A.an3").exists() {
+            eprintln!("no A among the saves");
+            return;
+        }
+        let root = patched(&dir, "A", "hot-seat", |records| {
+            records.globals.set_slots([1, 1, 0, 0]);
+            let team = records.managers[0].team();
+            records.managers[1].set_team(team + 1);
+            let (status, country) = (records.managers[0].status(), records.managers[0].country());
+            records.managers[1].set_status(status);
+            records.managers[1].set_country(country);
+            records.managers[1].set_human(2);
+            let club = records.team_mut(country, team + 1).unwrap();
+            club.set_humans([2, 2]);
+            club.set_human(2);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\n\
+                        on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
+                        on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
+        let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
+        let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
+        let then = format!(
+            "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
+             now press 1\n{turns}until day 30"
+        );
+        let play = || {
+            let mut runner = on_save(&game, "hot-seat", &then).unwrap();
+            let _ = runner.settle();
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let bytes = records.to_save().to_bytes_stored().unwrap();
+            let season = state.season.as_ref().unwrap();
+            let summary =
+                (season.year, season.day, season.managers.len(), records.globals.seasons(), season.clubs.len());
+            (bytes, summary, runner.log.clone())
+        };
+        let (first, summary, log) = play();
+        eprintln!("{summary:?}");
+        let (second, again, _) = play();
+        assert_eq!(summary.2, 2, "{}", log.join("\n"));
+        assert_eq!(summary.1, 30, "{}", log.join("\n"));
+        assert_eq!(summary.4, 2, "both humans' clubs followed");
+        assert_eq!(summary, again);
+        assert!(first == second, "the replay's records differ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
