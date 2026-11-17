@@ -4067,6 +4067,41 @@ pub fn scorers(records: &Records, country: u16, level: u8) -> Vec<LigaRow> {
 /// The table: with `rules` the penalty points and the point for three
 /// goals count.
 fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row> {
+    let mut rows = reckon_with(records, league, kind, rules, rules);
+    if league.played() != 0 {
+        sort(&mut rows, league.tie_break() == GOALS_FIRST);
+    }
+    rows
+}
+
+/// A league's table of `kind` without the penalty points, and without
+/// the sunk clubs sent to its bottom: `FUN_007293ea` with its third
+/// argument 0, as the table after the matchday asks for the home and the
+/// away table (`FUN_00729f35`) — `FUN_0072b9b9` then sorts by the
+/// figures alone.
+pub fn unpenalised_table(records: &Records, league: &League, kind: u8) -> Vec<Row> {
+    // The point for three goals stands on the league's rule alone
+    // (`FUN_00691b5f`), whatever the third argument.
+    let mut rows = reckon_with(records, league, kind, false, true);
+    if league.played() != 0 {
+        rows.sort_by(|a, b| {
+            let key = |r: &Row| {
+                let diff = r.goals_for - r.goals_against;
+                if league.tie_break() == GOALS_FIRST {
+                    [r.points, r.goals_for, diff, r.games]
+                } else {
+                    [r.points, diff, r.goals_for, r.games]
+                }
+            };
+            key(b).cmp(&key(a))
+        });
+    }
+    rows
+}
+
+/// The rows counted, not sorted: with `penalties` the penalty points
+/// taken off, with `bonus` the point for three goals given.
+fn reckon_with(records: &Records, league: &League, kind: u8, penalties: bool, bonus: bool) -> Vec<Row> {
     let n = league.teams();
     let country = league.country();
     let mut rows: Vec<Row> = (0..n)
@@ -4076,12 +4111,12 @@ fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row>
                 .ok()
                 .and_then(|t| records.team(country, t))
                 .map_or(0, |t| t.get::<u16>(TEAM_FLAGS));
-            let points = if rules { -PENALTY_POINTS * i32::from(flags & PENALTY) } else { 0 };
+            let points = if penalties { -PENALTY_POINTS * i32::from(flags & PENALTY) } else { 0 };
             Row { place, team, flags, points, ..Row::default() }
         })
         .collect();
     let (home_win, away_win) = league.win_points();
-    let three_goals = rules && league.flags() & THREE_GOALS != 0;
+    let three_goals = bonus && league.flags() & THREE_GOALS != 0;
     // One side's game: its goals and the other's, the points of a win.
     let count = |row: &mut Row, own: i32, other: i32, win: i32, bonus: bool| {
         if own > other {
@@ -4142,9 +4177,6 @@ fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row>
     }
     for row in &mut rows {
         row.points = row.points.max(0);
-    }
-    if league.played() != 0 {
-        sort(&mut rows, league.tie_break() == GOALS_FIRST);
     }
     rows
 }

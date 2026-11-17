@@ -77,7 +77,7 @@ const TABLE_COLUMNS: [(u16, u16); 17] = [
     (545, 0),
 ];
 
-fn set_columns(view: &mut View, list: usize, columns: &[(u16, u16)]) {
+pub(crate) fn set_columns(view: &mut View, list: usize, columns: &[(u16, u16)]) {
     let Some(list) = view.list_mut(list) else { return };
     list.tabs = columns.iter().map(|&(at, _)| f32::from(at & 0x3fff)).collect();
     // A left column runs to the next one's start; the ":" between the

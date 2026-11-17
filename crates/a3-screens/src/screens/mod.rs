@@ -52,6 +52,7 @@ pub mod squad;
 pub mod stadium;
 pub mod start;
 pub mod statistics;
+pub mod tables_after;
 pub mod tactics;
 pub mod talk;
 pub mod tournament;
@@ -279,6 +280,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(poaching::PoachingTalk::default()),
         Box::new(fee::FeeTalkScreen::default()),
         Box::new(tactics::TacticsScreen::default()),
+        Box::new(tables_after::TablesAfter::default()),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),
@@ -353,6 +355,7 @@ pub fn compose(game: &mut Game) {
     nutzung::compose(&mut game.dialogs);
     save::compose(&mut game.dialogs);
     youth_tables::compose(&mut game.dialogs);
+    tables_after::compose(&mut game.dialogs);
     doping::compose(&mut game.dialogs);
     doping_report::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);

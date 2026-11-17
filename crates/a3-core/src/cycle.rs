@@ -219,6 +219,9 @@ pub mod dialogs {
     pub const FEE_TALK: u16 = 308;
     /// The year calendar's open day, `IDD_TAG_DER_OFFENEN_TUER`.
     pub const OPEN_DAY: u16 = 270;
+    /// The tables after the matchday, `CTabelleNachDemSpiel`
+    /// (`IDD_TABELLE_NACH_DEM_SPIEL`).
+    pub const TABLES_AFTER: u16 = 269;
 }
 
 use self::dialogs::*;
@@ -373,6 +376,9 @@ pub enum Args {
     /// The human clubs that may join a talk (376): up to four, by country
     /// and number.
     JoinClubs { clubs: [(u8, i16); 4], count: u8 },
+    /// The leagues the table after the matchday steps through, by country
+    /// and level (the list at 0x1c2efd0 the dialog copies, `FUN_007291e4`).
+    Tables { leagues: [(u16, u8); crate::matches::TABLES_MOST], count: u8 },
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -1159,6 +1165,7 @@ impl Cycle {
                         self.ask(Request::with(BET_REPORT, Args::None))?;
                     }
                 }
+                let mut tables = Vec::new();
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1212,12 +1219,16 @@ impl Cycle {
                         // clubs' records — the human's game among them,
                         // its 3D match being out of the replica's scope.
                         if let Some(records) = state.records.as_mut() {
-                            crate::matches::play_day(
+                            let played = crate::matches::play_day(
                                 records,
                                 &self.data.world,
                                 &self.data.calendar,
                                 season,
                             );
+                            // The matchday's end lists the leagues for
+                            // the table after it (`FUN_007108d3`'s
+                            // `FUN_00729216`), once the results stand.
+                            tables = crate::matches::tables_after(records, &played);
                             // The youth leagues play beside them
                             // (`FUN_0062a959`, after the day's matches).
                             crate::youth_league::play_day(
@@ -1247,6 +1258,16 @@ impl Cycle {
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
+                }
+                // The table after the matchday, its leagues one by one
+                // (event 200, `FUN_00729370`).
+                if !tables.is_empty() {
+                    let mut leagues = [(0, 0); crate::matches::TABLES_MOST];
+                    for (slot, &league) in leagues.iter_mut().zip(&tables) {
+                        *slot = league;
+                    }
+                    let count = tables.len() as u8;
+                    self.ask(Request::with(TABLES_AFTER, Args::Tables { leagues, count }))?;
                 }
                 self.ask(Request::new(week))?;
                 // The week's boundary was reached: turns, week's end and

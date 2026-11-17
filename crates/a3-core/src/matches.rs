@@ -39,9 +39,16 @@ const GOAL_UNITS: i32 = 200;
 /// Play the games of the season's day: for every country the game follows,
 /// every league whose calendar row holds this day as one of its matchdays
 /// and has not played that matchday yet gets its pairs scored, and so does
-/// the country's cup when the day is one of its rounds.
-pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, season: &mut Season) {
+/// the country's cup when the day is one of its rounds. The leagues that
+/// played, by country and level.
+pub fn play_day(
+    records: &mut Records,
+    world: &World,
+    calendar: &Calendar,
+    season: &mut Season,
+) -> Vec<(u16, u8)> {
     let day = season.day;
+    let mut played = Vec::new();
     for slot in 0..world::SLOTS {
         let Some(nation) = world.country(slot).map(|country| country.nation) else {
             continue;
@@ -65,9 +72,52 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
             });
             if due {
                 settle(records, nation, level, day, &mut season.random);
+                played.push((nation, level));
             }
         }
     }
+    played
+}
+
+/// The game's switch for the table after the matchday (byte 0x08 of the
+/// switches at `0xb5d13c`, `DAT_00b5d144`): 0 off, 1 the leagues with a
+/// human's club, 2 all.
+const TABLES_SWITCH: usize = 0x08;
+const ALL_TABLES: u8 = 2;
+/// The most leagues its list holds (`FUN_0072c650`, 0x16 at 0x1c2eff2).
+pub const TABLES_MOST: usize = 22;
+
+/// The leagues the table after the matchday shows, in its order
+/// (`FUN_00729216`, at the matchday's end in `FUN_007108d3`): of the
+/// leagues that played today, the main country's by their levels, then
+/// each further country's first league — with the switch at 2 all of
+/// them, else those a human's club plays in (`FUN_006774f5`); none with
+/// it off, as the dialog then does not open (`FUN_00729370`, event 200).
+pub fn tables_after(records: &Records, played: &[(u16, u8)]) -> Vec<(u16, u8)> {
+    let switch = records.globals.game_options()[TABLES_SWITCH];
+    if switch != 1 && switch != ALL_TABLES {
+        return Vec::new();
+    }
+    let humans = statistics::human_clubs(records);
+    let shown = |country: u16, level: u8| {
+        played.contains(&(country, level))
+            && (switch == ALL_TABLES
+                || humans.iter().any(|&(c, club)| {
+                    u16::from(c) == country
+                        && u16::try_from(club)
+                            .ok()
+                            .and_then(|n| records.team(country, n))
+                            .is_some_and(|t| t.level() == level)
+                }))
+    };
+    let globals = &records.globals;
+    let main = u16::try_from(globals.main_country()).unwrap_or(0);
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let leagues = records.countries.leagues(usize::from(main)).clamp(0, 0xff) as u8;
+    let mains = (0..leagues).map(|level| (main, level));
+    let countries = globals.more_countries();
+    let firsts = countries[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0));
+    mains.chain(firsts).filter(|&(c, l)| shown(c, l)).take(TABLES_MOST).collect()
 }
 
 /// The cup's days sit on the country's first league row, coded 0x40 in the

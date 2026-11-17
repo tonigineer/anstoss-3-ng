@@ -1934,7 +1934,7 @@ const OWN_INK: [u8; 3] = [255, 0, 0];
 const INK: [u8; 3] = [0, 0, 0];
 /// The places' boxes by their code (COLORREFs 0xffff, 0x8080, 0xa000,
 /// 0xa0a0ff, 0xc800, 0xc8, 0x808000).
-const MARK_COLOURS: [[u8; 3]; 7] = [
+pub(crate) const MARK_COLOURS: [[u8; 3]; 7] = [
     [255, 255, 0],
     [128, 128, 0],
     [0, 160, 0],
@@ -2046,7 +2046,7 @@ fn season_text(year: i32) -> String {
 }
 
 /// A club's name with its letters: "FC Bayern München (M)".
-fn lettered(game: &Game, records: &Records, country: u16, team: i16) -> String {
+pub(crate) fn lettered(game: &Game, records: &Records, country: u16, team: i16) -> String {
     let name = game.club_name(Some(records), country as u8, team);
     let flags = statistics::letters(records, country, team);
     let letters: Vec<char> = game.text(LETTERS).chars().collect();
