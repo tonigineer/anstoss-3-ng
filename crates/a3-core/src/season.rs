@@ -145,6 +145,8 @@ pub struct Rules {
     pub stadium: crate::stadium::StadiumTables,
     /// The kinds of merchandise a club may sell.
     pub merchandise: crate::merchandise::MerchandiseTables,
+    /// The interview after the match: its facts' cases and its texts.
+    pub interview: crate::interview::Tables,
 }
 
 impl Rules {
@@ -196,6 +198,7 @@ impl Rules {
             noracsa: crate::noracsa::NoracsaTables::load(exe)?,
             stadium: crate::stadium::StadiumTables::load(exe)?,
             merchandise: crate::merchandise::MerchandiseTables::load(exe)?,
+            interview: crate::interview::Tables::load(exe)?,
             messages: crate::youth::MESSAGES
                 .into_iter()
                 .map(|at| (at, exe.text_at(at).unwrap_or_default()))
@@ -422,6 +425,11 @@ pub struct Season {
     /// The fee talk a human seller is answering (`0x1c5bf38`), while it
     /// runs.
     pub fee_talk: Option<crate::fee_talk::FeeTalk>,
+    /// The interview after the match while it runs (`FUN_00660895`), and
+    /// the last thirty questions asked in this run of the game, which no
+    /// save keeps (`DAT_00b621d8`).
+    pub interview: Option<crate::interview::Interview>,
+    pub interview_recent: crate::interview::Recent,
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -861,6 +869,8 @@ impl Season {
             planner_message: None,
             day_talks: Default::default(),
             fee_talk: None,
+            interview: None,
+            interview_recent: Default::default(),
             before_match: false,
             random,
             donations: Vec::new(),

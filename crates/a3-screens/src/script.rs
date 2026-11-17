@@ -11506,4 +11506,62 @@ mod tests {
         let runner = on_save(&game, "A", &format!("{ways}\non 269 ok\nuntil day 70")).unwrap();
         assert_eq!(seen(&runner, 269), 1, "{}", runner.log.join("\n"));
     }
+
+    /// A's interviews are on: walking on from A, on the matchday the
+    /// roll draws one for Union, dialog 383 opens behind the table on
+    /// its first question — the reporter's words above, three answers to
+    /// click, no OK. Clicking the first answer's place through it, as
+    /// Toni's walk does, plays it to the reporter's thanks and closes it;
+    /// the walk goes on, the reporter's mood kept in the station's record.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_interview_after_the_match_opens_and_is_answered() {
+        let game = game();
+        if !game.save_games().iter().any(|s| s.name == "A") {
+            eprintln!("no A among the saves; the oracle's copy has it");
+            return;
+        }
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 269 ok";
+        let row = game.save_games().iter().position(|s| s.name == "A").unwrap();
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
+        let play = |then: &str| Runner::play(&game, &Script::parse(&format!("{}\n{then}", load.trim_end())).unwrap());
+        // The roll is the game's: the first of a few seeds whose walk
+        // comes to an interview before the season's end.
+        let (seed, runner) = (1..20)
+            .find_map(|s| {
+                let (runner, result) = play(&format!("now random {s} {}\n{ways}\nuntil dialog 383", s * 7 + 3));
+                result.is_ok().then_some((s, runner))
+            })
+            .expect("an interview within the seeds");
+        let dialog = &game.dialogs[&383];
+        let id = |id: u16| control(dialog, id).unwrap();
+        let day = {
+            let state = runner.host.state();
+            let season = state.season.as_ref().unwrap();
+            let interview = season.interview.as_ref().expect("the interview runs");
+            let a3_core::interview::Page::Question { text, answers } = &interview.page else {
+                panic!("{:?}", interview.page)
+            };
+            let view = runner.host.view();
+            assert_eq!(view.text(id(3610)), text);
+            assert!(!text.is_empty());
+            for (k, answer) in answers.iter().enumerate() {
+                assert_eq!(view.text(id([4735, 4736, 4737][k])), answer);
+                assert!(!answer.is_empty());
+            }
+            assert!(view.controls[id(1)].hidden, "OK waits for the thanks");
+            season.day
+        };
+        drop(runner);
+        let (runner, result) = play(&format!("now random {seed} {}\n{ways}\non 383 click at 460 210\nuntil day {}", seed * 7 + 3, day + 1));
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(seen(&runner, 383), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert!(state.season.as_ref().unwrap().interview.is_none());
+        let recent = state.season.as_ref().unwrap().interview_recent;
+        assert!((1..=4).contains(&recent.iter().filter(|&&q| q != 0).count()), "{recent:?}");
+    }
 }

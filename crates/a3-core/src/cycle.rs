@@ -222,6 +222,9 @@ pub mod dialogs {
     /// The tables after the matchday, `CTabelleNachDemSpiel`
     /// (`IDD_TABELLE_NACH_DEM_SPIEL`).
     pub const TABLES_AFTER: u16 = 269;
+    /// The interview after the match, `CInterviewDialog`
+    /// (`IDD_INTERVIEW`).
+    pub const INTERVIEW: u16 = 383;
 }
 
 use self::dialogs::*;
@@ -1241,6 +1244,21 @@ impl Cycle {
                             // (`FUN_0062c74b`'s `FUN_0062bfc9`), a cup tie
                             // among them opening its sales record.
                             crate::year::note_next_matches(records, &self.data, season.day, &mut season.random);
+                            // The interview after a human's match
+                            // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
+                            // first match that draws one, its questions
+                            // read anew from the file.
+                            let fixtures = crate::interview::fixtures(records, &played);
+                            if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
+                                season.interview = crate::interview::Interview::begin(
+                                    records,
+                                    &self.data.rules,
+                                    a3_files::interview::load(&self.data.dir),
+                                    due,
+                                    &mut season.interview_recent,
+                                    &mut season.random,
+                                );
+                            }
                         }
                         // The day's match clears the load's hold
                         // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
@@ -1268,6 +1286,18 @@ impl Cycle {
                     }
                     let count = tables.len() as u8;
                     self.ask(Request::with(TABLES_AFTER, Args::Tables { leagues, count }))?;
+                }
+                // The interview behind it (event 0x126, dialog 383): the
+                // dialog plays it through; the reporter keeps his mood.
+                if self.state().season.as_ref().is_some_and(|s| s.interview.is_some()) {
+                    self.ask(Request::new(INTERVIEW))?;
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut())
+                        && let Some(interview) = season.interview.take()
+                    {
+                        interview.finish(records);
+                    }
                 }
                 self.ask(Request::new(week))?;
                 // The week's boundary was reached: turns, week's end and

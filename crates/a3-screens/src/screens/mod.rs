@@ -23,6 +23,7 @@ pub mod grounds;
 pub mod help;
 pub mod honours;
 pub mod illegal;
+pub mod interview;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
@@ -281,6 +282,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(fee::FeeTalkScreen::default()),
         Box::new(tactics::TacticsScreen::default()),
         Box::new(tables_after::TablesAfter::default()),
+        Box::new(interview::InterviewScreen::default()),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),

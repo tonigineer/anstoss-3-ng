@@ -75,6 +75,8 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         planner_message: None,
         day_talks: Default::default(),
         fee_talk: None,
+        interview: None,
+        interview_recent: Default::default(),
         // A game saved in the middle of a matchday goes on with the turns
         // before its matches.
         before_match: records.globals.resume() == MATCHES_RESUMED,
