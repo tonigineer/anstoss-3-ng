@@ -701,7 +701,7 @@ const SKILL_AT: usize = 0x25;
 const SHARED_AT: usize = 0x872;
 const CASH_AT: usize = 0x210;
 
-fn manager_skill(records: &Records, team: &Team) -> i64 {
+pub(crate) fn manager_skill(records: &Records, team: &Team) -> i64 {
     let [manager_trainer, _, manager] = team.staff();
     let id = if manager_trainer != 0 { manager_trainer } else { manager };
     if id == 0 || id > LAST_PERSON {

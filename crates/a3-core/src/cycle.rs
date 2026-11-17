@@ -214,6 +214,9 @@ pub mod dialogs {
     /// A poaching talk with another club's player on its day,
     /// `CVerhandlungAbwerbeversuch` (`IDD_VERTRAGSVERLAENGERUNG_SPIELER_STANDARD`).
     pub const POACHING_TALK: u16 = 319;
+    /// A transfer's fee talked over with its human seller,
+    /// `CVerhandlungUeberAbloese` (`IDD_VERHANDLUNG_UEBER_ABLOESE`).
+    pub const FEE_TALK: u16 = 308;
     /// The year calendar's open day, `IDD_TAG_DER_OFFENEN_TUER`.
     pub const OPEN_DAY: u16 = 270;
 }
@@ -1598,22 +1601,62 @@ impl Cycle {
         let mut told = Vec::new();
         if let Ok(day) = i16::try_from(season.day) {
             crate::transfers::loan_day(records, day, &mut told);
-            crate::transfers::purchase_talk_day(
-                records,
-                &mut season.random,
-                (&self.data.rules.contract, &self.data.rules.value),
-                &self.data.world.nation_kinds,
-                day,
-                &mut told,
-            );
         }
         drop(guard);
+        self.purchase_talks(&mut told)?;
         for d in told {
             let text = if d.squad_full { SQUAD_FULL } else { BANK_NO_CREDIT };
             let args = Args::ClubAlert { title: ALERT_FOR, text, country: d.club.0, number: d.club.1 };
             self.ask(Request::with(NOTICE, args))?;
         }
         Ok(())
+    }
+
+    /// The day's purchase talks one by one (`FUN_0076cb3e`'s last loop),
+    /// a fee talk with a human seller in his dialog 308 a round at a time:
+    /// his answer, then the bidder's (`FUN_00768638` asm 0x7698d1–0x769b0b).
+    fn purchase_talks(&self, told: &mut Vec<crate::transfers::Dropout>) -> Result<(), Gone> {
+        let rules = &self.data.rules;
+        loop {
+            let next = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) else {
+                    return Ok(());
+                };
+                let Ok(day) = i16::try_from(season.day) else { return Ok(()) };
+                crate::transfers::next_purchase_talk(
+                    records,
+                    &mut season.random,
+                    (&rules.contract, &rules.value),
+                    &rules.medical,
+                    &self.data.world.nation_kinds,
+                    day,
+                    told,
+                )
+            };
+            let Some((player, talk)) = next else { return Ok(()) };
+            if let Some(fee) = talk.and_then(|t| t.fee) {
+                self.season(|s| s.fee_talk = Some(fee));
+                loop {
+                    self.ask(Request::new(FEE_TALK))?;
+                    let ended = self
+                        .season(|s| {
+                            let fee = s.fee_talk.as_mut()?;
+                            fee.after_seller().or_else(|| fee.bidder_turn(&mut s.random))
+                        })
+                        .flatten();
+                    if ended.is_some() {
+                        break;
+                    }
+                }
+                self.season(|s| s.fee_talk = None);
+            }
+            let mut guard = self.state();
+            if let Some(records) = guard.records.as_mut() {
+                crate::transfers::close_purchase_talk(records, player);
+            }
+        }
     }
 
     /// What the managers booked for today in their planners with a player

@@ -3453,7 +3453,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3897,7 +3897,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -9903,7 +9903,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9947,7 +9947,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
+                    on 384 press 4741\non 308 choose 4095 0\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -10964,7 +10964,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
         let list = control(&game.dialogs[&25], 1313).unwrap();
@@ -11357,5 +11357,38 @@ mod tests {
         assert!(season.clubs.contains_key(&club));
         let records = state.records.as_ref().unwrap();
         assert_eq!(records.managers[records.human_slot(1).unwrap()].status(), 3);
+    }
+
+    /// Nsoki's fee talk on A, day 64, as the original holds it at its
+    /// first dialog 308 (seeds poked before the week): 59/3 offers 1 868
+    /// thousands, shown at its step (1.85 Mio), Union asks 10 350, shown
+    /// at 10 Mio; holding to it five rounds, the bidder runs out of
+    /// patience and Nsoki stays.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_seller_talks_over_the_fee_in_dialog_308() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 308")) else { return };
+        let text = |id: u16| runner.host.view().text(control(&game.dialogs[&308], id).unwrap()).to_owned();
+        assert_eq!(text(4070), "Stanley Nsoki");
+        assert_eq!(text(4078), "1.FC Union Berlin");
+        assert_eq!(text(4086), "1.85 Mio €");
+        assert_eq!(text(4088), "10.00 Mio €");
+        {
+            let state = runner.host.state();
+            let fee = state.season.as_ref().unwrap().fee_talk.clone().unwrap();
+            assert_eq!((fee.buyer, fee.offer, fee.demand, fee.most), ((59, 3), 1868, 10_350, 2459));
+        }
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")).unwrap();
+        assert_eq!(runner.log.iter().filter(|l| l.as_str() == "screen 308").count(), 5, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert!(state.season.as_ref().unwrap().fee_talk.is_none());
+        let nsoki = state.records.as_ref().unwrap().player(3262).unwrap();
+        assert_eq!((nsoki.club()[0], nsoki.club()[1]), (14, 84));
     }
 }

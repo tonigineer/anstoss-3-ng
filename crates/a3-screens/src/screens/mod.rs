@@ -43,6 +43,7 @@ pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
 pub mod poaching;
+pub mod fee;
 pub mod popups;
 pub mod save;
 pub mod search;
@@ -276,6 +277,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(talk::TalkScreen::default()),
         Box::new(talk::PlayerChoice::default()),
         Box::new(poaching::PoachingTalk::default()),
+        Box::new(fee::FeeTalkScreen::default()),
         Box::new(tactics::TacticsScreen::default()),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
@@ -316,6 +318,7 @@ pub fn compose(game: &mut Game) {
     hub::compose(&mut game.dialogs, &game.data.rules);
     formations::compose(&mut game.dialogs, &game.data.rules);
     special::compose(&mut game.dialogs);
+    fee::compose(&mut game.dialogs);
     duties::compose(&mut game.dialogs);
     medical::compose(&mut game.dialogs);
     medical::compose_visit(&mut game.dialogs);

@@ -419,6 +419,9 @@ pub struct Season {
     pub planner_message: Option<(u16, String)>,
     /// The human managers' talks of the day, by slot (`0x1c5b9e8`).
     pub day_talks: [crate::transfers::DayTalk; 4],
+    /// The fee talk a human seller is answering (`0x1c5bf38`), while it
+    /// runs.
+    pub fee_talk: Option<crate::fee_talk::FeeTalk>,
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -857,6 +860,7 @@ impl Season {
             clubs: BTreeMap::new(),
             planner_message: None,
             day_talks: Default::default(),
+            fee_talk: None,
             before_match: false,
             random,
             donations: Vec::new(),

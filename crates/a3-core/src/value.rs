@@ -219,6 +219,18 @@ impl ValueTables {
         loan_prices(self.monthly(w), months, years)
     }
 
+    /// The months a contract of `years` still runs in the month `month`
+    /// (`FUN_00707f50`): this season's months left, and twelve for each
+    /// year after it.
+    pub fn months_left(&self, years: i32, month: u32) -> i32 {
+        let first = i32::from(self.months.get(month as usize).copied().unwrap_or(0));
+        match years {
+            ..=0 => 0,
+            1 => first,
+            y => (y - 1) * 12 + first,
+        }
+    }
+
     /// His market value with `years` of his contract left in the month
     /// `month` (1 to 12): every month still to run, the later years
     /// counting less, a fifth off (`FUN_00708836`).
