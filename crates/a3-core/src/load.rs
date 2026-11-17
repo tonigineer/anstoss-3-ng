@@ -79,6 +79,7 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         before_match: records.globals.resume() == MATCHES_RESUMED,
         random,
         donations: Vec::new(),
+        job_notes: Vec::new(),
         statement: false,
         // The game stands freshly loaded: its load's hold (`CDiLoad`)
         // keeps the first week end from rolling the market.

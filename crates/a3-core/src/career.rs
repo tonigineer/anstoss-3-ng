@@ -353,6 +353,38 @@ pub fn rebuild_human_clubs(records: &mut Records) {
     records.globals.put::<i16>(COUNT, count as i16);
 }
 
+/// One entry of the ticker of jobs (`DAT_00a2e55c`, 0x14 bytes each from
+/// +4 behind the count word): its two names (+0, +2 — a manager's number
+/// negated), its kind (+4: 3 a career's end, 1, else another text of
+/// `CGefaehrdeteJobs` +0x1d68/+0x1d6c/+0x1d70), the club (+6 country
+/// byte, +8 number) and the flags at +0xc (told, `FUN_005dfa97`) and
+/// +0x10 (the dialog `FUN_004aacc1` lists only entries with it set).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobNote {
+    pub first: i16,
+    pub second: i16,
+    pub kind: i16,
+    pub club: (u8, u16),
+    pub told: bool,
+    pub live: bool,
+}
+
+/// The most entries the ticker of jobs takes (`FUN_005df799`'s 0x32).
+pub const MOST_JOB_NOTES: usize = 50;
+
+/// The club come free at the career's end of the human in `slot`
+/// (`FUN_005df799(club, manager, 3)` on the list at `DAT_00a2e55c`, last
+/// in `FUN_006da0fe`): with fewer than fifty entries one more, the
+/// manager's number negated at +2, the kind, the club's country (club
+/// +0x104) and number (+0x103), both flags cleared. +0 stays as the slot
+/// held it; a fresh list holds nought there.
+pub fn post_vacancy(notes: &mut Vec<JobNote>, slot: usize, club: (u8, u16), kind: i16) {
+    if notes.len() >= MOST_JOB_NOTES {
+        return;
+    }
+    notes.push(JobNote { first: 0, second: -((slot + 1) as i16), kind, club, told: false, live: false });
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -418,6 +450,19 @@ fn bump(car: &mut [u8], at: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A career's end puts the club on the ticker of jobs, the manager's
+    /// number negated; a full ticker takes nothing more.
+    #[test]
+    fn a_career_end_puts_the_club_on_the_ticker() {
+        let mut notes = Vec::new();
+        post_vacancy(&mut notes, 1, (3, 7), 3);
+        assert_eq!(notes, [JobNote { first: 0, second: -2, kind: 3, club: (3, 7), told: false, live: false }]);
+        notes.resize(MOST_JOB_NOTES, JobNote::default());
+        post_vacancy(&mut notes, 0, (1, 1), 3);
+        assert_eq!(notes.len(), MOST_JOB_NOTES);
+        assert_eq!(notes[MOST_JOB_NOTES - 1], JobNote::default());
+    }
 
     /// The kept saves' own table of the human clubs comes back byte for
     /// byte when rebuilt; with the human at no club it empties.
