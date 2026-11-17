@@ -1457,7 +1457,7 @@ impl Cycle {
             if reply == Reply::Ok
                 && let Some(talk) = self.season(|s| s.day_talks.get_mut(slot).cloned()).flatten()
             {
-                // The offer the dialog ends on comes with its negotiation.
+                // The dialog left its agreed offer in the talk's terms.
                 let agreed = crate::transfers::DayTalk { kind: crate::transfers::AGREED, ..talk };
                 self.season(|s| s.day_talks[slot] = agreed);
             }

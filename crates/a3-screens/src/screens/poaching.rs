@@ -293,6 +293,10 @@ impl PoachingTalk {
             let day = cx.state.records.as_ref().map_or(0, |r| r.globals.day() as i16);
             let at_once = flags & AT_ONCE_FLAG != 0 && day < LAST_DAY_AT_ONCE;
             let text = if at_once { AGREED_AT_ONCE } else { AGREED_NEXT_SEASON };
+            // The offer is the talk's contract from now on: the dialog
+            // edits the day's talk in place (+0x1dc0), which the cycle
+            // writes agreed and `after_poaching` books the fee talk on.
+            write_offer(cx, self.offer);
             self.ending = Some(Reply::Ok);
             return Outcome::Popup(Request::with(NOTICE, Args::PlayerMove { title: MOVE_TITLE, text, player }));
         };
@@ -315,6 +319,14 @@ impl PoachingTalk {
         }
         self.ending = Some(Reply::Cancel);
         Outcome::Popup(Request::with(NOTICE, Args::PlayerMove { title: MOVE_TITLE, text: BROKEN_OFF, player }))
+    }
+}
+
+/// Puts the offer into the current manager's talk of the day.
+fn write_offer(cx: &mut Cx, offer: [u8; TERMS]) {
+    let (Some(records), Some(season)) = (cx.state.records.as_ref(), cx.state.season.as_mut()) else { return };
+    if let Some(talk) = records.human_slot(season.current).and_then(|slot| season.day_talks.get_mut(slot)) {
+        talk.terms = offer;
     }
 }
 

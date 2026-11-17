@@ -11102,6 +11102,11 @@ mod tests {
                 }
             };
             assert_eq!(face(&runner), (Some(1680), 0));
+            let expected = {
+                let state = runner.host.state();
+                let records = state.records.as_ref().unwrap();
+                crate::screens::poaching::offer(transfers::terms(records, player), records.globals.day() as i16)
+            };
             let mut presses = 0;
             while runner.dialog() == Some(319) {
                 runner.run(&Script::parse("now press 4154").unwrap()).unwrap();
@@ -11121,6 +11126,14 @@ mod tests {
             // The talk ends; the day goes on.
             let on = "now press 4731\nuntil dialog 381";
             runner.run(&Script::parse(on).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            if agreed {
+                // The offer agreed is the talk's contract for the fee talk.
+                let state = runner.host.state();
+                let all = transfers::appointments(state.records.as_ref().unwrap());
+                let fee = all.iter().find(|t| t.player == player && t.kind == transfers::PURCHASE).expect("no fee talk");
+                assert_eq!(fee.terms, expected);
+                assert_ne!(fee.terms, [0; transfers::TERMS]);
+            }
             if !agreed {
                 let state = runner.host.state();
                 let records = state.records.as_ref().unwrap();

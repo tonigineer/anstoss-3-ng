@@ -183,6 +183,8 @@ pub struct Appointment {
     pub day: i16,
     pub player: u16,
     pub clubs: Vec<(u8, i16)>,
+    /// The contract the talk is on (+0x38).
+    pub terms: [u8; TERMS],
 }
 
 /// The appointments' kinds: poaching a player not on the transfer list
@@ -213,6 +215,10 @@ pub fn appointments(records: &Records) -> Vec<Appointment> {
                         (b.get(at).copied().unwrap_or(0), word(b, at + 2))
                     })
                     .collect(),
+                terms: b
+                    .get(e + TALK_TERMS..e + TALK_TERMS + TERMS)
+                    .and_then(|t| t.try_into().ok())
+                    .unwrap_or([0; TERMS]),
             }
         })
         .collect()
