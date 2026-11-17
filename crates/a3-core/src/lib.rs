@@ -31,6 +31,7 @@ pub mod grounds;
 pub mod hall;
 pub mod highscore;
 pub mod honours;
+pub mod headlines;
 pub mod human_day;
 pub mod illegal;
 pub mod individual;

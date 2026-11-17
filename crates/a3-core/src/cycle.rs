@@ -1038,6 +1038,10 @@ impl Cycle {
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         slots = Some(gates);
                         if let Some(records) = state.records.as_mut() {
+                            // The day's headline goes to the paper
+                            // before its events (`FUN_0078a0f5`); it
+                            // draws nothing.
+                            season.headlines.publish(records);
                             // The half week ticks first, the winter break
                             // developing the players at its 56th
                             // (`FUN_006da3a9`'s state 4).

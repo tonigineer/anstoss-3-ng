@@ -452,6 +452,9 @@ pub struct Season {
     /// (`DAT_00a2e016`, a row of 0x28 bytes per reporter). No save
     /// keeps it, so a load starts it clear.
     pub reported: [[bool; crate::records::MANAGERS]; crate::records::MANAGERS],
+    /// The newspaper's headlines waiting for the next day
+    /// (`DAT_01c6ac60`). No save keeps them.
+    pub headlines: crate::headlines::Queue,
 }
 
 /// A donation to another human's club: by the giving manager, to the club
@@ -853,6 +856,7 @@ impl Season {
             halls: Vec::new(),
             recent_events: Vec::new(),
             reported: Default::default(),
+            headlines: Default::default(),
         };
         for m in 0..season.managers.len() {
             if let Some(club) = season.managers[m].club {

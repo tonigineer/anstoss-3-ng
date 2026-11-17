@@ -88,6 +88,7 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         halls: Vec::new(),
         recent_events: Vec::new(),
         reported: Default::default(),
+        headlines: Default::default(),
     }
 }
 

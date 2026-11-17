@@ -2189,6 +2189,26 @@ mod tests {
         let (lawyer, referee) = team(&runner);
         assert_eq!(lawyer, 3);
         assert!(referee > 0, "{referee}");
+        // The refusal waits as a headline for the next day's paper, which
+        // puts it first in the list under today's date.
+        {
+            let mut guard = runner.host.state();
+            let state = &mut *guard;
+            let season = state.season.as_mut().unwrap();
+            let item = season.headlines.items()[0].clone();
+            assert_eq!(item.priority, 5);
+            assert!(
+                item.headline.contains("hat die Schnauze voll") || item.headline.contains("sauer auf"),
+                "{item:?}"
+            );
+            let records = state.records.as_mut().unwrap();
+            let before = a3_core::statistics::newspaper(records).len();
+            season.headlines.publish(records);
+            let paper = a3_core::statistics::newspaper(records);
+            assert_eq!(paper.len(), (before + 1).min(20));
+            assert_eq!(paper[0].lines, [item.headline, item.body]);
+            assert!(season.headlines.items().is_empty());
+        }
         // The aliens' office lists the foreigners.
         let runner = on_save(&game, "Probe1", &format!("{open}\nnow click at 442 302")).unwrap();
         let list = control(&game.dialogs[&492], 6212).unwrap();
