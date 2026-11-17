@@ -772,6 +772,19 @@ fn loan_winner(records: &Records, t: &Appointment, bidders: &[Side]) -> Option<S
     best.map(|(_, club)| club)
 }
 
+/// A human club out of a loan or purchase talk on its day, told so at
+/// once (`FUN_00768497` when it cannot pay, `FUN_0076851f` when its squad
+/// is full; both only for a human's club, `FUN_00677428`). They leave the
+/// reason (0 / 1) at `0xa321f4` and the club at `0xa321f6`/`0xa321f8` and
+/// post message 0x11f to its manager, whose alert (`FUN_0043ddb9`) reads
+/// "ANSTOSS 3 - Achtung <club>!" (2917) over text 2918 or 2919.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Dropout {
+    pub player: u16,
+    pub club: Side,
+    pub squad_full: bool,
+}
+
 /// A squad this big takes no one more on loan (`FUN_00767c78`: club
 /// +0xe2 < 0x22).
 const FULL_SQUAD: u16 = 34;
@@ -787,7 +800,7 @@ const FULL_SQUAD: u16 = 34;
 /// happens. Past day 216 the original counts the squad with next season's
 /// comings and goings (`FUN_0070ffef`), not ported: the squad as it
 /// stands.
-pub fn loan_day(records: &mut Records, day: i16) -> Vec<LoanTalk> {
+pub fn loan_day(records: &mut Records, day: i16, told: &mut Vec<Dropout>) -> Vec<LoanTalk> {
     let mut talks = Vec::new();
     while let Some(t) =
         appointments(records).into_iter().find(|t| t.day == day && t.kind == LOAN_TALK)
@@ -805,19 +818,23 @@ pub fn loan_day(records: &mut Records, day: i16) -> Vec<LoanTalk> {
         }
         let prices = records.globals.fund_prices();
         let agreed = records.agreed();
-        let bidders: Vec<Side> = t
-            .clubs
-            .iter()
-            .copied()
-            .filter(|&c| c != lender)
-            .filter(|&(country, number)| {
-                records.team(u16::from(country), number as u16).is_some_and(|team| {
-                    let investable =
-                        crate::finances::Balance::of(team, prices, &agreed).investable();
-                    investable >= i64::from(listing.fee as u32) && team.player_count() < FULL_SQUAD
-                })
-            })
-            .collect();
+        let mut bidders = Vec::new();
+        for &club in t.clubs.iter().filter(|&&c| c != lender) {
+            let Some(team) = records.team(u16::from(club.0), club.1 as u16) else { continue };
+            let investable = crate::finances::Balance::of(team, prices, &agreed).investable();
+            let squad_full = team.player_count() >= FULL_SQUAD;
+            if investable < i64::from(listing.fee as u32) || squad_full {
+                if team.human() != 0 {
+                    told.push(Dropout {
+                        player: t.player,
+                        club,
+                        squad_full: investable >= i64::from(listing.fee as u32),
+                    });
+                }
+            } else {
+                bidders.push(club);
+            }
+        }
         if !bidders.is_empty() {
             let winner = loan_winner(records, &t, &bidders);
             talks.push(LoanTalk { player: t.player, lender, bidders, winner });
@@ -852,12 +869,16 @@ const LATE_SEASON: i16 = 0xd8;
 /// seller is skipped (`FUN_006782aa`). The bargaining that follows (from
 /// asm 0x768c65) is not built. Afterwards a listing whose terms read
 /// [`POACHED`] (E+0xd = 3) leaves the transfer list (`FUN_0075a71f`).
-pub fn purchase_talk_day(records: &mut Records, day: i16) -> Vec<PurchaseTalk> {
+pub fn purchase_talk_day(
+    records: &mut Records,
+    day: i16,
+    told: &mut Vec<Dropout>,
+) -> Vec<PurchaseTalk> {
     let mut talks = Vec::new();
     while let Some(t) =
         appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)
     {
-        if let Some(talk) = purchase_bidders(records, &t, day) {
+        if let Some(talk) = purchase_bidders(records, &t, day, told) {
             talks.push(talk);
         }
         if listings(records).iter().any(|l| l.id == t.player && l.terms == POACHED) {
@@ -869,7 +890,12 @@ pub fn purchase_talk_day(records: &mut Records, day: i16) -> Vec<PurchaseTalk> {
 }
 
 /// `FUN_00768638` up to its bargaining: who still bids.
-fn purchase_bidders(records: &Records, t: &Appointment, day: i16) -> Option<PurchaseTalk> {
+fn purchase_bidders(
+    records: &Records,
+    t: &Appointment,
+    day: i16,
+    told: &mut Vec<Dropout>,
+) -> Option<PurchaseTalk> {
     let &seller = t.clubs.first()?;
     let player = records.player(t.player)?;
     if t.player == 0 || (player.club()[0], i16::from(player.club()[1])) != seller {
@@ -879,20 +905,21 @@ fn purchase_bidders(records: &Records, t: &Appointment, day: i16) -> Option<Purc
     let fee = i64::from(player.fixed_fee()) * RELEASE_UNIT;
     let prices = records.globals.fund_prices();
     let agreed = records.agreed();
-    let bidders: Vec<Side> = t
-        .clubs
-        .iter()
-        .copied()
-        .filter(|&c| c != seller)
-        .filter(|&(country, number)| {
-            records.team(u16::from(country), number as u16).is_some_and(|team| {
-                let affords = fee == 0
-                    || day > LATE_SEASON
-                    || crate::finances::Balance::of(team, prices, &agreed).investable() >= fee;
-                affords && team.player_count() < FULL_SQUAD
-            })
-        })
-        .collect();
+    let mut bidders = Vec::new();
+    for &club in t.clubs.iter().filter(|&&c| c != seller) {
+        let Some(team) = records.team(u16::from(club.0), club.1 as u16) else { continue };
+        let affords = fee == 0
+            || day > LATE_SEASON
+            || crate::finances::Balance::of(team, prices, &agreed).investable() >= fee;
+        let squad_full = team.player_count() >= FULL_SQUAD;
+        if !affords || squad_full {
+            if team.human() != 0 {
+                told.push(Dropout { player: t.player, club, squad_full: affords });
+            }
+        } else {
+            bidders.push(club);
+        }
+    }
     (!bidders.is_empty()).then_some(PurchaseTalk { player: t.player, seller, bidders })
 }
 
@@ -1031,7 +1058,8 @@ mod tests {
             assert!(book(&mut records, LOAN_TALK, day, l.id, lender, bidder, [0; TERMS]));
             let before = appointments(&records);
             let today = before.iter().filter(|t| t.day == day && t.kind == LOAN_TALK).count();
-            let talks = loan_day(&mut records, day);
+            let mut told = Vec::new();
+            let talks = loan_day(&mut records, day, &mut told);
             let after = appointments(&records);
             assert_eq!(after.len(), before.len() - today);
             assert!(!after.iter().any(|t| t.day == day && t.kind == LOAN_TALK));
@@ -1074,16 +1102,22 @@ mod tests {
             assert!(book(&mut records, PURCHASE, day, l.id, seller, human, [0; TERMS]));
             let before = appointments(&records);
             let today = before.iter().filter(|t| t.day == day && t.kind == PURCHASE).count();
-            let talks = purchase_talk_day(&mut records, day);
+            let mut told = Vec::new();
+            let talks = purchase_talk_day(&mut records, day, &mut told);
             let after = appointments(&records);
             assert_eq!(after.len(), before.len() - today);
             assert!(!after.iter().any(|t| t.day == day && t.kind == PURCHASE));
             assert!(listings(&records).iter().any(|x| x.id == l.id));
-            talks.into_iter().find(|t| t.player == l.id)
+            let told: Vec<Dropout> = told.into_iter().filter(|d| d.player == l.id).collect();
+            (talks.into_iter().find(|t| t.player == l.id), told)
         };
-        let talk = run(0).expect("no purchase talk");
-        assert_eq!(talk.bidders, vec![human]);
-        assert_eq!(run(u16::MAX), None);
+        let (talk, told) = run(0);
+        assert_eq!(talk.expect("no purchase talk").bidders, vec![human]);
+        assert!(told.is_empty());
+        // The human club that cannot pay is told so (`FUN_00768497`).
+        let (talk, told) = run(u16::MAX);
+        assert_eq!(talk, None);
+        assert_eq!(told, vec![Dropout { player: told[0].player, club: human, squad_full: false }]);
     }
 
 }

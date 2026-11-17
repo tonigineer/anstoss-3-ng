@@ -194,6 +194,11 @@ pub mod dialogs {
     pub const LOANS: u16 = 335;
     pub const REPAYMENT: u16 = 138;
     pub const NO_CREDIT: u16 = 24;
+    /// The alert of a human club out of a talk on its day: "ANSTOSS 3 -
+    /// Achtung %s!" over the bank's refusal or the full squad.
+    pub const ALERT_FOR: u16 = 2917;
+    pub const BANK_NO_CREDIT: u16 = 2918;
+    pub const SQUAD_FULL: u16 = 2919;
     pub const TRAINING_PICTURES: u16 = 513;
     pub const UNIT_CHOICE: u16 = 362;
     /// "Sind Sie sicher?" before the training strip writes, reads or
@@ -381,6 +386,14 @@ pub enum Args {
         title: u16,
         text: u16,
         player: u16,
+    },
+    /// A notice whose title (by id) takes a club's name for its `%s`, over
+    /// a text by its id (`FUN_0043ddb9`).
+    ClubAlert {
+        title: u16,
+        text: u16,
+        country: u8,
+        number: i16,
     },
     /// A text by its id, with the date of a day of the season for its
     /// `%s`.
@@ -1463,8 +1476,8 @@ impl Cycle {
             }
         }
         self.season(|s| s.current = 0);
-        let mut state = self.state();
-        let state = &mut *state;
+        let mut guard = self.state();
+        let state = &mut *guard;
         let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) else {
             return Ok(());
         };
@@ -1482,9 +1495,17 @@ impl Cycle {
         // The day's last loop: the loan talks leave the list and a loan no
         // human bids for finds its computer club (`FUN_00682814`); the
         // move itself and the human's bargaining (0x9b) are not built.
+        // A human club out of a talk is told why at once (message 0x11f).
+        let mut told = Vec::new();
         if let Ok(day) = i16::try_from(season.day) {
-            crate::transfers::loan_day(records, day);
-            crate::transfers::purchase_talk_day(records, day);
+            crate::transfers::loan_day(records, day, &mut told);
+            crate::transfers::purchase_talk_day(records, day, &mut told);
+        }
+        drop(guard);
+        for d in told {
+            let text = if d.squad_full { SQUAD_FULL } else { BANK_NO_CREDIT };
+            let args = Args::ClubAlert { title: ALERT_FOR, text, country: d.club.0, number: d.club.1 };
+            self.ask(Request::with(NOTICE, args))?;
         }
         Ok(())
     }
