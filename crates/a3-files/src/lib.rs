@@ -11,5 +11,6 @@ pub mod exe;
 pub mod help;
 pub mod jpeg;
 pub mod rch;
+pub mod saq;
 pub mod sav;
 pub mod sks;
