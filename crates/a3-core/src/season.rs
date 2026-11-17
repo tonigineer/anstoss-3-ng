@@ -779,6 +779,29 @@ pub struct NewManager {
     pub negotiating: i32,
 }
 
+/// A human manager as he enters the game, without a turn played.
+fn new_manager(m: NewManager, confidence: i32, rules: &Rules) -> Manager {
+    Manager {
+        first_name: m.first_name,
+        last_name: m.last_name,
+        club: m.club,
+        national_team: m.national_team,
+        level: m.level,
+        difficulty: m.difficulty,
+        negotiating: m.negotiating,
+        confidence,
+        offers: Vec::new(),
+        menu: 0,
+        list_view: false,
+        formations: rules.pitch.new_formations(),
+        templates: Vec::new(),
+        weeks: vec![Default::default(); crate::records::WEEKS],
+        individual_rule: 0,
+        camp_rules: [CAMP_RULE; 3],
+        training_pictures: false,
+    }
+}
+
 impl Season {
     /// The calculation of the first season.
     pub fn first(
@@ -815,25 +838,7 @@ impl Season {
                     let taken = taking_confidence(world, club, m.level, &mut random);
                     season_start_confidence(world, club, taken)
                 });
-                Manager {
-                    first_name: m.first_name,
-                    last_name: m.last_name,
-                    club: m.club,
-                    national_team: m.national_team,
-                    level: m.level,
-                    difficulty: m.difficulty,
-                    negotiating: m.negotiating,
-                    confidence,
-                    offers: Vec::new(),
-                    menu: 0,
-                    list_view: false,
-                    formations: rules.pitch.new_formations(),
-                    templates: Vec::new(),
-                    weeks: vec![Default::default(); crate::records::WEEKS],
-                    individual_rule: 0,
-                    camp_rules: [CAMP_RULE; 3],
-                    training_pictures: false,
-                }
+                new_manager(m, confidence, rules)
             })
             .collect();
         let mut season = Self {
@@ -1017,6 +1022,17 @@ impl Season {
         m.confidence = season_start_confidence(world, club, confidence);
         m.offers.clear();
         self.follow(world, rules, manager, club);
+    }
+
+    /// A human joining the running game (`FUN_006c5005`) stands at `at`
+    /// among the managers, without a club; the managers behind him move
+    /// down, the current one with them.
+    pub fn newcomer(&mut self, rules: &Rules, at: usize, m: NewManager) {
+        let at = at.min(self.managers.len());
+        self.managers.insert(at, new_manager(m, 0, rules));
+        if self.current >= at && self.managers.len() > 1 {
+            self.current += 1;
+        }
     }
 
     pub fn date(&self) -> NaiveDate {

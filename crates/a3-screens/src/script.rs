@@ -11299,4 +11299,58 @@ mod tests {
         drop(runner);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// "Neueinstieg": a second human gives his name and
+    /// birthday in the dressing room, and the week's start takes him in,
+    /// three levels below the first, with offers to sign; his own turn
+    /// follows the first's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_new_human_joins_at_the_weeks_start() {
+        let game = game();
+        let ask = "now click bar 17\nuntil dialog 302\nnow choose 4035 0\nuntil dialog 212\n\
+                   now type 3121 Carl; type 3122 Gamma; ok\nuntil dialog 491\nnow ok\nuntil dialog 302";
+        let Some(runner) = on_save(&game, "Toni", ask) else { return };
+        {
+            let state = runner.host.state();
+            assert_eq!(state.joining.len(), 1);
+            assert_eq!(state.joining[0].last_name, "Gamma");
+            assert_eq!(state.season.as_ref().unwrap().managers.len(), 1, "not before the week");
+        }
+        drop(runner);
+        let week = format!(
+            "{ask}\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 2 wait\n\
+             on 461 ok\non 270 ok\non 381 wait\nuntil dialog 99"
+        );
+        let runner = on_save(&game, "Toni", &week).unwrap();
+        let first_level = {
+            let state = runner.host.state();
+            let season = state.season.as_ref().unwrap();
+            assert_eq!(season.managers.len(), 2, "{}", runner.log.join("\n"));
+            let newcomer = &season.managers[season.current];
+            assert_eq!(newcomer.last_name, "Gamma");
+            assert!(!newcomer.offers.is_empty());
+            let records = state.records.as_ref().unwrap();
+            assert_eq!(records.globals.humans(), 2);
+            let slot = records.human_slot(season.current).unwrap();
+            assert_eq!(records.managers[slot].last_name(), "Gamma");
+            assert_eq!(i32::from(records.managers[slot].level()), newcomer.level);
+            season.managers[1 - season.current].level
+        };
+        assert_eq!(runner.host.state().season.as_ref().unwrap().managers[1].level, (first_level - 3).clamp(2, 15));
+        drop(runner);
+        // He signs with the first club: his turn comes after the first's.
+        let signed = format!(
+            "{week}\nnow choose 2063 0\non 103 choose 2107 1\non 104 press 2115\nuntil dialog 147\n\
+             now click bar 18\non 302 click bar 18\non 384 press 4741\nuntil dialog 147"
+        );
+        let runner = on_save(&game, "Toni", &signed).unwrap();
+        let state = runner.host.state();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.current, 1, "{}", runner.log.join("\n"));
+        let club = season.managers[1].club.expect("he signed");
+        assert!(season.clubs.contains_key(&club));
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.managers[records.human_slot(1).unwrap()].status(), 3);
+    }
 }

@@ -89,6 +89,11 @@ pub struct Offer {
 pub fn offer_jobs(season: &mut Season, world: &World, rules: &Rules) {
     let clubless: Vec<usize> =
         (0..season.managers.len()).filter(|&m| season.managers[m].club.is_none()).collect();
+    offer_jobs_to(season, world, rules, &clubless);
+}
+
+/// The offers of some managers without a club, the first season's way.
+pub fn offer_jobs_to(season: &mut Season, world: &World, rules: &Rules, clubless: &[usize]) {
     let main = season.main;
     let Some(country) = world.country(main) else { return };
     let Some(hiring) = hiring_leagues(country.nation) else { return };

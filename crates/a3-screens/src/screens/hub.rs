@@ -306,6 +306,12 @@ const NEW_GAME_QUESTION: u16 = u16::MAX - 2;
 const CAREER_ITEM: usize = 5;
 const CAREER_REALLY: u16 = 2691;
 const CAREER_QUESTION: u16 = u16::MAX - 3;
+/// "Neueinstieg" (`FUN_005b1156`): with fewer than four humans the room
+/// closes on 3000 and his name and birthday are asked
+/// (`CMyStartDialog::FUN_006b7255`); with four, 3260 says no one more.
+const JOIN_ITEM: usize = 0;
+const JOIN_FULL: u16 = 3260;
+use a3_core::cycle::dialogs::{BIRTHDAY, NAMES};
 /// "3D - Optionen": the 3D settings (`FUN_005b15ec`).
 const KONFIG_3D_ITEM: usize = 7;
 /// "Musik & Soundeffekte" (`FUN_005b1653`).
@@ -823,6 +829,32 @@ impl Screen for MenuBar {
             light_option(cx.dialog, view, Some(item));
             return Outcome::Popup(Request::with(QUESTION, Args::Text(CAREER_REALLY)));
         }
+        if view.id == DRESSING_ROOM
+            && cx.dialog.controls[c].id == Some(DRESSING_OPTIONS)
+            && item == JOIN_ITEM
+        {
+            light_option(cx.dialog, view, Some(item));
+            let humans = cx.state.season.as_ref().map_or(0, |s| s.managers.len());
+            if humans >= a3_core::joining::MOST {
+                self.popup = Some(NOTICE);
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(JOIN_FULL)));
+            }
+            // A game over the net takes its newcomers its own way
+            // (`FUN_006c1b7c`), not built.
+            if matches!(cx.state.mode, Mode::ServerNew | Mode::ServerLoad | Mode::Client) {
+                info!("Neueinstieg over the net: not built yet");
+                light_option(cx.dialog, view, None);
+                return Outcome::Stay;
+            }
+            // The name dialog counts him as the next human
+            // (`DAT_008a56d8 = DAT_00b5cbce + 1`).
+            let setup = &mut cx.state.setup;
+            *setup = a3_core::newgame::Setup::default();
+            setup.trainers = vec![Default::default(); humans + 1];
+            setup.current = humans;
+            self.popup = Some(NAMES);
+            return Outcome::Popup(Request::new(NAMES));
+        }
         // "Spielstand speichern". The original asks first whether the
         // game is on at all (`FUN_007cb965`); here it always is. A game
         // played over the net saves when every player has ended the
@@ -922,6 +954,23 @@ impl Screen for MenuBar {
                     end_career(cx);
                 }
                 Outcome::Close(Reply::Quit)
+            }
+            (Some(NAMES), Reply::Ok) => {
+                self.popup = Some(BIRTHDAY);
+                Outcome::Popup(Request::new(BIRTHDAY))
+            }
+            // Queued for the week's start (`FUN_006c4f81`).
+            (Some(BIRTHDAY), Reply::Ok) => {
+                let setup = &cx.state.setup;
+                if let Some(trainer) = setup.trainers.get(setup.current).cloned() {
+                    cx.state.joining.push(trainer);
+                }
+                light_option(cx.dialog, view, None);
+                Outcome::Stay
+            }
+            (Some(NAMES | BIRTHDAY), _) => {
+                light_option(cx.dialog, view, None);
+                Outcome::Stay
             }
             (Some(NEW_GAME_QUESTION), Reply::Ok) => Outcome::Close(Reply::NewGame),
             // The career ends with the week, and the turn at once

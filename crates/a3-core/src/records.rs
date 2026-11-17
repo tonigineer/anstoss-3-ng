@@ -1289,6 +1289,18 @@ impl Manager {
         text(&self.0[MANAGER_LAST_NAME.0..], MANAGER_LAST_NAME.1)
     }
 
+    /// Empties the record for a newcomer and writes his names in
+    /// (`FUN_006a3b61`'s two `strcpy`).
+    pub fn clear_with_names(&mut self, first: &str, last: &str) {
+        self.0.fill(0);
+        for ((at, len), name) in [(MANAGER_FIRST_NAME, first), (MANAGER_LAST_NAME, last)] {
+            // Latin-1 stands in for Windows-1252 in the letters a name has.
+            let bytes: Vec<u8> = name.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
+            let n = bytes.len().min(len - 1);
+            self.0[at..at + n].copy_from_slice(&bytes[..n]);
+        }
+    }
+
     /// The file of his portrait in the game's `portrait` folder (+0x1f20,
     /// `FUN_006a6423`).
     pub fn portrait(&self) -> String {

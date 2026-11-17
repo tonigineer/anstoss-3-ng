@@ -726,6 +726,44 @@ impl Cycle {
         Ok(())
     }
 
+    /// The humans queued to join take their slots at the week's start
+    /// (`FUN_006c5005`), each with the offers of the clubs in want of a
+    /// manager — the original lets him wait for the offers of a running
+    /// season, which are not built; the first season's stand in for them.
+    fn newcomers(&mut self) -> Result<(), Gone> {
+        let joined = {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            let queue = std::mem::take(&mut state.joining);
+            let Some(season) = state.season.as_mut() else { return Ok(()) };
+            let mut joined = Vec::new();
+            for trainer in &queue {
+                let Some(at) =
+                    crate::joining::join(season, state.records.as_mut(), &self.data.rules, trainer)
+                else {
+                    continue;
+                };
+                for j in &mut joined {
+                    if *j >= at {
+                        *j += 1;
+                    }
+                }
+                joined.push(at);
+            }
+            if !joined.is_empty() {
+                crate::jobs::offer_jobs_to(season, &self.data.world, &self.data.rules, &joined);
+            }
+            joined
+        };
+        if joined.is_empty() {
+            return Ok(());
+        }
+        let current = self.season(|s| s.current).unwrap_or(0);
+        self.job_offers()?;
+        self.season(|s| s.current = current.min(s.managers.len().saturating_sub(1)));
+        Ok(())
+    }
+
     /// Makes the next manager with offers the current one; whether there is
     /// one.
     fn next_with_offers(&self) -> bool {
@@ -759,12 +797,33 @@ impl Cycle {
     /// The current manager signs the offer on `tab` as it stands.
     fn sign(&self, tab: usize) {
         let data = &self.data;
-        self.season(|s| {
+        let club = self.season(|s| s.managers[s.current].offers.get(tab).map(|o| o.club));
+        if let Some(club) = club.flatten() {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            let Some(s) = state.season.as_mut() else { return };
             let current = s.current;
-            if let Some(club) = s.managers[current].offers.get(tab).map(|o| o.club) {
-                s.take_club(&data.world, &data.rules, current, club);
+            s.take_club(&data.world, &data.rules, current, club);
+            // A game loaded from its records: the manager's record names
+            // the club he is under contract with, and the club is followed
+            // as the records hold it.
+            if let Some(records) = state.records.as_mut()
+                && let Some(slot) = records.human_slot(current)
+                && let Some(nation) = data.world.country(club.0).map(|c| c.nation)
+            {
+                let manager = &mut records.managers[slot];
+                manager.set_status(load::HIRED);
+                manager.set_country(nation);
+                manager.set_team(club.1 as u16);
+                if let Some(team) = records.team_mut(nation, club.1 as u16) {
+                    let [_, second] = team.humans();
+                    team.set_humans([slot as u8 + 1, second]);
+                }
+                if let Some(followed) = load::club(records, data, club) {
+                    s.clubs.insert(club, followed);
+                }
             }
-        });
+        }
     }
 
     /// The managers who have a turn this week, in their order
@@ -839,6 +898,9 @@ impl Cycle {
                         crate::stock::vote(records);
                     }
                 }
+            }
+            if wait {
+                self.newcomers()?;
             }
             self.statement()?;
             if wait {

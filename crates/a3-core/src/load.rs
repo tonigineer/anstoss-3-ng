@@ -21,7 +21,7 @@ use crate::world::Player;
 use crate::{autolineup, cohesion, duties, individual};
 
 /// A manager under contract (`records::Manager::status`).
-const HIRED: u8 = 3;
+pub(crate) const HIRED: u8 = 3;
 /// The difficulty a new game starts at, until the records name it.
 const DIFFICULTY: usize = 2;
 
