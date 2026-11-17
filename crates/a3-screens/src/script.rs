@@ -8843,6 +8843,8 @@ mod tests {
         assert_eq!(records.globals.humans(), 1);
         assert_eq!(records.globals.slots(), [0, 1, 0, 0]);
         assert_eq!(records.globals.order(), [2, -1, -1, -1]);
+        // The national team let him go too (`FUN_006b9872`).
+        assert_eq!(records.managers[0].national_team(), 0);
         assert_eq!(season.day % 7, 0, "a week's first day");
         drop(state);
         let caption = control(&game.dialogs[&302], 9920).unwrap();
