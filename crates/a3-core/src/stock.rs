@@ -155,6 +155,62 @@ pub fn majority(records: &Records, index: usize) -> bool {
         .is_some_and(|(place, total)| total != 0 && holding(records, slot, place) > total / 2)
 }
 
+/// Where in a portfolio's place the share's vote waits: a byte set when
+/// the holding is to be counted at the next vote.
+const PORT_VOTE: usize = 0x40;
+/// A club is voted on only with more shares than this out.
+const VOTE_LEAST: i32 = 1000;
+
+/// The shareholders' vote (`FUN_00406baf`, first in `FUN_00751d76` as the
+/// turns begin): every human's places with a vote waiting are counted
+/// per club, in the order the clubs first come, and the wait cleared.
+/// A club on the market with more than a thousand shares takes the count
+/// as its percent for (team +0xb2, club +0x90) — 100 once it is more than
+/// half — and 0 against (+0xb3): the original's second sum is never
+/// added to.
+pub fn vote(records: &mut Records) {
+    let Some(market) = records.block(&format!("{MARKET_AT:#x}")).map(<[u8]>::to_vec) else {
+        return;
+    };
+    // (country, number, for, against) as `local_964`'s twelve bytes.
+    let mut clubs: Vec<(u8, i16, i32, i32)> = Vec::new();
+    let slots: Vec<i16> = records.globals.slots().iter().copied().filter(|&s| s > 0).collect();
+    for slot in slots {
+        let Some(port) = records.block_mut(&format!("{PORT_AT:#x}[{}]", slot - 1)) else {
+            continue;
+        };
+        for k in 0..PORT_SLOTS {
+            if port.get(PORT_USED + k).is_none_or(|&u| u == 0) {
+                continue;
+            }
+            let at = PORT_ENTRY + k * PORT_STEP;
+            let e = MARKET_FIRST + long(port, at).wrapping_mul(MARKET_ENTRY as i32) as usize;
+            let country = word(&market, e.wrapping_add(CLUB_COUNTRY));
+            if country <= 0 || port.get(at + (PORT_VOTE - PORT_ENTRY)).is_none_or(|&v| v == 0) {
+                continue;
+            }
+            let number = word(&market, e.wrapping_add(CLUB_NUMBER));
+            let shares = long(port, at + (PORT_SHARES - PORT_ENTRY));
+            // The club is found by its country byte, as the list keeps it.
+            match clubs.iter_mut().find(|c| i16::from(c.0) == country && c.1 == number) {
+                Some(club) => club.2 = club.2.wrapping_add(shares),
+                None => clubs.push((country as u8, number, shares, 0)),
+            }
+            port[at + (PORT_VOTE - PORT_ENTRY)] = 0;
+        }
+    }
+    for (country, number, pro, contra) in clubs {
+        let Some((_, total)) = listing(records, country, number) else { continue };
+        if total <= VOTE_LEAST {
+            continue;
+        }
+        let share = |n: i32| if n >= total / 2 + 1 { 100 } else { (n.wrapping_mul(100) / total) as u8 };
+        if let Some(team) = records.team_mut(u16::from(country), number as u16) {
+            team.set_votes([share(pro), share(contra)]);
+        }
+    }
+}
+
 /// The board's confidence as the screens show it: 100 for a manager
 /// holding the majority of his own club, else as he stands
 /// (`FUN_007701b2`).
@@ -541,5 +597,52 @@ mod tests {
         market[PRICES_AT + 9 * 4..PRICES_AT + 9 * 4 + 4].copy_from_slice(&price.to_le_bytes());
         let walked = index_price(&mut market, 0, 4, &mut random);
         assert!((price - 6.0..price + 4.0).contains(&walked), "{walked}");
+    }
+
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn a_vote_counts_the_waiting_shares_of_a_club() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let index = records.human_slot(0).unwrap();
+        let (country, number) = (records.managers[index].country(), records.managers[index].team());
+        let slot = place(&records, index);
+        let set = |records: &mut Records, total: i32, held: [(i32, u8); 2]| {
+            let b = records.block_mut("0x8be408").unwrap();
+            put_long(b, MARKET_COUNT, 1);
+            put_word(b, MARKET_FIRST + CLUB_COUNTRY, country as i16);
+            put_word(b, MARKET_FIRST + CLUB_NUMBER, number as i16);
+            put_long(b, MARKET_FIRST + CLUB_SHARES, total);
+            let p = records.block_mut(&format!("0x8dc6e0[{}]", slot - 1)).unwrap();
+            for (k, (shares, wait)) in held.into_iter().enumerate() {
+                p[PORT_USED + k] = 1;
+                put_long(p, PORT_ENTRY + k * PORT_STEP, 0);
+                put_long(p, PORT_SHARES + k * PORT_STEP, shares);
+                p[PORT_VOTE + k * PORT_STEP] = wait;
+            }
+        };
+        let votes = |records: &Records| records.team(country, number).unwrap().votes();
+        let waits = |records: &Records| {
+            let p = records.block(&format!("0x8dc6e0[{}]", slot - 1)).unwrap();
+            [p[PORT_VOTE], p[PORT_VOTE + PORT_STEP]]
+        };
+        // Two places waiting: 300 + 200 of 2000 shares, a quarter for.
+        set(&mut records, 2000, [(300, 1), (200, 1)]);
+        records.team_mut(country, number).unwrap().set_votes([7, 7]);
+        vote(&mut records);
+        assert_eq!(votes(&records), [25, 0]);
+        assert_eq!(waits(&records), [0, 0]);
+        // Only the waiting place counts, and more than half is all.
+        set(&mut records, 2000, [(1001, 1), (900, 0)]);
+        vote(&mut records);
+        assert_eq!(votes(&records), [100, 0]);
+        // A club of no more than a thousand shares keeps its last vote,
+        // though the wait is cleared all the same.
+        set(&mut records, 1000, [(400, 1), (0, 0)]);
+        vote(&mut records);
+        assert_eq!(votes(&records), [100, 0]);
+        assert_eq!(waits(&records), [0, 0]);
     }
 }

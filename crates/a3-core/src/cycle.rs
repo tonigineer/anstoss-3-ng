@@ -791,6 +791,12 @@ impl Cycle {
                 if let Some(records) = guard.records.as_mut() {
                     let today = records.globals.day();
                     records.globals.set_week_start(today as i16);
+                    // Past the season's first half week the shareholders
+                    // vote (`DAT_00b5cbd2 != 0` → `FUN_00751d76` →
+                    // `FUN_00406baf`).
+                    if records.globals.half_weeks() != 0 {
+                        crate::stock::vote(records);
+                    }
                 }
             }
             self.statement()?;

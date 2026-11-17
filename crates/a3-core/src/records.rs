@@ -574,6 +574,9 @@ record! {
     0x1ec => set_piece, set_set_piece: u16;
     /// The respect the team is held in, 0 to 200 (the club object's +0x92).
     0xb6 => respect, set_respect: i16;
+    /// The shareholders' last vote, in percent of the club's shares: for,
+    /// and against (the club object's +0x90, +0x91; `FUN_00406baf`).
+    0xb2 => votes, set_votes: [u8; 2];
     /// The team's will to win as it stands, before the manager's part,
     /// [`Team::will_to_win`] (`FUN_0069ee6d`).
     0x958 => will_base, set_will_base: i16;
