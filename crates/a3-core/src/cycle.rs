@@ -1065,7 +1065,6 @@ impl Cycle {
             // game standing mid-week — the `start` flag below fires on
             // `day % 7 == 0`, where the turns begin again.
             loop {
-                self.appointments()?;
                 // The day walked; its booked open day's dialog comes up in
                 // the walk's middle, once the day's training is done and
                 // before the friendlies and the news (`open_events_on`
@@ -1126,6 +1125,11 @@ impl Cycle {
                     }
                 }
                 self.open_events_on(walked)?;
+                // The day's talks and the planners' appointments follow
+                // the human clubs' training and the day's events
+                // (`FUN_0064f981` 0x650285 `FUN_0076cb3e`, 0x650295
+                // `FUN_0072fd53`), before the friendlies.
+                self.appointments()?;
                 // The betting shop's report of the matchday just paid
                 // opens for every human the settlement marked a section
                 // for (`FUN_0077f1b8` kind 1), on the half week the

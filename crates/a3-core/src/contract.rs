@@ -34,6 +34,10 @@ const MONTHS: usize = 13;
 /// 0x75; meaning not traced): a seller there gets less.
 const MARKED_AT: u32 = 0x89dfc8;
 const COUNTRIES: usize = 0x75;
+/// `FUN_0076efbb`'s odds of a bid's league bits, three levels a row
+/// for the strengths 0 to 14.
+const LEAGUE_ODDS_AT: u32 = 0x8a78d8;
+const LEAGUE_ODDS: usize = 15;
 /// What contentment adds to the will to stay, by its level (the table at
 /// 0x8819b4).
 const CONTENT: [i32; 4] = [15, 0, -15, -35];
@@ -67,6 +71,7 @@ pub struct ContractTables {
     years: Vec<[f32; 4]>,
     months: Vec<u8>,
     marked: Vec<u8>,
+    league_odds: Vec<[i16; 3]>,
 }
 
 impl ContractTables {
@@ -99,7 +104,19 @@ impl ContractTables {
             years: years.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
             months: exe.bytes(MONTHS_AT, MONTHS)?.to_vec(),
             marked: exe.bytes(MARKED_AT, COUNTRIES)?.to_vec(),
+            league_odds: exe
+                .u16s(LEAGUE_ODDS_AT, 3 * LEAGUE_ODDS)?
+                .chunks(3)
+                .map(|c| [c[0] as i16, c[1] as i16, c[2] as i16])
+                .collect(),
         })
+    }
+
+    /// The luck below which a bid's terms take the bidder's league
+    /// (`FUN_0076efbb`, the table at 0x8a78d8): by the man's strength and
+    /// the league's level up to 2.
+    pub fn league_odds(&self, strength: u16, level: u16) -> i16 {
+        self.league_odds.get(usize::from(strength)).map_or(0, |r| r[usize::from(level.min(2))])
     }
 
     /// Whether a country is marked at 0x89dfc8.
