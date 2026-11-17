@@ -10985,4 +10985,60 @@ mod tests {
         assert_eq!(rows.selected, None);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_poaching_talk_opens_on_its_day() {
+        use a3_core::transfers;
+        let game = game();
+        let Some(mut runner) = on_save(&game, "Probe1", "") else { return };
+        let player = {
+            let mut state = runner.host.state();
+            let records = state.records.as_mut().unwrap();
+            let manager = records.humans().next().unwrap();
+            let own = (manager.country() as u8, manager.team() as i16);
+            let player = (1..0x4269)
+                .find(|&p| {
+                    records.player(p).is_some_and(|r| {
+                        let c = r.club();
+                        c[1] != 0 && (c[0], i16::from(c[1])) != own && r.salary() > 0
+                    }) && transfers::talk_day(records, p).is_none()
+                })
+                .unwrap();
+            let his = records.player(player).map(|r| r.club()).unwrap();
+            let day = records.globals.day() as i16 + 1;
+            assert!(transfers::book(
+                records,
+                transfers::POACHING,
+                day,
+                player,
+                (his[0], i16::from(his[1])),
+                own,
+                [0; transfers::TERMS],
+            ));
+            player
+        };
+        let then = "on 302 click bar 18\non 384 press 4741\non 2 wait\nnow click bar 18\n\
+                    until dialog 319";
+        runner.run(&Script::parse(then).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let view = runner.host.view();
+        let dialog = &game.dialogs[&319];
+        let text = |id| view.text(crate::screens::control(dialog, id).unwrap()).to_owned();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let r = records.player(player).unwrap();
+        // His contract, and the offer with it but the signing fee.
+        let money = |v: i64| crate::screens::playerinfo::money(&game, v);
+        assert_eq!(text(4126), money(i64::from(r.salary()) * 1000));
+        assert_eq!(text(4130), text(4126));
+        assert_eq!(text(4131), text(4127));
+        assert_eq!(text(6007), money(0));
+        assert_eq!(text(4139), "Laufzeit");
+        assert!(text(4151).contains("Alter: "), "{}", text(4151));
+        assert!(!text(4149).is_empty());
+        drop(state);
+        // "Abbrechen" ends the talk without an agreement.
+        let cancel = "now press 4153\nuntil dialog 381";
+        runner.run(&Script::parse(cancel).unwrap()).unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+    }
 }

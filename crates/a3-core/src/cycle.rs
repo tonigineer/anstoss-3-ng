@@ -206,6 +206,9 @@ pub mod dialogs {
     /// A talk with a player, on the day it was booked for.
     pub const TALK: u16 = 461;
     pub const VISIT: u16 = 210;
+    /// A poaching talk with another club's player on its day,
+    /// `CVerhandlungAbwerbeversuch` (`IDD_VERTRAGSVERLAENGERUNG_SPIELER_STANDARD`).
+    pub const POACHING_TALK: u16 = 319;
     /// The year calendar's open day, `IDD_TAG_DER_OFFENEN_TUER`.
     pub const OPEN_DAY: u16 = 270;
 }
@@ -1413,18 +1416,19 @@ impl Cycle {
     /// buyer's talk puts "Verhandlung" and the manager's name in the
     /// week's message and the player in his talk of the day
     /// (`FUN_0076aca0`, text 5048 via `FUN_0064f456`). Its message 0xa6
-    /// would open the talk itself (`FUN_0076ad3b`,
-    /// `CVerhandlungAbwerbeversuch`), not built yet; after the day's
-    /// messages, managers 1 to 4 in turn act on a talk agreed
-    /// (`FUN_0076aeb8`).
-    fn poaching_talks(&self) {
-        let mut state = self.state();
-        let state = &mut *state;
-        let Some(season) = state.season.as_mut() else { return };
+    /// opens the talk itself in that manager's turn (`FUN_0076ad3b`,
+    /// `CVerhandlungAbwerbeversuch`), whose OK writes the talk agreed
+    /// (kind 3, `FUN_0076ac2e`); after the day's messages, managers 1 to 4
+    /// in turn act on a talk agreed (`FUN_0076aeb8`).
+    fn poaching_talks(&self) -> Result<(), Gone> {
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let Some(season) = state.season.as_mut() else { return Ok(()) };
         season.planner_message = None;
         season.day_talks = Default::default();
-        let Some(records) = state.records.as_mut() else { return };
-        let Ok(day) = i16::try_from(season.day) else { return };
+        let Some(records) = state.records.as_mut() else { return Ok(()) };
+        let Ok(day) = i16::try_from(season.day) else { return Ok(()) };
+        let mut talks = Vec::new();
         for (player, human) in crate::transfers::poaching_day(records, day) {
             let slot = usize::from(human) - 1;
             if let Some(talk) = season.day_talks.get_mut(slot) {
@@ -1435,7 +1439,28 @@ impl Cycle {
                 season.planner_message =
                     Some((CONTRACT_TALK_TEXT, manager.last_name.clone()));
             }
+            if let Some(n) = n {
+                talks.push((n, slot, player));
+            }
         }
+        drop(guard);
+        for (n, slot, player) in talks {
+            self.season(|s| s.current = n);
+            let reply = self.ask(Request::with(POACHING_TALK, Args::Record(player)))?;
+            if reply == Reply::Ok
+                && let Some(talk) = self.season(|s| s.day_talks.get_mut(slot).cloned()).flatten()
+            {
+                // The offer the dialog ends on comes with its negotiation.
+                let agreed = crate::transfers::DayTalk { kind: crate::transfers::AGREED, ..talk };
+                self.season(|s| s.day_talks[slot] = agreed);
+            }
+        }
+        self.season(|s| s.current = 0);
+        let mut state = self.state();
+        let state = &mut *state;
+        let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) else {
+            return Ok(());
+        };
         for slot in 0..season.day_talks.len() {
             let buyer = records
                 .teams
@@ -1447,6 +1472,7 @@ impl Cycle {
                 crate::transfers::after_poaching(records, &mut season.random, &talk, buyer);
             }
         }
+        Ok(())
     }
 
     /// What the managers booked for today in their planners with a player
@@ -1459,7 +1485,7 @@ impl Cycle {
     /// manager with one stays on the week screen.
     fn appointments(&self) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
-        self.poaching_talks();
+        self.poaching_talks()?;
         for n in 0..managers {
             let booked = {
                 let mut state = self.state();

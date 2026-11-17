@@ -41,6 +41,7 @@ pub mod optionen;
 pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
+pub mod poaching;
 pub mod popups;
 pub mod save;
 pub mod search;
@@ -272,6 +273,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(market::WatchedPlayer::default()),
         Box::new(talk::TalkScreen::default()),
         Box::new(talk::PlayerChoice::default()),
+        Box::new(poaching::PoachingTalk),
         Box::new(tactics::TacticsScreen::default()),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
