@@ -11391,4 +11391,52 @@ mod tests {
         let nsoki = state.records.as_ref().unwrap().player(3262).unwrap();
         assert_eq!((nsoki.club()[0], nsoki.club()[1]), (14, 84));
     }
+
+    /// Young's purchase talk on A, day 64, computer clubs only (seeds
+    /// poked before the week, the fee talk before it held to its asking):
+    /// as the original's records stand after it, 14/20 has taken him from
+    /// 14/43 at once for 548 000 — a weaker man by the step, on fresh
+    /// terms of 60 and 3 till 2029 with his option, moved in the season
+    /// and out of the European cups, with the number 25, a second station
+    /// from 8 September, off the transfer list; the fee stands in both
+    /// clubs' books.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn computer_clubs_settle_a_purchase_talk_and_the_player_moves() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(before) = on_save(&game, "A", "") else { return };
+        let runner = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")).unwrap();
+        const YOUNG: u16 = 2168;
+        let books = |runner: &Runner, number: u16| {
+            let state = runner.host.state();
+            let team = state.records.as_ref().unwrap().team(14, number).unwrap();
+            // Net, sales and purchases (club +0x258, +0x470, +0x478).
+            (team.players().len(), team.get::<i32>(0x4d0), team.get::<i64>(0x6e8), team.get::<i64>(0x6f0))
+        };
+        let (old, new) = (books(&before, 43), books(&before, 20));
+        assert_eq!(books(&runner, 43), (old.0 - 1, old.1 + 548_000, old.2 + 548_000, old.3));
+        assert_eq!(books(&runner, 20), (new.0 + 1, new.1 - 548_000, new.2, new.3 + 548_000));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let p = records.player(YOUNG).unwrap();
+        assert_eq!((p.club(), p.strength(), p.shirt()), ([14, 20], 4, 25));
+        assert_eq!((p.salary(), p.appearance_bonus(), p.goal_bonus(), p.fixed_fee()), (60, 3, 0, 0));
+        assert_eq!((p.contract(), p.terms(), p.get::<u32>(0x158), p.get::<u8>(0x161)), (2029, 0x1810, 548, 0));
+        assert_eq!((p.retiring(), p.intensity(), p.get::<i16>(0x1f4)), (0, 3, 0));
+        assert_eq!(p.career_count(), 2);
+        let station: [u8; 0x14] = p.get(0x34);
+        assert_eq!(station, [9, 9, 0xe9, 7, 0, 0, 0, 0, 0x24, 2, 0, 0, 0, 0, 0, 0, 14, 20, 1, 4]);
+        assert!(records.team(14, 20).unwrap().players().contains(&YOUNG));
+        assert!(!records.team(14, 43).unwrap().players().contains(&YOUNG));
+        assert!(!a3_core::transfers::listings(records).iter().any(|l| l.id == YOUNG));
+        // Both squads' best by position, their best sixteen's mean and
+        // the sixteenth (team +0x322), as the original left them.
+        let best = |number: u16| records.team(14, number).unwrap().get::<[u8; 16]>(0x322);
+        assert_eq!(best(43)[12..], [67, 0, 62, 0]);
+        assert_eq!(best(20)[12..], [58, 0, 50, 0]);
+    }
 }

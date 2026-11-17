@@ -17,6 +17,8 @@ const RANK_AT: usize = 0x130;
 const SCORE_AT: usize = 0x348;
 const BEST_AT: usize = 0x322;
 const BEST_POSITIONS: usize = 16;
+/// The squad's best this many count for its mean worth.
+const TOP: usize = 16;
 const ORDER_AT: usize = crate::opponent::LEAGUE_FIELDS + 0x4d2;
 /// The positions' groups and how many of each count.
 const GROUPS: [(u8, u8, usize); 4] = [(1, 1, 2), (2, 5, 6), (6, 9, 5), (10, 10, 3)];
@@ -65,22 +67,46 @@ pub fn keep_scores(records: &mut Records) {
 /// The best player's worth of each main position in a squad
 /// (`FUN_0070eea9` into team +0x322, sixteen bytes): a player's strength
 /// ten times less ten, his form today and two for each ability he is good
-/// at (`FUN_00708b02`), nought at least.
+/// at (`FUN_00708b02`), nought at least. Behind the twelve positions the
+/// mean worth of the squad's best sixteen (a word at +12) and, with
+/// sixteen or more, the sixteenth's (+14).
 fn best_by_position(records: &Records, team: &crate::records::Team) -> [u8; BEST_POSITIONS] {
     let mut best = [0u8; BEST_POSITIONS];
+    let mut worths: Vec<u8> = Vec::new();
     for id in team.players() {
         let Some(p) = records.player(id) else { continue };
         let value = (i32::from(p.strength()) * 10 - 10
             + crate::statistics::form_today(p)
             + 2 * p.good().count_ones() as i32)
             .max(0);
+        worths.push(value as u8);
         if let Some(b) = best.get_mut(usize::from(p.positions()[0]))
             && i32::from(*b) < value
         {
             *b = value as u8;
         }
     }
+    worths.sort_unstable_by(|a, b| b.cmp(a));
+    let counted = worths.len().min(TOP);
+    if counted > 0 {
+        let mean = worths[..counted].iter().map(|&v| i16::from(v)).sum::<i16>() / counted as i16;
+        best[12..14].copy_from_slice(&mean.to_le_bytes());
+    }
+    if let Some(&last) = worths.get(TOP - 1) {
+        best[14..16].copy_from_slice(&u16::from(last).to_le_bytes());
+    }
     best
+}
+
+/// A club's best of each position reckoned anew, as after a transfer
+/// (`FUN_0070eea9`).
+pub(crate) fn keep_best(records: &mut Records, country: u16, number: u16) {
+    let Some(best) = records.team(country, number).map(|team| best_by_position(records, team)) else { return };
+    if let Some(team) = records.team_mut(country, number) {
+        for (k, &v) in best.iter().enumerate() {
+            team.put::<u8>(BEST_AT + k, v);
+        }
+    }
 }
 
 /// Every ranked league's clubs by their squads.

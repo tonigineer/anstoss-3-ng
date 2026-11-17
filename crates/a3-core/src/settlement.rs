@@ -405,7 +405,7 @@ pub fn count_down_contracts(records: &mut Records) {
 /// (`DAT_008a66ac`), the numbers others hold marked as the order reaches
 /// them; whoever is left draws one to forty and takes the next free from
 /// there. (Player +0x223, the object's +0x26; his position +0x21d.)
-const SHIRT_CHOICES: [u8; 30] = [1, 21, 30, 5, 22, 23, 4, 6, 14, 2, 13, 15, 3, 12, 16, 8, 18, 25, 7, 17, 24, 19, 28, 27, 10, 26, 20, 9, 11, 29];
+pub(crate) const SHIRT_CHOICES: [u8; 30] = [1, 21, 30, 5, 22, 23, 4, 6, 14, 2, 13, 15, 3, 12, 16, 8, 18, 25, 7, 17, 24, 19, 28, 27, 10, 26, 20, 9, 11, 29];
 const SHIRT_DRAWN: u32 = 40;
 
 pub fn number_shirts(records: &mut Records, random: &mut Random) {
