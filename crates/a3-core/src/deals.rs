@@ -502,10 +502,24 @@ fn shirt_at(records: &Records, club: (u8, i16), id: u16, random: &mut Random) ->
 /// league (ereignis 0x684, 0x685), the Supertransfers and records
 /// (`FUN_0070eccd`, `FUN_006d5931`), a human buyer's strength step and
 /// message (`FUN_0070e6a3`), the human clubs' training plans
-/// (`FUN_00746ddf`), the list of the week's moves (`FUN_00759eb9`, not
-/// saved) and the clubs' search plans with their budgets (team +0x34c:
-/// `FUN_006a018f`, `FUN_006a03fb`).
+/// (`FUN_00746ddf`) and the list of the week's moves (`FUN_00759eb9`, not
+/// saved). Then both clubs plan their search anew
+/// ([`crate::search_plan::after_transfer`]).
 pub(crate) fn move_now(
+    records: &mut Records,
+    random: &mut Random,
+    id: u16,
+    seller: (u8, i16),
+    buyer: (u8, i16),
+    fee: u32,
+    terms: &[u8; 0x14],
+) {
+    carry_out(records, random, id, seller, buyer, fee, terms);
+    crate::search_plan::after_transfer(records, random, seller, buyer, fee, u16::from_le_bytes([terms[0], terms[1]]));
+}
+
+/// The move itself (`FUN_0070ca69`'s branch for at once).
+fn carry_out(
     records: &mut Records,
     random: &mut Random,
     id: u16,
@@ -661,9 +675,11 @@ pub(crate) fn move_now(
 /// (R+0x26f bit 7 cleared). Left out as at once, and the paper's line
 /// for a free man of strength 11 up (ereignis 0x683) and the share
 /// market's note of the buyer (`FUN_00405bf3`); the clubs' counts of
-/// deals and sums (+0xc06, +0xc08, +0x9ec) the save does not hold.
+/// deals and sums (+0xc06, +0xc08, +0x9ec) the save does not hold. Then
+/// both clubs plan their search anew, as at once.
 pub(crate) fn agree(
     records: &mut Records,
+    random: &mut Random,
     id: u16,
     seller: (u8, i16),
     buyer: (u8, i16),
@@ -705,6 +721,7 @@ pub(crate) fn agree(
         p.put::<i16>(0x14e, buyer.1);
         p.set_retiring(p.retiring() & !RETIRING);
     }
+    crate::search_plan::after_transfer(records, random, seller, buyer, fee, u16::from_le_bytes([terms[0], terms[1]]));
     booked
 }
 
@@ -934,7 +951,7 @@ mod tests {
         let mut terms = [0u8; 0x14];
         terms[0..2].copy_from_slice(&60u16.to_le_bytes());
         terms[0xc] = 3;
-        assert!(agree(&mut records, YOUNG, (14, 43), (14, 20), 548_000, &terms));
+        assert!(agree(&mut records, &mut Random::new(1), YOUNG, (14, 43), (14, 20), 548_000, &terms));
         let deals = read(&records);
         assert_eq!(deals.len(), held + 1);
         let d = deals[held];

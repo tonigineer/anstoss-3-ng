@@ -66,6 +66,7 @@ pub mod presale;
 pub mod promotion;
 pub mod season;
 pub mod season_odds;
+pub mod search_plan;
 pub mod settlement;
 pub mod sim;
 pub mod squadlist;

@@ -184,7 +184,7 @@ fn aged_out(records: &Records, country: u8, number: u16) -> Vec<u16> {
 
 /// His promise (`FUN_006ff516`): his strength and what his age and talent
 /// add, within 1 and what his talent reaches.
-fn promise(p: &Player, age: i32) -> i16 {
+pub(crate) fn promise(p: &Player, age: i32) -> i16 {
     let talent = usize::try_from(p.talent()).unwrap_or(0).min(4);
     let add = match age {
         ..17 => PROMISE[0][talent],

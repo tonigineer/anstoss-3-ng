@@ -1500,7 +1500,7 @@ fn computer_settlement(
     if at_once {
         crate::deals::move_now(records, random, t.player, seller, buyer, fee, &terms);
     } else {
-        crate::deals::agree(records, t.player, seller, buyer, fee, &terms);
+        crate::deals::agree(records, random, t.player, seller, buyer, fee, &terms);
     }
     Some(Settled { buyer, fee, terms, at_once })
 }

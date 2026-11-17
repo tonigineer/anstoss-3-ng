@@ -11439,4 +11439,29 @@ mod tests {
         assert_eq!(best(43)[12..], [67, 0, 62, 0]);
         assert_eq!(best(20)[12..], [58, 0, 50, 0]);
     }
+
+    /// The same move on A, day 64: the search plans (team +0x34c) as the
+    /// original's records hold them after it — 14/20 has paid the fee and
+    /// a thousand times the salary out of both budgets and wants a libero
+    /// and a stopper at once and a libero more, all at 6; 14/43 has half
+    /// the fee more and wants a libero for nobody, a keeper short by 2 and
+    /// a forward short by 1, at 7.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn computer_clubs_plan_their_search_anew_after_a_transfer() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")) else { return };
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let plan = |number: u16| records.team(14, number).unwrap().get::<[u8; 0x28]>(0x34c);
+        let budgets = |b: [u8; 0x28]| (i32::from_le_bytes(b[0..4].try_into().unwrap()), i32::from_le_bytes(b[4..8].try_into().unwrap()));
+        assert_eq!(budgets(plan(20)), (1_892_000, -608_000));
+        assert_eq!(plan(20)[0x12..0x26], [3, 0, 2, 6, 5, 0, 1, 2, 3, 6, 5, 0, 1, 2, 2, 6, 3, 0, 1, 1]);
+        assert_eq!(budgets(plan(43)), (1_922_000, -578_000));
+        assert_eq!(plan(43)[0x12..0x26], [3, 0, 2, 7, 3, 0, 1, 1, 1, 7, 2, 0, 1, 1, 10, 7, 1, 0, 1, 1]);
+    }
 }
