@@ -331,6 +331,13 @@ fn standing(records: &mut Records, club: (u8, i16), other: (u8, i16), d: i32) {
 /// first staff person standing, the manager's place the third
 /// (`FUN_006317c6`, `FUN_006318f4`: his +0x4a to +0x4c).
 fn popularity(records: &mut Records, club: (u8, i16), by: [i32; 3]) {
+    move_standing(records, club, by, 0);
+}
+
+/// [`popularity`] with the board's confidence beside (`FUN_00418065`'s
+/// fourth word, `FUN_00418597`: a human's record +0x184 within 0 and
+/// 100; a staff person's is dropped with the copy it moves).
+pub(crate) fn move_standing(records: &mut Records, club: (u8, i16), by: [i32; 3], confidence: i32) {
     let Some(team) = team(records, club) else { return };
     let [trainer, manager] = team.humans();
     let staff = team.staff();
@@ -353,6 +360,9 @@ fn popularity(records: &mut Records, club: (u8, i16), by: [i32; 3]) {
         if let Some(manager) = usize::from(m).checked_sub(1).and_then(|i| records.managers.get_mut(i)) {
             let p = manager.popularity();
             manager.set_popularity(std::array::from_fn(|k| (i32::from(p[k]) + by[k]).clamp(0, 100) as u8));
+            if confidence != 0 {
+                manager.set_confidence((i32::from(manager.confidence()) + confidence).clamp(0, 100) as i16);
+            }
         }
     }
     for person in persons {

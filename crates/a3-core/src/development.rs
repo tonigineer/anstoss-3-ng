@@ -440,6 +440,9 @@ pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
     if count == crate::honours::CHAMPIONS_DAY {
         crate::honours::champions_day(records);
         crate::honours::top_scorers_day(records);
+        // The leaders' managers gain with the public, the fans, the media
+        // and the board ([`crate::standing::champions_day`]).
+        crate::standing::champions_day(records);
     }
     // The winter's Hallenturniere, Germany's and France's where they are
     // played (`FUN_00771959`).

@@ -70,6 +70,7 @@ pub mod statistics;
 pub mod state;
 pub mod supercup;
 pub mod squad_rank;
+pub mod standing;
 pub mod stars;
 pub mod stock;
 pub mod tactics;
