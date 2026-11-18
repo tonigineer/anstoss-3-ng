@@ -1092,11 +1092,14 @@ impl Cycle {
                         // The clubs' week on the transfer market comes
                         // first (`FUN_0042958d`): last years weighed,
                         // retirements announced.
-                        crate::transfer_week::week(records, &self.data.rules, &mut season.random);
+                        // Its youths poached from a human club are told
+                        // (`FUN_006c41b1`'s `FUN_005f0556`), with the
+                        // trials' ends below.
+                        trials = crate::transfer_week::week(records, &self.data.rules, &mut season.random);
                         // The human clubs' trials go on a week, or end
                         // (`FUN_0064e25b`), each man gone back told to
                         // his club below.
-                        trials = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
+                        trials.extend(crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false));
                         // It forgets the last friendlies more than six
                         // weeks gone (`FUN_0043539b`).
                         crate::friendly::forget_last_friendlies(records, season.day as i16);

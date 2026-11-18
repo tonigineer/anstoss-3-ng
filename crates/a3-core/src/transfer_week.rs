@@ -79,8 +79,10 @@ const KEEPER: u8 = 1;
 /// The calendar month before which a computer club weighs a last year.
 const BEFORE_MONTH: u16 = 7;
 
-/// The week's business of every club, in the original's order.
-pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Random) {
+/// The week's business of every club, in the original's order; what it
+/// tells the human clubs (their youths poached).
+pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Random) -> Vec<crate::event_text::Posted> {
+    let mut posted = Vec::new();
     let today = i32::from(records.globals.day());
     if today > LATE {
         crate::transfers::fix_late_terms(records);
@@ -93,7 +95,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             if played && records.team(country, number).is_some_and(|t| t.humans() == [0, 0]) {
-                crate::youth_week::walk(records, (country as u8, number), random);
+                crate::youth_week::walk(records, (country as u8, number), random, &mut posted);
             }
             if played && today & 3 == i32::from(number & 3) {
                 renew(records, rules, (country, number), random);
@@ -119,6 +121,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     }
     bests.store(records);
     stale_listings(records, false, random);
+    posted
 }
 
 /// A listing stands this long before its club takes it off: a kept
