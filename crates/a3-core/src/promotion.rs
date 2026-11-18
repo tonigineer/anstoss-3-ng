@@ -36,11 +36,13 @@
 //! two leagues in one: the first league's bottom down, all but those sent
 //! down into the second, whose top fills the places; the second's bottom
 //! out, one fewer for each club the first sent down, and its places
-//! filled from below it.
+//! filled from below it. Country 0x3f as the main country
+//! (`FUN_006b122e`) sends three or four of its first league down, fills
+//! it with the second's top but its reserve teams, and fills the second
+//! with three drawn from outside the leagues.
 //!
 //! Left out: the other countries' own rules (`FUN_006af8fd`,
-//! `FUN_006b1c01`, `FUN_006b1920`,
-//! `FUN_006b122e`), which the replica's own leagues fall back to the plain
+//! `FUN_006b1c01`, `FUN_006b1920`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
 //! booked moves set off besides — the news (`FUN_006143d2`); the
 //! European places' flags. Each club's record of moves (`FUN_00726382`,
@@ -66,7 +68,8 @@ fn moves_two(country: u16, main: u16) -> bool {
     TWO_LEAGUES.contains(&country) && country == main
 }
 /// The country whose single league skips reserve teams among its risers
-/// and books its relegated a level down (`FUN_006b1f12`).
+/// and books its relegated a level down (`FUN_006b1f12`); as the main
+/// country it moves two leagues by its own rule (`FUN_006b122e`).
 const FAR: u16 = 0x3f;
 
 /// A league block's words: its clubs, how many go up and down, the list
@@ -296,7 +299,7 @@ fn single(records: &Records, country: u16, moves: &mut Moves, order_of: &mut Ord
     }
     let mut next: Vec<i16> = l.rows[..(place + 1).max(0) as usize].iter().map(|r| r.team).collect();
     let pool = risers(records, country);
-    let order = order_of(pool.len());
+    let order = order_of(pool.len(), None);
     let mut k = 0;
     while next.len() < l.teams && k < pool.len() {
         let team = pool[order[k]];
@@ -403,12 +406,100 @@ fn move_two(first: &Standing, second: &Standing, pool: &[i16], moves: &mut Moves
     }
     let kept = (place + 1).max(0) as usize;
     next1.extend(second.clubs[taken.min(kept)..kept].iter().map(|c| c.0));
-    let order = order_of(pool.len());
+    let order = order_of(pool.len(), None);
     let mut k = 0;
     while next1.len() < teams1 && k < pool.len() {
         next1.push(pool[order[k]]);
         k += 1;
     }
+    [next0, next1]
+}
+
+/// Country 0x3f's two leagues as the main country (`FUN_006b122e`).
+fn far_leagues(records: &Records, moves: &mut Moves, order_of: &mut Orders) -> Option<[Vec<i16>; 2]> {
+    let first = Standing::of(&closed(records, FAR, 0)?);
+    let second = Standing::of(&closed(records, FAR, 1)?);
+    let clubs: Vec<i16> = (0..records.countries.team_count(usize::from(FAR)).max(0)).collect();
+    let parent = |team| first_team(records, FAR, team);
+    let level = |team| level(records, FAR, team);
+    Some(move_far(&first, &second, &clubs, &parent, &level, moves, order_of))
+}
+
+/// The rule itself: from the first league's bottom up to four places a
+/// club sent down is booked so and goes down, every other below the safe
+/// places goes down; the first keeps its top but four when all four went,
+/// else but three, and those (sent down or not) head the second; the
+/// second's clubs but its reserve teams (`FUN_0063e793`) fill the first's
+/// places top down, each promoted. The second keeps its clubs top down
+/// but those promoted, a reserve whose first team was sent down or went
+/// down going down instead, till it holds three fewer than its size —
+/// that one and every club below it are booked down; three drawn
+/// (`FUN_00675698`) among the clubs outside the leagues fill it: no
+/// reserve team but one whose first team stays in the first league or
+/// came up into it. No promotion booked for those.
+fn move_far(
+    first: &Standing,
+    second: &Standing,
+    clubs: &[i16],
+    parent: &dyn Fn(i16) -> Option<i16>,
+    level: &dyn Fn(i16) -> u8,
+    moves: &mut Moves,
+    order_of: &mut Orders,
+) -> [Vec<i16>; 2] {
+    let (teams0, teams1) = (first.clubs.len(), second.clubs.len());
+    let mut place = teams0 as isize - 1;
+    while place >= teams0 as isize - 4 && place >= 0 {
+        let (team, sent_down) = first.clubs[place as usize];
+        if sent_down {
+            moves.force(0, team);
+        } else if (place as usize) < first.first_down {
+            break;
+        }
+        moves.relegate(0, team);
+        place -= 1;
+    }
+    let kept = teams0.saturating_sub(if place == teams0 as isize - 5 { 4 } else { 3 });
+    let mut next0: Vec<i16> = first.clubs[..kept].iter().map(|c| c.0).collect();
+    let mut next1: Vec<i16> = first.clubs[kept..].iter().map(|c| c.0).collect();
+    for &(team, _) in second.clubs.iter().filter(|c| parent(c.0).is_none()) {
+        if next0.len() >= teams0 {
+            break;
+        }
+        moves.promote(0, team);
+        next0.push(team);
+    }
+    let mut place = 0;
+    while place < teams1 {
+        let team = second.clubs[place].0;
+        if parent(team).is_some_and(|p| moves.forced_at(0, p) || moves.relegated_at(0, p)) {
+            moves.relegate(1, team);
+        } else if !moves.promoted(0, team) {
+            next1.push(team);
+            // The loop leaves at this club, and the one below books it
+            // down as well (0x6b16f4).
+            if next1.len() == teams1.saturating_sub(3) {
+                break;
+            }
+        }
+        place += 1;
+    }
+    for &(team, _) in &second.clubs[place..] {
+        moves.relegate(1, team);
+    }
+    let pool: Vec<i16> = clubs
+        .iter()
+        .copied()
+        .filter(|&team| level(team) >= OUTSIDE)
+        .filter(|&team| match parent(team) {
+            None => true,
+            Some(p) => match level(p) {
+                0 => !moves.forced_at(0, p) && !moves.relegated_at(0, p),
+                1 => moves.promoted(0, p),
+                _ => false,
+            },
+        })
+        .collect();
+    next1.extend(order_of(pool.len(), Some(3)).into_iter().take(3).filter_map(|k| pool.get(k).copied()));
     [next0, next1]
 }
 
@@ -627,14 +718,14 @@ fn germany(records: &Records, moves: &mut Moves, order_of: &mut Orders) -> Optio
     if south.len() < DRAWN_PER_REGION {
         borrow(records, &mut north, &mut south, false);
     }
-    let order_north = order_of(north.len());
+    let order_north = order_of(north.len(), None);
     for &k in order_north.iter().take(DRAWN_PER_REGION) {
         moves.promote(2, north[k]);
         pool.push(placed(records, north[k]));
     }
     // The original draws the south's order into the same buffer, and its
     // fill below reads both regions through it.
-    let order = order_of(south.len());
+    let order = order_of(south.len(), None);
     for &k in order.iter().take(DRAWN_PER_REGION) {
         moves.promote(3, south[k]);
         pool.push(placed(records, south[k]));
@@ -687,13 +778,17 @@ fn put_next(records: &mut Records, country: u16, level: u8, list: &[i16]) {
 pub type Drawn = Vec<(u16, u8)>;
 
 /// Where the draws' random orders come from: `n` places in the order
-/// they are taken.
-pub type Orders<'a> = dyn FnMut(usize) -> Vec<usize> + 'a;
+/// they are taken, all of them (`None`, `FUN_00675630`) or only the
+/// first `k` drawn (`Some(k)`, `FUN_00675698`).
+pub type Orders<'a> = dyn FnMut(usize, Option<usize>) -> Vec<usize> + 'a;
 
 /// The season's draw of every played country (`FUN_006b24f2`): its
 /// books cleared and filled, next season's lists beside the current.
 pub fn draw(records: &mut Records, random: &mut Random) -> Drawn {
-    draw_with(records, &mut |n| permutation(n, random))
+    draw_with(records, &mut |n, k| match k {
+        None => permutation(n, random),
+        Some(k) => crate::cup_draw::choose(k, n, random),
+    })
 }
 
 /// The same with the orders from `order_of`.
@@ -706,6 +801,8 @@ pub fn draw_with(records: &mut Records, order_of: &mut Orders) -> Drawn {
             germany(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else if moves_two(country, main) {
             two_leagues(records, country, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
+        } else if country == FAR && country == main {
+            far_leagues(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else {
             single(records, country, &mut moves, order_of).into_iter().collect()
         };
@@ -1134,7 +1231,7 @@ mod tests {
         let (first, second) = (standing(0, 15, &[17]), standing(100, 15, &[]));
         let mut moves = Moves::default();
         let pool = [200, 201, 202, 203];
-        let [next0, next1] = move_two(&first, &second, &pool, &mut moves, &mut |n| (0..n).rev().collect());
+        let [next0, next1] = move_two(&first, &second, &pool, &mut moves, &mut |n, _| (0..n).rev().collect());
         assert_eq!(next0, (0..15).chain(100..103).collect::<Vec<i16>>());
         assert_eq!(moves.down[0], [17, 16, 15]);
         assert_eq!(moves.forced[0], [17]);
@@ -1144,10 +1241,63 @@ mod tests {
         assert!(moves.up[1].is_empty(), "the clubs from below are booked as nothing");
         let (first, second) = (standing(0, 15, &[]), standing(100, 15, &[16]));
         let mut moves = Moves::default();
-        let [_, next1] = move_two(&first, &second, &pool, &mut moves, &mut |n| (0..n).collect());
+        let [_, next1] = move_two(&first, &second, &pool, &mut moves, &mut |n, _| (0..n).collect());
         assert_eq!(moves.forced[0], [16], "the first league's club at the sent down's place");
         assert_eq!(moves.down[1], [117, 116, 115]);
         assert_eq!(next1, [17, 16, 15].into_iter().chain(103..115).chain(200..203).collect::<Vec<i16>>());
+    }
+
+    /// Country 0x3f's two leagues as the main country (`FUN_006b122e`):
+    /// four of the first's bottom down when all four go (a reserve team
+    /// skipped among the risers), else three whatever their books; the
+    /// second keeps its own but the promoted till three short, that club
+    /// and those below booked down, a reserve whose first team went down
+    /// down as well; three drawn from outside, no reserve whose first team
+    /// plays the second league.
+    #[test]
+    fn country_0x3f_moves_two_leagues_as_the_original() {
+        let standing = |base: i16, first_down: usize, sent: &[usize]| Standing {
+            first_down,
+            clubs: (0..12).map(|k| (base + k as i16, sent.contains(&k))).collect(),
+        };
+        // 102 is the reserve team of 9, 104 of 11, 300 of 5, 301 of 101.
+        let parent = |t: i16| match t {
+            102 => Some(9),
+            104 => Some(11),
+            300 => Some(5),
+            301 => Some(101),
+            302 => Some(10),
+            _ => None,
+        };
+        let level = |t: i16| match t {
+            0..=11 => 0,
+            100..=111 => 1,
+            _ => OUTSIDE,
+        };
+        let clubs = [300, 301, 302, 303, 304, 5, 105];
+        let (first, second) = (standing(0, 8, &[]), standing(100, 9, &[]));
+        let mut moves = Moves::default();
+        let mut draws = Vec::new();
+        let [next0, next1] = move_far(&first, &second, &clubs, &parent, &level, &mut moves, &mut |n, k| {
+            draws.push((n, k));
+            (0..n).rev().collect()
+        });
+        assert_eq!(moves.down[0], [11, 10, 9, 8]);
+        assert_eq!(next0, (0..8).chain([100, 101, 103, 105]).collect::<Vec<i16>>());
+        assert_eq!(moves.up[0], [100, 101, 103, 105]);
+        assert_eq!(draws, [(4, Some(3))], "300 (its first stays up), 301 (its first came up), 303, 304");
+        assert_eq!(moves.down[1], [102, 104, 110, 111], "the reserves of 9 and 11, then the last kept on");
+        assert_eq!(next1, [8, 9, 10, 11, 106, 107, 108, 109, 110, 304, 303, 301]);
+        // One fewer down: the first keeps all but three, the bottom three
+        // head the second whatever their books.
+        let first = standing(0, 10, &[]);
+        let mut moves = Moves::default();
+        let [next0, next1] =
+            move_far(&first, &second, &clubs, &parent, &level, &mut moves, &mut |n, _| (0..n).collect());
+        assert_eq!(moves.down[0], [11, 10]);
+        assert_eq!(next0, (0..9).chain([100, 101, 103]).collect::<Vec<i16>>());
+        assert_eq!(moves.down[1], [104, 109, 110, 111], "9 stays up: its reserve stays");
+        assert_eq!(next1, [9, 10, 11, 102, 105, 106, 107, 108, 109, 300, 301, 303]);
     }
 
     /// Country 0x1c moves its two leagues as 0x14 does, but only as the
@@ -1204,7 +1354,7 @@ mod tests {
         let mut draws = picks.into_iter();
         let pools = candidate_pools(&before);
         let mut k = 0;
-        draw_with(&mut ours, &mut |n| {
+        draw_with(&mut ours, &mut |n, _| {
             let wanted = draws.next().unwrap_or_default();
             let pool = &pools[k];
             k += 1;
@@ -1323,7 +1473,7 @@ mod tests {
         for country in crate::opponent::played_nations(records) {
             if country == GERMANY {
                 let mut moves = Moves::default();
-                let _ = germany(records, &mut moves, &mut |n| (0..n).collect());
+                let _ = germany(records, &mut moves, &mut |n, _| (0..n).collect());
                 // The regions' candidates: clubs outside the leagues by
                 // region, as `germany` collects them before its draws.
                 let relegated1 = moves.down[1].clone();
