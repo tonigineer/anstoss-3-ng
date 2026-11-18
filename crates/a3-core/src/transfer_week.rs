@@ -25,9 +25,13 @@
 //! with no human manager offers the men it counts on fresh contracts
 //! (`FUN_0042991e`, the club's number and the day alike modulo four).
 //!
+//! After it a computer club may let go of a man of a position it holds
+//! too many of, for a fee or, early in the season, on loan (the end of
+//! `FUN_004279f8`).
+//!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — their scouting and bids, sales
-//! and loans, the wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
+//! in `FUN_004279f8` and `FUN_004297e1` — their scouting and bids, the
+//! wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
 //! the European clubs' (`FUN_0069d3dd`) and the closing passes
 //! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
 //! original's while those are missing.
@@ -79,6 +83,9 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
             let human = team.humans() != [0, 0];
             for id in team.players() {
                 weigh(records, id, human, today, random);
+            }
+            if !human {
+                sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
             }
         }
     }
@@ -480,6 +487,153 @@ pub(crate) fn discontent(p: &Player) -> u8 {
     }
 }
 
+/// The odds a computer club's week of selling and lending is drawn
+/// against: a kept country's, a played one's (`FUN_004279f8`'s first
+/// parameter, by `FUN_0042793c` and `FUN_004297e1`), and the draws below
+/// this that bring it.
+const SALE_ODDS: [u32; 2] = [400, 100];
+const SALE_DRAWS: u32 = 20;
+/// The men of a position a club keeps before it lets one go, by position
+/// 1 to 10 (`DAT_008773ec`): the second row for the countries 0x10
+/// (England), 0x1c (Italy) and 0x3f.
+const KEPT_BY_POSITION: [[u8; 11]; 2] =
+    [[0, 3, 2, 4, 2, 2, 2, 2, 2, 2, 4], [0, 4, 2, 6, 3, 3, 3, 3, 3, 3, 7]];
+const WIDE_SQUADS: [u16; 3] = [0x10, 0x1c, 0x3f];
+/// The chance in a hundred a calendar month gives a sale
+/// (`DAT_00877404`).
+const MONTH_CHANCE: [i32; 13] = [0, 10, 10, 10, 10, 10, 10, 0, 3, 6, 10, 15, 20];
+/// The best of a position a club ranks (`FUN_00429dd0`), and the days
+/// out from which a man is not ranked (L+0x2c).
+const RANKED: usize = 8;
+const OUT_DAYS: i32 = 14;
+/// The half weeks of the season in which a club lends (`FUN_00426bfc`),
+/// the age it lends below, the squad it lends from and the league
+/// matches under which a man is lent.
+const LENDING: std::ops::RangeInclusive<u16> = 20..=40;
+const LENT_BELOW: i32 = 22;
+const LENDING_SQUAD: u16 = 20;
+const LENT_MATCHES: u8 = 2;
+/// The class's base the sale's chance counts a surplus man with
+/// (`10 - club+0x11e0`), the class (team +0x875).
+const CLASS_BASE: i32 = 10;
+const CLASS: usize = 0x875;
+/// R+0x161 (L+0x98): how often he may still move this season, two at
+/// least for a sale before the season's late weeks (`FUN_00426d83`).
+const MOVES: usize = 0x161;
+const SALE_MOVES: u8 = 2;
+
+/// A computer club lets go of a man of a position it has too many of
+/// (`FUN_004279f8`'s end): on twenty draws of its odds it ranks its men
+/// out under fourteen days by position — the best eight by their promise
+/// a thousand times and the best players' pick (`FUN_006ff516`,
+/// `FUN_00708b80`) — and of each position that holds more than the club
+/// keeps of it takes the last of those ranked. One it does not count on
+/// and may sell (`FUN_00426d83`) goes onto the transfer list for a fee
+/// (`FUN_0075a129`) by a chance in a hundred: the month's, and for every
+/// man over those kept ten less the club's class. Otherwise, in the
+/// season's half weeks 20 to 40, a club of the main or a more country
+/// lends one under 22 it may lend (`FUN_00426c22`) at his fair prices
+/// (`FUN_00622f7d`, `FUN_0075b0da`): one it counts on for the fee alone,
+/// another with an option to buy him.
+fn sell(records: &mut Records, rules: &crate::season::Rules, (country, number): (u16, u16), odds: u32, random: &mut Random) {
+    if random.below(odds) >= SALE_DRAWS {
+        return;
+    }
+    let Some(team) = records.team(country, number) else { return };
+    let (squad, size) = (team.players(), team.player_count());
+    let class = i32::from(team.get::<u8>(CLASS));
+    let lends = LENDING.contains(&records.globals.half_weeks());
+    let mut ranked: [Vec<(u16, i16)>; 11] = Default::default();
+    for id in squad {
+        let Some(p) = records.player(id) else { continue };
+        if crate::load::days_to(&records.globals, p.injured_to()) >= OUT_DAYS {
+            continue;
+        }
+        let key = (i32::from(crate::free_agents::promise(p, age(records, p))) * 1000
+            + i32::from(rules.value.pick_value(p) as i16)) as i16;
+        let Some(list) = ranked.get_mut(usize::from(p.positions()[0])) else { continue };
+        let last = if list.len() < RANKED { 0 } else { list[RANKED - 1].1 };
+        if key > last {
+            let at = list.iter().position(|&(_, k)| k < key).unwrap_or(list.len());
+            list.insert(at, (id, key));
+            list.truncate(RANKED);
+        }
+    }
+    let row = usize::from(WIDE_SQUADS.contains(&country));
+    let month = usize::from(records.globals.date()[1]);
+    for position in 1..=10 {
+        let (list, kept) = (&ranked[position], KEPT_BY_POSITION[row][position]);
+        if list.len() <= usize::from(kept) {
+            continue;
+        }
+        let id = list[list.len() - 1].0;
+        let Some(p) = records.player(id) else { continue };
+        if id > LAST_REAL_ID {
+            continue;
+        }
+        let counted_on = p.terms() & COUNTED_ON != 0;
+        if !counted_on && may_sell(records, p) {
+            let surplus = (list.len() - usize::from(kept)) as i32;
+            let chance = MONTH_CHANCE.get(month).copied().unwrap_or(0) + surplus * (CLASS_BASE - class);
+            if (random.below(100) as i32) < chance {
+                crate::transfers::list_for_sale(records, id, false);
+            }
+            continue;
+        }
+        if !lends || age(records, p) >= LENT_BELOW || !may_lend(records, p, size) || !records.globals.played(country as i16) {
+            continue;
+        }
+        let star = records.globals.stars().get(usize::from(p.positions()[0])) == Some(&id);
+        let worth = crate::value::Worth {
+            strength: p.strength(),
+            position: p.positions()[0],
+            talent: p.talent(),
+            age: age(records, p),
+            good: p.good(),
+            character: p.traits(),
+            qualities: p.qualities(),
+            star,
+            kind_12_matches: p.kind_12_matches(),
+        };
+        let prices = rules.value.loan_prices(&worth, years_left(records, p), month as u32);
+        if counted_on {
+            crate::transfers::list_for_loan(records, id, false, prices.fee, 0);
+        } else {
+            crate::transfers::list_for_loan(records, id, true, prices.with_option, prices.option);
+        }
+    }
+}
+
+/// Whether his club may sell him (`FUN_00426d83`): a real man, not
+/// retiring, open to an extension, not passed over, no deal for next
+/// season, his terms no bar, no talks pending about him, and before the
+/// season's late weeks free to move twice more.
+fn may_sell(records: &Records, p: &Player) -> bool {
+    p.id() <= LAST_REAL_ID
+        && p.retiring() & RETIRES == 0
+        && p.problems() & NO_EXTENSION == 0
+        && !passed_over(p)
+        && p.next_club()[0] == 0
+        && p.terms() & HELD == 0
+        && !crate::transfers::pending(records, p.id())
+        && (i32::from(records.globals.day()) > LATE || p.get::<u8>(MOVES) >= SALE_MOVES)
+}
+
+/// Whether his club may lend him (`FUN_00426c22`): not retiring, open
+/// to an extension, not passed over, no deal for next season, no talks
+/// pending about him, two years left at least, under two league matches
+/// this season, and a squad of twenty at least.
+fn may_lend(records: &Records, p: &Player, squad: u16) -> bool {
+    p.retiring() & RETIRES == 0
+        && p.problems() & NO_EXTENSION == 0
+        && !passed_over(p)
+        && p.next_club()[0] == 0
+        && !crate::transfers::pending(records, p.id())
+        && years_left(records, p) >= 2
+        && p.league_matches() < LENT_MATCHES
+        && squad >= LENDING_SQUAD
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,8 +761,10 @@ mod tests {
         };
         let mut random = Random::new(7);
         let rules = rules();
+        // A last year goes onto the list at terms 0; the sales are for a
+        // fee.
         let listed = |records: &Records| -> Vec<u16> {
-            crate::transfers::listings(records).iter().map(|l| l.id).collect()
+            crate::transfers::listings(records).iter().filter(|l| l.terms == 0).map(|l| l.id).collect()
         };
         let listed_before = listed(&records);
         for day in (70..=364).step_by(7) {
@@ -661,7 +817,8 @@ mod tests {
     /// main and the more countries keep the men they count on longer as
     /// often as the original's season did (its SeasonEnd364: 233 of them
     /// in their last year, 265 with two left, 108 with three, the human
-    /// club none): each count within a fifth, the replica's every new
+    /// club none): each count within a quarter (the draws move with every
+    /// further part of the market built), the replica's every new
     /// contract of a last year worth 80 at least to the man (the
     /// original's one of 233 below came another way).
     #[test]
@@ -679,9 +836,63 @@ mod tests {
         assert_eq!((theirs[0], ours[0]), (0, 0));
         for k in 1..4 {
             let off = (ours[k] as f64 / theirs[k] as f64 - 1.0).abs();
-            assert!(off < 0.2, "{k} years left: {} against the original's {}", ours[k], theirs[k]);
+            assert!(off < 0.25, "{k} years left: {} against the original's {}", ours[k], theirs[k]);
         }
         assert!(least >= 80, "{least}");
+    }
+
+    /// The computer clubs' listings for a fee standing in a game, of the
+    /// main and more countries listed after `since`, of the kept
+    /// countries in the last thirty days; and the loans listed after it,
+    /// as (age today, counted on, for the fee alone).
+    fn sales(records: &Records, since: i16) -> (usize, usize, Vec<(i32, bool, bool)>) {
+        let (mut played, mut kept, mut loans) = (0, 0, Vec::new());
+        let today = records.globals.day() as i16;
+        for l in crate::transfers::listings(records) {
+            let human = records.team(l.country.into(), l.number).is_some_and(|t| t.humans() != [0, 0]);
+            if human || l.day <= since {
+                continue;
+            }
+            let p = records.player(l.id).unwrap();
+            match (l.kind, l.terms, records.globals.played(l.country.into())) {
+                (1, 1, true) => played += 1,
+                (1, 1, false) if l.day > today - 30 => kept += 1,
+                (2 | 3, _, _) => loans.push((age(records, p), p.terms() & COUNTED_ON != 0, l.kind == 2)),
+                _ => {}
+            }
+        }
+        (played, kept, loans)
+    }
+
+    /// From save A's day 63 to day 210 the computer clubs let go of the
+    /// men of the positions they hold too many of about as the original's
+    /// two runs to that day (S2, S2c): of the main and more countries at
+    /// least as many listings for a fee as the original still holds (100
+    /// and 78; the bids that take some away are not built) and less than
+    /// half again; of the kept countries, whose listings go after thirty
+    /// days, from as many as the original's last thirty days hold (9 in
+    /// both) to twice; loans for the fee alone of men they count on, as
+    /// the original's three and four, each under 22 when listed in the
+    /// half weeks 20 to 40 (days 70 to 140), more of them standing (the
+    /// original's bids take loans as they come).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_clubs_let_go_of_their_spare_men_as_the_original() {
+        let (s2, s2c) = (sales(&kept("S2.an3"), 63), sales(&kept("S2c.an3"), 63));
+        assert_eq!((s2.0, s2c.0, s2.1, s2c.1), (100, 78, 9, 9));
+        assert!([&s2.2, &s2c.2].iter().all(|l| l.len() >= 3 && l.iter().all(|&(_, on, fee)| on && fee)));
+        let mut records = kept("A.an3");
+        let (rules, mut random) = (rules(), Random::new(7));
+        for day in (70..=210).step_by(7) {
+            on_day(&mut records, day);
+            records.globals.set_half_weeks(day / 7 * 2);
+            week(&mut records, &rules, &mut random);
+        }
+        let (played, kept, loans) = sales(&records, 63);
+        assert!((100..150).contains(&played), "{played} listed for a fee");
+        assert!((9..=18).contains(&kept), "{kept} of the kept countries");
+        assert!(loans.len() >= 4, "{loans:?}");
+        assert!(loans.iter().all(|&(age, on, fee)| age <= 22 && on && fee), "{loans:?}");
     }
 }
 
@@ -730,4 +941,5 @@ mod season_tests {
         assert!(x == y, "{} bytes differ", (0..x.len()).filter(|&k| x[k] != y[k]).count());
     }
 }
+
 
