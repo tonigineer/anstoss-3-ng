@@ -5200,8 +5200,11 @@ mod tests {
     /// The season's end over the original's pair: the played clubs'
     /// strengths and places archived by the replica stand in SeasonEnd364
     /// byte for byte as NewSeason000 keeps them, so does the season's
-    /// strongest squad, and every player's goals by season but one's (whom
-    /// a step before, `FUN_0074d52b`, not built, takes from his club).
+    /// strongest squad, and every player's goals by season. A man who
+    /// ended his career went into the pool and came back as a new youth
+    /// under the same id and names (born anew, his history empty), so the
+    /// same man is the same names and birthday; none of the human's men
+    /// was on trial for `FUN_0074d52b` to send back first.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_season_end_keeps_the_clubs_strengths_and_places_as_the_original() {
@@ -5222,16 +5225,22 @@ mod tests {
             }
         }
         assert_eq!(ours.block(STRONGEST_AT), theirs.block(STRONGEST_AT), "the strongest squads");
-        let (mut same, mut differ) = (0, 0);
+        let (mut same, mut differ, mut reborn) = (0, 0, 0);
         for id in 1..crate::records::PLAYERS as u16 {
             let (Some(o), Some(x), Some(y)) = (before.player(id), ours.player(id), theirs.player(id)) else { continue };
-            if o.first_name() != y.first_name() {
+            if o.first_name() != y.first_name() || o.last_name() != y.last_name() {
                 continue;
             }
             let goals = |p: &Player| (0..SEASON_GOALS_LEN).map(|k| p.get::<u8>(SEASON_GOALS + k)).collect::<Vec<_>>();
+            if o.birthday() != y.birthday() {
+                assert!(goals(y).iter().all(|&g| g == 0), "{id} born anew with goals");
+                reborn += 1;
+                continue;
+            }
             if goals(x) == goals(y) { same += 1 } else { differ += 1 }
         }
-        assert!(same > 16000 && differ <= 1, "{same} players' goals as the original's, {differ} not");
+        assert!(same > 16000 && differ == 0, "{same} players' goals as the original's, {differ} not");
+        assert!(reborn >= 1, "the retired man of Germany's 66th born anew");
     }
 
     /// The season's end over the original's pair: archived by the replica,
