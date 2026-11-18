@@ -1,18 +1,18 @@
-//! A computer club's youth through the season (`FUN_006c41b1`, which the
-//! clubs' week on the market, `FUN_004297e1`, calls for each club of the
-//! main and the more countries with no human, before its fresh terms):
-//! outside June and July, a club that is no reserve team draws one in ten
+//! A club's youth through the season (`FUN_006c41b1`): a computer club
+//! of the main and the more countries with no human walks it in the
+//! clubs' week on the market (`FUN_004297e1`, before its fresh terms), a
+//! human club in its day's news (`FUN_005ef8cc`), told what came of it.
+//! Outside June and July, a club that is no reserve team draws one in ten
 //! thousand each week, and by the draw a youth of its youth team grows
 //! (9000 and over), one is hurt for months (2500 to 2504), one out hurt
 //! loses a point and may give up (2600 to 2609), or, the richer the club
-//! the likelier, it takes a new youth — three a season at most; on 1000,
+//! the likelier, it takes a new youth — three a season at most; a club
+//! too poor for one whose manager is a human's may have its talent scout
+//! find one. On 1000,
 //! with no new youth taken, a club of the first two leagues poaches one
 //! of the youth list from his club, the human's told. A week that comes
 //! to nothing else, a club with no amateur team works its pool of
 //! amateurs: a new one, a status up or down, an amateur hurt or slipping.
-//!
-//! Left out so far: the human club's own walk with its news
-//! (`FUN_005ef8cc`).
 
 use crate::event_text::{Fill, Posted};
 use crate::random::Random;
@@ -38,9 +38,48 @@ const FLAG: u8 = 2;
 const POACHES: u32 = 1000;
 const POACHING_LEVELS: u8 = 2;
 
-/// One club's week for its youth (`FUN_006c41b1` with no news of its
-/// own); a youth poached from a human club is told to it in `posted`.
-pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), random: &mut Random, posted: &mut Vec<Posted>) {
+/// The talent scout's sum the plan carries (club +0x26c, KALKULATION.md),
+/// in [`SUPPORT_UNIT`]s: a club too poor for a new youth, its manager a
+/// human, finds one on a draw of a hundred under two fifths of it.
+const SCOUT: usize = 0x26c + crate::finances::CLUB_TO_TEAM;
+const SCOUT_ODDS: u32 = 100;
+/// The event of the youth news a human club is told, and its texts in
+/// `ereignis.saq`: a new youth (`FUN_005f04c2`), one grown to a strength
+/// (`FUN_005f04e0`), one hurt (`FUN_005f0574`), one set back a point
+/// (`FUN_005f0592`) or giving up (`FUN_005f0538`); a new amateur
+/// (`FUN_005f05b0`), one hurt (`FUN_005f060a`) or giving up
+/// (`FUN_005f05ec`).
+const YOUTH_EVENT: u16 = 0x60;
+const TAKEN_TEXT: u16 = 0x35c;
+const GROWN_TEXT: u16 = 0x35d;
+const GAVE_UP_TEXT: u16 = 0x35f;
+const HURT_TEXT: u16 = 0x361;
+const SET_BACK_TEXT: u16 = 0x362;
+const AMATEUR_TEXT: u16 = 0x363;
+const AMATEUR_HURT_TEXT: u16 = 0x368;
+const AMATEUR_GONE_TEXT: u16 = 0x36a;
+
+/// What a human club is told of its youth's week, with `news`
+/// (`FUN_006c41b1`'s second word).
+struct Told<'a> {
+    club: (u16, u16),
+    news: bool,
+    posted: &'a mut Vec<Posted>,
+}
+
+impl Told<'_> {
+    fn post(&mut self, text: u16, fill: Fill) {
+        if self.news {
+            self.posted.push(Posted { club: self.club, code: YOUTH_EVENT, text, fill });
+        }
+    }
+}
+
+/// One club's week for its youth (`FUN_006c41b1`); with `news` the club
+/// is a human's and is told what came of it, its trainer's and manager's
+/// standing moving with it. A youth poached from a human club is told to
+/// that one in `posted` either way.
+pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), news: bool, random: &mut Random, posted: &mut Vec<Posted>) {
     let [_, month, _] = records.globals.date();
     if SUMMER.contains(&month) {
         return;
@@ -51,31 +90,53 @@ pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), random: 
     }
     let draw = random.below(DRAW);
     let support = team.get::<i32>(crate::newplayer::YOUTH_SUPPORT);
+    let (manager, scout) = (team.humans()[1], team.get::<i32>(SCOUT));
     let mut can = (support / SUPPORT_UNIT) as i16;
     if team.get::<u8>(FLAG_AT) & FLAG != 0 {
         can += can / 5;
     }
+    let standing = (country, number as i16);
+    let mut told = Told { club: (u16::from(country), number), news, posted };
     if draw >= GROWS_FROM {
-        if grow(records, (country, number), support, random) {
+        if let Some(id) = grow(records, (country, number), support, random) {
+            // The trainer a point up with the public and the fans
+            // (`FUN_0041828e`), the youth's new strength told.
+            if news {
+                crate::training_day::move_likings(records, told.club, [1, 1, 0]);
+            }
+            let strength = records.player(id).map_or(0, |p| p.strength());
+            told.post(GROWN_TEXT, Fill::NamedNumber(id, i32::from(strength)));
             return;
         }
     } else {
         if HURT.contains(&draw) {
-            hurt(records, (country, number), random);
+            if let Some(id) = hurt(records, (country, number), random) {
+                told.post(HURT_TEXT, Fill::Named(id));
+            }
             return;
         }
         if POACHED.contains(&draw) {
-            slip(records, (country, number), random);
+            slip(records, (country, number), &mut told, random);
             return;
         }
-        // A poor club's own youth (`FUN_006c35fc`) waits on a human
-        // manager (club +0x8b), so a computer club takes none.
-        if i32::from(can) >= draw as i32 / DRAW_UNIT && take(records, (country, number), random) {
+        if i32::from(can) < draw as i32 / DRAW_UNIT {
+            // Too poor for a new youth: a human manager's talent scout
+            // may find one (`FUN_006c35fc`), the trainer and the manager
+            // two up with the public and the fans (`FUN_00418065`).
+            if manager != 0 && (random.below(SCOUT_ODDS) as i32) < scout / SUPPORT_UNIT * 2 / 5 {
+                crate::exhibition::move_standing(records, standing, [2, 2, 0], 0);
+                scouted(records, (country, number), random);
+            }
+        } else if let Some(id) = take(records, (country, number), random) {
+            if news {
+                crate::exhibition::move_standing(records, standing, [1, 1, 0], 0);
+            }
+            told.post(TAKEN_TEXT, Fill::Named(id));
             return;
         }
     }
     if draw != POACHES {
-        amateurs(records, (country, number), random);
+        amateurs(records, (country, number), &mut told, random);
         return;
     }
     let level = records.team(u16::from(country), number).map_or(POACHING_LEVELS, |t| t.level());
@@ -88,7 +149,7 @@ pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), random: 
         && from != 0
         && crate::statistics::is_human(records, from, i16::from(from_number))
     {
-        posted.push(Posted { club: (u16::from(from), u16::from(from_number)), code: POACHED_EVENT, text: POACHED_TEXT, fill: Fill::Named(id) });
+        told.posted.push(Posted { club: (u16::from(from), u16::from(from_number)), code: POACHED_EVENT, text: POACHED_TEXT, fill: Fill::Named(id) });
     }
 }
 
@@ -124,7 +185,7 @@ const GIVES_UP_BELOW: u8 = 3;
 /// rises or falls a status; else on one in 500, one of the pool not hurt
 /// is hurt for months one time in five, or else may slip
 /// (`FUN_006c3daf`).
-fn amateurs(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+fn amateurs(records: &mut Records, (country, number): (u8, u16), told: &mut Told, random: &mut Random) {
     let Some(team) = records.team(u16::from(country), number) else { return };
     if team.linked()[1] >= 0 {
         return;
@@ -133,14 +194,16 @@ fn amateurs(records: &mut Records, (country, number): (u8, u16), random: &mut Ra
     if random.below(NEW_DRAW) as i32 <= budget {
         let [up, pool] = crate::youth::pool(records, country, number);
         if up.len() + pool.len() < crate::youth::POOL {
-            crate::newplayer::amateur_for(records, (country, number), random);
+            if let Some(id) = crate::newplayer::amateur_for(records, (country, number), random) {
+                told.post(AMATEUR_TEXT, Fill::Named(id));
+            }
             return;
         }
     }
     if (random.below(STATUS_DRAW) as i32) < STATUS_ODDS - budget / 2 {
         rise_or_fall(records, (country, number), budget, random);
     } else if random.below(MISHAP_DRAW) == 0 {
-        mishap(records, (country, number), random);
+        mishap(records, (country, number), told, random);
     }
 }
 
@@ -183,7 +246,7 @@ fn rise_or_fall(records: &mut Records, (country, number): (u8, u16), budget: i32
 
 /// One of the pool drawn: not hurt, one time in five he is out three to six
 /// months; else he may slip.
-fn mishap(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+fn mishap(records: &mut Records, (country, number): (u8, u16), told: &mut Told, random: &mut Random) {
     let [_, pool] = crate::youth::pool(records, country, number);
     if pool.is_empty() {
         return;
@@ -197,8 +260,9 @@ fn mishap(records: &mut Records, (country, number): (u8, u16), random: &mut Rand
         if let Some(p) = records.player_mut(id) {
             p.set_retiring(p.retiring() & !HURT_CLEARS);
         }
+        told.post(AMATEUR_HURT_TEXT, Fill::Named(id));
     } else {
-        slip_amateur(records, (country, number), id, random);
+        slip_amateur(records, (country, number), id, told, random);
     }
 }
 
@@ -206,7 +270,7 @@ fn mishap(records: &mut Records, (country, number): (u8, u16), random: &mut Rand
 /// the injury: a status and a point down; at the lowest status and under
 /// strength 3 he gives up — out of the pool, his career ended
 /// (`FUN_0070e31e`, `FUN_0066d975`).
-fn slip_amateur(records: &mut Records, club: (u8, u16), id: u16, random: &mut Random) {
+fn slip_amateur(records: &mut Records, club: (u8, u16), id: u16, told: &mut Told, random: &mut Random) {
     let Some(p) = records.player(id) else { return };
     if p.picks() & ON_TRIAL != 0 || !out_hurt(records, p) || p.retiring() & SLIPPED != 0 {
         return;
@@ -217,6 +281,7 @@ fn slip_amateur(records: &mut Records, club: (u8, u16), id: u16, random: &mut Ra
     p.set_strength(strength);
     p.set_retiring(p.retiring() | SLIPPED);
     if status < 1 && strength < GIVES_UP_BELOW {
+        told.post(AMATEUR_GONE_TEXT, Fill::Named(id));
         crate::youth::leave_pool(records, club, id);
         crate::rollover::end_career(records, id, random);
         return;
@@ -261,8 +326,9 @@ fn months_at_club(records: &Records, p: &Player) -> i32 {
 /// and not yet set back for it, he is a point weaker, and at nought he
 /// stays at one on half the draws, else he gives up — out of the youth
 /// team and off the list, his career ended (`FUN_0066aea3`,
-/// `FUN_0076408d`, `FUN_0066d975`).
-fn slip(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+/// `FUN_0076408d`, `FUN_0066d975`), the trainer three down with the
+/// public and the fans (`FUN_0041828e`). A human club is told either.
+fn slip(records: &mut Records, (country, number): (u8, u16), told: &mut Told, random: &mut Random) {
     let (youths, _) = crate::youth::youths(records, country, number);
     let mut total = 0;
     let mut drawn = Vec::new();
@@ -288,7 +354,14 @@ fn slip(records: &mut Records, (country, number): (u8, u16), random: &mut Random
         p.set_strength(if strength == 0 && !gives_up { 1 } else { strength });
         p.set_retiring(p.retiring() | SLIPPED);
     }
+    if strength != 0 {
+        told.post(SET_BACK_TEXT, Fill::Named(id));
+    }
     if gives_up {
+        if told.news {
+            crate::training_day::move_likings(records, told.club, [-3, -3, 0]);
+        }
+        told.post(GAVE_UP_TEXT, Fill::Named(id));
         crate::youth::leave_youth(records, (country, number), id);
         crate::youth::drop_prospect(records, id);
         crate::rollover::end_career(records, id, random);
@@ -355,11 +428,11 @@ const SEASON_MONTH: u8 = 7;
 
 /// A youth of the club grows a point (`FUN_006c4103`, `FUN_006c3f34`):
 /// each youth below his talent's most draws by his talent, and once more
-/// if over the first mark; those under a mark are drawn from. Whether one
-/// grew.
-fn grow(records: &mut Records, (country, number): (u8, u16), support: i32, random: &mut Random) -> bool {
+/// if over the first mark; those under a mark are drawn from. The one
+/// who grew.
+fn grow(records: &mut Records, (country, number): (u8, u16), support: i32, random: &mut Random) -> Option<u16> {
     let band = BANDS.iter().take_while(|&&b| support >= b).count();
-    let Some(team) = records.team(u16::from(country), number) else { return false };
+    let team = records.team(u16::from(country), number)?;
     let row = RANGES[usize::from(team.get::<u8>(RANGES_AT).min(3))];
     let year = records.globals.start_year();
     let (youths, _) = crate::youth::youths(records, country, number);
@@ -380,13 +453,13 @@ fn grow(records: &mut Records, (country, number): (u8, u16), support: i32, rando
         }
     }
     if grown.is_empty() {
-        return false;
+        return None;
     }
     let id = grown[random.below(grown.len() as u32) as usize];
     if let Some(p) = records.player_mut(id) {
         p.set_strength(p.strength().wrapping_add(1));
     }
-    true
+    Some(id)
 }
 
 /// A youth hurt: months out, his kind 1 (`FUN_006c3706`, `FUN_00766b92`).
@@ -398,16 +471,16 @@ const MONTH: i32 = 30;
 const HURT_CLEARS: u8 = 4;
 
 /// One of the youth team drawn, unless already out, is out three to six
-/// months (`FUN_006c3706`).
-fn hurt(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+/// months (`FUN_006c3706`); the one hurt.
+fn hurt(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
     let (youths, _) = crate::youth::youths(records, country, number);
     if youths.is_empty() {
-        return;
+        return None;
     }
     let id = youths[random.below(youths.len() as u32) as usize];
-    let Some(p) = records.player(id) else { return };
+    let p = records.player(id)?;
     if crate::load::days_to(&records.globals, p.injured_to()) != 0 {
-        return;
+        return None;
     }
     let days = (random.below(HURT_MONTHS) + HURT_FROM) as i32 * MONTH;
     let today = i32::from(records.globals.day());
@@ -415,20 +488,35 @@ fn hurt(records: &mut Records, (country, number): (u8, u16), random: &mut Random
     if let Some(p) = records.player_mut(id) {
         p.set_retiring(p.retiring() & !HURT_CLEARS);
     }
+    Some(id)
 }
 
 /// A new youth while the club has made under three this season
-/// (`FUN_006c3500`, `FUN_0066c0c2`).
-fn take(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> bool {
+/// (`FUN_006c3500`, `FUN_0066c0c2`); the one taken.
+fn take(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
     let made = crate::youth::made(records, country, number);
     if made >= crate::youth::MOST_MADE {
-        return false;
+        return None;
     }
-    if crate::newplayer::youth_for(records, (country, number), random).is_none() {
-        return false;
-    }
+    let id = crate::newplayer::youth_for(records, (country, number), random)?;
     crate::youth::set_made(records, country, number, made + 1);
-    true
+    Some(id)
+}
+
+/// The talents a scout's youth comes with (`FUN_0066b1bf`): a draw of a
+/// hundred under 20 the greatest, under 70 the next, else the third.
+const SCOUTED_TALENTS: [(u32, i8); 2] = [(20, 0), (70, 1)];
+const SCOUTED_LEAST: i8 = 2;
+
+/// A youth the talent scout found (`FUN_006c35fc`): taken as any new
+/// youth, his talent drawn among the three greatest. Told to no one.
+fn scouted(records: &mut Records, club: (u8, u16), random: &mut Random) {
+    let Some(id) = take(records, club, random) else { return };
+    let r = random.below(100);
+    let talent = SCOUTED_TALENTS.iter().find(|&&(under, _)| r < under).map_or(SCOUTED_LEAST, |&(_, t)| t);
+    if let Some(p) = records.player_mut(id) {
+        p.set_talent(talent);
+    }
 }
 
 #[cfg(test)]
@@ -475,7 +563,7 @@ mod tests {
         let mut random = Random::new(5);
         for _ in 0..37 {
             for &club in &clubs {
-                walk(&mut ours, club, &mut random, &mut Vec::new());
+                walk(&mut ours, club, false, &mut random, &mut Vec::new());
             }
         }
         for &(c, n) in &clubs {
@@ -556,7 +644,7 @@ mod tests {
         crate::youth::set_made(&mut r, club.0, club.1, crate::youth::MOST_MADE);
         let seed = (0..1_000_000).find(|&s| Random::new(s).below(DRAW) == POACHES).unwrap();
         let mut posted = Vec::new();
-        walk(&mut r, club, &mut Random::new(seed), &mut posted);
+        walk(&mut r, club, false, &mut Random::new(seed), &mut posted);
         assert!(crate::youth::youths(&r, club.0, club.1).0.contains(&id));
         assert!(!crate::youth::youths(&r, hc, hn as u16).0.contains(&id));
         assert!(crate::youth::prospects(&r).is_empty());
@@ -579,14 +667,14 @@ mod tests {
             p.set_strength(3);
             p.set_retiring(p.retiring() & !SLIPPED);
         }
-        slip(&mut r, club, &mut Random::new(1));
+        slip(&mut r, club, &mut untold(&mut Vec::new()), &mut Random::new(1));
         let slipped: Vec<u16> = youths.iter().copied().filter(|&y| r.player(y).unwrap().retiring() & SLIPPED != 0).collect();
         assert_eq!(slipped.len(), 1);
         let y = slipped[0];
         assert_eq!(r.player(y).unwrap().strength(), 2);
         let before = r.player(y).unwrap().strength();
         for _ in 0..50 {
-            slip(&mut r, club, &mut Random::new(1));
+            slip(&mut r, club, &mut untold(&mut Vec::new()), &mut Random::new(1));
         }
         assert_eq!(r.player(y).unwrap().strength(), before);
         // At one he stays at one or gives up his career.
@@ -598,7 +686,7 @@ mod tests {
                 p.set_strength(1);
                 p.set_retiring(p.retiring() & !SLIPPED);
             }
-            slip(&mut r, club, &mut random);
+            slip(&mut r, club, &mut untold(&mut Vec::new()), &mut random);
             let now = crate::youth::youths(&r, club.0, club.1).0;
             if let Some(left) = youths.iter().copied().find(|y| !now.contains(y)) {
                 gone += 1;
@@ -644,7 +732,7 @@ mod tests {
         // Rich in amateurs, the club's pool fills to five and no more.
         r.team_mut(u16::from(club.0), club.1).unwrap().put::<i32>(AMATEUR_BUDGET, 2_000_000);
         for _ in 0..2000 {
-            amateurs(&mut r, club, &mut random);
+            amateurs(&mut r, club, &mut untold(&mut Vec::new()), &mut random);
             let [up, pool] = crate::youth::pool(&r, club.0, club.1);
             assert!(up.len() + pool.len() <= 5);
         }
@@ -678,15 +766,118 @@ mod tests {
         let day = i32::from(r.globals.day());
         crate::training_day::injure(&mut r, id, HURT_KIND, 60, day);
         set_injured_status(&mut r, id, 1, 5);
-        slip_amateur(&mut r, club, id, &mut random);
-        slip_amateur(&mut r, club, id, &mut random);
+        slip_amateur(&mut r, club, id, &mut untold(&mut Vec::new()), &mut random);
+        slip_amateur(&mut r, club, id, &mut untold(&mut Vec::new()), &mut random);
         let p = r.player(id).unwrap();
         assert_eq!((crate::newplayer::status(p), p.strength(), p.retiring() & SLIPPED), (0, 4, SLIPPED));
         // At the lowest status and strength 3 he gives up.
         set_injured_status(&mut r, id, 0, 3);
-        slip_amateur(&mut r, club, id, &mut random);
+        slip_amateur(&mut r, club, id, &mut untold(&mut Vec::new()), &mut random);
         assert!(crate::youth::pool(&r, club.0, club.1)[1].is_empty());
         assert_eq!(r.player(id).unwrap().retiring(), 0);
+    }
+
+    /// On save A the human club's youth week tells him what came of it:
+    /// a youth hurt (0x361), a new one with the trainer a point up with
+    /// the public and the fans (0x35c), one grown with his new strength
+    /// told (0x35d); too poor for a new youth, the manager's talent scout
+    /// finds one of the three greatest talents, two points up and told to
+    /// no one. In the day's news the walk comes on every third half week
+    /// by the club's number, and never in the other two.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_human_club_is_told_of_its_youths_week() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let a = load();
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+        let club = (hc, hn as u16);
+        let trainer = usize::from(a.team(u16::from(hc), hn as u16).unwrap().humans()[0]) - 1;
+        let liking = |r: &Records| r.managers[trainer].popularity();
+        let seed = |range: std::ops::Range<u32>, from: u64| (from..).find(|&s| range.contains(&Random::new(s).below(DRAW))).unwrap();
+        let mut r = load();
+        let mut posted = Vec::new();
+        walk(&mut r, club, true, &mut Random::new(seed(2500..2505, 0)), &mut posted);
+        let [hurt] = posted[..] else { panic!("{posted:?}") };
+        assert_eq!((hurt.club, hurt.code, hurt.text), ((u16::from(hc), hn as u16), 0x60, 0x361));
+        let Fill::Named(id) = hurt.fill else { panic!() };
+        assert!(crate::load::days_to(&r.globals, r.player(id).unwrap().injured_to()) >= 90);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &hurt);
+        assert!(told.text.contains(&r.known_as(id).unwrap()), "{}", told.text);
+
+        let mut r = load();
+        crate::youth::set_made(&mut r, hc, hn as u16, 0);
+        let before = crate::youth::youths(&r, hc, hn as u16).0;
+        posted.clear();
+        walk(&mut r, club, true, &mut Random::new(seed(0..50, 0)), &mut posted);
+        let [taken] = posted[..] else { panic!("{posted:?}") };
+        let Fill::Named(id) = taken.fill else { panic!() };
+        assert_eq!(taken.text, 0x35c);
+        assert!(!before.contains(&id) && crate::youth::youths(&r, hc, hn as u16).0.contains(&id));
+        assert_eq!(crate::youth::made(&r, hc, hn as u16), 1);
+        let up = |was: [u8; 3], by: u8| [(was[0] + by).min(100), (was[1] + by).min(100), was[2]];
+        assert_eq!(liking(&r), up(liking(&a), 1));
+
+        // A youth who can grow: the one grown is told with his strength.
+        let mut s = 0;
+        let grown = loop {
+            let mut r = load();
+            for id in crate::youth::youths(&r, hc, hn as u16).0 {
+                let p = r.player_mut(id).unwrap();
+                p.set_talent(0);
+                p.set_strength(2);
+            }
+            s = seed(9000..10_000, s + 1);
+            let mut posted = Vec::new();
+            walk(&mut r, club, true, &mut Random::new(s), &mut posted);
+            if !posted.is_empty() {
+                break (r, posted);
+            }
+        };
+        let (r, grew) = grown;
+        let [grew] = grew[..] else { panic!("{grew:?}") };
+        let Fill::NamedNumber(id, strength) = grew.fill else { panic!("{grew:?}") };
+        assert_eq!((grew.text, strength), (0x35d, 3));
+        assert_eq!(r.player(id).unwrap().strength(), 3);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &grew);
+        assert!(told.text.contains(&r.known_as(id).unwrap()) && told.text.contains("Stärke 3"), "{}", told.text);
+        assert_eq!(liking(&r), up(liking(&a), 1));
+
+        // No support for youth, a scout's sum of 25 million: his find.
+        let mut r = load();
+        crate::youth::set_made(&mut r, hc, hn as u16, 0);
+        let team = r.team_mut(u16::from(hc), hn as u16).unwrap();
+        team.put::<i32>(crate::newplayer::YOUTH_SUPPORT, 0);
+        team.put::<i32>(SCOUT, 25_000_000);
+        posted.clear();
+        walk(&mut r, club, true, &mut Random::new(seed(50..2500, 0)), &mut posted);
+        assert!(posted.iter().all(|p| p.text != 0x35c), "{posted:?}");
+        let id = *crate::youth::youths(&r, hc, hn as u16).0.iter().find(|id| !before.contains(id)).unwrap();
+        assert!((0..=2).contains(&r.player(id).unwrap().talent()));
+        assert_eq!(liking(&r), up(liking(&a), 2));
+
+        // The day's news: on the club's third half week some seed walks
+        // the youth, on the others none.
+        let day = i32::from(a.globals.day());
+        let slots = [day.rem_euclid(7) as i16];
+        let mut r = load();
+        let mut walked = |half: u16| {
+            (0..400).any(|s| {
+                r.globals.set_half_weeks(half);
+                !crate::training_day::news(&mut r, day, &slots, &mut Random::new(s)).is_empty()
+            })
+        };
+        let at = hn as u16 % 3;
+        assert!(walked(at + 3));
+        assert!(!walked(at + 1) && !walked(at + 2));
+    }
+
+    /// A computer club's week, told to no one.
+    fn untold(posted: &mut Vec<Posted>) -> Told<'_> {
+        Told { club: (0, 0), news: false, posted }
     }
 
     /// His status and strength set, his slip for the injury not yet taken.

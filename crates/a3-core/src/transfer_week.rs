@@ -95,7 +95,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             if played && records.team(country, number).is_some_and(|t| t.humans() == [0, 0]) {
-                crate::youth_week::walk(records, (country as u8, number), random, &mut posted);
+                crate::youth_week::walk(records, (country as u8, number), false, random, &mut posted);
             }
             if played && today & 3 == i32::from(number & 3) {
                 renew(records, rules, (country, number), random);

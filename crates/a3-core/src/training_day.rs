@@ -602,25 +602,54 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// The day's news (`FUN_005ef842`, run by `FUN_0064f981` in its second
 /// loop over the human clubs, after the training, the day's booked events
 /// and the friendlies (`FUN_007615bb`)): a club meets it when the day's
-/// gates drew today for its slot. The category pick, and category 19's
-/// pick of one of the club's own players over its squad, stand in
-/// `crate::news`. `slots` are the day's event gates of
+/// gates drew today for its slot, and none in the first season's quiet
+/// days (`FUN_005ef56c`). The category pick, and category 19's pick of
+/// one of the club's own players over its squad, stand in `crate::news`.
+/// `slots` are the day's event gates of
 /// [`crate::human_day::event_slots`], one per human club in the order of
-/// [`crate::statistics::human_clubs`].
-pub fn news(records: &Records, today: i32, slots: &[i16], random: &mut Random) {
+/// [`crate::statistics::human_clubs`]. What the clubs are told comes back.
+///
+/// With no category picked (the rest of the table, 0) `FUN_005ef8cc`
+/// goes on over the club's squad (+0xe2): under it of a thousand a player's news
+/// (`FUN_005e20fd`), else under it of five thousand another
+/// (`FUN_005e2bb9`), neither built; else on every third half week by the
+/// club's number the club's youth walks its week, the human told
+/// ([`crate::youth_week::walk`]). A picked category's handler that
+/// posts nothing goes on so too; the replica builds none of them, and
+/// the probe's trace of save A's day 63 ends that day's news at category
+/// 19's pick of the player, so a picked category stands for the day's
+/// whole news here. (The town's share in the stadium's building after a
+/// youth's quiet week is not built either.)
+pub fn news(records: &mut Records, today: i32, slots: &[i16], random: &mut Random) -> Vec<Posted> {
+    let mut posted = Vec::new();
+    if crate::event_text::quiet(records) {
+        return posted;
+    }
     for (k, (country, number)) in statistics::human_clubs(records).into_iter().enumerate() {
-        if slots.get(k) == Some(&(today.rem_euclid(7) as i16)) {
-            let code = crate::news::pick(random);
-            if code == 19 {
-                let (country, number) = (u16::from(country), number as u16);
-                let squad = records
-                    .team(country, number)
-                    .map_or(0, |team| team.player_count());
-                crate::news::about_a_player(squad, random);
-            }
+        if slots.get(k) != Some(&(today.rem_euclid(7) as i16)) {
+            continue;
+        }
+        let code = crate::news::pick(random);
+        let squad = records.team(u16::from(country), number as u16).map_or(0, |team| team.player_count());
+        if code == 19 {
+            crate::news::about_a_player(squad, random);
+        }
+        if code != 0 {
+            continue;
+        }
+        if random.below(PLAYER_NEWS) < u32::from(squad) || random.below(OTHER_NEWS) < u32::from(squad) {
+            continue;
+        }
+        if records.globals.half_weeks() % 3 == number as u16 % 3 {
+            crate::youth_week::walk(records, (country, number as u16), true, random, &mut posted);
         }
     }
+    posted
 }
+
+/// The tail's two draws of the day's news over the squad (`FUN_005ef8cc`).
+const PLAYER_NEWS: u32 = 1000;
+const OTHER_NEWS: u32 = 5000;
 
 /// One session of the day (`FUN_0074a1ec` at intensity 0, with nothing
 /// asked back).
@@ -1722,7 +1751,7 @@ pub(crate) fn knee_knock(records: &mut Records, id: u16, kind: u8, date: NaiveDa
 /// manager object's +0x3a), else the computer trainer's — the club's
 /// +0x7e, or its +0x80 (the team's `staff`), a person of `0xbe3920` up
 /// to 1499 (`FUN_006317c6`, `FUN_006318f4`: his +0x4a to +0x4c).
-fn move_likings(records: &mut Records, (country, number): (u16, u16), by: [i8; 3]) {
+pub(crate) fn move_likings(records: &mut Records, (country, number): (u16, u16), by: [i8; 3]) {
     let Some(team) = records.team(country, number) else { return };
     let trainer = team.humans()[0];
     let [first, second, _] = team.staff();

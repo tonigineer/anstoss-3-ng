@@ -43,6 +43,9 @@ pub enum Fill {
     /// Its `%s` a man's name (`sprintf` with `FUN_006feb4d`, as
     /// `FUN_005ee5c0` does).
     Named(u16),
+    /// Its `%s` a man's name and its `%d` a number (`sprintf` with
+    /// `FUN_006feb4d`, as `FUN_005f04e0` tells a youth's new strength).
+    NamedNumber(u16, i32),
     /// `%1` and `%2` two men's names (`FUN_005ee619` through
     /// `FUN_005eee7f`).
     Numbered(u16, u16),
@@ -118,6 +121,7 @@ pub fn make(records: &Records, texts: &EventTexts, game: &dyn Fn(u16) -> String,
         Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
         Fill::Plain => body.to_owned(),
         Fill::Named(id) => body.replacen("%s", &name(id), 1),
+        Fill::NamedNumber(id, n) => body.replacen("%s", &name(id), 1).replacen("%d", &n.to_string(), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),
         Fill::Lead(lead) => {
             let lead = match lead {

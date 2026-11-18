@@ -1357,6 +1357,7 @@ impl Cycle {
                 let mut reported = Vec::new();
                 let mut controls = Vec::new();
                 let mut cups = None;
+                let mut news = Vec::new();
                 {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1377,8 +1378,10 @@ impl Cycle {
                         }
                         // The day's news: `FUN_0064f981`'s second club
                         // loop, after the friendlies.
+                        // What it tells comes up before the day's
+                        // matches (`FUN_005f1eaf`, the window waiting).
                         if let Some(gates) = &slots {
-                            crate::training_day::news(records, today, gates, &mut season.random);
+                            news = crate::training_day::news(records, today, gates, &mut season.random);
                         }
                         // The day's league games, behind its routine and
                         // on its own day: where the original lets its
@@ -1478,6 +1481,7 @@ impl Cycle {
                         }
                     }
                 }
+                self.day_events(news)?;
                 // The matches' dialogs come up as `FUN_00710839` posts
                 // them, on the day they are played, before the youth
                 // leagues and the world's day move it on.
