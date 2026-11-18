@@ -190,10 +190,14 @@ pub fn due(records: &Records, fixtures: &[Fixture], random: &mut Random) -> Opti
 /// (`FUN_00666aea`): a match among the top six, one time in four; a
 /// win or a defeat by three, one in five; a first league's club at the
 /// top two or the bottom three, one in thirty-three. A national cup tie
-/// rolls by [`cup_draws`]; the European cups' rolls are not built.
+/// rolls by [`cup_draws`], a Champions League match by
+/// [`champions_draws`]; the other European cups never roll.
 fn draws(records: &Records, f: &Fixture, home: bool, random: &mut Random) -> bool {
     if f.kind & 0x7f00_0000 == NATIONAL_CUP {
         return cup_draws(f, home, random);
+    }
+    if f.kind & 0x7f00_0000 == CHAMPIONS_LEAGUE {
+        return champions_draws(f, random);
     }
     if f.kind & 0x7f00_0000 >= 0x3f {
         return false;
@@ -222,6 +226,23 @@ fn draws(records: &Records, f: &Fixture, home: bool, random: &mut Random) -> boo
 /// The national cup's kind, and a second leg's flag in it.
 const NATIONAL_CUP: u32 = 0x4000_0000;
 const SECOND_LEG: u32 = 0x8000_0000;
+
+/// The Champions League's kind, and its one-leg flag.
+const CHAMPIONS_LEAGUE: u32 = 0x5000_0000;
+const ONE_LEG: u32 = 0x0008_0000;
+
+/// Whether a Champions League match draws an interview (`FUN_00666aea`'s
+/// 0x50000000 branch): ten times in a hundred; else a one-leg match,
+/// twenty in a hundred, and always unless it is a second leg.
+fn champions_draws(f: &Fixture, random: &mut Random) -> bool {
+    if random.below(100) < 10 {
+        return true;
+    }
+    if f.kind & ONE_LEG != 0 && random.below(100) < 20 {
+        return true;
+    }
+    f.kind & (SECOND_LEG | ONE_LEG) == ONE_LEG
+}
 
 /// Whether a national cup tie draws an interview (`FUN_00666aea`'s
 /// 0x40000000 branch): fifteen times in a hundred; else, the human side
@@ -845,6 +866,20 @@ mod tests {
         // Won 1:0 at home after 0:3 away: behind over the tie.
         let second = Fixture { goals: [1, 0], kind: 0xc000_0003, leg: [3, 0], ..won };
         assert!((1100..1500).contains(&rate(second, true)));
+    }
+
+    /// A Champions League match draws one ten times in a hundred; a
+    /// one-leg match that is no second leg always.
+    #[test]
+    fn a_champions_league_match_draws_an_interview() {
+        let rate = |kind: u32| {
+            let f = Fixture { sides: [(14, 22), (14, 84)], goals: [1, 1], kind, leg: [0; 2] };
+            (0..3000u64).filter(|&seed| champions_draws(&f, &mut Random::new(seed))).count()
+        };
+        assert!((200..400).contains(&rate(0x5000_0002)), "{}", rate(0x5000_0002));
+        assert_eq!(rate(0x5008_0002), 3000);
+        let second = rate(0xd008_0002);
+        assert!((700..1000).contains(&second), "{second}");
     }
 
     #[test]
