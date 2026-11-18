@@ -210,7 +210,7 @@ const PAST_SHARES: i32 = 0;
 /// The club flag (team +0x874's low byte, the club's +0xfd) that halves
 /// the next session's share, and goes with it.
 const HALF_SHARE: u8 = 4;
-const CLUB_FLAGS: usize = 0x874;
+pub(crate) const CLUB_FLAGS: usize = 0x874;
 /// The team byte (`FUN_006994b3`) that lifts the fitness units.
 const FITNESS_LIFT: usize = 0x470;
 
@@ -1673,17 +1673,33 @@ fn training_injury(
     }
     let kind = if kind == 0x25 && crate::computer_training::fresh_percent(p) < 0x23 { 0x43 } else { kind };
     let spent = records.team(country, number).map_or(0, |t| t.get::<i32>(0x314));
+    let days = cared_days(spent, medical.base_days(kind), random);
+    injure(records, id, kind, days, today);
+    knee_knock(records, id, kind, date, random);
+}
+
+/// An injury's days by what the club spends on its doctors (the team's
+/// +0x314, the club's +0x2ac): a hundred less three per medical level
+/// (`FUN_006773c4`) and a draw below a day's cost in the spending, times
+/// the kind's base days, over a hundred; one day at least — as
+/// `FUN_00767225` and the match's `FUN_00766eb9` reckon them.
+pub(crate) fn cared_days(spent: i32, base: u8, random: &mut Random) -> i32 {
     let level = MEDICAL_LEVELS.iter().filter(|&&cap| cap <= spent).count() as i64;
     let care = i64::from(random.below((spent / MEDICAL_DAY).max(0) as u32));
-    let base = i64::from(medical.base_days(kind));
+    let base = i64::from(base);
     // The factor goes to the FPU as a 64-bit integer whose high word is
     // nought — below nought it is read as 2^32 more — and the days come
     // back through `ftol` into a short (past i32, its 0x80000000).
     let factor = i64::from((100 - 3 * level - care) as i32 as u32);
     let whole = factor * base / 100;
     let whole = i32::try_from(whole).unwrap_or(i32::MIN);
-    let days = i32::from((whole as i16).max(1));
-    injure(records, id, kind, days, today);
+    i32::from((whole as i16).max(1))
+}
+
+/// Kinds 0x1b and 0x1e may leave him knocked about by the knee
+/// (`FUN_007675c6`): under 180 (200 without either trait bit 1) less
+/// nine a year he is under forty, of two hundred.
+pub(crate) fn knee_knock(records: &mut Records, id: u16, kind: u8, date: NaiveDate, random: &mut Random) {
     if kind == 0x1b || kind == 0x1e {
         let Some(p) = records.player(id) else { return };
         let age = statistics::age_on(p, date);
@@ -1767,7 +1783,7 @@ fn set_days_out(records: &mut Records, id: u16, days: i32) {
 
 /// An injury of `kind` from today, `days` long (`FUN_00766b92` for a
 /// kind that is no knock): the kind (+0x228), the day (+0x1d8), the end.
-fn injure(records: &mut Records, id: u16, kind: u8, days: i32, today: i32) {
+pub(crate) fn injure(records: &mut Records, id: u16, kind: u8, days: i32, today: i32) {
     if let Some(p) = records.player_mut(id) {
         p.set_injury_kind(kind);
         p.set_injured_on(today as u16);

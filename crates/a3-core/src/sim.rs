@@ -433,7 +433,7 @@ pub fn play_matches(
         }
     }
     let mut minute = 1;
-    while minute < 0x31 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random)
+    while minute < 0x31 && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random)
     {
         minute += 1;
     }
@@ -446,7 +446,7 @@ pub fn play_matches(
     }
     clock.half2 = 1;
     let mut minute = 46;
-    while minute < 99 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
+    while minute < 99 && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random) {
         minute += 1;
     }
     clock.minute = 90;
@@ -457,12 +457,12 @@ pub fn play_matches(
         clock.half2 = 0;
         clock.extra = 1;
         let mut minute = 90;
-        while minute < 0x7e && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
+        while minute < 0x7e && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random) {
             minute += 1;
         }
         if after_extra_time(matches, live) {
             clock.extra = 2;
-            tick(matches, live, 0x78, &mut clock, records.as_deref(), today, random);
+            tick(matches, live, 0x78, &mut clock, records.as_deref_mut(), today, random);
         }
     }
     // The day loop's per-match passes: what the ninety minutes leave on
@@ -542,7 +542,7 @@ fn tick(
     live: bool,
     minute: i16,
     clock: &mut Clock,
-    records: Option<&Records>,
+    mut records: Option<&mut Records>,
     today: NaiveDate,
     random: &mut Random,
 ) -> bool {
@@ -554,7 +554,7 @@ fn tick(
                 if minute == 10 {
                     m.score10 = [m.goals[0] as u8, m.goals[1] as u8];
                 }
-                minute_play(m, clock, records, random);
+                minute_play(m, clock, records.as_deref_mut(), random);
                 if minute < m.ends_at.max(45) {
                     run = true;
                 } else {
@@ -569,7 +569,7 @@ fn tick(
         for m in matches.iter_mut() {
             if live || m.nat_bits == 0 {
                 if m.flags & FINISHED == 0 {
-                    minute_play(m, clock, records, random);
+                    minute_play(m, clock, records.as_deref_mut(), random);
                     if minute < m.ends_at.max(90) {
                         run = true;
                     } else {
@@ -594,7 +594,7 @@ fn tick(
         let mut run = false;
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & EXTRA != 0 {
-                minute_play(m, clock, records, random);
+                minute_play(m, clock, records.as_deref_mut(), random);
                 if minute < m.ends_at.max(120) {
                     run = true;
                 } else {
@@ -606,7 +606,7 @@ fn tick(
     } else {
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & PENS != 0 {
-                penalties(m, records, today, random);
+                penalties(m, records.as_deref(), today, random);
             }
         }
         false
@@ -617,11 +617,11 @@ fn tick(
 /// both sides' rated strengths come out of their strengths, stance, tactic,
 /// mood and the foe's form, fatigue accumulates — and what the minute is
 /// worth in chances follows.
-fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
+fn minute_play(m: &mut Match, clock: &Clock, mut records: Option<&mut Records>, random: &mut Random) {
     if m.flags & (MINUTE_UP | OVER) != 0 {
         return;
     }
-    national_tactics(m, records);
+    national_tactics(m, records.as_deref());
     let extra = m.flags & EXTRA != 0;
     if m.advantage < 0 {
         if m.advantage as i32 + 90 < clock.minute as i32 {
@@ -709,7 +709,7 @@ fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: 
     // walk), the set pieces (`FUN_006f543f`) and, when those come to
     // nothing, open play (`FUN_006f562b`) — that path is a later piece.
     if !is_national(m.ids[0]) && !is_national(m.ids[2]) {
-        chance_minute(m, clock, records, random);
+        chance_minute(m, clock, records.as_deref_mut(), random);
         morale_talk(m, clock, random);
     } else {
         // FUN_0063dd1c()/FUN_0063df96() pair the clubs, FUN_00658b30(club,
@@ -1039,6 +1039,153 @@ fn straight_red(m: &mut Match, which: usize, records: &Records, minute: i16, ran
     Some(kind)
 }
 
+/// The injury kinds' rows as the match's injury reads them
+/// (`DAT_008ac340`, ten bytes a kind, kinds 0 to 0x43): byte 0 whether a
+/// lingering knock of the kind comes back — 1 as itself, 2 as the worse
+/// kind `FUN_00766c1b` names —, byte 1 the base days, byte 5 the weight
+/// of the draw.
+const INJURY_RECURS: [u8; 0x44] = [
+    0, 0, 0, 1, 1, 1, 1, 0, 1, 2, 0, 1, 1, 0, 2, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 1, 1, 1, 0, 0, 0,
+    1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const INJURY_DAYS: [u8; 0x44] = [
+    56, 56, 182, 28, 14, 31, 21, 56, 21, 21, 35, 21, 7, 28, 28, 21, 56, 42, 10, 10, 28, 28, 140, 14, 84, 7, 3, 182, 7,
+    49, 140, 3, 7, 21, 21, 42, 35, 112, 28, 21, 5, 7, 49, 7, 7, 14, 14, 3, 49, 21, 10, 84, 7, 28, 42, 49, 14, 14, 14,
+    42, 42, 2, 28, 14, 21, 56, 42, 112,
+];
+const INJURY_WEIGHTS: [u8; 0x44] = [
+    1, 1, 1, 2, 3, 2, 3, 1, 2, 2, 2, 3, 2, 2, 2, 2, 2, 1, 2, 2, 1, 1, 1, 1, 1, 3, 2, 0, 2, 1, 2, 1, 4, 4, 2, 1, 3, 1, 2,
+    4, 3, 4, 1, 1, 3, 4, 1, 1, 1, 1, 0, 2, 1, 3, 0, 1, 2, 3, 1, 1, 1, 1, 2, 3, 2, 2, 2, 1,
+];
+/// The kinds a club with its flag bit 2 (club +0xfd, team +0x874) draws
+/// only above 74 of a hundred.
+const SPARED_KINDS: [u8; 6] = [6, 0xc, 0x21, 0x27, 0x2d, 0x39];
+/// The ids of men (`FUN_00767686` skips the places above).
+const MEN_BELOW: i16 = 0x4269;
+
+/// A man's lingering knock as the live object holds it: his days out
+/// (+0x2c, reckoned from the record's end) one to six and a kind
+/// (+0x2e, the record's +0x228) under 0x3e — its row's byte 0, else
+/// nought.
+fn lingering(records: &Records, p: &Player) -> (u8, u8) {
+    let days = crate::load::days_to(&records.globals, p.injured_to());
+    let kind = p.injury_kind();
+    if (1..7).contains(&days) && kind != 0 && kind < 0x3e {
+        (kind, INJURY_RECURS[usize::from(kind)])
+    } else {
+        (kind, 0)
+    }
+}
+
+/// The injury's candidates (`FUN_00767686`): each place of the eleven
+/// with a man stands ten times, seventeen with a lingering knock; the
+/// knock bit 2 (record +0x218, the live +0x14) halves that, else the
+/// bit 4 adds two. The man at the side's +0x18 (+0x74 for the first,
+/// +0x268 for the second — `FUN_006782aa` says which the club is) adds
+/// twenty, the second side's fifty; no ported walk fills that field, so
+/// nobody draws the extra.
+fn injury_candidates(eleven: &[u16], records: &Records) -> Vec<u8> {
+    let mut list = Vec::new();
+    for (slot, &id) in eleven.iter().enumerate().take(11) {
+        if id == 0 || MEN_BELOW <= id as i16 {
+            continue;
+        }
+        let Some(p) = records.player(id) else { continue };
+        let mut weight: u16 = if lingering(records, p).1 != 0 { 0x11 } else { 10 };
+        if p.knocks() & 2 != 0 {
+            weight /= 2;
+        } else if p.knocks() & 4 != 0 {
+            weight += 2;
+        }
+        list.extend(std::iter::repeat_n(slot as u8, usize::from(weight)));
+    }
+    list
+}
+
+/// The injury's kind (`FUN_00766c1b`): a lingering knock comes back on
+/// one throw of two — its own kind, or for a row's byte 2 the kinds 9,
+/// 14 and 29 as 10, 16 and 30 —, else a draw over the kinds 1 to 61 by
+/// their weights, a club with its flag bit 2 throwing a hundred for each
+/// of `SPARED_KINDS` and keeping it only above 74; the walk stops one
+/// band late as `training_day`'s does. A torn muscle (0x25) of a man
+/// under 35 fresh is the worse 0x43.
+fn injury_kind(records: &Records, p: &Player, flags: u8, random: &mut Random) -> u8 {
+    let (kind, recurs) = lingering(records, p);
+    let mut drawn = 0;
+    if recurs != 0 && random.below(2) != 0 {
+        drawn = if recurs == 2 {
+            match kind {
+                9 => 10,
+                0xe => 0x10,
+                0x1d => 0x1e,
+                _ => 0,
+            }
+        } else {
+            kind
+        };
+    }
+    if drawn == 0 {
+        let mut kinds = Vec::new();
+        let mut starts = Vec::new();
+        let mut total = 0i32;
+        for k in 1..0x3e_u8 {
+            if flags & 2 != 0 && SPARED_KINDS.contains(&k) && random.below(100) <= 0x4a {
+                continue;
+            }
+            kinds.push(k);
+            starts.push(total);
+            total += i32::from(INJURY_WEIGHTS[usize::from(k)]);
+        }
+        let roll = random.below(total as u32) as i32;
+        let mut at = 0;
+        while at + 1 < kinds.len() && starts[at] <= roll {
+            at += 1;
+        }
+        drawn = kinds[at];
+    }
+    if drawn == 0x25 && crate::computer_training::fresh_percent(p) < 0x23 {
+        drawn = 0x43;
+    }
+    drawn
+}
+
+/// The chance frame's injury, rolls 900 to 903 (`FUN_0065cd8a`, side
+/// two's `FUN_0065ce98`): a throw over the candidates names the place,
+/// and its man takes the kind `injury_kind` draws (`FUN_00766eb9`) for
+/// the kind's base days as the club's doctors shorten them
+/// (`training_day::cared_days`), from today (+0x2a, `DAT_00b5cbd4`);
+/// kinds 0x1b and 0x1e may leave the knee knock (`FUN_007675c6`), and
+/// the live object goes back to the record (`FUN_006364cf`). The
+/// place's spot on the pitch (`FUN_00696cc5`, +0xae8/+0xae6) and the
+/// match's own injury event (`FUN_0065c8b1` — the man's way off, the
+/// news) are seams. Returns the man and his kind.
+fn injury(m: &mut Match, which: usize, records: &mut Records, random: &mut Random) -> Option<(u16, u8)> {
+    let at = which * 2;
+    let team = records.team(m.ids[at], m.ids[at + 1])?;
+    let (flags, spent) = (team.get::<u8>(training_day::CLUB_FLAGS), team.get::<i32>(MEDICAL_SPENT));
+    let eleven = pitch_eleven(m, which, records);
+    let list = injury_candidates(&eleven, records);
+    if list.is_empty() {
+        return None;
+    }
+    let slot = usize::from(list[random.below(list.len() as u32) as usize]);
+    let id = eleven[slot];
+    let p = records.player(id)?;
+    let kind = injury_kind(records, p, flags, random);
+    if kind == 0 {
+        return None;
+    }
+    let days = training_day::cared_days(spent, INJURY_DAYS[usize::from(kind)], random);
+    let today = records.globals.day();
+    training_day::injure(records, id, kind, days, i32::from(today));
+    if let Some(date) = records.globals.date_of(today as i16) {
+        training_day::knee_knock(records, id, kind, date, random);
+    }
+    Some((id, kind))
+}
+/// The club's medical spending (club +0x2ac, team +0x314).
+const MEDICAL_SPENT: usize = 0x314;
+
 /// The card (`FUN_0065a6b0`, side two's `FUN_0065ab3a`, here with the
 /// sixth parameter nought and the seventh one): a man standing in the
 /// eleven lifts the match's bookings at +0x45a. His first card cautions
@@ -1087,13 +1234,13 @@ fn book_card(m: &mut Match, which: usize, id: u16, eleven: &[u16], kind: i16, bo
 /// first side's attack an eighth. A roll under the side's share opens the
 /// chance — its shape by the minute kind and the shot's quality — and the
 /// frame closes with the bookings the last minute left.
-fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
+fn chance_minute(m: &mut Match, clock: &Clock, mut records: Option<&mut Records>, random: &mut Random) {
     // The chooser's set moment becomes a foul at the match's club:
     // FUN_0065b0b5 when it picked the first side, FUN_0065bd27 the second
     // (each through the club slot FUN_0063dd1c); without the save there
     // is no club to book.
     let picked = chance_chooser(m, random);
-    if let (1 | 2, Some(records)) = (picked, records) {
+    if let (1 | 2, Some(records)) = (picked, records.as_deref()) {
         booking(m, picked as usize - 1, records, random);
     }
     // The four chance weights: support and attack per side, as floats.
@@ -1119,7 +1266,7 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
         attack *= 1.08;
     }
     let defend = w[1][0] + w[1][1];
-    chance_for(m, 0, attack, clock.minute, records, random);
+    chance_for(m, 0, attack, clock.minute, records.as_deref_mut(), random);
     chance_for(m, 1, defend, clock.minute, records, random);
     // What the last minute's booking left (`FUN_00413115`): the match-day
     // state takes it (`FUN_00412cf2` per side, its bit +0x80 saying
@@ -1132,7 +1279,7 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
 /// One side's half of the frame: a thousand-wide roll against its share;
 /// past it (or past fifteen goals for the side) no chance, though the
 /// roll's own marks set events off: 699 the straight red (`straight_red`),
-/// 900..903 the injury (a seam). Inside, the
+/// 900..903 the injury (`injury`). Inside, the
 /// minute kind under 90 is a plain chance — the quality-one shot runs the
 /// `FUN_00659d2b` event (side two's `FUN_0065a3e1`) and counts twice, once
 /// in the event and once in the frame; every other imperfect shot counts
@@ -1144,16 +1291,22 @@ fn chance_for(
     which: usize,
     weight: f32,
     minute: i16,
-    records: Option<&Records>,
+    records: Option<&mut Records>,
     random: &mut Random,
 ) {
     let roll = random.below(1000);
     if weight <= roll as f32 || 15 < m.goals[which] {
         // roll 699: FUN_0065b894 (side two's FUN_0065bf36), each through
         // the club slot FUN_0063dd1c — without the save no club to book;
-        // 899 < roll < 904: FUN_0065cd8a / FUN_0065ce98 — the injury, a seam.
-        if let (699, Some(records)) = (roll, records) {
-            straight_red(m, which, records, minute, random);
+        // 899 < roll < 904: FUN_0065cd8a / FUN_0065ce98, the injury.
+        match (roll, records) {
+            (699, Some(records)) => {
+                straight_red(m, which, records, minute, random);
+            }
+            (900..=903, Some(records)) => {
+                injury(m, which, records, random);
+            }
+            _ => {}
         }
         return;
     }
@@ -1163,7 +1316,7 @@ fn chance_for(
         if quality == 1 {
             // The shot event raises the byte itself; the frame raises once
             // more, so a quality-one chance costs the side two counts.
-            let men = records.map(|r| (side_men(m, which, r), side_men(m, 1 - which, r)));
+            let men = records.as_deref().map(|r| (side_men(m, which, r), side_men(m, 1 - which, r)));
             shot_event(
                 m,
                 which,
@@ -3643,7 +3796,7 @@ mod tests {
     fn the_walks_penalty_minute_settles_the_saved_tie() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         // the first German club's eleven on both pitches, a level tie
         // after extra time: the walk's penalty minute now calls the
         // shootout itself, and the saved men's ages make the kicks dice
@@ -3659,7 +3812,7 @@ mod tests {
             false,
             0x78,
             &mut clock,
-            Some(&records),
+            Some(&mut records),
             test_day(),
             &mut r,
         );
@@ -4409,7 +4562,7 @@ mod tests {
         assert_eq!(foul_kind(&FOULS_OTHER, 5, 0x20), 31);
         assert_eq!(foul_kind(&FOULS_TRAIT, 27, 1), 1, "a throw past the table names one");
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         let mut m = fixture();
         m.ids = [0, 0, 0, 1];
         m.sides[0].men = 11;
@@ -4483,7 +4636,7 @@ mod tests {
             m.sides[1].men = 11;
             let mut random = Random::new(seed);
             for _ in 0..90 {
-                chance_minute(&mut m, &Clock::default(), Some(&records), &mut random);
+                chance_minute(&mut m, &Clock::default(), Some(&mut records), &mut random);
             }
             0 < m.bookings
         });
@@ -4504,7 +4657,7 @@ mod tests {
         assert_eq!(foul_kind(&REDS_OTHER, 0, 1), 26);
         assert_eq!(foul_kind(&REDS_OTHER, 6, 1), 32);
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         let side = |men| {
             let mut m = fixture();
             m.ids = [0, 0, 0, 1];
@@ -4541,11 +4694,67 @@ mod tests {
         let mut random = Random::new(7);
         let mut other = Random::new(7);
         for _ in 0..20_000 {
-            chance_for(&mut m, 0, 0.0, 60, Some(&records), &mut random);
+            chance_for(&mut m, 0, 0.0, 60, Some(&mut records), &mut random);
             chance_for(&mut bare, 0, 0.0, 60, None, &mut other);
         }
         assert_eq!((m.sides[0].men, m.sides[0].straight_reds, m.bookings), (9, 2, 2));
         assert_eq!((bare.sides[0].men, bare.bookings), (11, 0));
         assert_eq!(m.sides[1], side(11).sides[1], "the other side stands untouched");
+    }
+
+    #[test]
+    fn rolls_900_to_903_injure_a_man() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        // the kinds' rows stand as the exe holds them
+        let exe = a3_files::exe::Exe::open(&game.join("anstoss3.exe")).unwrap();
+        let rows = exe.bytes(0x8ac340, 10 * 0x44).unwrap();
+        for (k, row) in rows.chunks(10).enumerate() {
+            assert_eq!((row[0], row[1], row[5]), (INJURY_RECURS[k], INJURY_DAYS[k], INJURY_WEIGHTS[k]), "kind {k}");
+        }
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 1];
+        m.sides[0].men = 11;
+        let eleven = pitch_eleven(&m, 0, &records);
+        let list = injury_candidates(&eleven, &records);
+        for (slot, &id) in eleven.iter().enumerate() {
+            let n = list.iter().filter(|&&s| usize::from(s) == slot).count();
+            assert!(id == 0 || (5..=0x13).contains(&n), "place {slot}: {n}");
+        }
+        // a lingering knock comes back on about half the throws, a row's
+        // byte 2 as the worse kind
+        let id = eleven[0];
+        crate::medical::injure_for(&mut records, id, 3);
+        for (kind, back) in [(3u8, 3u8), (9, 10), (0x1d, 0x1e)] {
+            records.player_mut(id).unwrap().set_injury_kind(kind);
+            let p = records.player(id).unwrap();
+            assert_eq!(lingering(&records, p).1, INJURY_RECURS[usize::from(kind)]);
+            let again = (0..400).filter(|&s| injury_kind(&records, p, 0, &mut Random::new(s)) == back).count();
+            assert!((150..260).contains(&again), "kind {kind}: {again}");
+        }
+        // the spared kinds come up less for a club with the flag bit 2
+        let p = records.player(eleven[1]).unwrap();
+        let spared = |flags| (0..3000).filter(|&s| SPARED_KINDS.contains(&injury_kind(&records, p, flags, &mut Random::new(s)))).count();
+        assert!(spared(2) * 2 < spared(0), "{} {}", spared(2), spared(0));
+        // the man takes the kind from today for a day at least
+        let (man, kind) = injury(&mut m, 0, &mut records, &mut Random::new(5)).unwrap();
+        assert!(eleven.contains(&man));
+        let p = records.player(man).unwrap();
+        assert!(matches!(kind, 1..=0x3d | 0x43));
+        assert_eq!((p.injury_kind(), p.injured_on()), (kind, records.globals.day()));
+        assert!(1 <= crate::load::days_to(&records.globals, p.injured_to()));
+        // the frame's rolls 900..903 injure a man now and then; without
+        // the save nothing happens
+        let mut fresh = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let hurt = |records: &Records| {
+            eleven.iter().filter(|&&id| id != 0 && records.player(id).unwrap().injured_on() == records.globals.day()).count()
+        };
+        assert_eq!(hurt(&fresh), 0);
+        let mut random = Random::new(9);
+        for _ in 0..3000 {
+            chance_for(&mut m, 0, 0.0, 60, Some(&mut fresh), &mut random);
+        }
+        assert!(0 < hurt(&fresh));
     }
 }
