@@ -113,6 +113,93 @@ pub(crate) fn refill(records: &mut Records, random: &mut Random, club: (u8, i16)
     write(records, club, &plan);
 }
 
+/// A wanted position as the bids read it (+0x14 + 6k): the position, the
+/// strength wished for, how badly, the status the club takes its seat at
+/// the talk with (+4) and the deal sought (+5: 2 a loan, else a
+/// purchase).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Wanted {
+    pub position: u8,
+    pub strength: u8,
+    pub need: i16,
+    pub status: u8,
+    pub deal: u8,
+}
+
+/// A club's plan as its bids read it (`FUN_0069d0ca`'s copy).
+pub(crate) struct Search([u8; PLAN_SIZE]);
+
+/// The chance in its odds a club bids at all, and the least one when a
+/// position is wanted badly, before and after day 216.
+const BID_CHANCE: [f32; 2] = [30.0, 50.0];
+const BID_LEAST: [f32; 2] = [20.0, 40.0];
+/// What a budget's share of a position is raised by (`FUN_004279f8`).
+const SHARE_BASE: i32 = 25;
+
+impl Search {
+    pub(crate) fn of(records: &Records, club: (u8, i16)) -> Self {
+        Self(read(records, club))
+    }
+
+    /// The budget (`FUN_006a017f`).
+    pub(crate) fn budget(&self) -> i32 {
+        long(&self.0, 0)
+    }
+
+    /// The wanted positions, three at most.
+    pub(crate) fn wanted(&self) -> Vec<Wanted> {
+        let n = usize::try_from(count(&self.0)).unwrap_or(0).min(WANTED_MOST as usize);
+        (0..n)
+            .map(|k| {
+                let e = &self.0[WANTED + k * WANTED_SIZE..][..WANTED_SIZE];
+                Wanted {
+                    position: e[0],
+                    strength: e[1],
+                    need: i16::from_le_bytes([e[2], e[3]]),
+                    status: e[4],
+                    deal: e[5],
+                }
+            })
+            .collect()
+    }
+
+    /// The chance in its odds the club bids this week (`FUN_006a0dcc`):
+    /// none without a wanted position; else 30 (50 after day 216), times
+    /// the budget over the plan's +8 when that is above nought (who sets
+    /// it is not traced), at least 20 (40) with a need above one, cut to
+    /// a whole number.
+    pub(crate) fn chance(&self, late: bool) -> i16 {
+        let wanted = self.wanted();
+        if count(&self.0) < 1 {
+            return 0;
+        }
+        let mut chance = BID_CHANCE[usize::from(late)];
+        let against = long(&self.0, 8);
+        if against > 0 {
+            chance = (f64::from(self.budget()) / f64::from(against) * f64::from(chance)) as f32;
+        }
+        if wanted.iter().any(|w| w.need > 1) {
+            chance = chance.max(BID_LEAST[usize::from(late)]);
+        }
+        chance as i32 as i16
+    }
+
+    /// What the club may spend on the `k`th wanted position: its need's
+    /// share in a hundred of all needs (100 when they sum under one,
+    /// `FUN_006a0e9b`) and 25 more, times the budget's hundredth.
+    pub(crate) fn budget_for(&self, k: usize) -> u32 {
+        let wanted = self.wanted();
+        let share = match wanted.get(k) {
+            None => 0,
+            Some(w) => {
+                let sum: i32 = wanted.iter().map(|w| i32::from(w.need)).sum();
+                if sum < 1 { 100 } else { (i32::from(w.need) * 100 / sum) as i16 }
+            }
+        };
+        ((self.budget() / 100).wrapping_mul(i32::from(share) + SHARE_BASE)) as u32
+    }
+}
+
 /// The budget the week's refill leaves (`FUN_0069ff5e`).
 fn refilled(records: &Records, team: &crate::records::Team, plan: &[u8; PLAN_SIZE]) -> i32 {
     let mut budget = long(plan, BASE);

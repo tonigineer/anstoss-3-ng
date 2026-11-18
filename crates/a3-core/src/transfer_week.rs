@@ -27,13 +27,16 @@
 //!
 //! After it a computer club's transfer budget is refilled and, in the
 //! first week of November, its wanted positions planned anew
-//! ([`crate::search_plan::refill`]); then it may let go of a man of a
-//! position it holds too many of, for a fee or, early in the season, on
-//! loan (the end of `FUN_004279f8`).
+//! ([`crate::search_plan::refill`]); on a draw of its odds it bids for
+//! the listed men of the positions it wants ([`crate::bids::bid`]); then
+//! it may let go of a man of a position it holds too many of, for a fee
+//! or, early in the season, on loan (the end of `FUN_004279f8`).
 //!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — the men they scouted, their bids
-//! for the wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
+//! in `FUN_004279f8` and `FUN_004297e1` — the men they scouted, their
+//! looking among the free and foreign players when nobody listed suits
+//! (`FUN_004266a6`), their other bids (`FUN_006c41b1`, `FUN_00427494`)
+//! — and
 //! the European clubs' (`FUN_0069d3dd`) and the closing passes
 //! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
 //! original's while those are missing.
@@ -73,6 +76,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     let kept: Vec<u16> = (1..COUNTRIES).filter(|&c| records.countries.kind(c) == KEPT).map(|c| c as u16).collect();
     let played = crate::opponent::played_nations(records);
     let countries = kept.iter().map(|&c| (c, false)).chain(played.iter().map(|&c| (c, true)));
+    let mut busy = crate::bids::Busy::default();
     for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             if played && today & 3 == i32::from(number & 3) {
@@ -88,6 +92,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
             }
             if !human {
                 crate::search_plan::refill(records, random, (country as u8, number as i16));
+                crate::bids::bid(records, rules, (country, number), SALE_ODDS[usize::from(played)], &mut busy, random);
                 sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
             }
         }

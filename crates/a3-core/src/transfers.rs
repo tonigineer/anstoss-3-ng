@@ -380,6 +380,94 @@ pub fn book(
     true
 }
 
+/// A computer club's new appointment (`FUN_0076215b`): the kind, the day,
+/// two clubs, the player; the seller's dword at +8 and as the first club
+/// (its status and weight bytes left as the place held them), the buyer
+/// second with its status and no weight, the terms cleared; only while
+/// there is room and the day has not gone by. (The seller's second byte is
+/// the original's stale stack, written here as nought.)
+pub(crate) fn book_bid(
+    records: &mut Records,
+    kind: i16,
+    day: i16,
+    player: u16,
+    seller: Side,
+    buyer: Side,
+    status: u8,
+) -> bool {
+    let today = records.globals.day() as i16;
+    let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return false };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0);
+    let e = TALKS_FIRST + count * TALK;
+    if count >= MOST_TALKS || day < today || b.len() < e + TALK {
+        return false;
+    }
+    put16(b, e + TALK_KIND, kind);
+    put16(b, e + TALK_DAY, day);
+    put16(b, e + TALK_CLUBS, 2);
+    put16(b, e + TALK_PLAYER, player as i16);
+    for at in [e + TALK_HIS_CLUB, e + CLUB_AT] {
+        b[at] = seller.0;
+        b[at + 1] = 0;
+        put16(b, at + 2, seller.1);
+    }
+    let at = e + CLUB_AT + CLUB;
+    b[at] = buyer.0;
+    put16(b, at + 2, i16::from(buyer.1 as u8));
+    b[at + 4] = status;
+    b[at + 5] = 0;
+    b[e + TALK_TERMS..e + TALK_TERMS + TERMS].fill(0);
+    put16(b, 0, count as i16 + 1);
+    true
+}
+
+/// A computer club joins the player's appointment (`FUN_00762246`): not
+/// a full table (seven), not twice; behind the last, or before those
+/// from the third on who weigh less, with its status and weight. Whether
+/// it joined.
+pub(crate) fn join_bid(records: &mut Records, player: u16, buyer: Side, status: u8, weight: u8) -> bool {
+    let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return false };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0);
+    let Some(e) = (0..count)
+        .map(|k| TALKS_FIRST + k * TALK)
+        .find(|&e| word(b, e + TALK_PLAYER) as u16 == player)
+    else {
+        return false;
+    };
+    let n = word(b, e + TALK_CLUBS);
+    if n >= MOST_JOINED as i16 {
+        return false;
+    }
+    let seated = usize::try_from(n).unwrap_or(0);
+    if (0..seated).any(|k| side(b, e, k) == (buyer.0, i16::from(buyer.1 as u8))) {
+        return false;
+    }
+    let mut k: isize = if n == 1 { 0 } else { n as isize - 1 };
+    if n != 1 {
+        while k > 1 && b[e + CLUB_AT + k as usize * CLUB + 5] < weight {
+            let at = e + CLUB_AT + k as usize * CLUB;
+            b.copy_within(at..at + CLUB, at + CLUB);
+            k -= 1;
+        }
+    }
+    let at = e + CLUB_AT + (k + 1) as usize * CLUB;
+    b[at] = buyer.0;
+    put16(b, at + 2, i16::from(buyer.1 as u8));
+    b[at + 4] = status;
+    b[at + 5] = weight;
+    put16(b, e + TALK_CLUBS, n + 1);
+    true
+}
+
+/// The transfer list's entries as they stand (0x1c bytes each).
+pub(crate) fn list_entries(records: &Records) -> Vec<[u8; LIST_ENTRY]> {
+    let Some(b) = records.block(&list_name()) else { return Vec::new() };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(LIST_SIZE);
+    (0..count)
+        .filter_map(|k| b.get(LIST_FIRST + k * LIST_ENTRY..)?.get(..LIST_ENTRY)?.try_into().ok())
+        .collect()
+}
+
 /// Our club joins the player's appointment (`FUN_00762691`): not a full
 /// table, not twice; after the second club, before those weighing less
 /// than a human. Whether it joined.
