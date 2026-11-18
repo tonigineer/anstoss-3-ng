@@ -493,6 +493,107 @@ fn international_pair(records: &Records, entry: usize, column: usize, k: usize) 
     (a < count && b < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * b)))
 }
 
+/// The qualifiers' calendar every group copies to its +0x9e
+/// (`DAT_008a32c0`, `FUN_006b7cf3`): ten matchdays of three pairs, each
+/// a pair of the group's slots.
+const QUALIFIER_SCHEDULE: [u8; 0x3c] = [
+    0, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 0, 0, 2, 3, 5, 1, 4, 1, 5, 2, 4, 3, 0, 0, 4, 2, 5, 3, 1, //
+    1, 0, 3, 2, 5, 4, 2, 1, 4, 3, 0, 5, 2, 0, 5, 3, 4, 1, 5, 1, 4, 2, 0, 3, 4, 0, 5, 2, 1, 3,
+];
+/// The tournaments' hosts by year (`DAT_00ae6298[(year % 100) / 2]`).
+const HOSTS_AT: usize = 0xae6298;
+/// The European ranking the pots come from (`DAT_00b5d1a8`, 0x24 a row):
+/// its first twelve, the next twelve and the last thirteen
+/// (`FUN_0067bce4` with 6, 4 and 3).
+const RANKING_AT: usize = 0xb5d1a8;
+const RANKING_ROW: usize = 0x24;
+const POTS: [(usize, usize); 3] = [(0, 0xc), (0xc, 0x18), (0x18, 0x25)];
+/// The tournament's knockout round, none till it starts (`DAT_00b5dfc0`).
+const KNOCKOUT_ROUND: usize = 0xb5dfc0;
+const SEASON_AT: usize = 0xb5cbc8;
+/// A group's results from +0xe, six rows of six four-byte cells, 0xff
+/// while unplayed (`FUN_006b7cb3`).
+const GROUP_RESULTS: usize = 0xe;
+const GROUP_RESULTS_LEN: usize = 0x90;
+const GROUP_SIZE: usize = 6;
+
+/// The qualifying groups drawn at the turn of an even year
+/// (`FUN_0067c02f`, the new season's block of `FUN_006da3a9`): from the
+/// second season on the odd years keep theirs. The tournament two years
+/// on has its host left out (`DAT_00ae6298[((year + 2) % 100) / 2]`); the
+/// six groups start empty with their calendar, and the slots fill in turn
+/// — slot k is group k mod 6, place k / 6: first the European nations the
+/// humans coach (`FUN_0067c602`, the manager's +0x17e6) drawn among
+/// themselves, then the ranking's first twelve, its next twelve and its
+/// last thirteen, each drawn at random and the drawn one's place taken by
+/// the pot's last (`FUN_0067bf0f`). Each group then closes up its empty
+/// places and counts the rest (`FUN_006b82f7`), and the knockout round
+/// stands at none. (The first season, started in an odd year, draws the
+/// qualifiers for the coming year's tournament and plays their first five
+/// matchdays at once by the nations' strength — unported, as the replica
+/// opens no first season here.)
+pub fn draw_qualifiers(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
+    let year = i32::from(records.globals.start_year());
+    if records.globals.get::<i16>(SEASON_AT) <= 1 || year % 2 != 0 {
+        return;
+    }
+    let host = i16::from(records.countries.get::<u8>(HOSTS_AT + usize::try_from((year + 2) % 100 / 2).unwrap_or(0)));
+    records.globals.put::<u16>(KNOCKOUT_ROUND, 0xffff);
+    let mut humans: Vec<i16> = records
+        .managers
+        .iter()
+        .take(usize::from(records.globals.humans()))
+        .map(|m| m.national_team())
+        .filter(|&n| n != 0 && n != host && usize::try_from(n).ok().and_then(|n| european.get(n)).copied().unwrap_or(false))
+        .collect();
+    let mut pots: Vec<Vec<i16>> = POTS
+        .iter()
+        .map(|&(from, to)| {
+            (from..to)
+                .map(|row| records.globals.get::<i16>(RANKING_AT + row * RANKING_ROW))
+                .filter(|&n| n != 0 && n != host && !humans.contains(&n))
+                .collect()
+        })
+        .collect();
+    let Some(groups) = records.block_mut(&format!("{DATE_ENTRIES:#x}")) else {
+        return;
+    };
+    for g in 0..QUALIFYING_GROUPS {
+        let Some(e) = groups.get_mut(g * DATE_ENTRY..(g + 1) * DATE_ENTRY) else {
+            return;
+        };
+        e.fill(0);
+        put16(e, 0, GROUP_SIZE as i16);
+        e[GROUP_RESULTS..GROUP_RESULTS + GROUP_RESULTS_LEN].fill(0xff);
+        e[DATE_PAIRS..DATE_PAIRS + QUALIFIER_SCHEDULE.len()].copy_from_slice(&QUALIFIER_SCHEDULE);
+    }
+    let mut slot = 0;
+    for (k, pot) in pots.iter_mut().enumerate() {
+        while !pot.is_empty() || (k == 0 && !humans.is_empty()) {
+            let from = if humans.is_empty() { &mut *pot } else { &mut humans };
+            let nation = from.swap_remove(random.below(from.len() as u32) as usize);
+            // A place past the sixth runs into the results, as there.
+            let at = (slot % QUALIFYING_GROUPS) * DATE_ENTRY + DATE_NATIONS + (slot / QUALIFYING_GROUPS) * 2;
+            if let Some(w) = groups.get_mut(at..at + 2) {
+                w.copy_from_slice(&nation.to_le_bytes());
+            }
+            slot += 1;
+        }
+    }
+    for g in 0..QUALIFYING_GROUPS {
+        let e = &mut groups[g * DATE_ENTRY..(g + 1) * DATE_ENTRY];
+        let count = usize::try_from(word(e, 0)).unwrap_or(0);
+        let kept: Vec<i16> = (0..count).map(|k| word(e, DATE_NATIONS + 2 * k)).filter(|&n| n != 0).collect();
+        for (k, &n) in kept.iter().enumerate() {
+            put16(e, DATE_NATIONS + 2 * k, n);
+        }
+        put16(e, 0, kept.len() as i16);
+        for k in kept.len()..GROUP_SIZE {
+            put16(e, DATE_NATIONS + 2 * k, 0);
+        }
+    }
+}
+
 /// Whether entry `entry` of the international dates names `nation`
 /// (`FUN_006b7d18`).
 fn entry_holds(records: &Records, entry: usize, nation: i16) -> bool {
@@ -1035,6 +1136,63 @@ mod tests {
     /// every national team's next match comes out as the original's — the
     /// human coach's qualifier, the rest's first friendly against the
     /// loader's leftover — but for the referee the original draws.
+    /// The qualifiers drawn at the turn as the original drew them on
+    /// NewSeason000 (season 2, 2026, its human coaching nation 23): six
+    /// groups of six with their calendar and no result, the human's nation
+    /// first in the first group, each pair of places holding the same pot
+    /// of the ranking as the original's; the tournament's groups stand. An
+    /// odd year keeps its groups.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_qualifiers_draw_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves");
+            return;
+        }
+        let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let (mut ours, theirs) = (load(), load());
+        let data = crate::data::Data::load(&dir).unwrap();
+        let name = format!("{DATE_ENTRIES:#x}");
+        ours.block_mut(&name).unwrap()[..QUALIFYING_GROUPS * DATE_ENTRY].fill(0x55);
+        ours.globals.put::<u16>(KNOCKOUT_ROUND, 7);
+        draw_qualifiers(&mut ours, &data.rules.pitch.european, &mut crate::random::Random::new(3));
+        let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+        assert_eq!(a[QUALIFYING_GROUPS * DATE_ENTRY..], b[QUALIFYING_GROUPS * DATE_ENTRY..], "the tournament's groups stand");
+        assert_eq!(ours.globals.get::<u16>(KNOCKOUT_ROUND), 0xffff);
+        // Slot k is group k mod 6, place k / 6; each slot's nation comes
+        // from the same pot as the original's: the human's, then the
+        // ranking's rows below 12, 24 and 37.
+        let drawn = |blk: &[u8]| -> Vec<i16> {
+            (0..36).map(|k| word(&blk[(k % QUALIFYING_GROUPS) * DATE_ENTRY..], DATE_NATIONS + 2 * (k / QUALIFYING_GROUPS))).collect()
+        };
+        let pot = |n: i16| {
+            if n == 23 {
+                return 0;
+            }
+            let row = (0..0x25).position(|row| theirs.globals.get::<i16>(RANKING_AT + row * RANKING_ROW) == n).expect("ranked");
+            1 + POTS.iter().position(|&(from, to)| (from..to).contains(&row)).unwrap()
+        };
+        for g in 0..QUALIFYING_GROUPS {
+            let (x, y) = (&a[g * DATE_ENTRY..(g + 1) * DATE_ENTRY], &b[g * DATE_ENTRY..(g + 1) * DATE_ENTRY]);
+            assert_eq!(word(x, 0), 6);
+            assert_eq!(x[GROUP_RESULTS..], y[GROUP_RESULTS..], "group {g}'s results and calendar");
+        }
+        let (mut x, mut y) = (drawn(a), drawn(b));
+        assert_eq!(x[0], 23, "the human's nation leads");
+        assert_eq!(x.iter().map(|&n| pot(n)).collect::<Vec<_>>(), y.iter().map(|&n| pot(n)).collect::<Vec<_>>());
+        x.sort_unstable();
+        y.sort_unstable();
+        assert_eq!(x, y, "the same 36 nations");
+        let mut odd = load();
+        odd.globals.set_start_year(2027);
+        let before = odd.block(&name).unwrap().to_vec();
+        draw_qualifiers(&mut odd, &data.rules.pitch.european, &mut crate::random::Random::new(3));
+        assert_eq!(odd.block(&name).unwrap(), &before[..]);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_nations_next_matches_come_out_as_the_original() {
