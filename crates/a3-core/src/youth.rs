@@ -37,7 +37,7 @@ const SEASON_MONTH: u8 = 7;
 /// A club's amateur pool (`0x8dd4c8[i]`, from +0x20): five who moved up,
 /// then five amateurs.
 const POOL_AT: u32 = 0x8dd4c8;
-const POOL: usize = 5;
+pub(crate) const POOL: usize = 5;
 
 /// The youth talks booked (`0x1c53b88`, from +0x20): a count, then
 /// entries of 10 bytes from +2, the player first (`FUN_00763b0c`).

@@ -7,11 +7,12 @@
 //! loses a point and may give up (2600 to 2609), or, the richer the club
 //! the likelier, it takes a new youth — three a season at most; on 1000,
 //! with no new youth taken, a club of the first two leagues poaches one
-//! of the youth list from his club, the human's told.
+//! of the youth list from his club, the human's told. A week that comes
+//! to nothing else, a club with no amateur team works its pool of
+//! amateurs: a new one, a status up or down, an amateur hurt or slipping.
 //!
-//! Left out so far: the club's amateur pool (the walker's tail from
-//! `FUN_0063e7cf`), whose draws follow the first; and the human club's
-//! own walk with its news (`FUN_005ef8cc`).
+//! Left out so far: the human club's own walk with its news
+//! (`FUN_005ef8cc`).
 
 use crate::event_text::{Fill, Posted};
 use crate::random::Random;
@@ -55,23 +56,26 @@ pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), random: 
         can += can / 5;
     }
     if draw >= GROWS_FROM {
-        grow(records, (country, number), support, random);
-        return;
-    }
-    if HURT.contains(&draw) {
-        hurt(records, (country, number), random);
-        return;
-    }
-    if POACHED.contains(&draw) {
-        slip(records, (country, number), random);
-        return;
-    }
-    // A poor club's own youth (`FUN_006c35fc`) waits on a human manager
-    // (club +0x8b), so a computer club takes none.
-    if i32::from(can) >= draw as i32 / DRAW_UNIT && take(records, (country, number), random) {
-        return;
+        if grow(records, (country, number), support, random) {
+            return;
+        }
+    } else {
+        if HURT.contains(&draw) {
+            hurt(records, (country, number), random);
+            return;
+        }
+        if POACHED.contains(&draw) {
+            slip(records, (country, number), random);
+            return;
+        }
+        // A poor club's own youth (`FUN_006c35fc`) waits on a human
+        // manager (club +0x8b), so a computer club takes none.
+        if i32::from(can) >= draw as i32 / DRAW_UNIT && take(records, (country, number), random) {
+            return;
+        }
     }
     if draw != POACHES {
+        amateurs(records, (country, number), random);
         return;
     }
     let level = records.team(u16::from(country), number).map_or(POACHING_LEVELS, |t| t.level());
@@ -86,6 +90,138 @@ pub(crate) fn walk(records: &mut Records, (country, number): (u8, u16), random: 
     {
         posted.push(Posted { club: (u16::from(from), u16::from(from_number)), code: POACHED_EVENT, text: POACHED_TEXT, fill: Fill::Named(id) });
     }
+}
+
+/// What the club plans for its amateurs (club +0x294) counts in these
+/// (`DAT_00a3b36c`), ten at most.
+const AMATEUR_BUDGET: usize = 0x294 + crate::finances::CLUB_TO_TEAM;
+const BUDGET_UNIT: i32 = 200_000;
+const BUDGET_MOST: i16 = 10;
+/// The draws: a new amateur on 400 (up to the budget), a status on 30
+/// (under five less half the budget), a mishap on 500; one not hurt is
+/// hurt on one in five.
+const NEW_DRAW: u32 = 400;
+const STATUS_DRAW: u32 = 30;
+const STATUS_ODDS: i32 = 5;
+const MISHAP_DRAW: u32 = 500;
+const HURT_ODDS: u32 = 5;
+/// A status rises unless a draw of thirteen less the budget is above
+/// three a status and 28 less his age; up to strength 8.
+const STATUS_RANGE: i32 = 13;
+const STATUS_WEIGHT: i32 = 3;
+const STATUS_AGE: i32 = 28;
+const STATUS_STRONGEST: u8 = 8;
+/// R+0x271's low bits: on trial with the professionals.
+const ON_TRIAL: u8 = 0x0f;
+/// One who slips at the lowest status below this gives up.
+const GIVES_UP_BELOW: u8 = 3;
+
+/// A club with no amateur team in the leagues (team +0x873 below 0,
+/// `FUN_0063e7cf`) works its amateur pool (`FUN_006c41b1`'s tail), the
+/// more the more it plans for them: on a draw of 400 up to that and
+/// under five in its pool, a new amateur (and no more); else on a draw
+/// of 30 under five less half of it, an amateur of the pool not hurt
+/// rises or falls a status; else on one in 500, one of the pool not hurt
+/// is hurt for months one time in five, or else may slip
+/// (`FUN_006c3daf`).
+fn amateurs(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+    let Some(team) = records.team(u16::from(country), number) else { return };
+    if team.linked()[1] >= 0 {
+        return;
+    }
+    let budget = i32::from(((team.get::<i32>(AMATEUR_BUDGET) / BUDGET_UNIT) as i16).min(BUDGET_MOST));
+    if random.below(NEW_DRAW) as i32 <= budget {
+        let [up, pool] = crate::youth::pool(records, country, number);
+        if up.len() + pool.len() < crate::youth::POOL {
+            crate::newplayer::amateur_for(records, (country, number), random);
+            return;
+        }
+    }
+    if (random.below(STATUS_DRAW) as i32) < STATUS_ODDS - budget / 2 {
+        rise_or_fall(records, (country, number), budget, random);
+    } else if random.below(MISHAP_DRAW) == 0 {
+        mishap(records, (country, number), random);
+    }
+}
+
+/// Days he is still out hurt (L+0x2c).
+fn out_hurt(records: &Records, p: &Player) -> bool {
+    crate::load::days_to(&records.globals, p.injured_to()) != 0
+}
+
+/// One of the pool's amateurs not hurt drawn: the older he is the likelier
+/// he falls a status and a point, else he rises one and a point, within
+/// the statuses and strength 8.
+fn rise_or_fall(records: &mut Records, (country, number): (u8, u16), budget: i32, random: &mut Random) {
+    let [_, pool] = crate::youth::pool(records, country, number);
+    let fit: Vec<u16> = pool.into_iter().filter(|&id| records.player(id).is_some_and(|p| !out_hurt(records, p))).collect();
+    if fit.is_empty() {
+        return;
+    }
+    let id = fit[random.below(fit.len() as u32) as usize];
+    let Some(today) = crate::free_agents::today(records) else { return };
+    let Some(p) = records.player(id) else { return };
+    let mut status = crate::newplayer::status(p);
+    let r = random.below((STATUS_RANGE - budget) as u32) as i32;
+    let age = crate::statistics::age_on(p, today);
+    let mut strength = p.strength();
+    if i32::from(status) * STATUS_WEIGHT + STATUS_AGE - age < r {
+        if status > 0 {
+            status -= 1;
+            strength = strength.saturating_sub(1);
+        }
+    } else if status < crate::newplayer::STATUS_MOST {
+        status += 1;
+        if strength < STATUS_STRONGEST {
+            strength += 1;
+        }
+    }
+    let Some(p) = records.player_mut(id) else { return };
+    p.set_strength(strength);
+    crate::newplayer::set_status(p, i32::from(status));
+}
+
+/// One of the pool drawn: not hurt, one time in five he is out three to six
+/// months; else he may slip.
+fn mishap(records: &mut Records, (country, number): (u8, u16), random: &mut Random) {
+    let [_, pool] = crate::youth::pool(records, country, number);
+    if pool.is_empty() {
+        return;
+    }
+    let id = pool[random.below(pool.len() as u32) as usize];
+    let Some(p) = records.player(id) else { return };
+    if !out_hurt(records, p) && random.below(HURT_ODDS) == 0 {
+        let days = (random.below(HURT_MONTHS) + HURT_FROM) as i32 * MONTH;
+        let today = i32::from(records.globals.day());
+        crate::training_day::injure(records, id, HURT_KIND, days, today);
+        if let Some(p) = records.player_mut(id) {
+            p.set_retiring(p.retiring() & !HURT_CLEARS);
+        }
+    } else {
+        slip_amateur(records, (country, number), id, random);
+    }
+}
+
+/// An amateur out hurt and not on trial slips (`FUN_006c3daf`), once for
+/// the injury: a status and a point down; at the lowest status and under
+/// strength 3 he gives up — out of the pool, his career ended
+/// (`FUN_0070e31e`, `FUN_0066d975`).
+fn slip_amateur(records: &mut Records, club: (u8, u16), id: u16, random: &mut Random) {
+    let Some(p) = records.player(id) else { return };
+    if p.picks() & ON_TRIAL != 0 || !out_hurt(records, p) || p.retiring() & SLIPPED != 0 {
+        return;
+    }
+    let status = i32::from(crate::newplayer::status(p)) - 1;
+    let strength = p.strength().wrapping_sub(1);
+    let Some(p) = records.player_mut(id) else { return };
+    p.set_strength(strength);
+    p.set_retiring(p.retiring() | SLIPPED);
+    if status < 1 && strength < GIVES_UP_BELOW {
+        crate::youth::leave_pool(records, club, id);
+        crate::rollover::end_career(records, id, random);
+        return;
+    }
+    crate::newplayer::set_status(p, status);
 }
 
 /// The event that tells a human club a youth of his was poached, and its
@@ -348,6 +484,21 @@ mod tests {
                 hurt += usize::from(p.injury_kind() == HURT_KIND && crate::load::days_to(&ours.globals, p.injured_to()) >= 90);
             }
         }
+        let pools = |r: &Records| {
+            let (mut n, mut new, mut status, mut strength) = (0, 0, [0; 3], 0);
+            for &(c, n_) in &clubs {
+                let [up, am] = crate::youth::pool(r, c, n_);
+                let [_, before] = crate::youth::pool(&a, c, n_);
+                n += am.len() + up.len();
+                for id in am {
+                    let p = r.player(id).unwrap();
+                    new += usize::from(!before.contains(&id));
+                    status[usize::from(crate::newplayer::status(p).min(2))] += 1;
+                    strength += i32::from(p.strength());
+                }
+            }
+            (n, new, status, strength)
+        };
         let (youths, made, full, grown) = tally(&ours);
         let (their_youths, their_made, their_full, their_grown) = tally(&theirs);
         let (_, made_at_a, _, _) = tally(&a);
@@ -357,6 +508,14 @@ mod tests {
         assert!(near(full as f64, their_full as f64, 0.5), "full {full} against {their_full}");
         assert!(near(grown, their_grown, 0.25), "grown {grown:.2} against {their_grown:.2}");
         assert!((1..12).contains(&hurt), "{hurt}");
+        // The clubs with no amateur team fill their pools and lift their
+        // amateurs about as the original's did (238 in the pools, 33 new,
+        // 89 stars, strength 921 together).
+        let ((n, new, status, strength), (their_n, their_new, their_status, their_strength)) = (pools(&ours), pools(&theirs));
+        assert!(near(n as f64, their_n as f64, 0.1), "pools {n} against {their_n}");
+        assert!(near(new as f64, their_new as f64, 0.4), "new {new} against {their_new}");
+        assert!(near(status[2] as f64, their_status[2] as f64, 0.35), "stars {status:?} against {their_status:?}");
+        assert!(near(f64::from(strength), f64::from(their_strength), 0.1), "strength {strength} against {their_strength}");
         // A new youth stands in his club's youth team with a youth's
         // station of his class.
         let (c, n) = clubs.iter().copied().find(|&(c, n)| crate::youth::made(&ours, c, n) > crate::youth::made(&a, c, n)).unwrap();
@@ -451,5 +610,90 @@ mod tests {
             }
         }
         assert!(stayed > 0 && gone > 0, "{stayed} stayed, {gone} gone");
+    }
+
+    /// On save A a computer club with no amateur team takes a new amateur
+    /// into its pool: 20 to 29, the lowest status known, his strength by
+    /// it, an amateur's station at the club. Young, he rises to a star;
+    /// past 34 he falls back; out hurt he slips once, and at the lowest
+    /// status under strength 3 he gives up.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_club_works_its_amateur_pool() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let club = crate::opponent::played_nations(&r)
+            .into_iter()
+            .flat_map(|c| (0..r.countries.team_count(usize::from(c)).max(0) as u16).map(move |n| (c as u8, n)))
+            .find(|&(c, n)| r.team(u16::from(c), n).is_some_and(|t| t.humans() == [0, 0] && t.linked() == [-1, -1]))
+            .unwrap();
+        crate::youth::store_pool(&mut r, club.0, club.1, &[vec![], vec![]]);
+        let mut random = Random::new(3);
+        let id = crate::newplayer::amateur_for(&mut r, club, &mut random).unwrap();
+        assert_eq!(crate::youth::pool(&r, club.0, club.1), [vec![], vec![id]]);
+        let today = crate::free_agents::today(&r).unwrap();
+        let p = r.player(id).unwrap();
+        assert!((20..30).contains(&crate::statistics::age_on(p, today)));
+        assert_eq!((p.picks(), p.retiring(), p.salary(), p.contract()), (0x40, 8, 0, r.globals.start_year()));
+        assert!((1..=6).contains(&p.strength()) && p.positions()[1..] == [0, 0]);
+        let at = 0x20 + (p.career_count() as usize - 1) * 0x14;
+        assert_eq!(p.get::<[u8; 4]>(at + 0x10), [club.0, club.1 as u8, 0, p.strength() + 0x80]);
+
+        // Rich in amateurs, the club's pool fills to five and no more.
+        r.team_mut(u16::from(club.0), club.1).unwrap().put::<i32>(AMATEUR_BUDGET, 2_000_000);
+        for _ in 0..2000 {
+            amateurs(&mut r, club, &mut random);
+            let [up, pool] = crate::youth::pool(&r, club.0, club.1);
+            assert!(up.len() + pool.len() <= 5);
+        }
+        assert_eq!(crate::youth::pool(&r, club.0, club.1)[1].len(), 5);
+
+        // One amateur alone in the pool: at 20 he rises to a star, two
+        // points stronger; at 35 he falls to the lowest, two weaker.
+        crate::youth::store_pool(&mut r, club.0, club.1, &[vec![], vec![id]]);
+        let set = |r: &mut Records, age: u16, status: i32, strength: u8| {
+            let year = r.globals.date()[2];
+            let p = r.player_mut(id).unwrap();
+            p.set_birth_year(year - age - 1);
+            crate::newplayer::set_status(p, status);
+            p.set_strength(strength);
+            p.set_injured_to([0, 0]);
+        };
+        set(&mut r, 20, 0, 4);
+        for _ in 0..5 {
+            rise_or_fall(&mut r, club, 10, &mut random);
+        }
+        let p = r.player(id).unwrap();
+        assert_eq!((crate::newplayer::status(p), p.strength(), p.picks() & 0xc0), (2, 6, 0x40));
+        set(&mut r, 35, 2, 6);
+        for _ in 0..5 {
+            rise_or_fall(&mut r, club, 10, &mut random);
+        }
+        let p = r.player(id).unwrap();
+        assert_eq!((crate::newplayer::status(p), p.strength()), (0, 4));
+
+        // Out hurt he slips a status and a point, once for the injury.
+        let day = i32::from(r.globals.day());
+        crate::training_day::injure(&mut r, id, HURT_KIND, 60, day);
+        set_injured_status(&mut r, id, 1, 5);
+        slip_amateur(&mut r, club, id, &mut random);
+        slip_amateur(&mut r, club, id, &mut random);
+        let p = r.player(id).unwrap();
+        assert_eq!((crate::newplayer::status(p), p.strength(), p.retiring() & SLIPPED), (0, 4, SLIPPED));
+        // At the lowest status and strength 3 he gives up.
+        set_injured_status(&mut r, id, 0, 3);
+        slip_amateur(&mut r, club, id, &mut random);
+        assert!(crate::youth::pool(&r, club.0, club.1)[1].is_empty());
+        assert_eq!(r.player(id).unwrap().retiring(), 0);
+    }
+
+    /// His status and strength set, his slip for the injury not yet taken.
+    fn set_injured_status(r: &mut Records, id: u16, status: i32, strength: u8) {
+        let p = r.player_mut(id).unwrap();
+        crate::newplayer::set_status(p, status);
+        p.set_strength(strength);
+        p.set_retiring(p.retiring() & !SLIPPED);
     }
 }

@@ -483,6 +483,92 @@ pub(crate) fn youth_for(records: &mut Records, (country, number): (u8, u16), ran
     Some(id)
 }
 
+/// A new amateur is 20 and nine more drawn.
+const AMATEUR_FROM: u32 = 20;
+const AMATEUR_AGES: u32 = 10;
+/// R+0x271: his status known (bits 6 and 7 at 1), the status in bits 4
+/// and 5 (0 "Stammspieler" to 2 "Starspieler").
+pub(crate) const STATUS_KNOWN: u8 = 0x40;
+pub(crate) const STATUS_MASK: u8 = 0x30;
+pub(crate) const STATUS_SHIFT: u8 = 4;
+pub(crate) const STATUS_MOST: u8 = 2;
+/// The strengths an amateur of a status is drawn to, by a draw of a
+/// hundred (`FUN_0040767a`, `DAT_008769b4`): the first band strength 1.
+const STATUS_STRENGTH: [[u32; 8]; 3] = [
+    [20, 25, 25, 15, 10, 5, 0, 0],
+    [10, 15, 25, 25, 15, 7, 3, 0],
+    [0, 7, 13, 31, 31, 12, 6, 2],
+];
+
+/// An amateur's status (`FUN_00706ccf`).
+pub(crate) fn status(p: &Player) -> u8 {
+    (p.picks() & STATUS_MASK) >> STATUS_SHIFT
+}
+
+/// His status set, within 0 and 2 (`FUN_00706ced`).
+pub(crate) fn set_status(p: &mut Player, status: i32) {
+    let status = status.clamp(0, i32::from(STATUS_MOST)) as u8;
+    p.set_picks((p.picks() & !STATUS_MASK) | (status << STATUS_SHIFT));
+}
+
+/// A strength for a status (`FUN_0040767a`).
+fn status_strength(status: u8, random: &mut Random) -> u8 {
+    let row = STATUS_STRENGTH[usize::from(status.min(STATUS_MOST))];
+    let mut r = random.below(100);
+    let mut k = 0;
+    while k < row.len() && row[k] <= r {
+        r -= row[k];
+        k += 1;
+    }
+    k as u8 + 1
+}
+
+/// A new amateur for a club's pool (`FUN_006c41b1`'s tail; the new game's
+/// `FUN_0066bb26` makes his like): one in five of a nation drawn, of a
+/// position drawn, his record wiped (`FUN_0066ce4d`) and fresh
+/// (`FUN_0070745a`), 20 to 29, with no side positions, contract or
+/// salary, R+0x26f at 8, his status known at the lowest and his strength
+/// drawn by it (`FUN_00706b1e`), his nation's language; among the pool's
+/// amateurs (`FUN_00407c58`) with an amateur's station at the club
+/// (`FUN_00707c3f`).
+pub(crate) fn amateur_for(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
+    let nation = if random.below(ABROAD_ODDS) == 0 { random.below(NATIONS) as u8 + 1 } else { country };
+    let position = DRAWN_POSITIONS[random.below(12) as usize];
+    let id = pick_id(records, nation, number as i16, Some(position), random)?;
+    {
+        let p = records.player_mut(id)?;
+        freshen(p, random);
+        p.set_nation(nation);
+        if nation != country {
+            p.set_manner(p.manner() | BORN_ABROAD);
+        }
+    }
+    let age = random.below(AMATEUR_AGES) + AMATEUR_FROM;
+    let (day, month, year) = birth_date(records, age as i32, random);
+    let start = records.globals.start_year();
+    {
+        let p = records.player_mut(id)?;
+        p.set_birth_day(day);
+        p.set_birth_month(month);
+        p.set_birth_year(year);
+        p.set_positions([position, 0, 0]);
+        p.set_contract(start);
+        p.set_salary(0);
+        p.set_retiring(8);
+        p.set_picks(STATUS_KNOWN);
+        p.set_strength(status_strength(0, random));
+        speaks(p, nation);
+    }
+    let [mut up, mut amateurs] = crate::youth::pool(records, country, number);
+    up.retain(|&q| q != id);
+    if !amateurs.contains(&id) && amateurs.len() < crate::youth::POOL {
+        amateurs.push(id);
+    }
+    crate::deals::open_amateur_station(records, id, (country, number as i16));
+    crate::youth::store_pool(records, country, number, &[up, amateurs]);
+    Some(id)
+}
+
 /// Fresh terms for a new player at a club (`FUN_00709e88`): his salary as he
 /// would ask it, in thousands, the bonuses by the club's league, two years.
 fn terms(records: &mut Records, id: u16, level: u8, tables: (&ContractTables, &ValueTables)) {

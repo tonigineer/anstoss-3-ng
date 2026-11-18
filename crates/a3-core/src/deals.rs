@@ -249,15 +249,29 @@ pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee:
 /// team's bit.
 pub(crate) fn open_youth_station(records: &mut Records, id: u16, club: (u8, i16), kind: u8) {
     open_station_as(records, id, club, 0, kind);
+    mark_last_station(records, id, YOUTH_BIT);
+}
+
+/// An amateur's station at his club (`FUN_00707c3f`, `FUN_00704109` with
+/// its last argument 2): no fee, his strength with the amateurs' bit.
+pub(crate) fn open_amateur_station(records: &mut Records, id: u16, club: (u8, i16)) {
+    open_station_as(records, id, club, 0, 0);
+    mark_last_station(records, id, AMATEUR_BIT);
+}
+
+/// The last station's strength byte with `bit` added.
+fn mark_last_station(records: &mut Records, id: u16, bit: u8) {
     if let Some(p) = records.player_mut(id) {
         let last = usize::try_from(p.career_count().clamp(1, STATIONS_MOST) - 1).unwrap_or(0);
         let at = STATIONS + last * STATION + 0x13;
-        p.put::<u8>(at, p.get::<u8>(at).wrapping_add(YOUTH_BIT));
+        p.put::<u8>(at, p.get::<u8>(at).wrapping_add(bit));
     }
 }
 
-/// A station's strength byte holds this for a youth team's.
+/// A station's strength byte holds this for a youth team's, and this for
+/// an amateur's.
 const YOUTH_BIT: u8 = 0x40;
+const AMATEUR_BIT: u8 = 0x80;
 
 /// The same with the station's kind at +0x12 (`FUN_00704109`'s fourth
 /// argument: 1 for a transfer at once).
