@@ -7,15 +7,18 @@
 //! Here besides: the session's injury (`FUN_00767225`), the unit's team
 //! skills (`FUN_0069851b` and its kin), the events 100 to 110 of
 //! `FUN_0060c1c0` with all 31 of event 102's player events, the secret
-//! training's toll (`FUN_0041828e`), and the day's news pick after the
-//! friendlies ([`news`]).
+//! training's toll (`FUN_0041828e`), the day's news pick after the
+//! friendlies ([`news`]), what a session takes off each trained man's
+//! freshness and brings his condition (`FUN_0074ae97`), and the men's
+//! own training: the day's snapshot of their choices (`FUN_00746c48`),
+//! the week's start fading what they do not work on, each session's
+//! rolls for the ability one works on and his learning it
+//! (`FUN_00747246`), the snapshot kept again (`FUN_00746d33`).
 //!
-//! What is not here yet: the day's snapshot of the squad
-//! (`FUN_00746c48`) — and with it the block which decays the positions
-//! at the week's start and the units' position development with their
-//! rolls (`FUN_00747246`; nothing of it rolled in the day-63
-//! comparison, where draws 8 to 10 stand); the training gains
-//! (`FUN_0074ae97`); what the day's news posts once its category is
+//! What is not here yet: the camp's level out of the year calendar,
+//! which sets the share of a session in a camp (`FUN_005eab71`,
+//! `FUN_005eac44`, `DAT_008ab31a`); the national check of the trained
+//! (`FUN_006feff8`); what the day's news posts once its category is
 //! picked (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the
 //! pick itself stands in [`crate::news`]), and the events' news; the
 //! camp's own happenings (`FUN_0060ff69`); the player-manager's block
@@ -29,7 +32,9 @@ use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
 
+use crate::computer_training::{cond_percent, fresh_percent};
 use crate::event_text::{Fill, Lead, Posted};
+use crate::individual::{self, Entry, IndividualTables, FIELD_ABILITIES, LEARNT, NOTHING};
 use crate::lineup;
 use crate::league::LeagueTables;
 use crate::medical::MedicalTables;
@@ -89,6 +94,120 @@ const TALENT: [i16; 39] = [
     150, 60, 150, 30, 60, 100, 60, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 80, 30, 50, 150, 50, -1,
     50, 50, 50, -1, 500, 50, 50, 50, 30, 50, 50, 30, 50, 50, 80, 50,
 ];
+
+/// The rest of a unit's row that a session works with (`FUN_0074ae97`):
+/// what it takes off the three freshness words (+0, +2, +4) and brings
+/// the condition (+6, while he stands below +8), all at a hundred
+/// percent; and +0xa, the fitness units, which a club's team byte
+/// +0x470 lifts by five or seven more.
+const GAINS: [[i16; 6]; 39] = [
+    [-20, -20, -10, 25, 6500, 0],
+    [-30, -50, -20, 20, 6500, 0],
+    [-10, -10, 0, 10, 5500, 0],
+    [-40, -60, -30, 30, 8500, 0],
+    [-30, -50, -20, 20, 6500, 0],
+    [-10, -10, 0, 20, 5500, 0],
+    [-150, -400, -200, 120, 10000, 2],
+    [-30, -50, -20, 20, 6500, 0],
+    [-30, -50, -20, 20, 6500, 0],
+    [-10, -10, 0, 10, 5500, 0],
+    [-20, -20, -10, 20, 6500, 0],
+    [0, 0, 0, 0, 0, 0],
+    [-20, -20, -10, 20, 6500, 0],
+    [-50, -150, -70, 30, 8500, 0],
+    [-10, -10, 0, 10, 5500, 0],
+    [-10, -10, 0, 10, 5500, 0],
+    [-70, -250, -120, 60, 10000, 1],
+    [-110, -320, -180, 90, 10000, 1],
+    [-50, -150, -70, 20, 6500, 0],
+    [-70, -200, -100, 60, 9500, 1],
+    [-50, -150, -70, 30, 8000, 0],
+    [-70, -200, -100, 40, 10000, 1],
+    [-60, -200, -100, 30, 9500, 0],
+    [0, 0, 0, 0, 0, 0],
+    [-20, -20, -10, 10, 6500, 0],
+    [-30, -50, -20, 20, 7500, 0],
+    [0, 0, 0, 0, 0, 0],
+    [-130, -300, -150, 80, 10000, 1],
+    [-110, -300, -150, 80, 10000, 1],
+    [-200, -500, -300, 120, 10000, 2],
+    [-40, -60, -30, 30, 8500, 0],
+    [-30, -50, -20, 20, 6500, 0],
+    [-80, -150, -80, 30, 8500, 0],
+    [-40, -100, -50, 40, 7500, 0],
+    [-80, -120, -60, 40, 8500, 0],
+    [-20, -20, -10, 10, 5500, 0],
+    [-60, -200, -100, 40, 7500, 0],
+    [-110, -250, -120, 80, 10000, 1],
+    [-40, -60, -30, 30, 8500, 0],
+];
+
+/// How a unit teaches each ability (`DAT_008aa5a8`, the row's bytes
+/// from +0x18): the field players' sixteen, then the keepers' nine.
+/// 1, a roll over the men working on it and a half chance, for a step;
+/// 2, the roll alone; 3, a roll over half of them, for two steps.
+const TEACHES: [[u8; 25]; 39] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 3, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3],
+    [0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+    [0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 3, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 1, 2, 2, 3, 2, 0, 3, 3],
+    [0, 2, 0, 0, 0, 1, 3, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 2, 2, 3, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 1, 1, 2, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// The keepers' abilities count from here among a unit's.
+const KEEPER_COLUMNS: usize = 16;
+/// The unit flags that halve the count of men working on Schußkraft and
+/// on a keeper's Abschläge and Abwürfe (Krafttraining's).
+const HALVES: [(u32, usize); 3] = [(0x100, 3), (0x200, 23), (0x400, 24)];
+
+/// The share of a session the men take with the club's co-trainer, by
+/// the camp's level above it (`DAT_008aad7c`); without either a
+/// hundred.
+const SHARES: [i32; 8] = [95, 95, 98, 101, 104, 107, 110, 110];
+/// The club flag (team +0x874's low byte, the club's +0xfd) that halves
+/// the next session's share, and goes with it.
+const HALF_SHARE: u8 = 4;
+const CLUB_FLAGS: usize = 0x874;
+/// The team byte (`FUN_006994b3`) that lifts the fitness units.
+const FITNESS_LIFT: usize = 0x470;
+
+/// A player-manager trains as hard as his career's first slider says
+/// (`FUN_0074ae97`'s float factors, by the slider from 1; 2 keeps it).
+const OWN_PLAY: [f32; 5] = [0.4, 0.7, 1.0, 1.1, 1.2];
 
 /// The pickers' tables (`FUN_0060c015` and `FUN_0060c1c0`): weight and
 /// code, a total of 10000 each.
@@ -170,7 +289,7 @@ pub fn day(
     world: &world::World,
     today: i32,
     date: NaiveDate,
-    (mood, medical, league): (&MoodTables, &MedicalTables, &LeagueTables),
+    (mood, medical, league, individual): (&MoodTables, &MedicalTables, &LeagueTables, &IndividualTables),
     recent: &mut Vec<i32>,
     posted: &mut Vec<Posted>,
     random: &mut Random,
@@ -200,11 +319,22 @@ pub fn day(
         let secret = team.passing() & training::SECRET != 0;
         let flags = state.training.flags;
         let mut plan = state.training.plan();
+        // The men's own training as the club's store keeps it, an entry
+        // for each of the squad in its order (`FUN_00746c48`).
+        let mut own = snapshot(records, slot, &ids);
         if weekday == 0 {
-            // The week's start also decays the snapshot's positions —
-            // no rolls, and the snapshot is not here. Whose condition
-            // the two rolls below train is lost in the decompile; the
-            // replica trains the squad member whose turn it is.
+            // The turn's start gave each man the intensity his entry
+            // holds (`FUN_00747144` → `FUN_00746f46`, first of all the
+            // day; a choice made during the week reaches him only here).
+            for entry in &own {
+                if let Some(player) = records.player_mut(entry.id) {
+                    player.set_intensity(entry.intensity as u8);
+                }
+            }
+            fade(records, &mut own);
+            // Whose condition the two rolls below train is lost in the
+            // decompile; the replica trains the squad member whose turn
+            // it is.
             for roll in [10, 100] {
                 let on = gates & if roll == 10 { 8 } else { 0x80 } != 0;
                 if !on {
@@ -273,6 +403,17 @@ pub fn day(
                 posted,
                 random,
             );
+            learn(records, &mut own, unit, human, individual, random);
+        }
+        // The snapshot goes back into the store (`FUN_00746d33`), the
+        // club's own copy with it.
+        if let Some(store) = records.individual.get_mut(slot) {
+            let mut entries = store.entries();
+            for &entry in &own {
+                individual::keep(&mut entries, entry);
+            }
+            store.set_entries(&entries);
+            state.individual = entries;
         }
         if flags & training::CAMP != 0 {
             // `FUN_0060ff69`'s camp happenings are not here.
@@ -346,16 +487,28 @@ fn session(
 ) {
     let mut trainable = Vec::new();
     let mut injured = Vec::new();
+    let share = share(records, (country, number));
+    let lift = records.team(country, number).map_or(0, |t| t.get::<u8>(FITNESS_LIFT));
+    // What the unit took off the first freshness word of the men before
+    // him, at a hundred percent (`FUN_0074a1ec`'s +0x10 of the frame).
+    let mut taken: i16 = 0;
     for &id in ids {
         let Some(player) = records.player(id) else { continue };
         if days_out(records, player) < 7 {
             // The national check (`FUN_006fef73`, `FUN_006feff8`) is
             // not in the corpus and caps nothing here; a 0x20 unit only
             // trains its own kind — the record's scratch byte +0x3,
-            // kept at +0x21d by the load copies. `FUN_0074ae97`'s gains
-            // are not here.
+            // kept at +0x21d by the load copies.
             if unit != 0x20 || player.get::<u8>(0x21d) == 1 {
                 trainable.push(id);
+                let own_play = (id > crate::mood::LAST_REAL_ID)
+                    .then(|| records.managers.get(usize::from(id - crate::mood::LAST_REAL_ID - 1)))
+                    .flatten()
+                    .map(|m| m.own_play()[0]);
+                if let Some(player) = records.player_mut(id) {
+                    gains(player, unit, counter, share, lift, taken, own_play);
+                }
+                taken = taken.wrapping_add(GAINS[unit][0]);
             }
         } else {
             injured.push(id);
@@ -524,6 +677,270 @@ fn session(
             }
         }
     }
+}
+
+/// The share of a session the men take, in percent (`FUN_0074a1ec`'s
+/// +0xe of the frame): a hundred, or with a co-trainer the first of
+/// [`SHARES`] — the camp's level, which would move it on, is not here;
+/// half of it for the session after the club's flag, which goes.
+fn share(records: &mut Records, (country, number): (u16, u16)) -> i32 {
+    let Some(team) = records.team_mut(country, number) else { return 100 };
+    let camp: i32 = -1;
+    let level = if team.co_trainer() > 0 { camp + 1 } else { camp };
+    let mut share = usize::try_from(level).map_or(100, |l| SHARES[l.min(SHARES.len() - 1)]);
+    let flags = team.get::<u8>(CLUB_FLAGS);
+    if flags & HALF_SHARE != 0 {
+        share /= 2;
+    }
+    team.put::<u8>(CLUB_FLAGS, flags & !HALF_SHARE);
+    share
+}
+
+/// What a session does to one trained man (`FUN_0074ae97`). Out or
+/// building up (his intensity below light), only the day's first unit
+/// touches him: the row's freshness at a hundred percent, the first word
+/// held at nought and a little back below 0.6, and a point or two of
+/// condition below 40. Else his share is the session's by his morale —
+/// half of it light, half again hard; a player-manager's by his career's
+/// slider; doubled in the day's third unit once the men before him took
+/// more than 30 of the first word — and the row's freshness and, below
+/// its cap, condition go by that share: a tenth less for the first trait
+/// word's bit 4, a tenth more for bit 2, half while he stands below 25
+/// percent fresh, and a fitness unit five or seven more by the team's
+/// byte.
+fn gains(
+    player: &mut Player,
+    unit: usize,
+    counter: u32,
+    share: i32,
+    lift: u8,
+    taken: i16,
+    own_play: Option<u8>,
+) {
+    let [first, second, third, condition, cap, fitness] = GAINS[unit];
+    let mut fresh = player.freshness();
+    let intensity = i32::from(player.intensity());
+    if intensity < i32::from(individual::LIGHT) {
+        if counter == 1 {
+            fresh[0] = fresh[0].wrapping_add(first).max(0);
+            fresh[1] = fresh[1].wrapping_add(second);
+            fresh[2] = fresh[2].wrapping_add(third);
+            if fresh[0] < 30 {
+                fresh[0] += 2;
+            } else if fresh[0] < 60 {
+                fresh[0] += 1;
+            }
+            player.set_freshness(fresh);
+            let k = cond_percent(player);
+            if k < 20 {
+                train_condition(player, 2);
+            } else if k < 40 {
+                train_condition(player, 1);
+            }
+        }
+        return;
+    }
+    let mut v = i32::from(player.morale()) * share / 100;
+    if intensity != i32::from(individual::NORMAL) {
+        if intensity == i32::from(individual::LIGHT) {
+            v /= 2;
+        } else {
+            v += v / 2;
+        }
+    }
+    if let Some(play) = own_play {
+        if play != 2 {
+            let factor = OWN_PLAY.get(usize::from(play)).copied().unwrap_or(OWN_PLAY[0]);
+            v = (f64::from(v) * f64::from(factor)).trunc() as i32;
+        }
+    }
+    if counter == 3 && taken < -30 {
+        v <<= 1;
+    }
+    let part = |row: i16, v: i32, of: i32| (i32::from(row) * v / of) as i16;
+    fresh[0] = fresh[0].wrapping_add(part(first, v, 100)).max(0);
+    fresh[1] = fresh[1].wrapping_add(part(second, v, 100));
+    fresh[2] = fresh[2].wrapping_add(part(third, v, 100));
+    player.set_freshness(fresh);
+    if player.condition() < cap {
+        let traits = player.traits()[0];
+        if traits & 4 != 0 {
+            v -= v / 10;
+        } else if traits & 2 != 0 {
+            v += v / 10;
+        }
+        let of = if fresh_percent(player) < 25 { 200 } else { 100 };
+        let mut c = player.condition().wrapping_add(part(condition, v, of));
+        if fitness != 0 && lift != 0 {
+            if lift == 2 {
+                c = c.wrapping_add(7);
+            } else if lift == 1 {
+                c = c.wrapping_add(5);
+            }
+        }
+        player.set_condition(c);
+    }
+}
+
+/// The squad's own training for the day (`FUN_00746c48`): each man's
+/// entry out of the club's store, in the squad's order, or one made for
+/// him (`FUN_007467de`, which also takes a good bit off where the bad one
+/// is set, in his record).
+fn snapshot(records: &mut Records, slot: usize, ids: &[u16]) -> Vec<Entry> {
+    let store = records.individual.get(slot).map(|s| s.entries()).unwrap_or_default();
+    let mut own = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if let Some(&entry) = store.iter().find(|e| e.id == id) {
+            own.push(entry);
+            continue;
+        }
+        let Some(p) = records.player(id) else {
+            let mut entry = Entry::default();
+            entry.id = id;
+            own.push(entry);
+            continue;
+        };
+        let keeper = p.get::<u8>(0x21d) == 1;
+        let suspended = p.away_kind() & crate::discipline::SUSPENDED != 0;
+        let intensity = individual::first_intensity(days_out(records, p), suspended);
+        let (good, bad) = (p.good(), p.bad());
+        own.push(Entry::new(id, keeper, [good, bad], p.favourite(), intensity));
+        let span = (1u32 << individual::abilities(keeper)) - 1;
+        let clash = good & bad & span as u16;
+        if clash != 0 {
+            if let Some(p) = records.player_mut(id) {
+                p.set_good(good & !clash);
+            }
+        }
+    }
+    own
+}
+
+/// The week's first day (`FUN_00749508` with its day 0): each ability a
+/// man neither has nor works on loses two of what he got, down to nought.
+fn fade(records: &Records, own: &mut [Entry]) {
+    for entry in own {
+        let Some(p) = records.player(entry.id) else { continue };
+        let good = p.good();
+        for b in 0..FIELD_ABILITIES {
+            if b as i16 != entry.ability && good & (1 << b) == 0 {
+                let got = entry.progress[b];
+                entry.progress[b] = if got < 2 { 0 } else { got - 2 };
+            }
+        }
+    }
+}
+
+/// The men's own abilities after a session (`FUN_00749508` behind
+/// `FUN_0074a1ec`). Those fit today working on one count by it — a
+/// keeper's after the field players' sixteen — the unit's flags halving
+/// three of the counts; then each of them who lacks it rolls by what the
+/// unit teaches ([`TEACHES`]) over how many work on it: the fewer, the
+/// likelier. Past 99 he has learnt it ([`learnt`]) and works on nothing;
+/// one who has it already stands at a hundred.
+fn learn(
+    records: &mut Records,
+    own: &mut [Entry],
+    unit: usize,
+    human: u8,
+    tables: &IndividualTables,
+    random: &mut Random,
+) {
+    let Some(teaches) = TEACHES.get(unit) else { return };
+    let column = |records: &Records, entry: &Entry| -> Option<usize> {
+        let ability = usize::try_from(entry.ability).ok().filter(|&a| a < FIELD_ABILITIES)?;
+        let p = records.player(entry.id)?;
+        (days_out(records, p) == 0)
+            .then(|| ability + if p.get::<u8>(0x21d) == 1 { KEEPER_COLUMNS } else { 0 })
+    };
+    let mut working = [0u32; 2 * KEEPER_COLUMNS];
+    for entry in own.iter() {
+        if let Some(k) = column(records, entry) {
+            working[k] += 1;
+        }
+    }
+    for (flag, k) in HALVES {
+        if FLAGS[unit] & flag != 0 {
+            working[k] /= 2;
+        }
+    }
+    for entry in own.iter_mut() {
+        let Some(k) = column(records, entry) else { continue };
+        let ability = entry.ability as usize;
+        let good = records.player(entry.id).map_or(0, |p| p.good());
+        if good & (1 << ability) != 0 {
+            entry.progress[ability] = LEARNT;
+            continue;
+        }
+        // Past the row's 25 a stale keeper's ability reads the next
+        // row's bytes; none is taught there.
+        let n = working[k];
+        let step = match teaches.get(k).copied().unwrap_or(0) {
+            1 if random.below(n) == 0 && random.below(100) < 50 => 1,
+            2 if random.below(n) == 0 => 1,
+            3 if random.below(n / 2) == 0 => 2,
+            _ => 0,
+        };
+        if step == 0 {
+            continue;
+        }
+        entry.progress[ability] = entry.progress[ability].wrapping_add(step);
+        if entry.progress[ability] > 99 {
+            learnt(records, entry, ability, human, tables);
+            entry.ability = NOTHING;
+        }
+    }
+}
+
+/// A man learnt the ability he worked on (`FUN_00747246`). A weakness
+/// goes, from nought again; a new one he has at a hundred — with three
+/// already, good and bad together, the good one of least difficulty
+/// below 5 goes back to 80, or failing one the first such weakness goes.
+/// Both are booked as gained (`FUN_00643633`); one he had already only
+/// stands at a hundred.
+fn learnt(records: &mut Records, entry: &mut Entry, ability: usize, human: u8, tables: &IndividualTables) {
+    let Some(p) = records.player_mut(entry.id) else { return };
+    let keeper = p.get::<u8>(0x21d) == 1;
+    let bit = 1u16 << ability;
+    let (mut good, mut bad) = (p.good(), p.bad());
+    if bad & bit != 0 {
+        p.set_bad(bad & !bit);
+        entry.progress[ability] = 0;
+    } else if good & bit == 0 {
+        let span = individual::abilities(keeper);
+        let count = (0..span).filter(|&c| good >> c & 1 != 0).count()
+            + (0..span).filter(|&c| bad >> c & 1 != 0).count();
+        if count == 3 {
+            let mut easiest = 5;
+            let mut drop = None;
+            for c in 0..span {
+                let difficulty = tables.difficulty(keeper, c);
+                if good >> c & 1 != 0 && difficulty < easiest {
+                    easiest = difficulty;
+                    drop = Some(c);
+                }
+            }
+            match drop {
+                Some(c) => {
+                    entry.progress[c] = 80;
+                    good &= !(1 << c);
+                }
+                None => {
+                    if let Some(c) = (0..span).find(|&c| bad >> c & 1 != 0 && tables.difficulty(keeper, c) < easiest) {
+                        bad &= !(1 << c);
+                        p.set_bad(bad);
+                    }
+                }
+            }
+        }
+        entry.progress[ability] = LEARNT;
+        p.set_good(good | bit);
+    } else {
+        entry.ability = NOTHING;
+        entry.progress[ability] = LEARNT;
+        return;
+    }
+    records.ability_gained(human, entry.id, ability as u16);
 }
 
 /// The training's event of the day (`FUN_0060c1c0` by its pick out of
@@ -2446,5 +2863,88 @@ mod tests {
         assert!(!run(&mut records, &mut random), "ten standing does not");
         assert_eq!(random, held);
         assert_eq!(records.team(club.0, club.1).unwrap().offside(), 60);
+    }
+
+    /// A session's gains on one man (`FUN_0074ae97`), as the original's
+    /// dumps of Probe1's training week have keeper 3205 (hard, morale
+    /// 100, a co-trainer's 95 percent): Gymnastik and Trainingsspiel take
+    /// 14 and 56 of the first freshness word and bring 14 and 56 of
+    /// condition. Building up only the day's first unit counts, at its
+    /// row's hundred percent; light halves the share, a tenth goes for
+    /// bit 4 of the first trait word, the condition's half below 25
+    /// percent fresh, a fitness unit's seven for the team's byte 2; the
+    /// third unit doubles behind the men who took over 30; a
+    /// player-manager's first slider at 1 takes 0.7, cut down.
+    #[test]
+    fn a_session_trains_by_the_units_row() {
+        let man = |condition: i16, fresh: [i16; 3], morale: u8, intensity: u8| {
+            let mut p = Player::new(&vec![0; Player::SIZE]).unwrap();
+            p.set_condition(condition);
+            p.set_freshness(fresh);
+            p.set_morale(morale);
+            p.set_intensity(intensity);
+            p
+        };
+        let mut keeper = man(3596, [8987, 0, 0], 100, 4);
+        gains(&mut keeper, 15, 1, 95, 0, 0, None);
+        assert_eq!((keeper.freshness(), keeper.condition()), ([8973, -14, 0], 3610));
+        gains(&mut keeper, 33, 2, 95, 0, -40, None);
+        assert_eq!((keeper.freshness(), keeper.condition()), ([8917, -156, -71], 3666));
+
+        let mut building = man(1500, [8000, 0, 0], 100, 1);
+        gains(&mut building, 17, 1, 95, 0, 0, None);
+        assert_eq!((building.freshness(), building.condition()), ([7890, -320, -180], 1700));
+        gains(&mut building, 17, 2, 95, 0, 0, None);
+        assert_eq!((building.freshness(), building.condition()), ([7890, -320, -180], 1700));
+
+        let mut light = man(5000, [2000, 0, 0], 90, 2);
+        light.set_traits([4, 0]);
+        gains(&mut light, 6, 1, 100, 2, 0, None);
+        assert_eq!((light.freshness(), light.condition()), ([1933, -180, -90], 5031));
+
+        let first = |counter: u32, taken: i16, own_play: Option<u8>, unit: usize| {
+            let mut p = man(5000, [5000, 0, 0], 100, 4);
+            gains(&mut p, unit, counter, if own_play.is_some() { 95 } else { 100 }, 0, taken, own_play);
+            p.freshness()[0]
+        };
+        assert_eq!((first(3, -40, None, 16), first(3, -20, None, 16), first(2, -40, None, 16)), (4790, 4895, 4895));
+        assert_eq!((first(1, 0, Some(1), 15), first(1, 0, Some(2), 15)), (4991, 4986));
+    }
+
+    /// Learning what he worked on (`FUN_00747246`) on one of A's men: with
+    /// Kopfball, Schußkraft and Technik already, Zweikampf takes the
+    /// place of Schußkraft, the easiest, which goes back to 80; the book
+    /// of the week has him gain it. A weakness goes, from nought; one he
+    /// has only stands at a hundred, and he works on nothing.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn learning_drops_the_easiest_of_three() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let tables = crate::data::Data::load(&dir).unwrap().rules.individual;
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let squad = records.team(14, 84).unwrap().players();
+        let id = squad.into_iter().find(|&id| records.player(id).unwrap().get::<u8>(0x21d) > 1).unwrap();
+        records.player_mut(id).unwrap().set_good(1 | 1 << 3 | 1 << 9);
+        records.player_mut(id).unwrap().set_bad(0);
+        let mut entry = Entry::new(id, false, [1 | 1 << 3 | 1 << 9, 0], 0, individual::NORMAL);
+        entry.ability = 1;
+        entry.progress[1] = 100;
+        learnt(&mut records, &mut entry, 1, 1, &tables);
+        let p = records.player(id).unwrap();
+        assert_eq!((p.good(), p.bad()), (1 | 1 << 1 | 1 << 9, 0));
+        assert_eq!((entry.progress[1], entry.progress[3]), (LEARNT, 80));
+        assert!(records.abilities_week(1).iter().any(|e| e.id == id && e.gained == 1 << 1));
+
+        records.player_mut(id).unwrap().set_bad(1 << 6);
+        entry.ability = 6;
+        entry.progress[6] = 100;
+        learnt(&mut records, &mut entry, 6, 1, &tables);
+        let p = records.player(id).unwrap();
+        assert_eq!((p.good(), p.bad(), entry.progress[6]), (1 | 1 << 1 | 1 << 9, 0, 0));
+
+        entry.ability = 9;
+        learnt(&mut records, &mut entry, 9, 1, &tables);
+        assert_eq!((entry.ability, entry.progress[9]), (NOTHING, LEARNT));
     }
 }

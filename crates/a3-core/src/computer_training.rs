@@ -436,7 +436,7 @@ fn train(value: i16, steps: i16) -> i16 {
 
 /// The condition as the game reads it: a smoker's reads five lower,
 /// never below zero (`FUN_00457e00`, `FUN_006fffd9`).
-fn cond_percent(p: &crate::records::Player) -> i16 {
+pub(crate) fn cond_percent(p: &crate::records::Player) -> i16 {
     cond_percent_of(p.condition(), p.shown())
 }
 

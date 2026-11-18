@@ -3457,7 +3457,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\non 383 click at 460 210\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -10968,7 +10968,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let week = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\non 41 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
         let list = control(&game.dialogs[&25], 1313).unwrap();
@@ -11482,7 +11482,7 @@ mod tests {
         let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 383 click at 460 210";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 269")) else { return };
         let dialog = &game.dialogs[&269];
         let view = runner.host.view();
@@ -11918,7 +11918,7 @@ mod tests {
         // OK: the draw of the two second rounds.
         let Some((caption, cup, rows, range)) = shown("now press 2762") else { return };
         assert_eq!((caption, cup, range), (title(0xb43, 0xb46, 14), label("DEU"), (0, 1)));
-        let drawn = "FC Bayern München (1. Liga)\t- 1.FC Heidenheim (1. Liga)\t\t\t\t\t";
+        let drawn = "1.FC Heidenheim (1. Liga)\t- 1.FSV Mainz 05 (1. Liga)\t\t\t\t\t";
         assert!(rows.contains(&(drawn.into(), None, false)));
         let Some((caption, ..)) = shown("now press 2762\nnow slide 4778 1") else { return };
         assert_eq!(caption, title(0xb43, 0xb46, 20));
@@ -11932,9 +11932,9 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player out of the day's news (text 861), which the replica does not
-    /// build — its draws part there. With the generator at 12348/67899
-    /// (the court's draw of day 67 moves the replica's later ones) its
-    /// first comes from a training: player event 4, the brawl of text 7,
+    /// build — its draws part there. With the generator at 12348/67896
+    /// (the court's draw of day 67 and the men's own training rolls move
+    /// the replica's later ones) its first comes from a training: player event 4, the brawl of text 7,
     /// in the same window, its caption "Ereignis", Union's manager and the
     /// club as the original's (the caption bar matched pixel for pixel),
     /// the ball beside it; OK closes it and the day goes on.
@@ -11949,7 +11949,7 @@ mod tests {
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12348 67899\n{handlers}until dialog 51");
+        let then = format!("now random 12348 67896\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
@@ -12126,12 +12126,30 @@ mod tests {
                 format!("{} {:?} {} {}", p.injured_on(), p.injured_to(), p.injury_kind(), p.knocked())
             };
             differ(["injury", "human injury"], injury(r), injury(o));
+            differ(["abilities", "human abilities"], format!("{:x} {:x}", r.good(), r.bad()), format!("{:x} {:x}", o.good(), o.bad()));
         }
         for (country, number, team) in human {
             let money = a3_core::finances::cash_and_result(team);
             let ours = replica.team(country, number).map(a3_core::finances::cash_and_result);
             if ours != Some(money) {
                 apart.entry("money").or_default().push(format!("{country}/{number}: {ours:?}, not {money}"));
+            }
+            // The men's own training as the club's store keeps it, entry
+            // by entry: who, what he works on, how far he got, how hard.
+            let slot = usize::from(team.human()).saturating_sub(1);
+            let own = |records: &a3_core::records::Records| -> Vec<String> {
+                records.individual.get(slot).map_or_else(Vec::new, |store| {
+                    store
+                        .entries()
+                        .iter()
+                        .map(|e| format!("{} {} {:?} {}", e.id, e.ability, e.progress, e.intensity))
+                        .collect()
+                })
+            };
+            for (k, (a, b)) in own(replica).iter().zip(own(oracle)).enumerate() {
+                if *a != b {
+                    apart.entry("human own training").or_default().push(format!("entry {k}: {a}, not {b}"));
+                }
             }
         }
         apart
@@ -12160,16 +12178,54 @@ mod tests {
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
     fn probe1s_week_against_the_oracles_dumps() {
+        let script = include_str!("../../../tools/oracle/scripts/from-save.txt");
+        let Some(seen) = week_against_dumps(script, "runs/check/save-a", "tools/oracle/check.sh") else { return };
+        // A part that brings its matter into line takes it off the list.
+        for what in STILL_APART {
+            assert!(seen.contains_key(what), "{what} agrees all week now: take it off STILL_APART");
+        }
+    }
+
+    /// Probe1's week again with the manager's first template planned at
+    /// the line-up ("gemischte Woche", `tools/oracle/scripts/training-week.txt`):
+    /// the sessions take the human squad's freshness and bring its
+    /// condition by the units' rows, its men's own training rolls for
+    /// what they work on and learn it, all as the original's dumps have
+    /// it day by day.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_training_week_against_the_oracles_dumps() {
+        let script = include_str!("../../../tools/oracle/scripts/training-week.txt");
+        let how = "the oracle's play.sh of tools/oracle/scripts/training-week.txt on Probe1";
+        let Some(seen) = week_against_dumps(script, "runs/training-week", how) else { return };
+        assert!(seen.contains_key("condition"), "the computer clubs' condition still parts: {seen:?}");
+        // The week did train: the original's own days part in the human
+        // squad's condition and its men's own training.
+        let dumps = PathBuf::from(std::env::var_os("ANSTOSS3_ORACLE").unwrap()).join("runs/training-week");
+        let dump = |day: u16| {
+            let save = a3_files::an3::Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap();
+            a3_core::records::Records::from_save(save).unwrap()
+        };
+        let moved = apart(&dump(42), &dump(36));
+        assert!(moved.contains_key("human condition") && moved.contains_key("human own training"), "{moved:?}");
+    }
+
+    /// Plays `script` on Probe1 against the oracle's dumps of the same
+    /// script in `run` (of `$ANSTOSS3_ORACLE`), day by day to day 42;
+    /// whatever parts must be among [`STILL_APART`], and what did comes
+    /// back with the number of days it did. None when the dumps or the
+    /// save are missing (`how` writes them).
+    fn week_against_dumps(script: &str, run: &str, how: &str) -> Option<std::collections::BTreeMap<&'static str, usize>> {
         use a3_core::records::Records;
         use a3_files::an3::Save;
         let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
             eprintln!("no oracle dumps of Probe1's week among the saves: ANSTOSS3_ORACLE is not set");
-            return;
+            return None;
         };
-        let dumps = PathBuf::from(oracle).join("runs/check/save-a");
+        let dumps = PathBuf::from(oracle).join(run);
         if !dumps.join("day-042.an3").exists() {
-            eprintln!("no oracle dumps of Probe1's week among the saves; tools/oracle/check.sh writes them");
-            return;
+            eprintln!("no oracle dumps of Probe1's week in {run} among the saves; {how} writes them");
+            return None;
         }
         let dump = |day: u16| Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap();
         let word = |save: &Save, name: &str| {
@@ -12180,9 +12236,9 @@ mod tests {
         let game = game();
         let Some(row) = game.save_games().iter().position(|s| s.name == "Probe1") else {
             eprintln!("no Probe1 among the saves; the oracle's copy has it");
-            return;
+            return None;
         };
-        let script: String = include_str!("../../../tools/oracle/scripts/from-save.txt")
+        let script: String = script
             .lines()
             .filter(|line| !line.starts_with("until"))
             .map(|line| line.replace("row 5144 0", &format!("row 5144 {row}")) + "\n")
@@ -12212,9 +12268,6 @@ mod tests {
                 *seen.entry(what).or_default() += 1;
             }
         }
-        // A part that brings its matter into line takes it off the list.
-        for what in STILL_APART {
-            assert!(seen.contains_key(what), "{what} agrees all week now: take it off STILL_APART");
-        }
+        Some(seen)
     }
 }
