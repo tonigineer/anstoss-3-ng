@@ -1710,6 +1710,56 @@ pub fn friendly_wear(records: &mut Records, (country, number): (u8, i16), extra:
     }
 }
 
+/// The record bit of a smoker (player +0x1b4 bit 11): his condition
+/// counts five steps less (`FUN_006fffd9` in `FUN_00457e00`).
+const SMOKER: u32 = 0x800;
+
+/// What a league or cup match leaves on a side's squad: the graded pass
+/// (`FUN_006f8f44` with the fifth parameter one, as the day's matches
+/// walk `FUN_006f0efd` calls it; `FUN_006f86e1` over the club's squad
+/// at +0xb50, in its order). A man who stood on the pitch wears by the
+/// competition rows ([`WEAR_ROWS`], the record's +0x24 nought) for the
+/// minutes `played` names him, the multiplier by the side's pressure band
+/// — its stance the club's effort as in [`friendly_wear`], held the whole
+/// match — halved at the keeper's spot; a man who did not
+/// (`position == 0`) loses one condition step ([`sat_out`]). The original's
+/// eight tenths for the man its human club's fitness trainer looks after
+/// (`FUN_0069bec0`, the human slot's runtime staff at `DAT_00a58402`)
+/// waits with those staff objects; the computer clubs answer nought.
+pub fn competition_wear(records: &mut Records, (country, number): (u8, u16), played: &[(u16, i32)], extra: bool) {
+    let Some(team) = records.team(country.into(), number) else { return };
+    let squad = team.players();
+    let full = if extra { 120 } else { 90 };
+    let pct = MINUTE_PCT.get(usize::from(team.effort())).copied().unwrap_or(100);
+    let mult = WEAR_MULT[wear_band((pct * full) as i16, extra)];
+    for id in squad {
+        let Some(p) = records.player_mut(id).filter(|_| id != 0) else { continue };
+        match played.iter().find(|(man, _)| *man == id) {
+            Some(&(_, minutes)) => {
+                let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
+                wear_by_rows(p, minutes, mult, &WEAR_ROWS);
+            }
+            None => sat_out(p),
+        }
+    }
+}
+
+/// A competition match's man who sat it out (`FUN_006f8d88`, the record's
+/// +0x24 nought): one condition step down (`FUN_00411130(-1)`, kept at
+/// 0..10000) while his steps (`FUN_00457e00`, the condition by the
+/// hundred, a smoker's five less) stand above nought. The original asks
+/// `FUN_00747998` first: no step for a man whose runtime byte +0xb5 is 4,
+/// and at a human club none for one its manager's individual plan
+/// (`FUN_00746ddf`, `DAT_00a50028`) holds with a task; neither has a save
+/// copy found, so every man takes the step.
+fn sat_out(p: &mut Player) {
+    let steps = i32::from(p.condition()) / 100;
+    let steps = if p.shown() & SMOKER != 0 { if steps < 5 { 0 } else { steps - 5 } } else { steps };
+    if steps > 0 {
+        p.set_condition((i32::from(p.condition()) - 100).clamp(0, 10_000) as i16);
+    }
+}
+
 /// What a walked match leaves in the players' counters — chances,
 /// penalties taken, assists, own goals and the scorer's own books: the
 /// names the shot event booked on the side's waiting lists, written into
@@ -2775,6 +2825,45 @@ mod tests {
         wear_by_rows(&mut p, 120, 10 / 2, &FRIENDLY_WEAR_ROWS);
         assert_eq!(p.condition(), 30);
         assert_eq!(p.freshness(), [6255, -335, -157]);
+    }
+
+    #[test]
+    fn a_competition_match_wears_who_stood_and_steps_down_who_sat() {
+        // as the original's dumps of Probe1's supercup final have it (the
+        // visitors 14/85 the day after): ninety minutes at the harder
+        // effort's 105 a minute stand in the band of eleven, lifting a man
+        // 110 and draining 247, 693 and 346 by the competition rows
+        assert_eq!(WEAR_MULT[wear_band(90 * 105, false)], 11);
+        let mut p = squad_player(3289, 7, 4, 0, 0, 10);
+        p.set_condition(5747);
+        p.set_freshness([5762, 0, 0]);
+        wear_by_rows(&mut p, 90, 11, &WEAR_ROWS);
+        assert_eq!(p.condition(), 5857);
+        assert_eq!(p.freshness(), [5515, -693, -346]);
+        // the keeper's halved five: 50, 112, 315 and 157
+        let mut p = squad_player(3285, 7, 1, 0, 0, 10);
+        p.set_condition(6897);
+        p.set_freshness([6676, 0, 0]);
+        wear_by_rows(&mut p, 90, 11 / 2, &WEAR_ROWS);
+        assert_eq!(p.condition(), 6947);
+        assert_eq!(p.freshness(), [6564, -315, -157]);
+        // a man who sat it out loses a step, his freshness untouched
+        let mut p = squad_player(3286, 7, 4, 0, 0, 10);
+        p.set_condition(5652);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 5552);
+        assert_eq!(p.freshness(), [0, 0, 0]);
+        // none below a step, and a smoker's five fewer: none below six
+        p.set_condition(99);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 99);
+        p.set_shown(SMOKER);
+        p.set_condition(599);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 599);
+        p.set_condition(600);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 500);
     }
 
     #[test]

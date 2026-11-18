@@ -528,7 +528,8 @@ fn cup_day(
     // clubs' reports of their ties (`FUN_00550f29`).
     let mut reported = Vec::new();
     for (&(hc, hn, ac, an, hg, ag), mut played) in marks.iter().zip(reports) {
-        let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, individual, random);
+        let extra = played.flags & CUP_EXTRA != 0;
+        let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, extra, individual, random);
         if let Some(club) = report::human_side(records, played.sides) {
             played.scorers = scorers;
             report::write(records, &played, random);
@@ -721,7 +722,8 @@ const LAST_FINAL_DAY: usize = 0xb5df90;
 /// year calendar takes the score and his next tie, and the final decided
 /// goes into the country's list of finals. The supercup's gate books
 /// nothing on the clubs: `FUN_0078b26c`'s branch for its code 0x30 only
-/// fills the match's record. (The players' marks are not built.)
+/// fills the match's record. Its men keep the match's wear; the rest of
+/// the players' marks are not built.
 fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
     let Some(row) = calendar.row(nation, 0) else { return };
@@ -795,6 +797,21 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
         winner = Some(u8::from(won == std::cmp::Ordering::Less));
     }
     book_tie_crowd(records, sides[0], sides[1], [hg, ag], crowd);
+    // What the match leaves on both squads' fitness (`FUN_006f86e1`,
+    // [`crate::sim::competition_wear`]): each side's eleven — the saved
+    // formation where its record stands one, as the engine walk reads it
+    // (`sim::saved_eleven`), else its strongest fit men — stand the ninety
+    // minutes, extra time's hundred and twenty where it went there; the
+    // rest lose a condition step.
+    let extra = flags & CUP_EXTRA != 0;
+    for (country, number) in sides {
+        let Some(team) = records.team(u16::from(country), number) else { continue };
+        let lineup = team.lineup();
+        let men = if lineup.iter().all(|&id| id != 0) { lineup.to_vec() } else { eleven(&team.players(), records) };
+        let full = if extra { 120 } else { 90 };
+        let minutes: Vec<(u16, i32)> = men.into_iter().map(|id| (id, full)).collect();
+        crate::sim::competition_wear(records, (country, number), &minutes, extra);
+    }
     let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
     if let Some(b) = records.block_mut(&name) {
         if let Some(t) = b.get_mut(tie_at..tie_at + TIE) {
@@ -1125,6 +1142,7 @@ fn mark_cup(
     an: u16,
     full: u8,
     a_full: u8,
+    extra: bool,
     individual: &IndividualTables,
     random: &mut Random,
 ) -> [Vec<u16>; 2] {
@@ -1213,6 +1231,12 @@ fn mark_cup(
                 }
             }
         }
+        // What the tie leaves on the squad's fitness (`FUN_006f86e1`): the
+        // eleven stand the whole tie, extra time's hundred and twenty
+        // where it went there, the rest lose a condition step.
+        let full = if extra { 120 } else { 90 };
+        let minutes: Vec<(u16, i32)> = eleven.iter().map(|&id| (id, full)).collect();
+        crate::sim::competition_wear(records, (country, team), &minutes, extra);
         // The men who stood leave the youth round (`FUN_007471bd`),
         // in the squad's order as the graded pass walks them.
         for &id in squad.iter().filter(|id| eleven.contains(id)) {
@@ -1564,6 +1588,14 @@ fn settle(
 /// kinds from 11 on (the exe's table at 0x89e23c) count among the attack.
 const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
 
+/// The minute the replica's substitutions take place at: the original
+/// substitutes inside its engine (`FUN_006f8dc7` reading the minute at
+/// the man's +0x58), which the league matches do not walk yet; Probe1's
+/// first league day (the oracle's day 42) took its three men off between
+/// the sixtieth and the eightieth minute and brought two of them on for
+/// less than thirty.
+const SUB_MINUTE: i32 = 70;
+
 /// What a scored match leaves on its players: the eleven each side puts
 /// on the pitch stand for their league match (+0x253) and their run of
 /// matches in a row (+0x34e), broken for those listed but not picked;
@@ -1576,7 +1608,8 @@ const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
 /// the matchday (+0x319: starter, substitution touched, grade, card) with
 /// his goals of it in +0x2eb; one to three substitutions a side, grades,
 /// cards and the suspensions they bring are the replica's own, held to
-/// what the saves read. The fitness wear follows another step.
+/// what the saves read. The fitness its men keep follows the graded
+/// pass ([`crate::sim::competition_wear`]).
 fn mark_match(
     records: &mut Records,
     nation: u16,
@@ -1752,6 +1785,14 @@ fn mark_match(
                 }
             }
         }
+        // What the match leaves on the squad's fitness (`FUN_006f86e1`,
+        // [`crate::sim::competition_wear`]): the eleven stand the ninety
+        // minutes, the men the replica's substitutions touch split them at
+        // [`SUB_MINUTE`], and the rest lose a condition step.
+        let mut minutes: Vec<(u16, i32)> =
+            eleven.iter().map(|&id| (id, if outs.contains(&id) { SUB_MINUTE } else { 90 })).collect();
+        minutes.extend(ins.iter().map(|&id| (id, 90 - SUB_MINUTE)));
+        crate::sim::competition_wear(records, (u8::try_from(nation).unwrap_or(0), team), &minutes, false);
         // The men who stood leave the youth round (`FUN_007471bd`),
         // in the squad's order as the graded pass walks them.
         for &id in squad.iter().filter(|id| eleven.contains(id) || ins.contains(id)) {

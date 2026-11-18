@@ -11947,11 +11947,12 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player out of the day's news (text 861), which the replica does not
-    /// build — its draws part there. With the generator at 12349/67918
+    /// build — its draws part there. With the generator at 12343/67918
     /// (the court's draw of day 67, the men's own training rolls, the
     /// week end's look at its last day's matches, each matchday's own
-    /// two lists and the resting world's rolls move the replica's later
-    /// ones) its first comes from a
+    /// two lists, the resting world's rolls and the condition the
+    /// competition matches leave move the replica's later ones) its
+    /// first comes from a
     /// training: player event 4, the brawl of text 7, in the same window, its caption "Ereignis", Union's manager and the
     /// club as the original's (the caption bar matched pixel for pixel),
     /// the ball beside it; OK closes it and the day goes on.
@@ -11966,7 +11967,7 @@ mod tests {
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12349 67918\n{handlers}until dialog 51");
+        let then = format!("now random 12343 67918\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
@@ -12204,7 +12205,11 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
     fn probe1s_week_against_the_oracles_dumps() {
         let script = include_str!("../../../tools/oracle/scripts/from-save.txt");
-        let Some(seen) = week_against_dumps(script, "runs/check/save-a", "tools/oracle/check.sh") else { return };
+        // The supercup's final on day 41 (14/85 at 14/3) wears both squads
+        // by the competition rows; the visitors, who field their saved
+        // eleven the whole match, agree man by man the day after.
+        let agree = [(42, (14, 85))];
+        let Some(seen) = week_against_dumps(script, "runs/check/save-a", "tools/oracle/check.sh", &agree) else { return };
         // A part that brings its matter into line takes it off the list.
         for what in STILL_APART {
             assert!(seen.contains_key(what), "{what} agrees all week now: take it off STILL_APART");
@@ -12222,7 +12227,7 @@ mod tests {
     fn a_training_week_against_the_oracles_dumps() {
         let script = include_str!("../../../tools/oracle/scripts/training-week.txt");
         let how = "the oracle's play.sh of tools/oracle/scripts/training-week.txt on Probe1";
-        let Some(seen) = week_against_dumps(script, "runs/training-week", how) else { return };
+        let Some(seen) = week_against_dumps(script, "runs/training-week", how, &[]) else { return };
         assert!(seen.contains_key("condition"), "the computer clubs' condition still parts: {seen:?}");
         // The week did train: the original's own days part in the human
         // squad's condition and its men's own training.
@@ -12238,9 +12243,15 @@ mod tests {
     /// Plays `script` on Probe1 against the oracle's dumps of the same
     /// script in `run` (of `$ANSTOSS3_ORACLE`), day by day to day 42;
     /// whatever parts must be among [`STILL_APART`], and what did comes
-    /// back with the number of days it did. None when the dumps or the
-    /// save are missing (`how` writes them).
-    fn week_against_dumps(script: &str, run: &str, how: &str) -> Option<std::collections::BTreeMap<&'static str, usize>> {
+    /// back with the number of days it did. The clubs `agree` names by
+    /// day keep no man apart in [`MATCH_WEAR`] that day. None when the
+    /// dumps or the save are missing (`how` writes them).
+    fn week_against_dumps(
+        script: &str,
+        run: &str,
+        how: &str,
+        agree: &[(u16, (u16, u16))],
+    ) -> Option<std::collections::BTreeMap<&'static str, usize>> {
         use a3_core::records::Records;
         use a3_files::an3::Save;
         let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
@@ -12334,6 +12345,15 @@ mod tests {
                 played.extend(club_of.values().filter(|(country, _)| !oracle.globals.played(*country as i16)));
             }
             let parted = apart(replica, &oracle);
+            for &(_, club) in agree.iter().filter(|(on, _)| *on == day) {
+                let off: Vec<&String> = parted
+                    .iter()
+                    .filter(|(what, _)| MATCH_WEAR.contains(what))
+                    .flat_map(|(_, list)| list)
+                    .filter(|entry| club_of.get(&id_of(entry)) == Some(&club))
+                    .collect();
+                assert!(off.is_empty(), "day {day}: the men of {club:?} part, {off:?}");
+            }
             let injured: std::collections::BTreeSet<u16> = parted.get("injury").into_iter().flatten().map(id_of).collect();
             for (what, list) in parted {
                 assert!(STILL_APART.contains(&what), "day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
