@@ -136,6 +136,64 @@ pub fn youths(records: &Records, country: u8, number: u16) -> (Vec<u16>, usize) 
     (ids, usize::try_from(word(block, MOVED_UP)).unwrap_or(0))
 }
 
+/// The youths a club made this season (the block's byte 6, the youth
+/// team's +0x2c): at most three (`FUN_006c3500`), none again at the
+/// season's end (`FUN_006b4727`).
+const MADE: usize = 6;
+pub(crate) const MOST_MADE: u8 = 3;
+
+pub(crate) fn made(records: &Records, country: u8, number: u16) -> u8 {
+    team_block(country, number, records)
+        .and_then(|b| records.block(&b).and_then(|b| b.get(MADE).copied()))
+        .unwrap_or(MOST_MADE)
+}
+
+pub(crate) fn set_made(records: &mut Records, country: u8, number: u16, n: u8) {
+    let Some(name) = team_block(country, number, records) else { return };
+    if let Some(b) = records.block_mut(&name).and_then(|b| b.get_mut(MADE)) {
+        *b = n;
+    }
+}
+
+/// Into a club's youth team while it holds under twenty, his club its
+/// (`FUN_0066ae46`), the team stored (`FUN_0063937e`).
+pub(crate) fn join_youth(records: &mut Records, (country, number): (u8, u16), id: u16) -> bool {
+    let (mut ids, _) = youths(records, country, number);
+    if ids.len() >= MOST {
+        return false;
+    }
+    ids.push(id);
+    if let Some(r) = records.player_mut(id) {
+        r.set_club([country, number as u8]);
+    }
+    store(records, country, number, &ids);
+    true
+}
+
+/// Onto the youth list unless he is on it, in its first free slot, with
+/// his club and today (`FUN_00763fbd`).
+pub(crate) fn add_prospect(records: &mut Records, id: u16, (country, number): (u8, u16)) {
+    let today = records.globals.day();
+    let Some(block) = records.block_mut(&format!("{LIST_AT:#x}")) else { return };
+    let slots = (0..LIST_SIZE).filter(|s| block.len() >= (s + 1) * ENTRY);
+    let mut free = None;
+    for slot in slots {
+        let have = word(block, slot * ENTRY) as u16;
+        if have == id {
+            return;
+        }
+        if have == 0 && free.is_none() {
+            free = Some(slot);
+        }
+    }
+    let Some(slot) = free else { return };
+    let at = slot * ENTRY;
+    block[at..at + 2].copy_from_slice(&id.to_le_bytes());
+    block[at + 2] = country;
+    block[at + 4..at + 6].copy_from_slice(&number.to_le_bytes());
+    block[at + 6..at + 8].copy_from_slice(&today.to_le_bytes());
+}
+
 /// His youth class by his birthday: 0 C, 1 B, 2 A (`FUN_0066b0c1`).
 pub fn class(records: &Records, id: u16) -> usize {
     class_in(records, id, i32::from(records.globals.start_year()))

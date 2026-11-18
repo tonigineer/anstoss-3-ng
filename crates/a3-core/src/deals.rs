@@ -244,6 +244,21 @@ pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee:
     open_station_as(records, id, club, fee, 0);
 }
 
+/// A youth's station at his club (`FUN_00707c10`, `FUN_00704109` with
+/// its last argument 1): of `kind`, no fee, his strength with the youth
+/// team's bit.
+pub(crate) fn open_youth_station(records: &mut Records, id: u16, club: (u8, i16), kind: u8) {
+    open_station_as(records, id, club, 0, kind);
+    if let Some(p) = records.player_mut(id) {
+        let last = usize::try_from(p.career_count().clamp(1, STATIONS_MOST) - 1).unwrap_or(0);
+        let at = STATIONS + last * STATION + 0x13;
+        p.put::<u8>(at, p.get::<u8>(at).wrapping_add(YOUTH_BIT));
+    }
+}
+
+/// A station's strength byte holds this for a youth team's.
+const YOUTH_BIT: u8 = 0x40;
+
 /// The same with the station's kind at +0x12 (`FUN_00704109`'s fourth
 /// argument: 1 for a transfer at once).
 fn open_station_as(records: &mut Records, id: u16, club: (u8, i16), fee: u32, kind: u8) {

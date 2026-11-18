@@ -274,10 +274,12 @@ const YOUTH_BITS_KEPT: u8 = 0xf3;
 /// year counted one on): each loses R+0x26f's bits 2 and 3 and his youth
 /// goals (`FUN_00706cb1`), and of those supported (R+0x1b4 bit 30,
 /// `FUN_00706ba6`) each class of next season (`FUN_0066b0c1`) keeps one:
-/// the strongest, of equals the later in the list (`FUN_00706bc8`).
+/// the strongest, of equals the later in the list (`FUN_00706bc8`). The
+/// club has made no youth of the new season yet (the youth team's +0x2c).
 fn close_youths(records: &mut Records, country: u8, number: u16) {
     let next = i32::from(records.globals.start_year()) + 1;
     let (ids, _) = crate::youth::youths(records, country, number);
+    crate::youth::set_made(records, country, number, 0);
     let mut holder: [Option<u16>; 3] = [None; 3];
     for id in ids {
         let Some(p) = records.player_mut(id) else { continue };
@@ -1659,6 +1661,7 @@ mod tests {
                     }
                 }
                 assert!(classes.iter().all(|&n| n <= 1), "{country}/{number}: {classes:?}");
+                assert_eq!(crate::youth::made(&ours, c, number), crate::youth::made(&theirs, c, number), "{country}/{number}");
             }
         }
         // The pair holds no amateur past 30 (they are drawn 20 to 29), so

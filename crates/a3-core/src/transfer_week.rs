@@ -21,7 +21,9 @@
 //! of 18 more at 35 (37), of ten more at 32 (35). A human club's player
 //! is weighed thus only in his last two years.
 //!
-//! Before that, every fourth week, a club of the main or a more country
+//! Before that a computer club of the main or a more country sees to its
+//! youth ([`crate::youth_week::walk`], `FUN_006c41b1`), and every fourth
+//! week a club of the main or a more country
 //! with no human manager offers the men it counts on fresh contracts
 //! (`FUN_0042991e`, the club's number and the day alike modulo four).
 //!
@@ -46,8 +48,9 @@
 //! which land in the coaches' records once all clubs are through.
 //!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — their other bids (`FUN_006c41b1`)
-//! — and the closing pass `FUN_004290b3`; the draws between clubs are
+//! in `FUN_004279f8` and `FUN_004297e1` — the youth's poaching and the
+//! amateur pools (`FUN_006c41b1`'s rest) — and the closing pass
+//! `FUN_004290b3`; the draws between clubs are
 //! not the original's while those are missing.
 
 use chrono::NaiveDate;
@@ -89,6 +92,9 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     let mut bests = crate::national::Bests::new(records);
     for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if played && records.team(country, number).is_some_and(|t| t.humans() == [0, 0]) {
+                crate::youth_week::walk(records, (country as u8, number), random);
+            }
             if played && today & 3 == i32::from(number & 3) {
                 renew(records, rules, (country, number), random);
             }

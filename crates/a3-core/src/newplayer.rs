@@ -378,6 +378,14 @@ pub(crate) fn make(
 
 /// His birthday for an age of `age` on the game's day (`FUN_00675923`).
 fn born(records: &Records, p: &mut Player, age: i32, random: &mut Random) {
+    let (d, m, y) = birth_date(records, age, random);
+    p.set_birth_day(d);
+    p.set_birth_month(m);
+    p.set_birth_year(y);
+}
+
+/// The day, month and year of such a birthday.
+fn birth_date(records: &Records, age: i32, random: &mut Random) -> (u8, u8, u16) {
     let [day, month, year] = records.globals.date();
     let m = random.below(12) + 1;
     let d = random.below(MONTH_DAYS[m as usize]) + 1;
@@ -389,9 +397,90 @@ fn born(records: &Records, p: &mut Player, age: i32, random: &mut Random) {
     } else {
         base
     };
-    p.set_birth_day(d as u8);
-    p.set_birth_month(m as u8);
-    p.set_birth_year(y as u16);
+    (d as u8, m as u8, y as u16)
+}
+
+/// A new youth's age: 13 and four more drawn; one under this is of
+/// strength 1 to 3, an older one of 3 to 5.
+const YOUTH_FROM: u32 = 13;
+const YOUTH_AGES: u32 = 5;
+const YOUNG_YOUTH: u32 = 15;
+/// One in five is born abroad, in any of the 116 countries.
+const ABROAD_ODDS: u32 = 5;
+const NATIONS: u32 = 0x74;
+/// Born abroad (R+0x282's bit, `FUN_00705861`).
+const BORN_ABROAD: u8 = 0x10;
+/// The planned youth support (club +0x2b0) a youth's talent is drawn by.
+pub(crate) const YOUTH_SUPPORT: usize = 0x2b0 + crate::finances::CLUB_TO_TEAM;
+/// R+0x1b4's bits a new youth may come with (`FUN_0070018a`,
+/// `FUN_006ffffb`, `FUN_006fff76`), and R+0x161.
+const RARE_BIT: u32 = 0x4000;
+const SMOKES: u32 = 0x800;
+const OVERWEIGHT: u32 = 0x20;
+/// The youth stations' kinds by class (C, B, A).
+const YOUTH_STATION: u8 = 9;
+
+/// A new youth for a computer club's youth team (`FUN_0066c0c2`; a human
+/// club's draws more bits, not built), while it holds under fifteen with
+/// those moved up (`FUN_004d7940`): 13 to 17 years, one in five of a
+/// nation drawn, of a position drawn, made by the club's youth support
+/// (`FUN_0066b6c6`) and fresh, with no contract, salary or seasons; of
+/// strength 1 to 3 under fifteen, else 3 to 5; R+0x26f at 8, one in 150
+/// with R+0x1b4's 0x4000; his nation's language; his station as a youth
+/// of his class, into the youth team; his foot; over fifteen a smoker
+/// one in five and overweight one in twelve and a half; one in twenty
+/// onto the youth list.
+pub(crate) fn youth_for(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
+    let (youths, moved_up) = crate::youth::youths(records, country, number);
+    if youths.len() + moved_up >= crate::youth::FULL {
+        return None;
+    }
+    let age = random.below(YOUTH_AGES) + YOUTH_FROM;
+    let (day, month, year) = birth_date(records, age as i32, random);
+    let nation = if random.below(ABROAD_ODDS) == 0 { random.below(NATIONS) as u8 + 1 } else { country };
+    let position = DRAWN_POSITIONS[random.below(12) as usize];
+    let worth = records.team(u16::from(country), number)?.get::<i32>(YOUTH_SUPPORT);
+    let id = make(records, (country, number as i16), position, worth, true, random)?;
+    let start = records.globals.start_year();
+    {
+        let p = records.player_mut(id)?;
+        freshen(p, random);
+        p.set_nation(nation);
+        if nation != country {
+            p.set_manner(p.manner() | BORN_ABROAD);
+        }
+        p.set_birth_day(day);
+        p.set_birth_month(month);
+        p.set_birth_year(year);
+        p.set_contract(start);
+        p.set_salary(0);
+        p.put::<u8>(SEASONS, 0);
+        let strength = random.below(3) as u8 + if age < YOUNG_YOUTH { 1 } else { 3 };
+        p.set_strength(strength);
+        p.set_retiring(8);
+        if random.below(150) == 0 {
+            p.set_shown(p.shown() | RARE_BIT);
+        }
+        speaks(p, nation);
+    }
+    let class = crate::youth::class(records, id) as u8;
+    crate::deals::open_youth_station(records, id, (country, number as i16), YOUTH_STATION + class);
+    crate::youth::join_youth(records, (country, number), id);
+    let p = records.player_mut(id)?;
+    p.set_picks(0);
+    foot(p, random);
+    if age > YOUNG_YOUTH {
+        if random.below(100) < 20 {
+            p.set_shown(p.shown() | SMOKES);
+        }
+        if random.below(100) < 8 {
+            p.set_shown(p.shown() | OVERWEIGHT);
+        }
+    }
+    if random.below(20) == 0 {
+        crate::youth::add_prospect(records, id, (country, number));
+    }
+    Some(id)
 }
 
 /// Fresh terms for a new player at a club (`FUN_00709e88`): his salary as he

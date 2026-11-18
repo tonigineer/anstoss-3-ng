@@ -3488,25 +3488,25 @@ mod tests {
                     .unwrap_or_default()
             })
             .collect();
-        let apps = |recs: &a3_core::records::Records| {
+        let apps = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_matches())))
                 .sum::<usize>()
         };
-        let goals = |recs: &a3_core::records::Records| {
+        let goals = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.goals()[0])))
                 .sum::<usize>()
         };
-        let lesss = |recs: &a3_core::records::Records| {
+        let lesss = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_less()[0])))
                 .sum::<usize>()
         };
-        let carded = |recs: &a3_core::records::Records| {
+        let carded = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| {
@@ -3518,8 +3518,6 @@ mod tests {
                 })
                 .sum::<usize>()
         };
-        let (apps_before, goals_before, less_before, carded_before) =
-            (apps(&before), goals(&before), lesss(&before), carded(&before));
         let tor_before: usize = statistics::torjaeger(&before, home_nation, 0)
             .iter()
             .map(|r| usize::from(r.values[0]))
@@ -3529,6 +3527,15 @@ mod tests {
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
         let nation = u16::try_from(records.globals.main_country()).unwrap();
         let league = opponent::League::of(records, nation, 0).expect("the first league");
+        // A man sold on in these days leaves his season's counts and rows
+        // behind (`FUN_00707bbf`): the players' figures are reckoned over
+        // those still at their club.
+        let squad: Vec<u16> = squad
+            .into_iter()
+            .filter(|&id| before.player(id).map(|p| p.club()) == records.player(id).map(|p| p.club()))
+            .collect();
+        let (apps_before, goals_before, less_before, carded_before) =
+            (apps(&before, &squad), goals(&before, &squad), lesss(&before, &squad), carded(&before, &squad));
         // The save opened on three played matchdays, and the days since
         // each pair meet once a week at least.
         assert!(league.played() > 3, "still only {} matchdays played", league.played());
@@ -3655,11 +3662,11 @@ mod tests {
             })
             .sum();
         assert!(
-            apps(records) >= apps_before + 20 * new_games,
+            apps(records, &squad) >= apps_before + 20 * new_games,
             "apps {apps_before} → {}, {new_games} games",
-            apps(records)
+            apps(records, &squad)
         );
-        assert_eq!(goals(records), goals_before + new_goals, "scorers' goals");
+        assert_eq!(goals(records, &squad), goals_before + new_goals, "scorers' goals");
         let tor_after: usize = statistics::torjaeger(records, nation, 0)
             .iter()
             .map(|r| usize::from(r.values[0]))
@@ -3719,9 +3726,9 @@ mod tests {
                 nibbled += usize::from(nibbles[md] >> 4);
             }
         }
-        assert_eq!(apps(records), apps_before + row_apps, "the rows and the appearance counts");
-        assert_eq!(lesss(records), less_before + came_ons, "the coming-ons at +0x254");
-        assert_eq!(carded(records), carded_before + row_cards, "the rows' cards and the counters");
+        assert_eq!(apps(records, &squad), apps_before + row_apps, "the rows and the appearance counts");
+        assert_eq!(lesss(records, &squad), less_before + came_ons, "the coming-ons at +0x254");
+        assert_eq!(carded(records, &squad), carded_before + row_cards, "the rows' cards and the counters");
         assert_eq!(nibbled, new_goals, "the matchday goal nibbles");
         // The grade of the last match stands at +0x273 as the row shows it.
         let last = league.played() - 1;

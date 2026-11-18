@@ -102,6 +102,7 @@ pub mod transfers;
 pub mod value;
 pub mod words;
 pub mod youth_league;
+pub mod youth_week;
 pub mod world;
 pub mod world_day;
 pub mod year;
