@@ -493,6 +493,91 @@ fn wanted_at(p: &Player, level: i16) -> bool {
     p.club()[0] != 0 && level <= i16::from(LEVEL_BY_STRENGTH.get(usize::from(p.strength())).copied().unwrap_or(0))
 }
 
+/// The two men a club's next manager asked it to buy (team +0x37c and
+/// +0x37e; their clubs at +0x380 and +0x384, a country byte and the
+/// club's number at +2 — the club object's +0x137e, +0x1380, +0x1382,
+/// +0x1386): put there where his move for next season is agreed
+/// (`FUN_006695c8`, the deal's +0xdc, +0xde, +0xd4, +0xd8; `FUN_007553a0`),
+/// the second moved up when the first is nought; cleared at the season's
+/// end (`FUN_00699524`).
+pub(crate) const WISHED: usize = 0x37c;
+pub(crate) const WISHED_NEXT: usize = 0x37e;
+pub(crate) const WISHED_CLUB: usize = 0x380;
+pub(crate) const WISHED_NEXT_CLUB: usize = 0x384;
+/// The weight the club takes its seat with for a wished man.
+const WISHED_WEIGHT: u8 = 10;
+
+/// A club's held-back deal (`FUN_004297e1` after `FUN_004279f8`, a club
+/// of the main or a more country, whoever runs it): with a first man
+/// wished for, it asks for him (`FUN_0042767a`), and the second moves up
+/// into his place — his club's four bytes with him — and leaves his own
+/// empty (the id and the country byte nought, the number left).
+pub(crate) fn wished(records: &mut Records, buyer: (u16, u16), busy: &mut Busy, random: &mut Random) {
+    let Some(team) = records.team(buyer.0, buyer.1) else { return };
+    if team.get::<u16>(WISHED) == 0 {
+        return;
+    }
+    ask_wished(records, (buyer.0 as u8, buyer.1 as i16), busy, random);
+    let Some(team) = records.team_mut(buyer.0, buyer.1) else { return };
+    let (next, club) = (team.get::<u16>(WISHED_NEXT), team.get::<u32>(WISHED_NEXT_CLUB));
+    team.put::<u16>(WISHED, next);
+    team.put::<u32>(WISHED_CLUB, club);
+    team.put::<u16>(WISHED_NEXT, 0);
+    team.put::<u8>(WISHED_NEXT_CLUB, 0);
+}
+
+/// The ask for a wished man (`FUN_0042767a`): only by a club without a
+/// human manager (club +0x8b) for a man of the club named (`FUN_006968c4`)
+/// whom it may sell (`FUN_00426d83`), whose release fee, if set, the club
+/// can invest before the season's late weeks (`FUN_00767b6a`), and whose
+/// strength suits the club (`FUN_00758468`). A man not listed and without
+/// a talk, on a day both clubs are free this week (`FUN_007585c6`), gets
+/// a purchase talk with the club seated at weight ten and once it is
+/// booked goes onto the list for sale on terms 3 (`FUN_0075a3cc`); one
+/// listed for sale without a talk gets it on such a day at weight
+/// nought; one listed otherwise nothing; with a talk the club joins it
+/// at weight ten (`FUN_00426a9c`). Its status is nought.
+fn ask_wished(records: &mut Records, buyer: Side, busy: &mut Busy, random: &mut Random) {
+    let Some(team) = records.team(u16::from(buyer.0), buyer.1 as u16) else { return };
+    let (id, country, number) = (team.get::<u16>(WISHED), team.get::<u8>(WISHED_CLUB), team.get::<u16>(WISHED_CLUB + 2));
+    if country == 0 || team.humans()[1] != 0 {
+        return;
+    }
+    let seller: Side = (country, number as i16);
+    let in_squad = records.team(u16::from(country), number).is_some_and(|c| c.players().contains(&id));
+    let Some(p) = records.player(id).filter(|_| in_squad) else { return };
+    let fee = u64::from(p.fixed_fee()) * RELEASE_UNIT;
+    let affords = fee == 0
+        || i32::from(records.globals.day()) > LATE
+        || crate::finances::Balance::of(team, records.globals.fund_prices(), &records.agreed()).investable() >= fee as i64;
+    if !crate::transfer_week::may_sell(records, p) || !affords || !suits(records, p, team) {
+        return;
+    }
+    let purchase = crate::transfers::PURCHASE;
+    let listed = crate::transfers::list_entries(records)
+        .into_iter()
+        .find(|e| u16::from_le_bytes([e[0], e[1]]) == id)
+        .map(|e| e[0xc]);
+    let talk = crate::transfers::talk_day(records, id).is_some_and(|d| d >= 0);
+    match (listed, talk) {
+        (Some(kind), _) if kind != crate::transfers::SALE => {}
+        (_, true) => {
+            book(records, busy, id, seller, buyer, 0, purchase, None, WISHED_WEIGHT);
+        }
+        (Some(_), false) => {
+            if let Some(d) = crate::transfers::this_week_day(records, random, seller, buyer) {
+                book(records, busy, id, seller, buyer, 0, purchase, Some(d), 0);
+            }
+        }
+        (None, false) => {
+            let Some(d) = crate::transfers::this_week_day(records, random, seller, buyer) else { return };
+            if book(records, busy, id, seller, buyer, 0, purchase, Some(d), WISHED_WEIGHT) {
+                crate::transfers::list_for_terms(records, id, crate::transfers::POACHED);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,5 +680,64 @@ mod tests {
         }
         println!("{asked} asked in twenty weeks");
         assert!((40..=240).contains(&asked), "{asked} asked in twenty weeks");
+    }
+
+    /// A club's next manager wished for two men (planted on save A): the
+    /// first, of another club, unlisted and free of talks, gets a purchase
+    /// talk this week, the club seated second at weight ten with status
+    /// nought, and goes onto the list for sale on terms 3; the second
+    /// takes his place, his own left empty. Asked the week after for a man
+    /// his club named does not have, the club books nothing and the
+    /// places empty, the number left.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_club_asks_for_the_men_its_next_manager_wished_for() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let main = r.globals.main_country() as u16;
+        let n = r.countries.team_count(usize::from(main)).max(0) as u16;
+        let first = |r: &Records, k: u16| r.team(main, k).is_some_and(|t| t.level() == 0);
+        let buyer = (0..n).find(|&k| first(&r, k) && r.team(main, k).unwrap().humans() == [0, 0]).unwrap();
+        let listed: Vec<u16> = crate::transfers::listings(&r).iter().map(|l| l.id).collect();
+        let free = |r: &Records, id: u16| {
+            let p = r.player(id).unwrap();
+            p.fixed_fee() == 0
+                && !listed.contains(&id)
+                && crate::transfers::talk_day(r, id).is_none()
+                && crate::transfer_week::may_sell(r, p)
+                && suits(r, p, r.team(main, buyer).unwrap())
+        };
+        let men: Vec<(u16, u16)> = (0..n)
+            .filter(|&k| k != buyer && first(&r, k))
+            .flat_map(|k| r.team(main, k).unwrap().players().into_iter().map(move |id| (k, id)))
+            .filter(|&(_, id)| free(&r, id))
+            .collect();
+        let ((seller, id), (_, other)) = (men[0], men[1]);
+        let t = r.team_mut(main, buyer).unwrap();
+        t.put::<u16>(WISHED, id);
+        t.put::<u32>(WISHED_CLUB, u32::from(main) | u32::from(seller) << 16);
+        t.put::<u16>(WISHED_NEXT, other);
+        t.put::<u32>(WISHED_NEXT_CLUB, u32::from(main) | u32::from(buyer) << 16);
+        let (mut busy, mut random) = (Busy::default(), Random::new(1));
+        wished(&mut r, (main, buyer), &mut busy, &mut random);
+        let start = r.globals.week_start();
+        let talk = crate::transfers::appointments(&r).into_iter().find(|t| t.player == id).expect("a talk for the first");
+        assert_eq!(talk.kind, crate::transfers::PURCHASE);
+        assert_eq!(talk.clubs, vec![(main as u8, seller as i16), (main as u8, buyer as i16)]);
+        assert_eq!((talk.weights[1], talk.statuses[1]), (WISHED_WEIGHT, 0));
+        assert!((start + 1..start + 7).contains(&talk.day), "{talk:?} from {start}");
+        let listing = crate::transfers::listings(&r).into_iter().find(|l| l.id == id).expect("listed");
+        assert_eq!(listing.terms, crate::transfers::POACHED);
+        let t = r.team(main, buyer).unwrap();
+        assert_eq!((t.get::<u16>(WISHED), t.get::<u32>(WISHED_CLUB)), (other, u32::from(main) | u32::from(buyer) << 16));
+        assert_eq!((t.get::<u16>(WISHED_NEXT), t.get::<u8>(WISHED_NEXT_CLUB)), (0, 0));
+        let talks = crate::transfers::appointments(&r).len();
+        wished(&mut r, (main, buyer), &mut busy, &mut random);
+        assert_eq!(crate::transfers::appointments(&r).len(), talks);
+        assert!(crate::transfers::talk_day(&r, other).is_none());
+        let t = r.team(main, buyer).unwrap();
+        assert_eq!((t.get::<u16>(WISHED), t.get::<u32>(WISHED_CLUB)), (0, u32::from(buyer) << 16));
     }
 }

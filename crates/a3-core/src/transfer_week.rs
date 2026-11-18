@@ -37,6 +37,10 @@
 //! it may let go of a man of a position it holds too many of, for a fee
 //! or, early in the season, on loan (the end of `FUN_004279f8`).
 //!
+//! Then a club of the main or a more country, of any league, asks for
+//! the first of the two men its next manager wished for, and the second
+//! takes his place for the week after ([`crate::bids::wished`]).
+//!
 //! Left out so far: the rest of the computer clubs' business that follows
 //! in `FUN_004279f8` and `FUN_004297e1` — their other bids (`FUN_006c41b1`, `FUN_00427494`)
 //! — and
@@ -86,18 +90,20 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
                 renew(records, rules, (country, number), random);
             }
             let Some(team) = records.team(country, number) else { continue };
-            if team.level() >= LEVELS {
-                continue;
+            let (level, human, squad) = (team.level(), team.humans() != [0, 0], team.players());
+            if level < LEVELS {
+                for id in squad {
+                    weigh(records, id, human, today, random);
+                }
+                if !human {
+                    keep_asked(records, rules, (country, number), random);
+                    crate::search_plan::refill(records, random, (country as u8, number as i16));
+                    crate::bids::bid(records, rules, (country, number), SALE_ODDS[usize::from(played)], &mut busy, random);
+                    sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
+                }
             }
-            let human = team.humans() != [0, 0];
-            for id in team.players() {
-                weigh(records, id, human, today, random);
-            }
-            if !human {
-                keep_asked(records, rules, (country, number), random);
-                crate::search_plan::refill(records, random, (country as u8, number as i16));
-                crate::bids::bid(records, rules, (country, number), SALE_ODDS[usize::from(played)], &mut busy, random);
-                sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
+            if played {
+                crate::bids::wished(records, (country, number), &mut busy, random);
             }
         }
     }
