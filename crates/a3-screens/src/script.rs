@@ -12407,4 +12407,32 @@ mod tests {
         let state = runner.host.state();
         assert_eq!(state.records.as_ref().unwrap().teams[84].effort(), 2);
     }
+    /// A human whose count at record +0x180 stands above one hears of his
+    /// contract at the season's turn: past A's statement his club stayed
+    /// in its league, so the season's new goal (dialog 379) opens, and OK
+    /// lets the game walk on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_turn_tells_a_human_his_seasons_goal() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-goal", |records| {
+            records.globals.set_day(320);
+            for slot in 0..records.globals.slots().len() {
+                if records.globals.slots()[slot] > 0 {
+                    records.managers[slot].set_unrest_count(2);
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1\nuntil dialog 379";
+        let Some(mut runner) = on_save(&game, "season-goal", then) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, a3_core::cycle::dialogs::SEASON_GOAL, "{log}");
+        assert_eq!(runner.host.state().season.as_ref().unwrap().year, 2026);
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

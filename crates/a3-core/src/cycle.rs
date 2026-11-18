@@ -245,6 +245,12 @@ pub mod dialogs {
     /// The association's court on its planner day, `CGerichtDialog`
     /// (`IDD_GERICHT`).
     pub const COURT: u16 = 89;
+    /// The season's new goal at the turn
+    /// (`IDD_VERTRAGSKONDITIONEN_SAISONWECHSEL`, `FUN_005bebe0`'s 0x17b).
+    pub const SEASON_GOAL: u16 = 379;
+    /// The new contract terms after a promotion or relegation
+    /// (`IDD_VERTRAGSKONDITIONEN_LIGAWECHSEL`, `FUN_005be00a`'s 0x13a).
+    pub const NEW_TERMS: u16 = 314;
 }
 
 use self::dialogs::*;
@@ -437,6 +443,10 @@ pub enum Args {
     Doping(crate::doping_control::Control),
     /// A case the association's court heard (`DAT_00a3b44c`).
     Court(crate::court::Case),
+    /// The new contract terms of the season's turn
+    /// (`CVertragskonditionenNeu`): its flag, set on a promotion and
+    /// clear on a relegation.
+    NewTerms { promoted: bool },
     /// The day's national cups for the cup results (the block at
     /// `0xa3b488`).
     CupResults(crate::cup_results::CupDay),
@@ -1657,6 +1667,7 @@ impl Cycle {
         // stands, the leagues open and the clubs' bookings clear
         // ([`crate::settlement::open_season`]) — the game walks on from
         // the new season's day 0.
+        let mut told = Vec::new();
         {
             let mut guard = self.state();
             let state = &mut *guard;
@@ -1692,8 +1703,13 @@ impl Cycle {
                 // the one build here already stands for.
                 // The humans due their contract's word (`FUN_0066a946`,
                 // message 0x10b) have the sums moved with the league;
-                // the dialogs that tell them are not built yet.
-                let _told = crate::career::season_terms(records);
+                // each one's dialog follows the turn, by his place among
+                // the humans.
+                let slots = records.globals.slots();
+                told = crate::career::season_terms(records)
+                    .into_iter()
+                    .map(|(slot, terms)| (slots[..slot].iter().filter(|&&s| s > 0).count(), terms))
+                    .collect();
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
                 crate::year::note_next_matches(records, &self.data, 0, &mut season.random);
@@ -1717,6 +1733,20 @@ impl Cycle {
                 season.day = 0;
                 season.statement = false;
             }
+        }
+        // `CMyStartDialog::FUN_0066aa06` on message 0x10b runs each told
+        // human's dialog modally (`FUN_007a0bfd`): the season's goal
+        // (`CVertragskonditionenSaisonwechsel`, dialog 379) where his club
+        // stayed, the new terms (`CVertragskonditionenNeu`, dialog 314,
+        // flag 1 promoted, 0 relegated) where it moved.
+        for (manager, terms) in told {
+            self.season(|s| s.current = manager);
+            let request = match terms {
+                crate::career::SeasonTerms::Goal => Request::new(SEASON_GOAL),
+                crate::career::SeasonTerms::Promoted => Request::with(NEW_TERMS, Args::NewTerms { promoted: true }),
+                crate::career::SeasonTerms::Relegated => Request::with(NEW_TERMS, Args::NewTerms { promoted: false }),
+            };
+            self.ask(request)?;
         }
         Ok(())
     }
