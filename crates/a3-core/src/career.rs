@@ -385,6 +385,21 @@ pub fn post_vacancy(notes: &mut Vec<JobNote>, slot: usize, club: (u8, u16), kind
     notes.push(JobNote { first: 0, second: -((slot + 1) as i16), kind, club, told: false, live: false });
 }
 
+/// The ticker's told entries go (`FUN_00751180` → `FUN_007580f0` on
+/// `CGefaehrdeteJobs` at 0xa2e420, its list at +0x13c compacted by
+/// `FUN_005df9ab`): every entry whose dword at +0xc is still nought moves
+/// up in its order, the told ones drop out, the count follows. The
+/// original runs it at the new season (`FUN_006da3a9` case 0) and at each
+/// week's turn past the season's first half week (case 1, `DAT_00b5cbd2 !=
+/// 0`). Beside it the object's two blocks of 0x11a bytes at +0x20 and
+/// +0x528 are zeroed, which nothing here keeps; and `FUN_0074f3da`, the
+/// humans past 21 years at their clubs weighed (`FUN_006fe28c`,
+/// `FUN_0074fb09`), posts only between days 0x78 and 0x140, never at the
+/// season's turn (its week posts are not built).
+pub fn drop_told(notes: &mut Vec<JobNote>) {
+    notes.retain(|n| !n.told);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -450,6 +465,15 @@ fn bump(car: &mut [u8], at: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn drops the told entries and keeps the rest in their order.
+    #[test]
+    fn the_turn_drops_the_told_notes() {
+        let note = |kind, told| JobNote { first: 0, second: -1, kind, club: (3, 7), told, live: false };
+        let mut notes = vec![note(1, true), note(3, false), note(2, true), note(4, false)];
+        drop_told(&mut notes);
+        assert_eq!(notes, [note(3, false), note(4, false)]);
+    }
 
     /// A career's end puts the club on the ticker of jobs, the manager's
     /// number negated; a full ticker takes nothing more.

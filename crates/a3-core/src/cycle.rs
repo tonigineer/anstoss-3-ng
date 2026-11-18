@@ -971,6 +971,11 @@ impl Cycle {
                     // `FUN_00406baf`).
                     if records.globals.half_weeks() != 0 {
                         crate::stock::vote(records);
+                        // The block closes with the ticker's told jobs
+                        // dropped (`FUN_00751180`).
+                        if let Some(season) = guard.season.as_mut() {
+                            crate::career::drop_told(&mut season.job_notes);
+                        }
                     }
                 }
             }
@@ -1681,6 +1686,10 @@ impl Cycle {
                 // The humans' calendars start empty and take their clubs'
                 // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
                 crate::year::open_season(records, &self.data.calendar);
+                // `FUN_006fd8e7` builds each human's year calendar so once
+                // more after the grounds' draw (`FUN_0072f568`, the same
+                // `FUN_0072e5d0` fixtures, his week planner emptied), which
+                // the one build here already stands for.
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
                 crate::year::note_next_matches(records, &self.data, 0, &mut season.random);
@@ -1697,6 +1706,9 @@ impl Cycle {
                         season.clubs.insert(key, club);
                     }
                 }
+                // The ticker of jobs drops its told entries
+                // (`FUN_00751180`, after `FUN_0062def0`).
+                crate::career::drop_told(&mut season.job_notes);
                 season.year = i32::from(records.globals.start_year());
                 season.day = 0;
                 season.statement = false;
