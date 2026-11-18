@@ -12138,20 +12138,25 @@ mod tests {
     }
 
     /// What the replica still reckons otherwise than the original over
-    /// Probe1's week, each the matter of a part of its own: the human
-    /// club's money (daily-reckoning-finances), the computer clubs'
-    /// injuries breaking out and healing (daily-reckoning-injuries) and
-    /// their condition and freshness (daily-reckoning-computer-fitness).
-    const STILL_APART: [&str; 4] = ["money", "injury", "condition", "freshness"];
+    /// Probe1's week, each the matter of a part of its own: the computer
+    /// clubs' injuries breaking out and healing (daily-reckoning-injuries)
+    /// and their condition and freshness
+    /// (daily-reckoning-computer-fitness). The human club's money agrees,
+    /// its season tickets selling day by day.
+    const STILL_APART: [&str; 3] = ["injury", "condition", "freshness"];
 
     /// The oracle's week from Probe1 (`tools/oracle/check.sh` step 1,
     /// `tools/oracle/scripts/from-save.txt`, a dump after each day's close)
     /// against the replica's days from the same save, its random numbers
     /// set at the line-up to where the original's stood: the loader
     /// overwrites the state's first half with `rand()` (SAVEGAME.md), and
-    /// the dump of day 35, taken as the turn opens, holds it. The load
-    /// agrees in everything compared, and the human club's squad keeps
-    /// agreeing day by day; what still parts is [`STILL_APART`].
+    /// the dump of day 35, taken as the turn opens, holds it. Each day
+    /// after starts from the generator the original's dump of the day
+    /// before closed with, so a day's draws are held against the
+    /// original's even where an earlier day's unported ones would have
+    /// moved them. The load agrees in everything compared, and the human
+    /// club's squad and money keep agreeing day by day; what still parts
+    /// is [`STILL_APART`].
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
     fn probe1s_week_against_the_oracles_dumps() {
@@ -12192,7 +12197,9 @@ mod tests {
         }
         let mut seen = std::collections::BTreeMap::<&str, usize>::new();
         for day in 36..=42u16 {
-            let result = runner.run(&Script::parse(&format!("until day {day}")).unwrap());
+            let before = dump(day - 1);
+            let (s1, s2) = (word(&before, "0x89dcc0"), word(&before, "0x89dcc4"));
+            let result = runner.run(&Script::parse(&format!("now random {s1} {s2}\nuntil day {day}")).unwrap());
             result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
             let oracle = Records::from_save(dump(day)).unwrap();
             let state = runner.host.state();

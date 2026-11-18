@@ -250,6 +250,9 @@ pub mod dialogs {
 use self::dialogs::*;
 
 /// The start menu's entries, in order.
+/// The season tickets sell and the boards are let while the half weeks
+/// since the season's start stand below this (`DAT_00b5cbd2 < 0xc`).
+const PRESEASON_HALF_WEEKS: u16 = 12;
 const NEW_GAME: usize = 0;
 const LOAD_GAME: usize = 1;
 const HOST_NEW: usize = 2;
@@ -1176,6 +1179,14 @@ impl Cycle {
                             // (`FUN_006da3a9`'s state 4).
                             crate::development::half_week(records, today, &mut season.random);
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
+                            // Over the first six weeks the season tickets
+                            // sell and the perimeter boards are let
+                            // (`FUN_006da3a9` hands `FUN_0064f981` the
+                            // half weeks below 12).
+                            if records.globals.half_weeks() < PRESEASON_HALF_WEEKS {
+                                crate::tickets::season_ticket_day(records, &self.data.calendar, &mut season.random);
+                                crate::human_day::let_boards(records, today, &mut season.random);
+                            }
                             // The day's training at the human clubs
                             // follows the sales (`FUN_00749508`).
                             let date = season.date();
