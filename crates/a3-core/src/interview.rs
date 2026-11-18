@@ -129,12 +129,15 @@ impl Tables {
 }
 
 /// A match of the day as the interview reads it: the sides, home first,
-/// their goals, and its kind (`+0x20`: a league's matchday from 0).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// their goals, and its kind (`+0x20`: a league's matchday from 0, else
+/// the cup's calendar code), and a second leg's first leg (`+0x08`,
+/// `+0x09`, the away side's goals first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fixture {
     pub sides: [(u8, i16); 2],
     pub goals: [i16; 2],
     pub kind: u32,
+    pub leg: [i16; 2],
 }
 
 /// The league games just played, in the order their leagues played, each
@@ -151,6 +154,7 @@ pub fn fixtures(records: &Records, played: &[(u16, u8)]) -> Vec<Fixture> {
                 sides: [side(home), side(away)],
                 goals: [i16::from(result[0]), i16::from(result[1])],
                 kind: matchday as u32,
+                leg: [0; 2],
             });
         }
     }
@@ -185,9 +189,12 @@ pub fn due(records: &Records, fixtures: &[Fixture], random: &mut Random) -> Opti
 /// Whether a league match draws an interview for its human side
 /// (`FUN_00666aea`): a match among the top six, one time in four; a
 /// win or a defeat by three, one in five; a first league's club at the
-/// top two or the bottom three, one in thirty-three. The cups' and the
-/// European cups' rolls are not built.
+/// top two or the bottom three, one in thirty-three. A national cup tie
+/// rolls by [`cup_draws`]; the European cups' rolls are not built.
 fn draws(records: &Records, f: &Fixture, home: bool, random: &mut Random) -> bool {
+    if f.kind & 0x7f00_0000 == NATIONAL_CUP {
+        return cup_draws(f, home, random);
+    }
     if f.kind & 0x7f00_0000 >= 0x3f {
         return false;
     }
@@ -210,6 +217,27 @@ fn draws(records: &Records, f: &Fixture, home: bool, random: &mut Random) -> boo
         }
     }
     false
+}
+
+/// The national cup's kind, and a second leg's flag in it.
+const NATIONAL_CUP: u32 = 0x4000_0000;
+const SECOND_LEG: u32 = 0x8000_0000;
+
+/// Whether a national cup tie draws an interview (`FUN_00666aea`'s
+/// 0x40000000 branch): fifteen times in a hundred; else, the human side
+/// behind over the tie (`FUN_00414f22`, both legs' goals in a second leg
+/// by `FUN_00414e9f`), one time in three. The record's +0x26 of 7 draws
+/// one always; what it holds is not mapped yet, so that rule waits.
+fn cup_draws(f: &Fixture, home: bool, random: &mut Random) -> bool {
+    if random.below(100) < 15 {
+        return true;
+    }
+    let mut diff = f.goals[0] - f.goals[1];
+    if f.kind & SECOND_LEG != 0 {
+        diff += f.leg[1] - f.leg[0];
+    }
+    let own = if home { diff } else { -diff };
+    own < 0 && random.below(3) == 0
 }
 
 /// What the dialog shows.
@@ -802,12 +830,29 @@ mod tests {
     /// Union (14, 84), A's human club, eleventh: a match it wins 4:0 at
     /// home draws an interview on some of the rolls, never with the
     /// switch off, and a match of two computer clubs never does.
+    /// A national cup tie draws one fifteen times in a hundred, and a tie
+    /// the human side is behind in, over both legs, a third of the rest
+    /// besides.
+    #[test]
+    fn a_cup_tie_lost_draws_an_interview_more_often() {
+        let rate = |f: Fixture, home: bool| {
+            (0..3000u64).filter(|&seed| cup_draws(&f, home, &mut Random::new(seed))).count()
+        };
+        let won = Fixture { sides: [(14, 22), (14, 84)], goals: [2, 0], kind: 0x4000_0003, leg: [0; 2] };
+        let (home_won, away_lost) = (rate(won, true), rate(won, false));
+        assert!((300..600).contains(&home_won), "{home_won}");
+        assert!((1100..1500).contains(&away_lost), "{away_lost}");
+        // Won 1:0 at home after 0:3 away: behind over the tie.
+        let second = Fixture { goals: [1, 0], kind: 0xc000_0003, leg: [3, 0], ..won };
+        assert!((1100..1500).contains(&rate(second, true)));
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_big_win_draws_an_interview_now_and_then() {
         let Some((_, mut records, _)) = setup() else { return };
-        let union = Fixture { sides: [(14, 84), (14, 22)], goals: [4, 0], kind: 3 };
-        let others = Fixture { sides: [(14, 22), (14, 20)], goals: [5, 0], kind: 3 };
+        let union = Fixture { sides: [(14, 84), (14, 22)], goals: [4, 0], kind: 3, leg: [0; 2] };
+        let others = Fixture { sides: [(14, 22), (14, 20)], goals: [5, 0], kind: 3, leg: [0; 2] };
         let drawn = (0..200).filter(|&s| due(&records, &[others, union], &mut Random::new(s)).is_some()).count();
         assert!((10..80).contains(&drawn), "{drawn} of 200");
         assert!((0..200).all(|s| due(&records, &[others], &mut Random::new(s)).is_none()));
@@ -826,7 +871,7 @@ mod tests {
     fn the_interview_asks_and_its_answers_count() {
         let Some((dir, mut records, rules)) = setup() else { return };
         let tables = MoodTables::load(&Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
-        let fixture = Fixture { sides: [(14, 22), (14, 84)], goals: [3, 0], kind: 3 };
+        let fixture = Fixture { sides: [(14, 22), (14, 84)], goals: [3, 0], kind: 3, leg: [0; 2] };
         let mut recent = Recent::default();
         let mut random = Random::new(11);
         let questions = a3_files::interview::load(&dir);

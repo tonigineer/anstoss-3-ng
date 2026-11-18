@@ -1399,7 +1399,8 @@ impl Cycle {
                         // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
                         // first match that draws one, its questions
                         // read anew from the file.
-                        let fixtures = crate::interview::fixtures(records, &played.leagues);
+                        let mut fixtures = crate::interview::fixtures(records, &played.leagues);
+                        fixtures.extend(played.cups.iter().copied());
                         if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
                             season.interview = crate::interview::Interview::begin(
                                 records,

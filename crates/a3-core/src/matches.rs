@@ -58,6 +58,7 @@ pub fn play_day(
     let mut played = Vec::new();
     let mut faced = Vec::new();
     let mut controls = Vec::new();
+    let mut cups = Vec::new();
     for slot in 0..world::SLOTS {
         let Some(nation) = world.country(slot).map(|country| country.nation) else {
             continue;
@@ -65,7 +66,7 @@ pub fn play_day(
         if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
             continue;
         }
-        faced.extend(cup_day(records, nation, calendar, day, individual, &mut season.random));
+        faced.extend(cup_day(records, nation, calendar, day, individual, &mut season.random, &mut cups));
         supercup_day(records, nation, calendar, day, &mut season.random);
         league_cup_day(records, nation, calendar, day, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
@@ -88,7 +89,7 @@ pub fn play_day(
     }
     crate::training_day::refresh_individual(records, &mut season.clubs, world);
     let reported = faced.iter().map(|f| f.club).collect();
-    MatchDay { leagues: played, reported, faced, controls }
+    MatchDay { leagues: played, reported, faced, controls, cups }
 }
 
 /// A calendar entry's competition, its top bits (`& 0x7f000000`); none
@@ -164,6 +165,8 @@ pub struct MatchDay {
     pub reported: Vec<(u8, i16)>,
     pub faced: Vec<Faced>,
     pub controls: Vec<crate::doping_control::Control>,
+    /// The humans' national cup ties, as the interview reads them.
+    pub cups: Vec<crate::interview::Fixture>,
 }
 
 /// A match a human's club played: the club its report is shown for, both
@@ -363,6 +366,7 @@ fn cup_day(
     day: usize,
     individual: &IndividualTables,
     random: &mut Random,
+    cups: &mut Vec<crate::interview::Fixture>,
 ) -> Vec<Faced> {
     let Some((entry, ties)) = cup_ties(records, nation, calendar, day) else {
         return Vec::new();
@@ -532,6 +536,12 @@ fn cup_day(
         let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, extra, individual, random);
         if let Some(club) = report::human_side(records, played.sides) {
             played.scorers = scorers;
+            cups.push(crate::interview::Fixture {
+                sides: played.sides,
+                goals: played.goals.map(i16::from),
+                kind: played.kind,
+                leg: played.leg.map(i16::from),
+            });
             report::write(records, &played, random);
             reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None, half: played.half });
         }
@@ -2213,11 +2223,11 @@ mod two_legs_tests {
         };
         let drawn = ties(&records);
         assert!(!drawn.is_empty(), "the first round drawn");
-        cup_day(&mut records, ITALY, &data.calendar, days[0], &data.rules.individual, &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[0], &data.rules.individual, &mut random, &mut Vec::new());
         for p in ties(&records) {
             assert_eq!(p[0xc] & (CUP_RESULT | CUP_PLAYED | CUP_SECOND_PLAYED), CUP_RESULT, "the first leg only stands");
         }
-        cup_day(&mut records, ITALY, &data.calendar, days[1], &data.rules.individual, &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[1], &data.rules.individual, &mut random, &mut Vec::new());
         for p in ties(&records) {
             assert_eq!(p[0xc] & 0x38, 0x38, "the second leg decides");
             if p[0xc] & CUP_EXTRA != 0 {
