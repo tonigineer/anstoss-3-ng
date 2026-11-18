@@ -1607,6 +1607,7 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     clear_human_season(records);
     clear_bookings(records, random);
     keep_club_money(records);
+    walk_played_clubs(records);
 }
 
 /// The objects the new season clears whole (`FUN_0065e659`'s
@@ -1818,6 +1819,73 @@ pub(crate) fn keep_club_money(records: &mut Records) {
         let Some(m) = records.managers.get_mut(n) else { continue };
         for (k, b) in money.into_iter().enumerate() {
             m.put::<u8>(MANAGER_MONEY + k, b);
+        }
+    }
+}
+
+/// The youth support a club's youth is classed by (club +0x1a8, team
+/// +0x420): above 600 000 rich (`DAT_00a3b340`), below 300 000 poor
+/// (`DAT_00a3b35c`), between them middling.
+const YOUTH_SUPPORT: usize = 0x1a8;
+const YOUTH_RICH: i32 = 600_000;
+const YOUTH_POOR: i32 = 300_000;
+/// A loan's flags and its end (years × 1000 + the day), in each of the
+/// eight loans from club +0x318, 0x18 apart; the bit of one in use.
+const LOANS_AT: usize = 0x318;
+const LOAN_SLOTS: usize = 8;
+const LOAN_STRIDE: usize = 0x18;
+const LOAN_FLAGS: usize = 0xf;
+const LOAN_END: usize = 0x14;
+const LOAN_IN_USE: u8 = 1;
+const LOAN_YEAR: i16 = 1000;
+/// What a club pays its reserve team (club +0x18c) and the reserve's other
+/// income it goes into (club +0x2c4); the reserve's number in the team
+/// record's second link (+0x873, `FUN_0063e7cf`).
+const OWN_STADIUM_MONEY: usize = 0x18c;
+const OTHER_INCOME: usize = 0x2c4;
+
+/// The played countries' clubs once more, behind the clubs' walk and the
+/// managers' copy of their money (`FUN_00775066`, `FUN_00774a99` per
+/// country, the main one first): every loan in use comes a year nearer
+/// its end, the club's youth is classed by its support
+/// ([`crate::youth_league::class_youth`]), and a club with a reserve team
+/// puts its +0x18c into the reserve's other income — which the clearing
+/// has just put to nought. The rating the walk reckons at the club
+/// object's +0x111 — ten, the cash in millions once it lies beyond half a
+/// million either way, the league's and the list place's points, five for
+/// the title or two for (`FUN_0069a2e5`) — never reaches the team record
+/// (`FUN_0063c908` stores no +0x111) and is not kept.
+pub(crate) fn walk_played_clubs(records: &mut Records) {
+    for country in crate::opponent::played_nations(records) {
+        let clubs = records.countries.team_count(usize::from(country)).max(0) as u16;
+        for number in 0..clubs {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            for k in 0..LOAN_SLOTS {
+                let at = LOANS_AT + k * LOAN_STRIDE;
+                if club::<u8>(team, at + LOAN_FLAGS) & LOAN_IN_USE != 0 {
+                    let end = club::<i16>(team, at + LOAN_END);
+                    put::<i16>(team, at + LOAN_END, end.wrapping_sub(LOAN_YEAR));
+                }
+            }
+            let support = club::<i32>(team, YOUTH_SUPPORT);
+            let class = if support > YOUTH_RICH {
+                1
+            } else if support < YOUTH_POOR {
+                3
+            } else {
+                2
+            };
+            let (reserve, money) = (team.linked()[1], club::<i32>(team, OWN_STADIUM_MONEY));
+            crate::youth_league::class_youth(records, country, usize::from(number), class);
+            // A link past the country's clubs names one of its amateur
+            // clubs (`FUN_0063dd1c` beyond the count), whose record keeps
+            // no income.
+            if reserve >= 0 && (reserve as u16) < clubs {
+                if let Some(r) = records.team_mut(country, reserve as u16) {
+                    let income = club::<i32>(r, OTHER_INCOME);
+                    put::<i32>(r, OTHER_INCOME, income.wrapping_add(money));
+                }
+            }
         }
     }
 }
@@ -3606,5 +3674,66 @@ mod tests {
             count += 1;
         }
         assert!(count > 140, "{count}");
+    }
+
+    /// The played countries' clubs walked once more over the original's
+    /// turn (SeasonEnd364 rolled over by the replica against NewSeason000,
+    /// `FUN_00774a99`): every loan's end as the original's, and on both
+    /// sides each club's youth classed by its own support — the bytes 3 to
+    /// 8 of its stages 1, 2 or 3, the played bytes nought — and each
+    /// reserve team's other income its first team's +0x18c.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_walks_the_played_clubs_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let mut random = Random::new(5);
+        let drawn = crate::promotion::draw(&mut ours, &mut random);
+        crate::statistics::archive_leagues(&mut ours);
+        crate::promotion::take(&mut ours, &drawn);
+        open_season(&mut ours, &mut random);
+        const STAGES: usize = 0xb7eeea - 0xb77500 - 0x20;
+        let stages = |r: &Records, country: u16, n: usize| -> Vec<u8> {
+            let slot = r.countries.slot(country.into());
+            r.block(&format!("0xb77500[{slot}]")).unwrap()[STAGES + n * 0xc..STAGES + n * 0xc + 0xc].to_vec()
+        };
+        let (mut loans, mut classed, mut reserves) = (0, 0, 0);
+        for country in crate::opponent::played_nations(&theirs) {
+            let clubs = theirs.countries.team_count(usize::from(country));
+            for n in 0..clubs as u16 {
+                let (a, b) = (ours.team(country, n).unwrap(), theirs.team(country, n).unwrap());
+                for k in 0..LOAN_SLOTS {
+                    let at = LOANS_AT + k * LOAN_STRIDE;
+                    if club::<u8>(b, at + LOAN_FLAGS) & LOAN_IN_USE != 0 {
+                        assert_eq!(club::<i16>(a, at + LOAN_END), club::<i16>(b, at + LOAN_END), "{country}/{n} loan {k}");
+                        loans += 1;
+                    }
+                }
+                for (r, t, side) in [(&ours, a, "ours"), (&theirs, b, "theirs")] {
+                    let support = club::<i32>(t, YOUTH_SUPPORT);
+                    let class = if support > YOUTH_RICH { 1 } else if support < YOUTH_POOR { 3 } else { 2 };
+                    let s = stages(r, country, usize::from(n));
+                    assert_eq!(s[3..], [class, class, class, class, class, class, 0, 0, 0], "{side} {country}/{n} youth");
+                    let reserve = t.linked()[1];
+                    if reserve >= 0 && i16::from(reserve) < clubs {
+                        let income = club::<i32>(r.team(country, reserve as u16).unwrap(), OTHER_INCOME);
+                        if income == club::<i32>(t, OWN_STADIUM_MONEY) {
+                            reserves += 1;
+                        } else {
+                            // The original's Germany 85 pays its reserve 45
+                            // twice over, by a step not traced.
+                            assert_eq!((side, country, n), ("theirs", 14, 85), "{side} {country}/{n}'s reserve");
+                        }
+                    }
+                }
+                classed += 1;
+            }
+        }
+        assert!(classed > 200 && reserves == 9, "{loans} loans, {classed} clubs, {reserves} reserves");
     }
 }
