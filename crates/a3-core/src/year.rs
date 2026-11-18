@@ -564,9 +564,10 @@ fn olympiastadion(records: &Records) -> i16 {
 /// year calendar emptied, and the year calendar given his club's fixtures
 /// of the season (`FUN_0072e5d0`) — the league's matchdays, home and away,
 /// and the cup's rounds as long as the club is in it, the drawn tie named.
-/// The supercup's days follow its object ([`book_supercup`]). (The league
-/// cup's, the European cups', the world cup's and the relegation's days,
-/// and a national coach's matches, are not built.)
+/// The supercup's days follow its object ([`book_supercup`]), England's
+/// league cup's its own as the cup's do. (The European cups', the world
+/// cup's and the relegation's days, and a national coach's matches, are
+/// not built.)
 pub fn open_season(records: &mut Records, calendar: &crate::calendar::Calendar) {
     for planner in records.planners.iter_mut().chain(records.calendars.iter_mut()) {
         for d in 0..PLANNER_DAYS {
@@ -597,7 +598,19 @@ fn book_fixtures(records: &Records, calendar: &crate::calendar::Calendar, (count
         }
         match code & COMPETITION {
             c if c < LEAGUE_CODES => book_league(records, team, d, code, planner),
-            CUP => book_cup(records, team, d, code, planner),
+            CUP => {
+                let slot = records.countries.slot(usize::from(team.country()));
+                if let Some(cup) = records.block(&format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)) {
+                    book_cup(records, cup, team, d, code, planner);
+                }
+            }
+            // England's league cup (`FUN_0072dfa4`): its object's tie for
+            // an English club in it (`FUN_006d1cc9`, the cup's test on
+            // `0x1ba7488`), any other club's match taken off the day.
+            LEAGUE_CUP => match records.block(crate::cup_draw::LEAGUE_CUP) {
+                Some(cup) if team.country() == ENGLAND => book_cup(records, cup, team, d, code, planner),
+                _ => drop_match(planner, d),
+            },
             SUPERCUP => book_supercup(records, team, d, code, planner),
             _ => {}
         }
@@ -668,15 +681,10 @@ fn book_league(records: &Records, team: &crate::records::Team, d: usize, code: u
 /// A cup round's day (`FUN_0072ded2`): the club still in the cup — its
 /// tie of the round named when drawn, the host as its ground (a final on
 /// neutral ground the cup's) — or the day's match taken off.
-fn book_cup(records: &Records, team: &crate::records::Team, d: usize, code: u32, planner: &mut Planner) {
-    let slot = records.countries.slot(usize::from(team.country()));
-    let Some(cup) = records.block(&format!("{:#x}[{slot}]", crate::opponent::CUPS_AT)) else { return };
+fn book_cup(records: &Records, cup: &[u8], team: &crate::records::Team, d: usize, code: u32, planner: &mut Planner) {
     let mut e = planner.entry(d);
     if !in_cup(cup, team, code) {
-        if e[0] == MATCH {
-            e[0] = 0;
-            planner.set_entry(d, e);
-        }
+        drop_match(planner, d);
         return;
     }
     e[0] = MATCH;
@@ -716,6 +724,15 @@ fn book_cup(records: &Records, team: &crate::records::Team, d: usize, code: u32,
         }
     }
     planner.set_entry(d, e);
+}
+
+/// A day's match taken off when the club plays none there.
+fn drop_match(planner: &mut Planner, d: usize) {
+    let mut e = planner.entry(d);
+    if e[0] == MATCH {
+        e[0] = 0;
+        planner.set_entry(d, e);
+    }
 }
 
 /// A supercup's day (`FUN_0072e066`): the club in the supercup's round
@@ -1416,6 +1433,64 @@ mod tests {
         // The UEFA cup's are many: `A.an3` stands the day before a leg, so
         // its 41 ties note their two sides over the league's club slots.
         assert!(all > 400 && eight >= 5 && five >= 20 && seven >= 500 && misses.is_empty(), "{} misses of {all} ({eight} Intertoto, {five} European, {seven} UEFA):\n{}", misses.len(), misses.join("\n"));
+    }
+
+    /// England's league cup in an English club's calendar: on the kept
+    /// saves every one of its days names the club's tie while the club is
+    /// in the cup — the host's ground, the same opponent its next match
+    /// names the day before — and nothing once it is out. (No kept save
+    /// has an English club noting a league cup tie as its next match.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_league_cup_books_its_days_as_the_original_notes_them() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (mut days, mut named, mut noted, mut misses) = (0, 0, 0, Vec::new());
+        for name in ["NewSeason000.an3", "A.an3", "S2c.an3", "S2late.an3"] {
+            let n = Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+            if !crate::opponent::played_nations(&n).contains(&u16::from(ENGLAND)) {
+                continue;
+            }
+            let cup = n.block(crate::cup_draw::LEAGUE_CUP).unwrap();
+            for t in 0..n.countries.team_count(usize::from(ENGLAND)).max(0) as u16 {
+                let team = n.team(u16::from(ENGLAND), t).unwrap();
+                if team.level() >= NO_LEAGUE {
+                    continue;
+                }
+                let mut planner = calendar();
+                book_fixtures(&n, &data.calendar, (u16::from(ENGLAND), t), &mut planner);
+                for d in 0..SEASON_DAYS {
+                    let code = fixture(&n, &data.calendar, team, d);
+                    if code & COMPETITION != LEAGUE_CUP {
+                        continue;
+                    }
+                    days += 1;
+                    let e = planner.entry(d);
+                    assert_eq!(e[0] == MATCH, in_cup(cup, team, code), "{name} {t} day {d}");
+                    if e[0] != MATCH || e[MATCH_HOME] == 0 {
+                        continue;
+                    }
+                    named += 1;
+                    let side = |at: usize| (e[at], i16::from_le_bytes([e[at + 2], e[at + 3]]));
+                    assert!(side(MATCH_HOME) == (ENGLAND, t as i16) || side(MATCH_AWAY) == (ENGLAND, t as i16), "{name} {t} day {d}");
+                    // The host's ground, a final on neutral ground the cup's.
+                    if (code & MATCHDAY) as usize != FINAL || code & NEUTRAL != NEUTRAL_FINAL {
+                        assert_eq!(e[MATCH_VENUE..MATCH_VENUE + 4], e[MATCH_HOME..MATCH_HOME + 4], "{name} {t} day {d}");
+                    }
+                    // The club's next match looked for the day before
+                    // (`FUN_0062bfc9`) is this tie.
+                    let (other, venue) = if side(MATCH_HOME) == (ENGLAND, t as i16) { (side(MATCH_AWAY), 0) } else { (side(MATCH_HOME), 1) };
+                    let next = d.checked_sub(1).and_then(|y| next_match(&n, &data.calendar, team, y));
+                    noted += 1;
+                    if next.map(|m| (m.day as usize, m.opponent, m.venue, m.kind)) != Some((d, other, venue, NEXT_CUP)) {
+                        misses.push(format!("{name} {t} day {d}: {other:?} {venue}, next {next:?}"));
+                    }
+                }
+            }
+        }
+        assert!(days > 0 && named > 0 && noted > 0 && misses.is_empty(), "{days} days, {named} named, {noted} noted: {misses:?}");
     }
 
     fn calendar() -> Planner {
