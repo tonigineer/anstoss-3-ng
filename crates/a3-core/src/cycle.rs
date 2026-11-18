@@ -1162,6 +1162,15 @@ impl Cycle {
                     let mut guard = self.state();
                     let state = &mut *guard;
                     if let Some(season) = state.season.as_mut() {
+                        // The day's match list is drawn before the human
+                        // clubs' day (`FUN_006da3a9`'s case 3,
+                        // `FUN_0062a325(day)` into `0x1baf714`), each
+                        // league playing drawing its doping pair; once the
+                        // day's routine is done it is drawn again, and the
+                        // matches take that second list.
+                        if let Some(records) = state.records.as_ref() {
+                            crate::matches::list_day(records, &self.data.calendar, season.day, &mut season.random);
+                        }
                         // The human clubs' day starts it (`FUN_0064f981`):
                         // on the second weekday the computer clubs'
                         // own week first, then the event gates, then
@@ -1275,174 +1284,129 @@ impl Cycle {
                 let mut reported = Vec::new();
                 let mut controls = Vec::new();
                 let mut cups = None;
-                let week_start = {
+                {
                     let mut guard = self.state();
                     let state = &mut *guard;
-                    state.season.as_mut().map(|season| {
+                    if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
                         let today = walked as i32;
-                        if let Some(records) = state.records.as_mut() {
-                            // The day's friendlies and tournaments
-                            // (`FUN_007615bb`): a Turnier's draw and its
-                            // results come up for the humans taking part
-                            // where the option shows them (`DAT_00b5d14f`,
-                            // events 0x9f and 0xa0).
-                            let shown = crate::exhibition::play_day(&self.data, records, today as i16, &mut season.random);
-                            if records.globals.get::<u8>(TOURNAMENT_SCREENS) == 1 {
-                                let drawn = shown.drawn.into_iter().map(|id| (dialogs::TOURNAMENT_DRAW, id));
-                                let results = shown.results.into_iter().map(|id| (dialogs::TOURNAMENT_RESULT, id));
-                                let halls = shown.halls.iter().map(|h| (dialogs::HALL_RESULT, h.id));
-                                season.tournament_screens.extend(drawn.chain(results).chain(halls));
-                                season.halls.extend(shown.halls);
-                            }
-                            // The day's news: `FUN_0064f981`'s second club
-                            // loop, after the friendlies.
-                            if let Some(gates) = &slots {
-                                crate::training_day::news(records, today, gates, &mut season.random);
-                            }
-                            // The nations play their owed international
-                            // dates on the weekdays 3 and 6
-                            // (`FUN_006bd980`): in the original it walks
-                            // the youth league and just before the
-                            // world's day, the replica's youth leagues
-                            // standing later, after the matches.
-                            crate::internationals::play_day(
-                                records,
-                                today,
-                                &mut season.random,
-                            );
-                            // The day of the world closes it
-                            // (`FUN_006504b6` with the weekday); the
-                            // original's job steps stand between,
-                            // unported.
-                            crate::world_day::day(
-                                records,
-                                today.rem_euclid(7),
-                                &mut season.random,
-                            );
+                        // The day's friendlies and tournaments
+                        // (`FUN_007615bb`): a Turnier's draw and its
+                        // results come up for the humans taking part
+                        // where the option shows them (`DAT_00b5d14f`,
+                        // events 0x9f and 0xa0).
+                        let shown = crate::exhibition::play_day(&self.data, records, today as i16, &mut season.random);
+                        if records.globals.get::<u8>(TOURNAMENT_SCREENS) == 1 {
+                            let drawn = shown.drawn.into_iter().map(|id| (dialogs::TOURNAMENT_DRAW, id));
+                            let results = shown.results.into_iter().map(|id| (dialogs::TOURNAMENT_RESULT, id));
+                            let halls = shown.halls.iter().map(|h| (dialogs::HALL_RESULT, h.id));
+                            season.tournament_screens.extend(drawn.chain(results).chain(halls));
+                            season.halls.extend(shown.halls);
                         }
-                        // The followed clubs stand as the day left their
-                        // records; only a new game, which keeps none yet,
-                        // passes its day on the replica's own model.
-                        match state.records.as_ref() {
-                            Some(records) => season.follow_records(records, &self.data),
-                            None => season.pass_day(),
+                        // The day's news: `FUN_0064f981`'s second club
+                        // loop, after the friendlies.
+                        if let Some(gates) = &slots {
+                            crate::training_day::news(records, today, gates, &mut season.random);
                         }
-                        season.day += 1;
-                        // The day's league games: where the original lets
-                        // its clubs play them on the pitch, the replica
-                        // scores them into the league blocks and their
-                        // clubs' records — the human's game among them,
-                        // its 3D match being out of the replica's scope.
-                        if let Some(records) = state.records.as_mut() {
-                            // The last information before the humans'
-                            // matches is taken as they stand before the
-                            // first is played (`FUN_006ef296`'s records,
-                            // `FUN_006fa448`), the crowd once they are.
-                            let fixtures = crate::matches::human_fixtures(
-                                records,
-                                &self.data.world,
-                                &self.data.calendar,
-                                season.day,
-                            );
-                            let mut pages = if crate::prematch::live(records, season.day) {
-                                crate::prematch::pages(records, &self.data, season, &fixtures)
-                            } else {
-                                Vec::new()
-                            };
-                            // The breaks at half time likewise, one for
-                            // each human side (`FUN_0064987a`).
-                            let mut breaks = crate::halftime::breaks(records, season.day, &fixtures);
-                            // A camp booked before the match works on
-                            // each side as the day's matches begin, home
-                            // first (`FUN_006ef296`'s `FUN_0059a2ea`).
-                            for (sides, _) in &fixtures {
-                                for &side in sides {
-                                    crate::training_day::camp_before_match(
-                                        records,
-                                        &mut season.clubs,
-                                        &self.data.world,
-                                        side,
-                                        &self.data.rules.discipline.mood,
-                                        &mut season.random,
-                                    );
-                                }
-                            }
-                            let played = crate::matches::play_day(
-                                records,
-                                &self.data.world,
-                                &self.data.calendar,
-                                season,
-                                &self.data.rules.individual,
-                            );
-                            crate::prematch::crowds(&mut pages, &played.faced);
-                            season.prematch = pages;
-                            crate::halftime::scores(&mut breaks, &played.faced);
-                            season.halftime = breaks;
-                            season.halftime_at = 0;
-                            // The matchday's end lists the leagues for
-                            // the table after it (`FUN_007108d3`'s
-                            // `FUN_00729216`), once the results stand.
-                            tables = crate::matches::tables_after(records, &played.leagues);
-                            // The reports of the humans' matches stand
-                            // written (`FUN_00550f29`); the Spielbericht
-                            // follows from the season's 42nd day, before
-                            // it only with a full preparation
-                            // (`FUN_006ef262`, event 0xce), and only with
-                            // the game's switch for it on (`FUN_00551818`).
-                            if reports_shown(records, season.day) {
-                                reported = played.reported.clone();
-                            }
-                            // The doping controls of the humans' clubs
-                            // (event 0xcb each, `FUN_005dae5f`).
-                            controls = played.controls.clone();
-                            // The day's cup rounds, their next drawn
-                            // (`FUN_0062eac3`, event 0xc9).
-                            cups = crate::cup_results::day(records, &self.data.calendar, season.day);
-                            // The youth leagues play beside them
-                            // (`FUN_0062a959`, after the day's matches).
-                            crate::youth_league::play_day(
-                                records,
-                                &self.data.calendar,
-                                season.day,
-                                &mut season.random,
-                            );
-                            // The clubs note their next matches anew
-                            // (`FUN_0062c74b`'s `FUN_0062bfc9`), a cup tie
-                            // among them opening its sales record.
-                            crate::year::note_next_matches(records, &self.data, season.day, &mut season.random);
-                            // The interview after a human's match
-                            // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
-                            // first match that draws one, its questions
-                            // read anew from the file.
-                            let fixtures = crate::interview::fixtures(records, &played.leagues);
-                            if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
-                                season.interview = crate::interview::Interview::begin(
+                        // The day's league games, behind its routine and
+                        // on its own day: where the original lets its
+                        // clubs play them on the pitch, the replica scores
+                        // them into the league blocks and their clubs'
+                        // records — the human's game among them, its 3D
+                        // match being out of the replica's scope. The
+                        // routine done, the day's list is drawn again and
+                        // played (`FUN_0062a325(day)`, `FUN_00710839` when
+                        // it holds any): its marks are the doping pairs
+                        // the matches take.
+                        let listed = crate::matches::list_day(records, &self.data.calendar, season.day, &mut season.random);
+                        // The last information before the humans'
+                        // matches is taken as they stand before the
+                        // first is played (`FUN_006ef296`'s records,
+                        // `FUN_006fa448`), the crowd once they are.
+                        let fixtures = crate::matches::human_fixtures(
+                            records,
+                            &self.data.world,
+                            &self.data.calendar,
+                            season.day,
+                        );
+                        let mut pages = if crate::prematch::live(records, season.day) {
+                            crate::prematch::pages(records, &self.data, season, &fixtures)
+                        } else {
+                            Vec::new()
+                        };
+                        // The breaks at half time likewise, one for
+                        // each human side (`FUN_0064987a`).
+                        let mut breaks = crate::halftime::breaks(records, season.day, &fixtures);
+                        // A camp booked before the match works on
+                        // each side as the day's matches begin, home
+                        // first (`FUN_006ef296`'s `FUN_0059a2ea`).
+                        for (sides, _) in &fixtures {
+                            for &side in sides {
+                                crate::training_day::camp_before_match(
                                     records,
-                                    &self.data.rules,
-                                    a3_files::interview::load(&self.data.dir),
-                                    due,
-                                    &mut season.interview_recent,
+                                    &mut season.clubs,
+                                    &self.data.world,
+                                    side,
+                                    &self.data.rules.discipline.mood,
                                     &mut season.random,
                                 );
                             }
                         }
-                        // The day's match clears the load's hold
-                        // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
-                        // 3): the boundary's block below then rolls the
-                        // market even in the week a game was loaded in.
-                        season.week_hold = false;
-                        let start = season.day % WEEK_DAYS == 0;
-                        if start {
-                            season.begin_week();
+                        let played = crate::matches::play_day(
+                            records,
+                            &self.data.world,
+                            &self.data.calendar,
+                            season,
+                            &self.data.rules.individual,
+                            &listed,
+                        );
+                        crate::prematch::crowds(&mut pages, &played.faced);
+                        season.prematch = pages;
+                        crate::halftime::scores(&mut breaks, &played.faced);
+                        season.halftime = breaks;
+                        season.halftime_at = 0;
+                        // The matchday's end lists the leagues for
+                        // the table after it (`FUN_007108d3`'s
+                        // `FUN_00729216`), once the results stand.
+                        tables = crate::matches::tables_after(records, &played.leagues);
+                        // The reports of the humans' matches stand
+                        // written (`FUN_00550f29`); the Spielbericht
+                        // follows from the season's 42nd day, before
+                        // it only with a full preparation
+                        // (`FUN_006ef262`, event 0xce), and only with
+                        // the game's switch for it on (`FUN_00551818`).
+                        if reports_shown(records, season.day) {
+                            reported = played.reported.clone();
                         }
-                        start.then_some(season.day / WEEK_DAYS)
-                    })
-                };
-                if let Some(Some(_)) = week_start
-                    && let Some(records) = self.state().records.as_mut()
-                {
-                    crate::noracsa::age_requests(records);
+                        // The doping controls of the humans' clubs
+                        // (event 0xcb each, `FUN_005dae5f`).
+                        controls = played.controls.clone();
+                        // The day's cup rounds, their next drawn
+                        // (`FUN_0062eac3`, event 0xc9).
+                        cups = crate::cup_results::day(records, &self.data.calendar, season.day);
+                        // The clubs note their next matches anew
+                        // (`FUN_0062c74b`'s `FUN_0062bfc9`), a cup tie
+                        // among them opening its sales record.
+                        crate::year::note_next_matches(records, &self.data, season.day, &mut season.random);
+                        // The interview after a human's match
+                        // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
+                        // first match that draws one, its questions
+                        // read anew from the file.
+                        let fixtures = crate::interview::fixtures(records, &played.leagues);
+                        if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
+                            season.interview = crate::interview::Interview::begin(
+                                records,
+                                &self.data.rules,
+                                a3_files::interview::load(&self.data.dir),
+                                due,
+                                &mut season.interview_recent,
+                                &mut season.random,
+                            );
+                        }
+                    }
                 }
+                // The matches' dialogs come up as `FUN_00710839` posts
+                // them, on the day they are played, before the youth
+                // leagues and the world's day move it on.
                 // The last information before the match (event 0x74,
                 // `FUN_004cb878`): a page for each human club's match.
                 if self.state().season.as_ref().is_some_and(|s| !s.prematch.is_empty()) {
@@ -1506,6 +1470,62 @@ impl Cycle {
                     {
                         interview.finish(records);
                     }
+                }
+                let week_start = {
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    state.season.as_mut().map(|season| {
+                        let today = walked as i32;
+                        if let Some(records) = state.records.as_mut() {
+                            // The youth leagues play behind the matches
+                            // (`FUN_0062a959`), the nations their owed
+                            // international dates on the weekdays 3 and
+                            // 6 (`FUN_006bd980`).
+                            crate::youth_league::play_day(
+                                records,
+                                &self.data.calendar,
+                                season.day,
+                                &mut season.random,
+                            );
+                            crate::internationals::play_day(
+                                records,
+                                today,
+                                &mut season.random,
+                            );
+                            // The day of the world closes it
+                            // (`FUN_006504b6` with the weekday); the
+                            // original's job steps stand between,
+                            // unported.
+                            crate::world_day::day(
+                                records,
+                                today.rem_euclid(7),
+                                &mut season.random,
+                            );
+                        }
+                        // The followed clubs stand as the day left their
+                        // records; only a new game, which keeps none yet,
+                        // passes its day on the replica's own model.
+                        match state.records.as_ref() {
+                            Some(records) => season.follow_records(records, &self.data),
+                            None => season.pass_day(),
+                        }
+                        season.day += 1;
+                        // The day's match clears the load's hold
+                        // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
+                        // 3): the boundary's block below then rolls the
+                        // market even in the week a game was loaded in.
+                        season.week_hold = false;
+                        let start = season.day % WEEK_DAYS == 0;
+                        if start {
+                            season.begin_week();
+                        }
+                        start.then_some(season.day / WEEK_DAYS)
+                    })
+                };
+                if let Some(Some(_)) = week_start
+                    && let Some(records) = self.state().records.as_mut()
+                {
+                    crate::noracsa::age_requests(records);
                 }
                 self.ask(Request::new(week))?;
                 // The week's boundary was reached: turns, week's end and

@@ -43,13 +43,16 @@ const GOAL_UNITS: i32 = 200;
 /// and has not played that matchday yet gets its pairs scored, and so does
 /// the country's cup when the day is one of its rounds. The leagues that
 /// played, by country and level, and the human clubs whose matches left
-/// them a report.
+/// them a report. `listed` is the day's match list ([`list_day`]) the
+/// original plays (`FUN_00710839` on the buffer at `0x1baf714`): a league
+/// on it has its controlled pairs there, one left off it none.
 pub fn play_day(
     records: &mut Records,
     world: &World,
     calendar: &Calendar,
     season: &mut Season,
     individual: &IndividualTables,
+    listed: &[Listed],
 ) -> MatchDay {
     let day = season.day;
     let mut played = Vec::new();
@@ -77,7 +80,8 @@ pub fn play_day(
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                faced.extend(settle(records, nation, level, day, individual, &mut season.random, &mut controls));
+                let picks = listed.iter().find(|(league, _)| *league == (nation, level)).map_or(&[][..], |(_, p)| p);
+                faced.extend(settle(records, nation, level, day, individual, picks, &mut season.random, &mut controls));
                 played.push((nation, level));
             }
         }
@@ -107,7 +111,7 @@ const SPLIT_PAIRS: u32 = 4;
 /// ties without these: the relegation's (0x10000000, `FUN_006d73a3`)
 /// and row 0's world matches (0x02000000, `FUN_00675698`'s shuffle) draw
 /// as well, not here yet. The picks, league by league.
-pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<((u16, u8), Vec<u32>)> {
+pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<Listed> {
     let mut picks = Vec::new();
     if calendar.entry(0, day) & LISTING_KIND != 0 {
         return picks;
@@ -130,6 +134,10 @@ pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut
     }
     picks
 }
+
+/// A league on the day's match list, by country and level, and the pairs
+/// its doping control takes ([`listing_picks`]).
+pub type Listed = ((u16, u8), Vec<u32>);
 
 /// The pair of a league's matchday the doping control takes
 /// (`FUN_00690a9e`, the list's +0x460): one of its `teams / 2`; past the
@@ -1241,6 +1249,7 @@ fn settle(
     level: u8,
     day: usize,
     individual: &IndividualTables,
+    picks: &[u32],
     random: &mut Random,
     controls: &mut Vec<crate::doping_control::Control>,
 ) -> Vec<Faced> {
@@ -1251,7 +1260,6 @@ fn settle(
         return Vec::new();
     };
     let games = league.open_games();
-    let teams = league.teams();
     // The byte where each place writes its place after this matchday, and
     // where the count and the crowd stand — all taken before the count is
     // raised, since they lie on the matchday as it was played.
@@ -1449,14 +1457,18 @@ fn settle(
             reported.push(Faced { club, sides, attendance, fans: Some(fans), half: [result[2], result[3]] });
         }
     }
-    // The matchday's doping control: one of its pairs (`FUN_00690a9e`),
-    // both sides' men picked (`FUN_005dad80`, home first) and those of a
-    // human's club tested (`FUN_00741aef` → `FUN_005dae5f`).
-    let at = crate::doping_control::controlled(teams, random);
-    if let (Some(&home), Some(&away)) = (homes.get(at), aways.get(at)) {
-        let picked = [home, away].map(|n| (n, crate::doping_control::pick(records, nation, n, random)));
-        for (n, men) in picked {
-            controls.extend(crate::doping_control::test(records, nation, n, &men, random));
+    // The matchday's doping control: the pair the day's list marked
+    // (+0x460, drawn in `FUN_00690a9e`; in a split league's second phase
+    // one in each group of four), both sides' men picked (`FUN_005dad80`,
+    // home first) and those of a human's club tested (`FUN_00741aef` →
+    // `FUN_005dae5f`).
+    for (group, &pick) in picks.iter().enumerate() {
+        let at = group * SPLIT_PAIRS as usize + pick as usize;
+        if let (Some(&home), Some(&away)) = (homes.get(at), aways.get(at)) {
+            let picked = [home, away].map(|n| (n, crate::doping_control::pick(records, nation, n, random)));
+            for (n, men) in picked {
+                controls.extend(crate::doping_control::test(records, nation, n, &men, random));
+            }
         }
     }
     // Every offered Toto match keeps its result, wherever it stands in
@@ -2095,7 +2107,7 @@ mod crowd_tests {
         let day = usize::from(records.globals.day());
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let tables = IndividualTables::load(&exe).unwrap();
-        settle(&mut records, 14, 0, day, &tables, &mut random, &mut Vec::new());
+        settle(&mut records, 14, 0, day, &tables, &[], &mut random, &mut Vec::new());
         let gates: Vec<i32> = held
             .iter()
             .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
@@ -2212,5 +2224,39 @@ mod listing_tests {
             assert_eq!(drawn, &vec![replay.below(n)]);
         }
         assert_eq!(random, replay);
+    }
+
+    /// The doping control takes the pair the day's list marked: on A's
+    /// human league, marking the human club's own pair tests his men
+    /// (dialog 41's control), marking the next pair leaves him alone, and
+    /// a league off the list draws no control at all.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_control_takes_the_lists_pair() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let load = || Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let records = load();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let nation = u16::from(country);
+        let level = records.team(nation, number as u16).unwrap().level();
+        let league = League::of(&records, nation, level).unwrap();
+        let games = league.open_games();
+        let own = games
+            .iter()
+            .position(|&(h, a, _)| [h, a].iter().any(|&p| league.team(p) == number))
+            .unwrap();
+        let controlled = |picks: &[u32]| {
+            let mut records = load();
+            let mut controls = Vec::new();
+            let mut random = Random::from_state(4711, 815);
+            settle(&mut records, nation, level, 69, &data.rules.individual, picks, &mut random, &mut controls);
+            controls.iter().map(|c| c.club).collect::<Vec<_>>()
+        };
+        assert_eq!(controlled(&[own as u32]), [(country, number)]);
+        assert!(controlled(&[((own + 1) % games.len()) as u32]).is_empty());
+        assert!(controlled(&[]).is_empty());
     }
 }

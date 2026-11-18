@@ -87,12 +87,6 @@ impl Control {
     }
 }
 
-/// Which of a matchday's matches is controlled: one of the league's
-/// pairs, by its place among them (`FUN_00690a9e`).
-pub fn controlled(teams: usize, random: &mut Random) -> usize {
-    random.below(u32::try_from(teams / 2).unwrap_or(0)) as usize
-}
-
 /// The men picked on a side of the controlled match (`FUN_005dad80`): a
 /// club spared this once has its flag taken and nobody picked; else one
 /// of the eleven, and one of the bench — three draws of its seven places

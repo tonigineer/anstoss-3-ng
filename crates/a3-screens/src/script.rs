@@ -731,7 +731,9 @@ mod tests {
     /// its week from 56, 7 Nov) showed dialog 147 again at day 63, with
     /// the week's wait 381 just before it — not seven days on at 69 — and
     /// between them the window of the record the save holds, which the
-    /// turn before the match leaves alone.
+    /// turn before the match leaves alone. Behind that turn the saved day's
+    /// own matches are played (A, the same game a day on, holds Wolfsburg
+    /// against Union), their dialogs before the day moves on.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_load_mid_week_turns_again_at_its_weeks_boundary() {
@@ -749,6 +751,13 @@ mod tests {
              on 270 ok
              on 381 wait
              on 477 ok
+             on 96 ok
+             on 93 press 1943
+             on 499 ok
+             on 41 ok
+             on 332 ok
+             on 269 ok
+             on 383 click at 460 210
              until day 64",
         )
         .unwrap();
@@ -11329,7 +11338,8 @@ mod tests {
         drop(runner);
         let week = format!(
             "{ask}\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 2 wait\n\
-             on 461 ok\non 270 ok\non 381 wait\nuntil dialog 99"
+             on 461 ok\non 270 ok\non 381 wait\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\n\
+             on 332 ok\non 269 ok\non 383 click at 460 210\nuntil dialog 99"
         );
         let runner = on_save(&game, "Toni", &week).unwrap();
         let first_level = {
@@ -11918,7 +11928,7 @@ mod tests {
         // OK: the draw of the two second rounds.
         let Some((caption, cup, rows, range)) = shown("now press 2762") else { return };
         assert_eq!((caption, cup, range), (title(0xb43, 0xb46, 14), label("DEU"), (0, 1)));
-        let drawn = "1.FC Heidenheim (1. Liga)\t- 1.FSV Mainz 05 (1. Liga)\t\t\t\t\t";
+        let drawn = "Hamburger SV (1. Liga)\t- 1.FSV Mainz 05 (1. Liga)\t\t\t\t\t";
         assert!(rows.contains(&(drawn.into(), None, false)));
         let Some((caption, ..)) = shown("now press 2762\nnow slide 4778 1") else { return };
         assert_eq!(caption, title(0xb43, 0xb46, 20));
@@ -11932,11 +11942,11 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player out of the day's news (text 861), which the replica does not
-    /// build — its draws part there. With the generator at 12354/67896
-    /// (the court's draw of day 67, the men's own training rolls and the
-    /// week end's look at its last day's matches move the replica's later
-    /// ones) its first comes from a training: player event 4, the brawl of text 7,
-    /// in the same window, its caption "Ereignis", Union's manager and the
+    /// build — its draws part there. With the generator at 12359/67901
+    /// (the court's draw of day 67, the men's own training rolls, the
+    /// week end's look at its last day's matches and each matchday's own
+    /// two lists move the replica's later ones) its first comes from a
+    /// training: player event 4, the brawl of text 7, in the same window, its caption "Ereignis", Union's manager and the
     /// club as the original's (the caption bar matched pixel for pixel),
     /// the ball beside it; OK closes it and the day goes on.
     #[test]
@@ -11950,7 +11960,7 @@ mod tests {
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12354 67896\n{handlers}until dialog 51");
+        let then = format!("now random 12359 67901\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
