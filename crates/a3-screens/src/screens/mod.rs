@@ -21,6 +21,7 @@ pub mod doping_report;
 pub mod duties;
 pub mod european_ranking;
 pub mod event_text;
+pub mod development;
 pub mod farewells;
 pub mod finances;
 pub mod formations;
@@ -300,6 +301,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(match_report::MatchReport::default()),
         Box::new(doping_control::DopingControl),
         Box::new(farewells::Farewells::default()),
+        Box::new(development::Development::default()),
         Box::new(european_ranking::EuropeanRanking),
         Box::new(court::Court),
         Box::new(season_terms::SeasonTerms::default()),
@@ -390,6 +392,7 @@ pub fn compose(game: &mut Game) {
     doping_report::compose(&mut game.dialogs);
     doping_control::compose(&mut game.dialogs);
     farewells::compose(&mut game.dialogs);
+    development::compose(&mut game.dialogs);
     european_ranking::compose(&mut game.dialogs);
     court::compose(&mut game.dialogs);
     season_terms::compose(&mut game.dialogs);

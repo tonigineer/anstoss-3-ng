@@ -242,6 +242,9 @@ pub mod dialogs {
     /// The careers the season's end closes, `CMitTraenen`
     /// (`IDD_MIT_TRAENEN`, event 0xcd).
     pub const FAREWELLS: u16 = 152;
+    /// The players' development, a page each human club, `CAufwertung`
+    /// (`IDD_AUFWERTUNG`, event 0xca).
+    pub const DEVELOPMENT: u16 = 22;
     /// The European ranking the season's end rolled on,
     /// `CUefa5Jahreswertung` (`IDD_UEFA`, event 0xcf).
     pub const EUROPEAN_RANKING: u16 = 301;
@@ -1213,6 +1216,7 @@ impl Cycle {
                 let walked = self.season(|s| s.day).unwrap_or(0);
                 let mut slots = None;
                 let mut posted = Vec::new();
+                let mut winter = false;
                 {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1256,7 +1260,10 @@ impl Cycle {
                             // The half week ticks first, the winter break
                             // developing the players at its 56th
                             // (`FUN_006da3a9`'s state 4).
-                            crate::development::half_week(records, today, &mut season.random);
+                            if let Some(report) = crate::development::half_week(records, today, &mut season.random) {
+                                winter = !report.is_empty();
+                                season.development = report;
+                            }
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
                             // The week's first day starts with the men's
                             // extra shifts and youth rounds and the
@@ -1299,6 +1306,11 @@ impl Cycle {
                             );
                         }
                     }
+                }
+                // The winter break's development comes up first, posted
+                // at the half week's tick (`FUN_0040f99c(1)`, event 0xca).
+                if winter {
+                    self.ask(Request::new(DEVELOPMENT))?;
                 }
                 // The training's events come up as they happen, before
                 // the booked ones (`FUN_005ef5cb`, event 0xfc).
@@ -1647,20 +1659,25 @@ impl Cycle {
                     // (`FUN_0074d52b`), told to no one.
                     let _ = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
                     crate::statistics::archive_strengths(records);
-                    crate::development::develop_played(records, false, &mut season.random);
-                    Some((drawn, crate::rollover::farewells(records)))
+                    season.development = crate::development::develop_played(records, false, &mut season.random);
+                    Some((drawn, crate::rollover::farewells(records), !season.development.is_empty()))
                 }
                 _ => None,
             }
         };
-        // The careers about to end are told first, every human club's on
+        // The players' development comes up first, a page each human
+        // club (`FUN_0040f99c` posting event 0xca).
+        if let Some((_, _, true)) = &closing {
+            self.ask(Request::new(DEVELOPMENT))?;
+        }
+        // The careers about to end are told next, every human club's on
         // a page of one notice (`FUN_0066d435` posting event 0xcd ahead of
         // its retirements).
-        if let Some((_, Some(farewells))) = &closing {
+        if let Some((_, Some(farewells), _)) = &closing {
             self.ask(Request::with(FAREWELLS, Args::Farewells(*farewells)))?;
         }
         let rolled = closing.is_some();
-        if let Some((drawn, _)) = closing {
+        if let Some((drawn, _, _)) = closing {
             let mut guard = self.state();
             let state = &mut *guard;
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {

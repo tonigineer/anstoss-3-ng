@@ -9423,7 +9423,7 @@ mod tests {
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
-                        on 381 wait\non 356 press 4542\non 152 press 2594\n";
+                        on 381 wait\non 356 press 4542\non 22 press 1306\non 152 press 2594\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(5);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
@@ -12696,5 +12696,62 @@ mod tests {
         let _ = runner.settle();
         assert_ne!(runner.host.view().id, 301, "OK closes it");
         assert_eq!(runner.host.state().records.as_ref().unwrap().globals.start_year(), 2026);
+    }
+
+    /// SeasonEnd364's season end shows the players' development first
+    /// (dialog 22, event 0xca): Union's name in the caption, the plain
+    /// header as its trainer plays at difficulty 0, and a line a man —
+    /// name, position, age, form, season's form, old strength, whether he
+    /// got better or worse, and his new strength as the records now have
+    /// it. OK turns the page, the last goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_shows_the_players_development() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD
+            .replace("row 5144 0", &format!("row 5144 {row}"))
+            .replace("on 22 press 1306\n", "")
+            .replace("until dialog 147", "until dialog 22");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&22];
+        assert_eq!(
+            runner.host.view().text(control(dialog, 9924).unwrap()),
+            "ANSTOSS 3 - Auf- und Abwertungen 1.FC Union Berlin"
+        );
+        let header = runner.host.view().header(control(dialog, 1308).unwrap()).unwrap().text.clone();
+        assert_eq!(header, "Name\\tPos\\tAlter\\tForm\\tD-Form\\tAlte Stärke\\tGrund\\t\\tNeue Stärke");
+        let list = runner.host.view().list(control(dialog, 1307).unwrap()).unwrap().clone();
+        let pages = runner.host.state().season.as_ref().unwrap().development.clone();
+        assert!(!pages.is_empty() && pages[0].insight == 0 && !pages[0].rows.is_empty());
+        assert_eq!(list.rows.len(), pages[0].rows.len());
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            for (line, r) in list.rows.iter().zip(&pages[0].rows) {
+                let fields: Vec<&str> = line.split('\t').collect();
+                assert_eq!(fields.len(), 9, "{line}");
+                assert_eq!(fields[2], r.age.to_string());
+                assert_eq!(fields[4], format!("{:.2}", f32::from(r.season_form) / 10.0));
+                assert_eq!(fields[5], r.old.to_string());
+                let said = match r.new.cmp(&r.old) {
+                    std::cmp::Ordering::Greater => "hat sich verbessert",
+                    std::cmp::Ordering::Less => "hat sich verschlechtert",
+                    std::cmp::Ordering::Equal => "",
+                };
+                assert_eq!(fields[6], said, "{line}");
+                assert_eq!(fields[8], r.new.to_string());
+                assert_eq!(records.player(r.player).unwrap().strength(), r.new, "{r:?}");
+            }
+        }
+        for _ in 0..pages.len() {
+            runner.run(&Script::parse("now press 1306").unwrap()).unwrap();
+            let _ = runner.settle();
+        }
+        assert_ne!(runner.host.view().id, 22, "the last page's OK closes it");
     }
 }

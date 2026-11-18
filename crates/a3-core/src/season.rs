@@ -448,6 +448,9 @@ pub struct Season {
     /// The ticker of jobs come free and lost (`CGefaehrdeteJobs`' list at
     /// `DAT_00a2e55c`, at most fifty entries).
     pub job_notes: Vec<crate::career::JobNote>,
+    /// The players' development as dialog 22 shows it, from the last
+    /// time they developed (`DAT_008e2cb4`, which no save keeps).
+    pub development: crate::development::Report,
     /// Whether the season's statement — dialog 417 as the season end
     /// posts it — has come up in this game.
     pub statement: bool,
@@ -886,6 +889,7 @@ impl Season {
             random,
             donations: Vec::new(),
             job_notes: Vec::new(),
+            development: Vec::new(),
             statement: false,
             week_hold: false,
             opponents: Default::default(),
