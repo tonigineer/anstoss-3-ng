@@ -12537,4 +12537,53 @@ mod tests {
         let _ = runner.settle();
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// A youth on trial at Union in his last week (A patched, his weeks at
+    /// 1): the loaded week's end holds its block, the next, at day 70,
+    /// sends him back to the youth and tells the club in the event window,
+    /// "Ihr Jugendspieler %s trainiert ab jetzt wieder in Ihrer A-Jugend!"
+    /// (text 4156, `FUN_0074d2b5`), his name in it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_trials_end_is_told_to_the_club() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut youth = 0;
+        let root = patched(&dir, "A", "trial-end", |records| {
+            youth = *records.team(14, 84).unwrap().players().last().unwrap();
+            let p = records.player_mut(youth).unwrap();
+            p.set_retiring(p.retiring() | 0x10);
+            p.set_picks(p.picks() & 0x30 | 1);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 392 ok\non 96 ok\non 161 ok\non 419 ok\non 435 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
+        let Some(mut runner) = on_save(&game, "trial-end", &format!("{handlers}until dialog 51")) else { return };
+        let dialog = &game.dialogs[&51];
+        let name = runner.host.state().records.as_ref().unwrap().known_as(youth).unwrap();
+        let told = game.text(4156).replacen("%s", &name, 1);
+        assert_eq!(told, format!("Ihr Jugendspieler {name} trainiert ab jetzt wieder in Ihrer A-Jugend!"));
+        for _ in 0..40 {
+            if runner.host.view().text(control(dialog, 1451).unwrap()) == told {
+                break;
+            }
+            assert!(runner.host.state().season.as_ref().unwrap().day <= 70, "{}", runner.log.join("\n"));
+            runner.run(&Script::parse("now ok\nuntil dialog 51").unwrap()).unwrap();
+        }
+        assert_eq!(runner.host.view().text(control(dialog, 1451).unwrap()), told);
+        {
+            let state = runner.host.state();
+            assert_eq!(state.season.as_ref().unwrap().day, 70);
+            let records = state.records.as_ref().unwrap();
+            assert!(!records.team(14, 84).unwrap().players().contains(&youth));
+            assert_eq!(records.player(youth).unwrap().retiring() & 0x10, 0);
+        }
+        runner.run(&Script::parse("now ok\nuntil dialog 147").unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -1045,6 +1045,7 @@ impl Cycle {
             // next turn with the week's dialog 147 back at 63, came in
             // the trace of 7 Nov.
             let at_week_start = self.season(|s| s.day % WEEK_DAYS == 0).unwrap_or(true);
+            let mut trials = Vec::new();
             // The week's end first rolls the market (`FUN_00405c5e`):
             // every entry takes its price for the new week and the mean
             // of them moves the market's index. A freshly loaded game
@@ -1078,8 +1079,9 @@ impl Cycle {
                         // retirements announced.
                         crate::transfer_week::week(records, &mut season.random);
                         // The human clubs' trials go on a week, or end
-                        // (`FUN_0064e25b`).
-                        crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
+                        // (`FUN_0064e25b`), each man gone back told to
+                        // his club below.
+                        trials = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
                         // It forgets the last friendlies more than six
                         // weeks gone (`FUN_0043539b`).
                         crate::friendly::forget_last_friendlies(records, season.day as i16);
@@ -1090,6 +1092,9 @@ impl Cycle {
                     }
                 }
             }
+            // The trials' ends come up as the week's block posts them
+            // (`FUN_0074d2b5`'s `FUN_005f1eaf`, the window waiting).
+            self.day_events(trials)?;
             // The week's end opens the advance sales of each human club's
             // league matches of the next four weeks (`FUN_0064e40f` ->
             // `FUN_0077d4ea`), and a record just opened sells at once
@@ -1629,8 +1634,8 @@ impl Cycle {
                 let drawn = crate::promotion::draw(records, &mut season.random);
                 crate::promotion::count(records);
                 // Every trial at the human clubs ends with the season
-                // (`FUN_0074d52b`).
-                crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
+                // (`FUN_0074d52b`), told to no one.
+                let _ = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
                 crate::statistics::archive_strengths(records);
                 crate::development::develop_played(records, false, &mut season.random);
                 crate::rollover::retire_announced(records, &mut season.random);
@@ -2279,6 +2284,14 @@ impl Cycle {
             return Ok(());
         }
         let Some(texts) = a3_files::saq::EventTexts::load(&self.data.dir) else { return Ok(()) };
+        // The game's own texts (the dialog file's string table) only for
+        // the posts that take one.
+        let game = if posted.iter().any(|p| matches!(p.fill, crate::event_text::Fill::GameNamed(_))) {
+            a3_files::rch::load_string_table(&self.data.dir.join("deb/MeineDialoge.rch")).unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let game = |id: u16| game.get(&id).cloned().unwrap_or_default();
         for p in posted {
             let dialog = {
                 let state = self.state();
@@ -2286,7 +2299,7 @@ impl Cycle {
                 if crate::event_text::quiet(records) {
                     return Ok(());
                 }
-                crate::event_text::make(records, &texts, &p).dialog()
+                crate::event_text::make(records, &texts, &game, &p).dialog()
             };
             self.ask(Request::with(dialog, Args::Event(p)))?;
         }

@@ -49,6 +49,10 @@ pub enum Fill {
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
+    /// The text one of the game's own (by its id in `ListeDerTexte.rh`,
+    /// `FUN_00730300`) rather than `ereignis.saq`'s, its `%s` a man's
+    /// name (as `FUN_0074d2b5` builds a trial's end).
+    GameNamed(u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +62,8 @@ pub enum Lead {
 }
 
 /// An event as a rule posts it: the club, the event's code and the text's
-/// id in `ereignis.saq` with what goes into it. Its text is filled in
+/// id in `ereignis.saq` (the game's own for [`Fill::GameNamed`]) with what
+/// goes into it. Its text is filled in
 /// when it comes up ([`make`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Posted {
@@ -103,12 +108,14 @@ pub fn quiet(records: &Records) -> bool {
     g.day() < QUIET_DAYS && g.seasons() == 1 && g.get::<i16>(QUIET_OPTION) != 0
 }
 
-/// The event of a post, its text filled in.
-pub fn make(records: &Records, texts: &EventTexts, posted: &Posted) -> Event {
+/// The event of a post, its text filled in; `game` gives the game's own
+/// texts by id.
+pub fn make(records: &Records, texts: &EventTexts, game: &dyn Fn(u16) -> String, posted: &Posted) -> Event {
     let text = |id: u16| texts.get(usize::from(id)).unwrap_or_default();
     let name = |id: u16| records.known_as(id).unwrap_or_default();
     let body = text(posted.text);
     let text = match posted.fill {
+        Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
         Fill::Plain => body.to_owned(),
         Fill::Named(id) => body.replacen("%s", &name(id), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),

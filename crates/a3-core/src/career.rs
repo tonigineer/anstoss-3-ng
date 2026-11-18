@@ -298,6 +298,7 @@ pub fn release_club(
             p.set_morale(crate::mood::morale(p));
         }
     }
+    // Sent back without a word (`FUN_0074d27f`).
     crate::youth::end_club_trials(records, clubs, world, country, number, true);
 }
 

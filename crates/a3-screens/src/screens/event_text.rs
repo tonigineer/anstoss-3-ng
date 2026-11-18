@@ -47,7 +47,7 @@ impl Screen for EventText {
         let Args::Event(posted) = args else { return };
         let Some(records) = cx.state.records.as_ref() else { return };
         let Some(texts) = EventTexts::load(&cx.game.dir) else { return };
-        let event = event_text::make(records, &texts, &posted);
+        let event = event_text::make(records, &texts, &|id| cx.game.text(id).to_owned(), &posted);
         let mut who = String::new();
         if let Some(m) = usize::from(event.manager).checked_sub(1).and_then(|m| records.managers.get(m)) {
             who = format!("{} {}", m.first_name(), m.last_name());
