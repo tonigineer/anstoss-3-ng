@@ -298,7 +298,7 @@ fn weighed(p: &Player, today: i32, random: &mut Random) -> bool {
 /// team and club please him less than 70 over the mean, 2 or 1 when all
 /// seven parts come to less than 170 or 201 over it; a manager who plays
 /// counts 1.
-fn discontent(p: &Player) -> u8 {
+pub(crate) fn discontent(p: &Player) -> u8 {
     if p.id() > LAST_REAL_ID {
         return 1;
     }

@@ -268,7 +268,7 @@ const MATCHES_RESUMED: u16 = 0x3e6;
 const GERMANY: usize = 14;
 
 /// A player record as the world has the players of the data files.
-fn player(records: &Records, record: &records::Player) -> Player {
+pub(crate) fn player(records: &Records, record: &records::Player) -> Player {
     Player {
         last_name: records.name(record.last_name()).to_owned(),
         first_name: records.name(record.first_name()).to_owned(),
@@ -315,7 +315,7 @@ const STRENGTH_UNKNOWN: u8 = 0x20;
 /// The top two bits of `picks` at 1 or 3 (`FUN_00706acd`).
 const STRENGTH_HIDDEN: u8 = 0x40;
 
-fn status(records: &Records, medical: &MedicalTables, record: &records::Player) -> Status {
+pub(crate) fn status(records: &Records, medical: &MedicalTables, record: &records::Player) -> Status {
     let globals = &records.globals;
     Status {
         last_form: Some(record.last_form().into()),

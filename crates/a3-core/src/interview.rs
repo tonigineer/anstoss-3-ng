@@ -20,10 +20,13 @@
 //! time and penalties, the crowd and the tie hold here; the sides'
 //! chances, cards and marks, the score at the clock's marks and the
 //! weather only over a record the engine wrote, and the replica's matches
-//! are scored by a stand-in that leaves them at nought. The facts of the
-//! squad, the manager's record and the men the record names stay off; no
-//! referee is drawn, and the match's best and worst men go unnamed.
-//! League matches and the national cup's ties are looked at.
+//! are scored by a stand-in that leaves them at nought. The manager's
+//! record, the club's money, its squad (ages, freshness, condition,
+//! contentment, injuries, bans, its five best and whether they stood the
+//! match) and its run of league results give their facts from the save;
+//! the men the record names stay off; no referee is drawn, and the
+//! match's best and worst men go unnamed. League matches and the
+//! national cup's ties are looked at.
 
 use std::io;
 
@@ -426,6 +429,210 @@ struct Match {
     opp_level: u8,
     /// The match's record, where the human's report keeps it.
     rec: Option<Record>,
+    /// The manager, the club's money, its squad and its run of results.
+    club: Club,
+}
+
+/// What the facts read off the manager object (`param_5`), the club's
+/// money and its squad (`param_3` +0xb50, +0xe2), by the save's fields.
+#[derive(Default)]
+struct Club {
+    /// The manager object's +0x22, +0x23 (the record's own offsets).
+    status: u8,
+    level: u8,
+    /// +0x94 and +0x96 (record 0x180, 0x182).
+    unrest: i16,
+    second_count: i16,
+    /// The titles (+0xdc), the black cash box (+0xec), the first of his
+    /// abilities at his standing (+0x1800 + `FUN_006a61e5` × 0xe), the
+    /// fans' and the media's liking (+0x3b, +0x3c), the contract's years
+    /// (+0x66).
+    titles: i16,
+    black_cash: i32,
+    ability: i16,
+    fans: u8,
+    media: u8,
+    contract_years: i16,
+    /// The board's confidence (`FUN_007701b2`), his majority of the
+    /// club's shares (`FUN_00406b4f`), his age (`FUN_006a54d0`), and the
+    /// humans of the game (`DAT_00b5cbce`).
+    confidence: i32,
+    majority: bool,
+    age: i32,
+    humans: u16,
+    /// The money figure (`FUN_00621eac`) and the season's booked result
+    /// (`FUN_00621f50`).
+    figure: i64,
+    booked: i64,
+    /// The squad's men, the sums of their ages (`FUN_006ff01b`), their
+    /// freshness (`FUN_006ff649`) and condition (`FUN_00457e00`), each a
+    /// short as the original adds them.
+    squad: i16,
+    ages: i16,
+    freshness: i16,
+    condition: i16,
+    /// How many are discontent (`FUN_00770877` over 1), play up front
+    /// (main position 10, handle +0x3), are out over six days (+0x2c),
+    /// stand over strength 9 (+0x2), and carry the league ban's byte
+    /// (+0x36) at 0x20 or 0x80.
+    discontent: i16,
+    forwards: i16,
+    injured: i16,
+    strong: i16,
+    banned: i16,
+    sent_off: i16,
+    /// The season's title and promotion (team +0x110: `FUN_0069a161`,
+    /// `FUN_0069a1e1`).
+    champion: bool,
+    promoted: bool,
+    /// The club's league results by matchday, its own goals first, none
+    /// for a day not played (`FUN_006907da`).
+    results: Vec<Option<(u8, u8)>>,
+}
+
+/// The main position of a forward (handle +0x3), the days out that count,
+/// the strength that counts, and the league ban's bytes (handle +0x36).
+const FORWARD: u8 = 10;
+const OUT_DAYS: i32 = 6;
+const STRONG: u8 = 9;
+const BANNED: u8 = 0x20;
+const SENT_OFF: u8 = 0x80;
+/// The facts the five best of the squad give before the switch: one left
+/// out of the match (live +0x57 bit 1 clear), one who stood it hurt for
+/// over three weeks (+0x2c over 0x15).
+const LEFT_OUT: usize = 400;
+const PLAYED_HURT: usize = 408;
+const HURT_DAYS: i32 = 0x15;
+const BEST: usize = 5;
+/// The bit of the record's match bits (+0x25b, the handle's +0x57) a man
+/// who stood the match carries.
+const PLAYED: u8 = 1;
+/// The money's bounds (`FUN_00627bd0`: `DAT_00a3b308`, `DAT_00a3b2d8`,
+/// `DAT_00a3b2e8`, `DAT_00a3b314`, so many thousands of `DAT_00a3b3e4`).
+const RICH: i64 = 3_000_000;
+const VERY_RICH: i64 = 8_000_000;
+const DEBT: i64 = 5_000_000;
+const LOSS: i64 = 2_000_000;
+/// The season's achievements (team +0x110).
+const ACHIEVEMENTS: usize = 0x110;
+const TITLE: u16 = 1;
+const PROMOTION: u16 = 4;
+
+/// The live handle's +0x36 (`FUN_00636638`): the league ban's second
+/// byte (record +0x230), left at nought when it carries a red card's bit
+/// and the card's day (+0x1f2) is none or gone.
+fn ban_byte(p: &crate::records::Player, today: u16) -> u8 {
+    let ban = p.league_ban()[1];
+    let on = i32::from(p.sent_off_on());
+    if ban & 0x80 != 0 && (on == 0 || on < i32::from(today)) { 0 } else { ban }
+}
+
+impl Club {
+    fn of(records: &Records, rules: &Rules, team: &Team, manager: usize) -> Self {
+        let mut c = Self { humans: records.globals.humans(), ..Self::default() };
+        if let Some(m) = records.managers.get(manager) {
+            c.status = m.status();
+            c.level = m.level();
+            c.unrest = m.unrest_count();
+            c.second_count = m.second_count();
+            c.titles = m.titles()[0];
+            c.black_cash = m.black_cash();
+            c.ability = m.abilities()[m.standing().clamp(0, 15) as usize][0];
+            let [_, fans, media] = m.popularity();
+            (c.fans, c.media) = (fans, media);
+            c.contract_years = m.contract_years();
+            c.confidence = crate::stock::confidence(records, manager);
+            c.majority = crate::stock::majority(records, manager);
+            let born = chrono::NaiveDate::from_ymd_opt(
+                i32::from(m.birth_year()),
+                u32::from(m.birth_month()),
+                u32::from(m.birth_day()),
+            );
+            c.age = crate::free_agents::today(records).map_or(0, |d| crate::autolineup::age(born, d));
+        }
+        c.figure = crate::finances::figure(team, records.globals.fund_prices());
+        c.booked = crate::finances::booked_result(team);
+        let achieved = team.get::<u16>(ACHIEVEMENTS);
+        (c.champion, c.promoted) = (achieved & TITLE != 0, achieved & PROMOTION != 0);
+        let today = crate::free_agents::today(records);
+        let day = records.globals.day();
+        for id in team.players() {
+            let Some(p) = records.player(id) else { continue };
+            let fitness = crate::load::fitness(p);
+            c.squad += 1;
+            c.ages = c.ages.wrapping_add(today.map_or(0, |d| crate::statistics::age_on(p, d)) as i16);
+            c.freshness = c.freshness.wrapping_add(crate::lineup::freshness(fitness) as i16);
+            c.condition = c.condition.wrapping_add(crate::lineup::condition(fitness) as i16);
+            let status = crate::load::status(records, &rules.medical, p);
+            c.discontent += i16::from(crate::transfer_week::discontent(p) > 1);
+            c.forwards += i16::from(p.positions()[0] == FORWARD);
+            c.injured += i16::from(status.injured > OUT_DAYS);
+            c.strong += i16::from(p.strength() > STRONG);
+            let ban = ban_byte(p, day);
+            c.banned += i16::from(ban == BANNED);
+            c.sent_off += i16::from(ban == SENT_OFF);
+        }
+        if let Some(league) = crate::opponent::League::of(records, team.country().into(), team.level()) {
+            let place = usize::from(team.league_place());
+            c.results = (1..=league.matchdays())
+                .map(|md| match league.result(md, place)? {
+                    (home, _, Some((a, b))) if home == place => Some((a, b)),
+                    (_, _, Some((a, b))) => Some((b, a)),
+                    _ => None,
+                })
+                .collect();
+        }
+        c
+    }
+
+    /// How many matchdays back from `from` the club's run lasts: the days
+    /// to the last match `ends` holds for, all of them when none does
+    /// (`FUN_00660cda` and its kin, `FUN_006611be`'s kinds). The home
+    /// side the original takes from the club's fixture list
+    /// (`FUN_0062af24`), the replica from the day's pairing.
+    fn run(&self, from: i32, ends: impl Fn(u8, u8) -> bool) -> i32 {
+        for k in (1..=from).rev() {
+            if let Some(Some((own, foe))) = self.results.get(k as usize - 1) {
+                if ends(*own, *foe) {
+                    return from - k;
+                }
+            }
+        }
+        from
+    }
+}
+
+/// The facts the club's five best give (`FUN_0066177d` before its
+/// switch): its men by `FUN_006a115b`, the five above the rest kept in
+/// order, ties behind; each who may play (`FUN_0069692b`) gives 400 when
+/// he did not stand the match, else 408 when he stood it more than three
+/// weeks hurt.
+fn best_facts(records: &Records, rules: &Rules, team: &Team) -> Vec<usize> {
+    let mut best = [(0i32, 0u16); BEST];
+    for id in team.players() {
+        let Some(p) = records.player(id) else { continue };
+        let status = crate::load::status(records, &rules.medical, p);
+        let value = rules.pitch.strength(&crate::load::player(records, p), crate::load::fitness(p), status.doping);
+        if best[BEST - 1].0 < value {
+            let at = best[..BEST - 1].iter().rposition(|&(v, _)| v >= value).map_or(0, |k| k + 1);
+            best.copy_within(at..BEST - 1, at + 1);
+            best[at] = (value, id);
+        }
+    }
+    let mut facts = Vec::new();
+    for &(_, id) in &best {
+        let Some(p) = records.player(id).filter(|_| id != 0) else { continue };
+        let status = crate::load::status(records, &rules.medical, p);
+        if !crate::autolineup::may_play(&status) {
+            continue;
+        }
+        if p.match_bits() & PLAYED == 0 {
+            facts.push(LEFT_OUT);
+        } else if status.injured > HURT_DAYS {
+            facts.push(PLAYED_HURT);
+        }
+    }
+    facts
 }
 
 /// Whether a fact holds, by its case (the cases built; the rest wait for
@@ -579,6 +786,83 @@ fn holds(case: u8, m: &Match) -> bool {
         0xe2 => md > 0 && md <= m.matchdays / 2,
         0xe8 => m.country != 0x10,
         0xee => m.rival >= 0,
+        _ => holds_club(case, m),
+    }
+}
+
+/// The facts of the manager, the club's money, its squad and its run of
+/// results (`FUN_0066177d`'s cases over `param_5`, `FUN_00621eac` and the
+/// squad at +0xb50).
+fn holds_club(case: u8, m: &Match) -> bool {
+    let c = &m.club;
+    let md = i32::from(m.md);
+    let mean_over = |sum: i16, bound: f32| c.squad > 0 && bound < f32::from(sum) / f32::from(c.squad);
+    let won = |own: u8, foe: u8| own > foe;
+    let lost = |own: u8, foe: u8| own < foe;
+    match case {
+        0x00 => c.level > 10,
+        0x5b => c.level < 6,
+        0x25 => c.status & 2 != 0,
+        0x24 => c.unrest < 2,
+        0x47 => c.unrest > 2,
+        0x4d => md > -1 && c.second_count < 10,
+        0x5c => md > -1 && c.second_count == 0,
+        0xba => c.titles > 5,
+        0xb7 => c.black_cash > 0,
+        0xec => c.ability > 10,
+        0x30 => c.fans > 90,
+        0xc7 => c.fans == 100,
+        0xc2 => c.media > 80,
+        0x71 => c.contract_years > 1,
+        0x04 => c.confidence < 70,
+        0x06 => c.confidence < 65,
+        0x1b => c.confidence < 60,
+        0x26 => c.confidence < 75,
+        0x89 => c.confidence > 80,
+        0xe0 => c.humans == 2 && c.confidence < 65,
+        0xeb => !c.majority,
+        0x5a => c.age > 40,
+        0x64 => c.age > 55,
+        0x6a => c.age < 40,
+        0xb3 => c.age > 60,
+        0x15 => c.figure > RICH,
+        0x43 => c.figure > VERY_RICH,
+        0x90 => c.figure < -DEBT,
+        0xb8 => c.booked < -LOSS,
+        0x12 => mean_over(c.ages, 29.0),
+        0x5e => c.squad > 0 && f32::from(c.freshness) / f32::from(c.squad) < 50.0,
+        0xa8 => mean_over(c.freshness, 70.0),
+        0x82 => mean_over(c.condition, 70.0),
+        0x3a => c.discontent > 4,
+        0xe1 => c.discontent > 5,
+        0xe3 => c.forwards < 4,
+        0x72 => c.injured > 4,
+        0xcc => c.injured == 0,
+        0x76 => c.strong > 9,
+        0xc3 => md > 0 && c.banned == 2,
+        0xd2 => md > 0 && c.banned > 1,
+        0xd3 => md > 0 && c.sent_off > 1,
+        0x0c => m.diff > 0 && md > 0 && c.promoted,
+        0x0d => md > 0 && !c.promoted,
+        0x51 => md > 0 && c.promoted,
+        0x53 => md > 0 && !c.champion,
+        0xa2 => md > 0 && c.champion,
+        // Unbeaten, winning, without a win, losing (`FUN_00660cda`,
+        // `FUN_00660e13`, `FUN_00660f4c`, `FUN_00661085`).
+        0x02 => md > 3 && c.run(md, won) == 4,
+        0x31 => md > 2 && c.run(md, |o, f| !won(o, f)) == 3,
+        0x74 => md > 1 && c.run(md, |o, f| !won(o, f)) == 2,
+        0x3d => md > 3 && c.run(md, lost) == 4,
+        0x7b => md > 7 && c.run(md, |o, f| !lost(o, f)) == 8,
+        // `FUN_006611be`'s kinds: 10 wins by three, 11 without a goal, 12
+        // goalless, 13 without one let in, 14 drawn; 5 lost, from the
+        // matchday before (`FUN_006615a5`).
+        0x56 => md > 0 && c.run(md, |o, f| i32::from(o) <= i32::from(f) + 2) == 0,
+        0x8f => md > -1 && c.run(md, |o, _| o != 0) > 3,
+        0x79 => md > 0 && c.run(md, |o, f| o != 0 || f != 0) == 3,
+        0x88 => md > 10 && c.run(md, |_, f| f != 0) > 10,
+        0xc4 => md > -1 && c.run(md, |o, f| o != f) > 4,
+        0xc5 => md > 3 && c.run(md - 1, |o, f| !lost(o, f)) > 2,
         _ => false,
     }
 }
@@ -719,8 +1003,12 @@ impl Interview {
             tie: tie(&fixture, home),
             opp_level: other.level(),
             rec: Record::of(records, own, &fixture, home),
+            club: Club::of(records, rules, own, usize::from(manager) - 1),
         };
         let m = Match { top: m.md > 1 && u32::from(own.get::<u8>(PLACE_NEXT)) + u32::from(other.get::<u8>(PLACE_NEXT)) < 7, ..m };
+        for fact in best_facts(records, rules, own) {
+            me.facts[fact] = true;
+        }
         for (fact, &case) in rules.interview.cases.iter().enumerate() {
             if holds(case, &m) {
                 me.facts[fact + 1] = true;
@@ -1234,5 +1522,70 @@ mod tests {
         let slot = records.countries.slot(14);
         let block = records.block(&format!("0x19f7fd0[{slot}]")).unwrap();
         assert_eq!(block[interview.station + MOODS + usize::from(interview.manager) - 1], 4);
+    }
+
+    /// The club's run, money and men decide their facts: four matches
+    /// without a defeat after two lost, the last won by three, a manager
+    /// past sixty with a board that trusts him little.
+    #[test]
+    fn the_club_decides_its_facts() {
+        let results = [(0, 2), (1, 3), (2, 2), (1, 0), (0, 0), (4, 1)].map(Some).to_vec();
+        let club = Club { results, confidence: 62, age: 61, figure: -6_000_000, squad: 2, ages: 61, level: 4, ..Club::default() };
+        let m = Match { md: 6, own: 4, opp: 1, diff: 3, club, ..Match::default() };
+        for (case, want) in [
+            (0x3d, true), (0x02, false), (0x56, false), (0x7b, false), (0x31, false),
+            (0x06, true), (0x1b, false), (0xb3, true), (0x6a, false), (0x90, true), (0x15, false),
+            (0x12, true), (0x5b, true), (0x00, false), (0xeb, true), (0xc4, false),
+        ] {
+            assert_eq!(holds(case, &m), want, "{case:#x}");
+        }
+        assert_eq!(m.club.run(6, |o, f| o < f), 4);
+        assert_eq!(m.club.run(6, |o, f| o <= f + 2), 1);
+        assert_eq!(m.club.run(2, |o, f| o >= f), 2, "lost both");
+        assert_eq!(m.club.run(0, |_, _| true), 0);
+        let m = Match { md: 7, club: Club { results: vec![Some((0, 1)); 4], ..Club::default() }, ..Match::default() };
+        assert!(holds(0xc5, &m), "three lost before the day");
+    }
+
+    /// A's Union: the facts of its manager, its money and its squad say
+    /// what the save says of them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_save_gives_the_facts_of_the_club() {
+        let Some((dir, records, rules)) = setup() else { return };
+        let union = records.team(14, 84).unwrap();
+        let fixture = Fixture { sides: [(14, 22), (14, 84)], goals: [3, 0], kind: 3, ..Fixture::default() };
+        let questions = a3_files::interview::load(&dir);
+        let interview =
+            Interview::begin(&records, &rules, questions, (fixture, false), &mut Recent::default(), &mut Random::new(3)).unwrap();
+        let slot = usize::from(interview.manager) - 1;
+        let boss = &records.managers[slot];
+        let confidence = crate::stock::confidence(&records, slot);
+        let figure = crate::finances::figure(union, records.globals.fund_prices());
+        let squad: Vec<_> = union.players().into_iter().filter_map(|id| records.player(id)).collect();
+        let discontent = squad.iter().filter(|p| crate::transfer_week::discontent(p) > 1).count();
+        let mut seen = 0;
+        for (k, &case) in rules.interview.cases.iter().enumerate() {
+            let want = match case {
+                0x04 => confidence < 70,
+                0x89 => confidence > 80,
+                0x00 => boss.level() > 10,
+                0x5b => boss.level() < 6,
+                0x15 => figure > 3_000_000,
+                0x90 => figure < -5_000_000,
+                0x30 => boss.popularity()[1] > 90,
+                0x3a => discontent > 4,
+                _ => continue,
+            };
+            assert_eq!(interview.fact(k as i16 + 1), want, "fact {} case {case:#x}", k + 1);
+            seen += 1;
+        }
+        assert!(seen >= 6 && !squad.is_empty(), "{seen}");
+        let club = Club::of(&records, &rules, union, slot);
+        assert_eq!(usize::try_from(club.squad).unwrap(), squad.len());
+        let played = club.results.iter().filter(|r| r.is_some()).count();
+        let goals: i32 = club.results.iter().flatten().map(|&(own, _)| i32::from(own)).sum();
+        assert!(played > 0 && played < club.results.len(), "{:?}", club.results);
+        assert_eq!(goals, i32::from(union.goals()[0]), "{:?}", club.results);
     }
 }

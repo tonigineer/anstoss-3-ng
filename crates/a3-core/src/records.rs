@@ -1012,8 +1012,10 @@ record! {
     /// events act at code 8 once it stands at four and the manager's
     /// standing (`FUN_006a61e5`) below ten — the club's fit men then
     /// lose condition.  What lifts the count is not followed (meaning
-    /// not traced further); the word behind it, 0x182, is unported.
+    /// not traced further). The word behind it (+0x96) the interview's
+    /// facts read under ten and at nought (meaning not traced).
     0x180 => unrest_count, set_unrest_count: i16;
+    0x182 => second_count, set_second_count: i16;
     /// The national team he manages, by country number, 0 when he manages
     /// none: the manager object's +0x17e6, whose name the honours page
     /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
