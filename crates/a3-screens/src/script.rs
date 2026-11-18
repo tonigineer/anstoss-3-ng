@@ -12373,4 +12373,38 @@ mod tests {
         }
         Some(seen)
     }
+
+    /// From the office the tactics come without the bar and with their
+    /// OK, as every hub opens its screens from the office or the text
+    /// menu (request byte 0 nought, `FUN_00652a86` in the turn before a
+    /// match): the OK keeps the stepping buttons for the match — Einsatz
+    /// "Normal" one step on is "120%", the record's value 2 the match's
+    /// wear reads — and leads back to the office.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_tactics_from_the_office_keep_with_their_ok() {
+        use a3_core::cycle::dialogs;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Toni", "tactics-office", |records| {
+            for m in &mut records.managers {
+                m.set_menu_view(1);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&dialogs::TACTICS];
+        let to_tactics = LOAD.replace("until dialog 147", "until dialog 483\nnow press 6124\nuntil dialog 271");
+        let (runner, result) = Runner::play(&game, &Script::parse(&to_tactics).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert!(runner.host.state().season.as_ref().unwrap().before_match);
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[crate::screens::control(dialog, id).unwrap()].hidden;
+        assert!(!hidden(&runner, 1), "the OK shows");
+        assert!(hidden(&runner, 9930), "no bar");
+        let back = to_tactics.replace("until dialog 271", "until dialog 271\nnow press 3739; press 1\nuntil dialog 483");
+        let (runner, result) = Runner::play(&game, &Script::parse(&back).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, dialogs::OFFICE);
+        let state = runner.host.state();
+        assert_eq!(state.records.as_ref().unwrap().teams[84].effort(), 2);
+    }
 }

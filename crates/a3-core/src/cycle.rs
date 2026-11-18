@@ -377,6 +377,14 @@ pub enum Args {
     /// season end posts to every human club opens it (`FUN_006742e0`,
     /// `FUN_004a141c`).
     Statement,
+    /// A main screen opened from the office or the text menu: without the
+    /// bar and with its OK, which leads back to that menu — every hub
+    /// clears the request's bar byte before it opens either menu
+    /// (`FUN_00650b84`, the turn before a match `FUN_00652a86` 0x652dc6,
+    /// `FUN_0065337e`, `FUN_00653bab`, `FUN_0065427a`), and its loop head
+    /// opens the menu again on any code the screen answers. Built for the
+    /// tactics (dialog 271, `FUN_0058a915`).
+    FromMenu,
     /// The world map of the training camps' places, for a camp from a day.
     CampDay(usize),
     /// The choice of a friendly's opponent, for a day.
@@ -2183,10 +2191,21 @@ impl Cycle {
         if self.a_note_waits() {
             self.ask(Request::new(NOTEPAD))?;
         }
+        // The office and the text menu open the screens without the bar,
+        // and the screen's OK leads back to them (`FUN_00652a86`'s loop
+        // head, request byte 0 nought); built for the tactics alone.
+        let menu = [OFFICE, GRAND_OFFICE, TEXT_MENU].contains(&screen).then_some(screen);
+        let mut args = Args::None;
         loop {
-            match self.ask(Request::new(screen))? {
+            match self.ask(Request::with(screen, args))? {
                 Reply::Goto(next) => {
+                    let from_menu = menu == Some(screen);
                     screen = self.season(|s| line_up_view(s, next)).unwrap_or(next);
+                    args = if from_menu && screen == TACTICS { Args::FromMenu } else { Args::None };
+                }
+                Reply::Ok if args == Args::FromMenu => {
+                    screen = menu.unwrap_or(screen);
+                    args = Args::None;
                 }
                 // "Spiel beenden": the career ends as "Karriereende" ends
                 // it, at once, and the cycle with it — and the program,
@@ -2233,6 +2252,7 @@ impl Cycle {
                         self.ask(Request::with(NOTICE, Args::Text(NOT_ENOUGH_PLAYERS)))?;
                     }
                     screen = NATIONAL_MENU;
+                    args = Args::None;
                 }
             }
         }
