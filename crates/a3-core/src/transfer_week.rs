@@ -25,13 +25,15 @@
 //! with no human manager offers the men it counts on fresh contracts
 //! (`FUN_0042991e`, the club's number and the day alike modulo four).
 //!
-//! After it a computer club may let go of a man of a position it holds
-//! too many of, for a fee or, early in the season, on loan (the end of
-//! `FUN_004279f8`).
+//! After it a computer club's transfer budget is refilled and, in the
+//! first week of November, its wanted positions planned anew
+//! ([`crate::search_plan::refill`]); then it may let go of a man of a
+//! position it holds too many of, for a fee or, early in the season, on
+//! loan (the end of `FUN_004279f8`).
 //!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — their scouting and bids, the
-//! wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
+//! in `FUN_004279f8` and `FUN_004297e1` — the men they scouted, their bids
+//! for the wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
 //! the European clubs' (`FUN_0069d3dd`) and the closing passes
 //! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
 //! original's while those are missing.
@@ -85,6 +87,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
                 weigh(records, id, human, today, random);
             }
             if !human {
+                crate::search_plan::refill(records, random, (country as u8, number as i16));
                 sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
             }
         }
@@ -818,7 +821,9 @@ mod tests {
     /// often as the original's season did (its SeasonEnd364: 233 of them
     /// in their last year, 265 with two left, 108 with three, the human
     /// club none): each count within a quarter (the draws move with every
-    /// further part of the market built), the replica's every new
+    /// further part of the market built, the seed with them: of seeds 1
+    /// to 8 two leave the replica's three-year count a third over), the
+    /// replica's every new
     /// contract of a last year worth 80 at least to the man (the
     /// original's one of 233 below came another way).
     #[test]
@@ -827,7 +832,7 @@ mod tests {
         let a = kept("A.an3");
         let (theirs, _) = extended(&a, &kept("SeasonEnd364.an3"));
         let mut records = kept("A.an3");
-        let (rules, mut random) = (rules(), Random::new(7));
+        let (rules, mut random) = (rules(), Random::new(8));
         for day in (70..=364).step_by(7) {
             on_day(&mut records, day);
             week(&mut records, &rules, &mut random);

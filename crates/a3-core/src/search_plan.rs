@@ -49,12 +49,135 @@ pub(crate) fn after_transfer(
     let mut plan = read(records, buyer);
     spend(&mut plan, (fee as i32).wrapping_neg());
     spend(&mut plan, i32::from(salary).wrapping_neg().wrapping_mul(THOUSAND));
-    plan_anew(records, random, buyer, &mut plan);
+    plan_anew(records, random, buyer, &mut plan, false);
     write(records, buyer, &plan);
     let mut plan = read(records, seller);
     spend(&mut plan, fee as i32 / 2);
-    plan_anew(records, random, seller, &mut plan);
+    plan_anew(records, random, seller, &mut plan, false);
     write(records, seller, &plan);
+}
+
+/// The plan's base budget (+0xc) and the mark its November planning
+/// sets (+0x10, an i16; who lowers it again is not traced).
+const BASE: usize = 0xc;
+const NOVEMBER_MARK: usize = 0x10;
+/// A mark above this keeps the November planning off; it is set to this.
+const NOVEMBER_KEPT: i16 = 10;
+const NOVEMBER_SET: i16 = 12;
+/// November, and the days of it the planning runs in.
+const NOVEMBER: u16 = 11;
+const NOVEMBER_DAYS: u16 = 8;
+/// The months the planning with its mark stays off (`FUN_006a03fb`).
+const AUTUMN: std::ops::RangeInclusive<u16> = 7..=10;
+/// A budget this high takes nothing more (`DAT_00a3b2a0`, 200 Mio).
+const REFILL_BELOW: i32 = 200_000_000;
+/// What a week adds by the club's rating: below 0.3 half a million, then
+/// above each mark its sum (`DAT_00a3b2a4` twice … `DAT_00a3b32c`), up to
+/// 0.8 nothing.
+const POOR_RATING: f64 = 0.3;
+const POOR_REFILL: i32 = 500_000;
+const REFILLS: [(f64, i32); 9] = [
+    (8.8, 240_000_000),
+    (7.8, 120_000_000),
+    (6.8, 60_000_000),
+    (5.8, 30_000_000),
+    (4.8, 16_000_000),
+    (3.8, 9_000_000),
+    (2.8, 5_000_000),
+    (1.8, 2_500_000),
+    (0.8, 1_200_000),
+];
+/// The licence's transfer sum, in the club object, by its unit
+/// (`DAT_00a3b37c`).
+const TRANSFER_SUM: usize = 0x5dc + crate::finances::CLUB_TO_TEAM;
+const SUM_UNIT: i32 = 100_000;
+
+/// A computer club's plan at its week on the market (`FUN_004279f8`,
+/// after the players it scouted): the budget starts again from the base
+/// (`FUN_0069ff5e`) — below 200 Mio with a sum by the club's rating —,
+/// cut to the licence's transfer sum where the association set one
+/// (club +0x101's 0x10, +0x5dc), and the second budget added, there only
+/// when above nought. In November's first seven days the wanted
+/// positions are planned anew (`FUN_006a03fb` with its second argument
+/// one) unless the plan's mark stands above ten, which then goes to
+/// twelve.
+pub(crate) fn refill(records: &mut Records, random: &mut Random, club: (u8, i16)) {
+    let Some(team) = team_of(records, club) else { return };
+    let mut plan = read(records, club);
+    let budget = refilled(records, team, &plan);
+    plan[0..4].copy_from_slice(&budget.to_le_bytes());
+    let [day, month, _] = records.globals.date();
+    if month == NOVEMBER && day < NOVEMBER_DAYS {
+        plan_anew(records, random, club, &mut plan, true);
+    }
+    write(records, club, &plan);
+}
+
+/// The budget the week's refill leaves (`FUN_0069ff5e`).
+fn refilled(records: &Records, team: &crate::records::Team, plan: &[u8; PLAN_SIZE]) -> i32 {
+    let mut budget = long(plan, BASE);
+    if budget < REFILL_BELOW {
+        let r = f64::from(rating(records, team));
+        let add = if r < POOR_RATING {
+            POOR_REFILL
+        } else {
+            REFILLS.iter().find(|&&(above, _)| r > above).map_or(0, |&(_, add)| add)
+        };
+        budget = budget.wrapping_add(add);
+    }
+    let extra = long(plan, 4);
+    if crate::licence::conditions(team) & crate::licence::TRANSFER_BUDGET != 0 {
+        budget = budget.min(i32::from(team.get::<i16>(TRANSFER_SUM)).wrapping_mul(SUM_UNIT));
+        if extra > 0 {
+            budget = budget.wrapping_add(extra);
+        }
+    } else {
+        budget = budget.wrapping_add(extra);
+    }
+    budget
+}
+
+fn long(plan: &[u8; PLAN_SIZE], at: usize) -> i32 {
+    i32::from_le_bytes(plan[at..at + 4].try_into().unwrap())
+}
+
+/// The club's rating, 0 to 9 (`FUN_0069d1e4`): its class (team +0x875),
+/// 0.4 for the honours' bit 0x40 and 0.7 for 0x80 (team +0x8ea), the
+/// leader of a first league a fiftieth for each matchday played, 0.3 for
+/// a cup run, 0.5 promoted, a whole one less relegated (team +0x110), 0.2
+/// in the first league's top five.
+fn rating(records: &Records, team: &crate::records::Team) -> f32 {
+    const CLASS: usize = 0x875;
+    const HONOURS: usize = 0x8ea;
+    const RUNS: usize = 0x110;
+    const CUP_RUN: u16 = 0x1000;
+    let mut r = f32::from(team.get::<u8>(CLASS));
+    let honours = team.get::<u8>(HONOURS);
+    if honours & 0x40 != 0 {
+        r += 0.4;
+    }
+    if honours & 0x80 != 0 {
+        r += 0.7;
+    }
+    let (level, place) = (team.level(), crate::league::place(team));
+    if place == 1 && level == 0 {
+        let played = crate::league::matchdays(records, team) as i32;
+        r = (f64::from(played) * f64::from(0.02f32) + f64::from(r)) as f32;
+    }
+    let runs = team.get::<u16>(RUNS);
+    if runs & CUP_RUN != 0 {
+        r += 0.3;
+    }
+    if runs & crate::promotion::PROMOTED != 0 {
+        r += 0.5;
+    }
+    if runs & crate::promotion::RELEGATED != 0 {
+        r -= 1.0;
+    }
+    if level == 0 && place < 6 {
+        r += 0.2;
+    }
+    r.clamp(0.0, 9.0)
 }
 
 fn read(records: &Records, club: (u8, i16)) -> [u8; PLAN_SIZE] {
@@ -154,8 +277,10 @@ fn stays(p: &Player) -> bool {
     p.picks() >> 6 != 1 && p.next_club()[0] == 0 && p.retiring() & RETIRING == 0 && p.terms() & ON_LOAN == 0
 }
 
-/// The club's wanted positions planned anew (`FUN_006a03fb`, its second
-/// argument nought). A plan over budget, or a club with a human manager
+/// The club's wanted positions planned anew (`FUN_006a03fb`; with its
+/// second argument, `marked`, not from July to October nor while the
+/// plan's mark stands above ten, which it then sets to twelve). A plan
+/// over budget, or a club with a human manager
 /// (club +0x8b, team +0xa9), wants nothing. The men weighed are the squad
 /// from July to September, else those of it who stay and those it has
 /// bought or will have back from loan for next season (`FUN_0070f041`'s
@@ -172,7 +297,7 @@ fn stays(p: &Player) -> bool {
 /// all positions is found — none, and the plan is done; at or above the
 /// level he is struck off with those behind him, below it his position is
 /// wanted with the gap for need.
-fn plan_anew(records: &Records, random: &mut Random, club: (u8, i16), plan: &mut [u8; PLAN_SIZE]) {
+fn plan_anew(records: &Records, random: &mut Random, club: (u8, i16), plan: &mut [u8; PLAN_SIZE], marked: bool) {
     if i32::from_le_bytes(plan[0..4].try_into().unwrap()) < 0 {
         set_count(plan, 0);
         return;
@@ -182,7 +307,15 @@ fn plan_anew(records: &Records, random: &mut Random, club: (u8, i16), plan: &mut
         set_count(plan, 0);
         return;
     }
-    let summer = SUMMER.contains(&records.globals.date()[1]);
+    let month = records.globals.date()[1];
+    if marked {
+        let mark = i16::from_le_bytes([plan[NOVEMBER_MARK], plan[NOVEMBER_MARK + 1]]);
+        if AUTUMN.contains(&month) || mark > NOVEMBER_KEPT {
+            return;
+        }
+        plan[NOVEMBER_MARK..NOVEMBER_MARK + 2].copy_from_slice(&NOVEMBER_SET.to_le_bytes());
+    }
+    let summer = SUMMER.contains(&month);
     let mut fit = [0i16; 11];
     let mut men = Vec::new();
     for id in team.players() {
@@ -282,6 +415,62 @@ mod tests {
         assert_eq!((b.count, b.ids, b.values), (5, [5, 2, 3, 6, 1, 4], [7, 6, 5, 5, 4, 4]));
         b.cut(3);
         assert_eq!((b.count, b.ids, b.values), (2, [5, 2, 0, 0, 1, 4], [7, 6, 0, 0, 4, 4]));
+    }
+
+    /// Every computer club of the played and kept countries' first six
+    /// leagues holds the budget its last week's refill left, in each kept
+    /// save of a running season; in November's first week a plan whose mark
+    /// stands at eleven keeps its wanted positions, one at nought plans
+    /// them anew and marks twelve.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_computer_clubs_budgets_refill_as_the_original_keeps_them() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(format!("{name}.an3"))).unwrap()).unwrap();
+        for name in ["A", "A2", "S2c", "S2late3", "SeasonEnd364"] {
+            let records = load(name);
+            let mut clubs = 0;
+            let kept = (1..0x75u16).filter(|&c| records.countries.kind(usize::from(c)) == 2);
+            for country in crate::opponent::played_nations(&records).into_iter().chain(kept) {
+                for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                    let Some(team) = records.team(country, number) else { continue };
+                    if team.level() >= 6 || team.humans() != [0, 0] {
+                        continue;
+                    }
+                    let plan: [u8; PLAN_SIZE] = team.get(PLAN);
+                    assert_eq!(refilled(&records, team, &plan), long(&plan, 0), "{name}: {country}/{number}");
+                    clubs += 1;
+                }
+            }
+            assert_eq!(clubs, 403, "{name}");
+        }
+        let mut records = load("A");
+        let [_, _, year] = records.globals.date();
+        records.globals.set_date([3, NOVEMBER, year]);
+        let club = (14u8, 7i16);
+        let mut random = Random::new(12345);
+        let mark = |records: &Records| {
+            let plan = read(records, club);
+            (i16::from_le_bytes([plan[NOVEMBER_MARK], plan[NOVEMBER_MARK + 1]]), plan[COUNT..].to_vec())
+        };
+        let with_mark = |records: &mut Records, m: i16| {
+            let mut plan = read(records, club);
+            plan[NOVEMBER_MARK..NOVEMBER_MARK + 2].copy_from_slice(&m.to_le_bytes());
+            plan[COUNT..].fill(0xee);
+            write(records, club, &plan);
+        };
+        with_mark(&mut records, 11);
+        refill(&mut records, &mut random, club);
+        assert_eq!(mark(&records), (11, vec![0xee; PLAN_SIZE - COUNT]));
+        with_mark(&mut records, 0);
+        refill(&mut records, &mut random, club);
+        let (m, wanted) = mark(&records);
+        assert_eq!(m, NOVEMBER_SET);
+        assert!((0..=WANTED_MOST).contains(&i16::from_le_bytes([wanted[0], wanted[1]])), "{wanted:?}");
     }
 
     #[test]
