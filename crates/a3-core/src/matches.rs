@@ -68,7 +68,7 @@ pub fn play_day(
         }
         faced.extend(cup_day(records, nation, calendar, day, individual, &mut season.random, &mut cups));
         supercup_day(records, nation, calendar, day, &mut season.random);
-        league_cup_day(records, nation, calendar, day, &mut season.random);
+        league_cup_day(records, nation, calendar, day, individual, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
             let level = level as u8;
             let Some(row) = calendar.row(nation, usize::from(level)) else {
@@ -733,8 +733,10 @@ const LAST_FINAL_DAY: usize = 0xb5df90;
 /// year calendar takes the score and his next tie, and the final decided
 /// goes into the country's list of finals. The supercup's gate books
 /// nothing on the clubs: `FUN_0078b26c`'s branch for its code 0x30 only
-/// fills the match's record. Its men keep the match's wear; the rest of
-/// the players' marks are not built.
+/// fills the match's record. Its men keep the match's wear, and nothing
+/// of the cup's marks: its branch of the settlement calls no
+/// `FUN_00744a32`, only `FUN_00744173`, which carries the engine's cards
+/// into the league's counts (not built, the replica draws none here).
 fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
     let Some(row) = calendar.row(nation, 0) else { return };
@@ -943,9 +945,14 @@ const ENGLAND: u16 = 0x10;
 /// winners and the entrants the next round takes in beside them are
 /// shuffled and paired anew there, the home side drawn too, and the
 /// block's last drawn round follows. The home clubs book their gates as
-/// the cup's ([`book_cup_gates`]). (The players' marks and the premiums
-/// are not built.)
-fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
+/// the cup's ([`book_cup_gates`]), and its men take the cup's marks
+/// ([`mark_cup`]): the settlement (`FUN_007108d3`) walks the league
+/// cup's code 0x01 as the cup's 0x40, the same `FUN_00744a32` on both
+/// sides. It pays no premium: its call of `FUN_006ce00e` passes 1 as the
+/// last argument, which skips the block of the trainer's premium, the
+/// sponsor's extras and the titles (`FUN_006cebcd`, `FUN_006cec7f`,
+/// `FUN_006b50a4`) the cup's 0 runs.
+fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, individual: &IndividualTables, random: &mut Random) {
     use crate::cup_draw::{ENTRANTS_AT, LEAGUE_CUP, joining};
     if nation != ENGLAND {
         return;
@@ -968,6 +975,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     let mut results: Vec<(usize, [u8; PAIRING])> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     let mut crowds = Vec::new();
+    let mut marks: Vec<(u8, u16, u8, u16, u8, u8, bool)> = Vec::new();
     for q in start..start + count {
         let at = PAIRINGS + q * PAIRING;
         let Some(tie) = block.get(at..at + PAIRING) else { continue };
@@ -1021,6 +1029,9 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
             }
             winner = u8::from(won == std::cmp::Ordering::Less);
         }
+        // The game's sides' goals, extra time's with them, for the marks.
+        let (home_goals, away_goals) = if turned { (second, first) } else { (first, second) };
+        marks.push((hc, hn, ac, an, home_goals, away_goals, flags & CUP_EXTRA != 0));
         if turned {
             tie[0xa] = first;
             tie[0xb] = second;
@@ -1039,6 +1050,9 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     book_cup_gates(records, &gates, code);
     for (home, away, score, att) in crowds {
         book_tie_crowd(records, home, away, score, att);
+    }
+    for (hc, hn, ac, an, hg, ag, extra) in marks {
+        mark_cup(records, hc, hn, ac, an, hg, ag, extra, individual, random);
     }
     let Some(b) = records.block_mut(LEAGUE_CUP) else { return };
     for (q, tie) in &results {
@@ -2062,14 +2076,56 @@ mod supercup_tests {
             records.teams.iter().filter(|t| u16::from(t.country()) == ENGLAND).map(|t| i64::from(t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM))).sum()
         };
         let before = booked(&records);
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
+        // The men's cup appearances and the managers' money before; the
+        // men a side can stand, its fit eleven (lower clubs keep no squad).
+        let apps = |records: &Records| -> u32 {
+            records.players.iter().map(|p| u32::from(p.career_cup_appearances()[0])).sum()
+        };
+        let stands = |records: &Records, country: u8, number: u16| -> u32 {
+            let squad = records.team(u16::from(country), number).map(|t| t.players()).unwrap_or_default();
+            let fit: Vec<u16> = squad
+                .into_iter()
+                .filter(|&id| records.player(id).is_some_and(|p| available(records, id) && p.cup_ban() == 0))
+                .collect();
+            eleven(&fit, records).len() as u32
+        };
+        let mut men = 0;
+        let apps_before = apps(&records);
+        let cash: Vec<i32> = records.managers.iter().map(|m| m.cash()).collect();
+        let mut games = 0;
         for &d in &days {
             let was = booked(&records);
-            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+            let open = records.block(LEAGUE_CUP).map(<[u8]>::to_vec).unwrap();
+            let sides_men: Vec<(usize, u32)> = (0..open.len().saturating_sub(PAIRINGS) / PAIRING)
+                .map(|q| PAIRINGS + q * PAIRING)
+                .filter(|&at| open[at] != 0 && open[at + 4] != 0)
+                .map(|at| {
+                    let side = |k: usize| stands(&records, open[at + k], u16::from_le_bytes([open[at + k + 2], open[at + k + 3]]));
+                    (at, side(0) + side(4))
+                })
+                .collect();
+            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &tables, &mut random);
+            let now = records.block(LEAGUE_CUP).unwrap();
+            let played: Vec<usize> = (0..now.len().saturating_sub(PAIRINGS) / PAIRING)
+                .map(|q| PAIRINGS + q * PAIRING)
+                .filter(|&at| now[at..at + 0xd] != open[at..at + 0xd] && now[at + 0xc] & CUP_RESULT != 0)
+                .collect();
+            games += played.len();
+            men += sides_men[..].iter().filter(|(at, _)| played.contains(at)).map(|(_, n)| n).sum::<u32>();
             if data.calendar.entry(row, d) & 0x3f != 0 {
                 assert!(booked(&records) > was, "day {d} books its gates on the cup takings");
             }
         }
         assert!(booked(&records) > before);
+        // Every game stands in its 22 men's cup appearances (`FUN_00744a32`
+        // as at the cup), and no premium reaches a manager: the league
+        // cup's `FUN_006ce00e` skips its premiums.
+        assert!(games > 0);
+        assert_eq!(apps(&records) - apps_before, men, "{games} games");
+        let now: Vec<i32> = records.managers.iter().map(|m| m.cash()).collect();
+        assert_eq!(now, cash, "the league cup pays no premium");
         let b = records.block(LEAGUE_CUP).unwrap();
         let mode = usize::from(u16::from_le_bytes([b[4], b[5]]));
         for round in 1..=6 {
@@ -2117,8 +2173,10 @@ mod crowd_tests {
         // An emptied international list, so every crowd ranks in.
         records.block_mut("0xaf723c").unwrap().fill(0);
         let today = usize::from(records.globals.day());
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
         for d in (today..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE) {
-            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &tables, &mut random);
         }
         let after = statistics::international_crowds(&records);
         let atts: Vec<u32> = after.iter().map(|c| c.attendance).collect();
