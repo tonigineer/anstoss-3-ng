@@ -1654,14 +1654,17 @@ impl Cycle {
                 // reading the promoted flag `FUN_006b2e88` set, between the
                 // settlement and the managers' season end).
                 crate::career::promotions(records);
+                // The season's flags and places move the managers' standing
+                // and season marks (`FUN_0041786a`) right before the
+                // managers' season end, which folds those marks and counts
+                // the season's points into the season records
+                // (`FUN_00624e4f` → `FUN_00624ad4`).
+                crate::standing::season_end(records);
+                crate::evaluation::close_season(records, &self.data, clock_date());
                 crate::settlement::close_managers(records, &mut season.random);
                 crate::statistics::roll_ranking(records);
                 // The transfer list closes the season (`FUN_00428fa2`).
                 crate::transfer_week::close_season(records, &mut season.random);
-                // The season's flags and places move the managers' standing
-                // (`FUN_0041786a`, scheduler case 5) before the leagues
-                // take their new clubs.
-                crate::standing::season_end(records);
                 // The original's leagues take their new clubs before its
                 // settlement, which reads the places the archive kept;
                 // the replica's settlement reckons the closed tables
@@ -2611,6 +2614,17 @@ fn leave(records: &mut Records, slot: usize) {
             team.put(ENGAGED_WITH_AT, 0i16);
         }
     }
+}
+
+/// The PC's clock date, as `GetSystemTime` gives it (UTC): day, month,
+/// year (`FUN_006d4d20`).
+fn clock_date() -> (u8, u8, u16) {
+    use chrono::Datelike;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let today = chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default().date_naive();
+    (today.day() as u8, today.month() as u8, today.year() as u16)
 }
 
 #[cfg(test)]

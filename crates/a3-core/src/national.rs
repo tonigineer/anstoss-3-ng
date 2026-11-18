@@ -205,7 +205,7 @@ pub fn leave(records: &mut Records, slot: usize, reason: u8) {
 /// `FUN_006a55ec` from `FUN_0067e660`, read by `FUN_006a55ca`); and the
 /// national contract `FUN_006a566c` sets: 1, the salary, the bonus per
 /// round.
-const SEASON_POINTS: usize = 0x1f74;
+pub(crate) const SEASON_POINTS: usize = 0x1f74;
 const NATIONAL_STAGE: usize = 0x1f76;
 const CONTRACT_SET: usize = 0x1f78;
 const CONTRACT_SALARY: usize = 0x1f7c;

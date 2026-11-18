@@ -9360,9 +9360,9 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         // As in the tax test up to the statement, then OK.
-        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\non 356 press 4542\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
-                    until dialog 417\nnow press 1";
+                    until dialog 417\nnow press 1\nuntil dialog 356\nnow press 4542";
         let Some(mut runner) = on_save(&game, "season-open", then) else { return };
         // The cycle opens the new season behind the press: wait for its
         // next screen before reading the state.
@@ -9423,7 +9423,7 @@ mod tests {
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
-                        on 381 wait\n";
+                        on 381 wait\non 356 press 4542\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(5);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
@@ -11220,12 +11220,13 @@ mod tests {
                         on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\n\
                         on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
-                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n\
+                        on 356 press 4542\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
-             now press 1\n{turns}until day 30"
+             now press 1\n{turns}until dialog 422\nuntil day 30"
         );
         let play = || {
             let mut runner = on_save(&game, "hot-seat", &then).unwrap();
@@ -12425,7 +12426,7 @@ mod tests {
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\non 356 press 4542\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
                     until dialog 417\nnow press 1\nuntil dialog 379";
         let Some(mut runner) = on_save(&game, "season-goal", then) else { return };
@@ -12452,7 +12453,7 @@ mod tests {
         compose(&mut game);
         let to = |last: u16| {
             format!(
-                "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\n\
+                "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\non 356 press 4542\n\
                  now click bar 9\nuntil dialog 417\nnow click bar 18\n\
                  until dialog 417\nnow press 1\nuntil dialog {TALKS}{}",
                 match last {

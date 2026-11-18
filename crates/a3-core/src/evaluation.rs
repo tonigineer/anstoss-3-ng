@@ -185,3 +185,156 @@ fn average(records: &Records, team: &Team, of: fn(&records::Player) -> i32) -> i
     }
     squad.iter().map(|&id| value(id)).sum::<i32>() / squad.len() as i32
 }
+
+
+/// The season records' table (block `0x1ba9f38`, ERFOLGE.md §A.4): ten
+/// entries of 0x40 — the name (0x34 bytes), the points (i32), the club's
+/// country (u8) and number (u16), the date (day, month, year u16) — and
+/// behind them, at +0x280, each human's sum of last season's end by his
+/// number.
+const SEASON_RECORDS: &str = "0x1ba9f38";
+const ENTRY: usize = 0x40;
+const ENTRIES: usize = 10;
+const ENTRY_POINTS: usize = 0x34;
+const ENTRY_COUNTRY: usize = 0x38;
+const ENTRY_NUMBER: usize = 0x3a;
+const ENTRY_DATE: usize = 0x3c;
+const LAST_SUMS: usize = 0x280;
+
+/// The humans' season end in the comparison (`FUN_00624ad4`'s first two
+/// calls, for every human by his number, at the head of `FUN_00624e4f`):
+/// his marks folded ([`fold`]), then his season's points
+/// ([`season_points`]). `today` is the PC's clock date the table's entry
+/// takes (`FUN_006d4d20`'s `GetSystemTime`): day, month, year.
+pub fn close_season(records: &mut Records, data: &crate::data::Data, today: (u8, u8, u16)) {
+    for n in 0..usize::from(records.globals.humans()) {
+        fold(records, data, n);
+        season_points(records, n, today);
+    }
+}
+
+/// The season's marks into what he has won, and what his squad lost or
+/// gained in strength since it was last kept into what he did for the
+/// club, ten for a point (`FUN_006dd2fe`: +0xd4 += +0xd0, +0xd0 = 0, and
+/// with a club +0xcc += (`FUN_006a10bb` − club +0x9c) · 10).
+fn fold(records: &mut Records, data: &crate::data::Data, n: usize) {
+    let Some(m) = records.managers.get_mut(n) else { return };
+    m.set_honour_marks(m.honour_marks().wrapping_add(m.season_marks()));
+    m.set_season_marks(0);
+    let (country, number) = (m.country(), m.team());
+    if country == 0 {
+        return;
+    }
+    let Some(team) = records.team(country, number) else { return };
+    let club = crate::load::club_state_of(records, team, data);
+    let now = crate::statistics::squad_strength(&data.rules.pitch, &club);
+    let by = (i32::from(now) - i32::from(team.squad_strength())).wrapping_mul(10);
+    let m = &mut records.managers[n];
+    m.set_service_marks(m.service_marks().wrapping_add(by));
+}
+
+/// A human's points of the season (`FUN_006d6264`): the sum of his nine
+/// marks less what his standing alone stands for (0x8a6758), less that
+/// same sum at last season's end (T +0x280 by his number), written to
+/// his record's +0x1f74 (`FUN_006a5580`, a word). At or above the tenth
+/// entry's points they go into the table, sorted, above the entries of
+/// as many — "first last" (0x8a652c), his club, the date. The sum stays
+/// for next season.
+fn season_points(records: &mut Records, n: usize, today: (u8, u8, u16)) {
+    let number = n + 1;
+    let Some(m) = records.managers.get(n) else { return };
+    let total = marks(records, m, number).iter().fold(0i32, |s, &x| s.wrapping_add(x));
+    let standing = usize::try_from(m.standing()).unwrap_or(0).min(STANDING_POINTS.len() - 1);
+    let sum = total.wrapping_sub(i32::from(STANDING_POINTS[standing]));
+    let word = |at: usize| (at..at + 0x12).map(|i| m.get::<u8>(i)).take_while(|&b| b != 0);
+    let mut name: Vec<u8> = word(0).take(9).collect();
+    name.push(b' ');
+    name.extend(word(0xa).take(17));
+    let club = (m.country() as u8, m.team());
+    let Some(block) = records.block(SEASON_RECORDS).filter(|b| b.len() >= LAST_SUMS + 4 * (number + 1)) else {
+        return;
+    };
+    let at_last = LAST_SUMS + 4 * number;
+    let last = i32::from_le_bytes(block[at_last..at_last + 4].try_into().unwrap());
+    let points = sum.wrapping_sub(last);
+    records.managers[n].put::<i16>(crate::national::SEASON_POINTS, points as i16);
+    let block = records.block_mut(SEASON_RECORDS).unwrap();
+    let points_of = |b: &[u8], i: usize| {
+        i32::from_le_bytes(b[i * ENTRY + ENTRY_POINTS..i * ENTRY + ENTRY_POINTS + 4].try_into().unwrap())
+    };
+    if points_of(block, ENTRIES - 1) <= points {
+        let mut i = ENTRIES - 1;
+        while i > 0 && points_of(block, i - 1) <= points {
+            block.copy_within((i - 1) * ENTRY..i * ENTRY, i * ENTRY);
+            i -= 1;
+        }
+        let e = &mut block[i * ENTRY..(i + 1) * ENTRY];
+        e[..name.len()].copy_from_slice(&name);
+        e[name.len()] = 0;
+        e[ENTRY_POINTS..ENTRY_POINTS + 4].copy_from_slice(&points.to_le_bytes());
+        e[ENTRY_DATE] = today.0;
+        e[ENTRY_DATE + 1] = today.1;
+        e[ENTRY_DATE + 2..ENTRY_DATE + 4].copy_from_slice(&today.2.to_le_bytes());
+        e[ENTRY_COUNTRY] = club.0;
+        e[ENTRY_NUMBER..ENTRY_NUMBER + 2].copy_from_slice(&club.1.to_le_bytes());
+    }
+    block[at_last..at_last + 4].copy_from_slice(&sum.to_le_bytes());
+}
+
+#[cfg(test)]
+mod saves {
+    use super::*;
+    use a3_files::an3::Save;
+
+    /// The original's turn from SeasonEnd364 to NewSeason000 (one human,
+    /// number 1, standing 9): the season end's marks moved first
+    /// (`FUN_0041786a`, sixty for his place) and his squad's strength
+    /// eleven under the kept one as the original's season end left it, the
+    /// fold leaves what he has won at NewSeason000's 104, and his season's
+    /// points come out at its 6009 — the sum 7259 less his standing's 1250
+    /// — kept in his record and the table's sums, and entered first in the
+    /// season records with his name, his club and the date given.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_counts_the_human_s_season_points_as_the_original() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        if !keeps.join("SeasonEnd364.an3").exists() || !keeps.join("NewSeason000.an3").exists() {
+            eprintln!("no SeasonEnd364 or NewSeason000 among the saves");
+            return;
+        }
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        crate::standing::season_end(&mut ours);
+        let (country, number) = (ours.managers[0].country(), ours.managers[0].team());
+        let team = ours.team(country, number).unwrap();
+        let now = crate::statistics::squad_strength(&data.rules.pitch, &crate::load::club_state_of(&ours, team, &data));
+        ours.team_mut(country, number).unwrap().set_squad_strength(now + 11);
+        close_season(&mut ours, &data, (18, 11, 2026));
+        let (x, y) = (&ours.managers[0], &theirs.managers[0]);
+        assert_eq!((x.honour_marks(), x.season_marks()), (y.honour_marks(), 0));
+        assert_eq!(x.get::<i16>(crate::national::SEASON_POINTS), 6009);
+        assert_eq!(y.get::<i16>(crate::national::SEASON_POINTS), 6009);
+        let (a, b) = (ours.block(SEASON_RECORDS).unwrap(), theirs.block(SEASON_RECORDS).unwrap());
+        assert_eq!(a[LAST_SUMS..], b[LAST_SUMS..], "the sums kept by number");
+        assert_eq!(a[..ENTRY_DATE], b[..ENTRY_DATE], "name, points and club as the original's");
+        assert_eq!(a[ENTRY_DATE..ENTRY_DATE + 4], [18, 11, 0xea, 0x07]);
+        assert_eq!(a[ENTRY..LAST_SUMS], b[ENTRY..LAST_SUMS], "the other entries empty");
+        let marks = ours.season_marks();
+        assert_eq!((marks[0].name.as_str(), marks[0].points, marks[0].club), ("Toni Lubiniecki", 6009, (14, 84)));
+        // A second season's end counts only what the sum moved since.
+        let before = i32::from_le_bytes(a[LAST_SUMS + 4..LAST_SUMS + 8].try_into().unwrap());
+        let youth = ours.managers[0].youth_marks();
+        ours.managers[0].set_youth_marks(youth + 100);
+        let team = ours.team(country, number).unwrap();
+        let now = crate::statistics::squad_strength(&data.rules.pitch, &crate::load::club_state_of(&ours, team, &data));
+        ours.team_mut(country, number).unwrap().set_squad_strength(now);
+        close_season(&mut ours, &data, (1, 7, 2027));
+        assert_eq!(ours.managers[0].get::<i16>(crate::national::SEASON_POINTS), 450);
+        let after = ours.block(SEASON_RECORDS).unwrap();
+        assert_eq!(i32::from_le_bytes(after[LAST_SUMS + 4..LAST_SUMS + 8].try_into().unwrap()), before + 450);
+        let marks = ours.season_marks();
+        assert_eq!(marks.iter().map(|m| m.points).collect::<Vec<_>>(), [6009, 450]);
+    }
+}
