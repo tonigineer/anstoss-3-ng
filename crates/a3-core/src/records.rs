@@ -2189,7 +2189,7 @@ impl Records {
     }
 
     fn book(book: &mut Vec<WeekAbility>, id: u16, gained: bool, ability: u16) {
-        let bit = 1u16 << (ability & 0x1f);
+        let bit = (1u32 << (ability & 0x1f)) as u16;
         match book.iter().position(|e| e.id == id) {
             Some(at) if gained => book[at].gained |= bit,
             Some(at) => book[at].lost |= bit,

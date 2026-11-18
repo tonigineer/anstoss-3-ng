@@ -13,7 +13,8 @@
 //! own training: the day's snapshot of their choices (`FUN_00746c48`),
 //! the week's start fading what they do not work on, each session's
 //! rolls for the ability one works on and his learning it
-//! (`FUN_00747246`), the snapshot kept again (`FUN_00746d33`).
+//! (`FUN_00747246`), the snapshot kept again (`FUN_00746d33`); and what
+//! a match's goals, assists and saved penalties teach (`FUN_00747855`).
 //!
 //! What is not here yet: the camp's level out of the year calendar,
 //! which sets the share of a session in a camp (`FUN_005eab71`,
@@ -1034,16 +1035,27 @@ fn learn(
 /// already, good and bad together, the good one of least difficulty
 /// below 5 goes back to 80, or failing one the first such weakness goes.
 /// Both are booked as gained (`FUN_00643633`); one he had already only
-/// stands at a hundred.
+/// stands at a hundred. A match can bring him here working on nothing
+/// ([`match_lesson`]): the original tests the sixteenth bit of the words
+/// sign-extended — his fifteenth's — sets none, and writes the progress
+/// into the low byte of his entry's ability, which its caller sets to
+/// nothing straight after.
 fn learnt(records: &mut Records, entry: &mut Entry, ability: usize, human: u8, tables: &IndividualTables) {
     let Some(p) = records.player_mut(entry.id) else { return };
     let keeper = p.get::<u8>(0x21d) == 1;
-    let bit = 1u16 << ability;
+    let shift = ability.min(31);
+    let bit = (1u32 << shift) as u16;
+    let has = |word: u16| i32::from(word as i16) >> shift & 1 != 0;
     let (mut good, mut bad) = (p.good(), p.bad());
-    if bad & bit != 0 {
+    let put = |entry: &mut Entry, value: i8| {
+        if let Some(got) = entry.progress.get_mut(ability) {
+            *got = value;
+        }
+    };
+    if has(bad) {
         p.set_bad(bad & !bit);
-        entry.progress[ability] = 0;
-    } else if good & bit == 0 {
+        put(entry, 0);
+    } else if !has(good) {
         let span = individual::abilities(keeper);
         let count = (0..span).filter(|&c| good >> c & 1 != 0).count()
             + (0..span).filter(|&c| bad >> c & 1 != 0).count();
@@ -1070,14 +1082,110 @@ fn learnt(records: &mut Records, entry: &mut Entry, ability: usize, human: u8, t
                 }
             }
         }
-        entry.progress[ability] = LEARNT;
+        put(entry, LEARNT);
         p.set_good(good | bit);
     } else {
         entry.ability = NOTHING;
-        entry.progress[ability] = LEARNT;
+        put(entry, LEARNT);
         return;
     }
     records.ability_gained(human, entry.id, ability as u16);
+}
+
+/// The field abilities a match teaches — Kopfball, Schußkraft,
+/// Torinstinkt, Spielmacher — and the keeper's Elfmetertöter.
+const HEADER: usize = 0;
+const SHOT_POWER: usize = 3;
+const INSTINCT: usize = 7;
+const PLAYMAKER: usize = 11;
+const PENALTY_KILLER: usize = 0;
+/// How far a goal or an assist brings him, and a saved penalty.
+const GOAL_LESSON: i8 = 3;
+const SAVE_LESSON: i8 = 10;
+/// The keeper's position byte (+0x3), and the midfield's
+/// (`FUN_00677ca7`: 6 to 9).
+const KEEPER: u8 = 1;
+const MIDFIELD: std::ops::RangeInclusive<u8> = 6..=9;
+/// The kinds of a goal that teach their own ability, as the scorer's
+/// books name them (`FUN_00740aad`'s first place): headed and struck.
+const HEADED: i16 = 2;
+const STRUCK: i16 = 3;
+
+/// What a match teaches one man (`FUN_00747855`): at a club a human
+/// trains or manages (the club object's +0x8a or +0x8b, the gate of its
+/// callers) out of a slot 1 to 4 (+0x11de), a man lacking the ability
+/// gets `by` more of it in his entry of the slot's store (`FUN_00746bde`;
+/// a man without one gets nothing). Past 99 he has learnt — not that
+/// ability but the one his entry works on (`FUN_00747246` with the
+/// entry's +0x12) — and works on nothing; the match's ability stays
+/// above 99 unlearnt. The entry goes back (`FUN_00746997`).
+pub fn match_lesson(
+    records: &mut Records,
+    tables: &IndividualTables,
+    (country, number): (u16, u16),
+    id: u16,
+    ability: usize,
+    by: i8,
+) {
+    let Some(team) = records.team(country, number) else { return };
+    let human = team.human();
+    if team.humans() == [0, 0] || !(1..=crate::human_day::HUMANS).contains(&usize::from(human)) {
+        return;
+    }
+    let slot = usize::from(human) - 1;
+    if records.player(id).is_none_or(|p| p.good() >> ability & 1 != 0) {
+        return;
+    }
+    let Some(mut entry) =
+        records.individual.get(slot).and_then(|s| s.entries().into_iter().find(|e| e.id == id))
+    else {
+        return;
+    };
+    entry.progress[ability] = entry.progress[ability].wrapping_add(by);
+    if entry.progress[ability] > 99 {
+        let working = usize::try_from(entry.ability).unwrap_or(usize::MAX);
+        learnt(records, &mut entry, working, human, tables);
+        entry.ability = NOTHING;
+    }
+    if let Some(store) = records.individual.get_mut(slot) {
+        let mut entries = store.entries();
+        individual::keep(&mut entries, entry);
+        store.set_entries(&entries);
+    }
+}
+
+/// A goal's lessons for its scorer, a field player (`FUN_00740aad`): a
+/// headed one teaches him Kopfball (`FUN_006a76df`), a struck one
+/// Schußkraft (`FUN_006a7737`), and every one Torinstinkt
+/// (`FUN_006a778f`), three each. `club` is the scoring side's.
+pub fn goal_lessons(records: &mut Records, tables: &IndividualTables, club: (u16, u16), id: u16, kind: i16) {
+    if records.player(id).is_none_or(|p| p.positions()[0] == KEEPER) {
+        return;
+    }
+    match kind {
+        HEADED => match_lesson(records, tables, club, id, HEADER, GOAL_LESSON),
+        STRUCK => match_lesson(records, tables, club, id, SHOT_POWER, GOAL_LESSON),
+        _ => {}
+    }
+    match_lesson(records, tables, club, id, INSTINCT, GOAL_LESSON);
+}
+
+/// An assist teaches a midfielder Spielmacher, three (`FUN_00740dc4` →
+/// `FUN_006a77ea`).
+pub fn assist_lesson(records: &mut Records, tables: &IndividualTables, club: (u16, u16), id: u16) {
+    if records.player(id).is_some_and(|p| MIDFIELD.contains(&p.positions()[0])) {
+        match_lesson(records, tables, club, id, PLAYMAKER, GOAL_LESSON);
+    }
+}
+
+/// A saved penalty teaches the keeper Elfmetertöter, ten (`FUN_00741038`
+/// → `FUN_006a784b`). The original teaches only while his match byte
+/// +0x65, lifted by the save, stood from nought to 99; it has no save
+/// copy, so the replica takes it to stand there.
+pub fn save_lesson(records: &mut Records, tables: &IndividualTables, club: (u16, u16), id: u16) {
+    if records.player(id).is_some_and(|p| p.positions()[0] == KEEPER) {
+        match_lesson(records, tables, club, id, PENALTY_KILLER, SAVE_LESSON);
+    }
 }
 
 /// The training's event of the day (`FUN_0060c1c0` by its pick out of
@@ -3083,6 +3191,75 @@ mod tests {
         entry.ability = 9;
         learnt(&mut records, &mut entry, 9, 1, &tables);
         assert_eq!((entry.ability, entry.progress[9]), (NOTHING, LEARNT));
+    }
+
+    /// What a match teaches A's men (`FUN_00747855` behind
+    /// `FUN_00740aad`, `FUN_00740dc4`, `FUN_00741038`): keeper 3257
+    /// saving a big chance takes ten of Elfmetertöter — as he did across
+    /// the original's Wolfsburg match from Toni.an3 to A.an3 —, a headed
+    /// goal three of Kopfball and of Torinstinkt to a field man lacking
+    /// them, an assist three of Spielmacher to a midfielder alone; a
+    /// computer club's goal teaches nobody. Past 99 he learns what his
+    /// entry works on, not what the match taught, and works on nothing.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn matches_teach_the_human_clubs_men() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let tables = crate::data::Data::load(&dir).unwrap().rules.individual;
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let team = records.team(14, 84).unwrap();
+        let (squad, human) = (team.players(), team.human());
+        let slot = usize::from(human) - 1;
+        let foe = (1..20).find(|&t| t != 84 && records.team(14, t).is_some_and(|t| t.humans() == [0, 0])).unwrap();
+        let entry = |records: &Records, id: u16| {
+            records.individual[slot].entries().into_iter().find(|e| e.id == id).unwrap()
+        };
+        let pick = |records: &Records, at: &dyn Fn(u8) -> bool, lacks: u16| {
+            squad
+                .iter()
+                .copied()
+                .find(|&id| {
+                    let p = records.player(id).unwrap();
+                    at(p.positions()[0])
+                        && p.good() & lacks == 0
+                        && records.individual[slot].entries().iter().any(|e| e.id == id)
+                })
+                .unwrap()
+        };
+        let striker = pick(&records, &|at| at > 9, 1 | 1 << 7);
+        let midfielder = pick(&records, &|at| (6..=9).contains(&at), 1 << 11 | 1 << 7);
+        let defender = pick(&records, &|at| (2..6).contains(&at), 1 << 11);
+        assert_eq!(records.player(3257).unwrap().good() & 1, 0);
+        let before = [3257, striker, midfielder, defender].map(|id| entry(&records, id));
+        let mut m = crate::sim::Match::default();
+        m.ids = [14, 84, 14, foe];
+        m.sides[0].goal_book[0] = (striker, 2);
+        m.sides[0].assist_book[..2].copy_from_slice(&[midfielder, defender]);
+        m.sides[1].keeper_book[0] = (3257, true);
+        m.sides[1].goal_book[0] = (midfielder, 2);
+        crate::sim::post_match_lessons(&m, &mut records, &tables);
+        let moved = |records: &Records, k: usize, ability: usize| {
+            entry(records, before[k].id).progress[ability] - before[k].progress[ability]
+        };
+        assert_eq!(moved(&records, 0, 0), 10, "Elfmetertöter");
+        assert_eq!((moved(&records, 1, 0), moved(&records, 1, 3), moved(&records, 1, 7)), (3, 0, 3));
+        assert_eq!((moved(&records, 2, 11), moved(&records, 2, 0), moved(&records, 2, 7)), (3, 0, 0));
+        assert_eq!(entry(&records, defender), before[3], "a defender's assist");
+
+        // past 99 on Torinstinkt he learns Zweikampf, which he works on
+        let mut e = entry(&records, striker);
+        (e.ability, e.progress[7], e.progress[1]) = (1, 98, 40);
+        let mut entries = records.individual[slot].entries();
+        individual::keep(&mut entries, e);
+        records.individual[slot].set_entries(&entries);
+        records.player_mut(striker).unwrap().set_good(0);
+        records.player_mut(striker).unwrap().set_bad(0);
+        goal_lessons(&mut records, &tables, (14, 84), striker, -1);
+        let e = entry(&records, striker);
+        assert_eq!((e.ability, e.progress[7], e.progress[1]), (NOTHING, 101, LEARNT));
+        assert_eq!(records.player(striker).unwrap().good(), 1 << 1);
+        assert!(records.abilities_week(human).iter().any(|w| w.id == striker && w.gained == 1 << 1));
     }
 
     /// The week's start on A's squad (`FUN_00746f46`, `FUN_00786285`): a

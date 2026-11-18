@@ -5,6 +5,7 @@
 
 use crate::calendar::Calendar;
 use crate::cards;
+use crate::individual::IndividualTables;
 use crate::finances::CLUB_TO_TEAM;
 use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS, cup_pairings};
 use crate::random::Random;
@@ -48,6 +49,7 @@ pub fn play_day(
     world: &World,
     calendar: &Calendar,
     season: &mut Season,
+    individual: &IndividualTables,
 ) -> MatchDay {
     let day = season.day;
     let mut played = Vec::new();
@@ -60,7 +62,7 @@ pub fn play_day(
         if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
             continue;
         }
-        faced.extend(cup_day(records, nation, calendar, day, &mut season.random));
+        faced.extend(cup_day(records, nation, calendar, day, individual, &mut season.random));
         supercup_day(records, nation, calendar, day, &mut season.random);
         league_cup_day(records, nation, calendar, day, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
@@ -75,7 +77,7 @@ pub fn play_day(
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                faced.extend(settle(records, nation, level, day, &mut season.random, &mut controls));
+                faced.extend(settle(records, nation, level, day, individual, &mut season.random, &mut controls));
                 played.push((nation, level));
             }
         }
@@ -289,7 +291,14 @@ const YEAR_CUP: u8 = 0x08;
 /// its season's cup takings (club +0x234). The human's year calendar keeps
 /// its entries: the played round fills its score into the day's entry, the
 /// new drawing names his next tie there — and drops it once he is out.
-fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<Faced> {
+fn cup_day(
+    records: &mut Records,
+    nation: u16,
+    calendar: &Calendar,
+    day: usize,
+    individual: &IndividualTables,
+    random: &mut Random,
+) -> Vec<Faced> {
     let Some((entry, ties)) = cup_ties(records, nation, calendar, day) else {
         return Vec::new();
     };
@@ -454,7 +463,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // clubs' reports of their ties (`FUN_00550f29`).
     let mut reported = Vec::new();
     for (&(hc, hn, ac, an, hg, ag), mut played) in marks.iter().zip(reports) {
-        let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, random);
+        let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, individual, random);
         if let Some(club) = report::human_side(records, played.sides) {
             played.scorers = scorers;
             report::write(records, &played, random);
@@ -1051,6 +1060,7 @@ fn mark_cup(
     an: u16,
     full: u8,
     a_full: u8,
+    individual: &IndividualTables,
     random: &mut Random,
 ) -> [Vec<u16>; 2] {
     let mut scorers: [Vec<u16>; 2] = Default::default();
@@ -1083,6 +1093,9 @@ fn mark_cup(
             };
             scored[k] = scored[k].saturating_add(1);
             scorers[side].push(eleven[k]);
+            // Every goal teaches its scorer (`FUN_00740aad`); the
+            // replica's draw names no kind, so only Torinstinkt.
+            crate::training_day::goal_lessons(records, individual, (nation, team), eleven[k], -1);
         }
         // A fresh card's suspension of this round's marking stands over
         // the serving of the last; the men who wore one into the tie sat
@@ -1170,6 +1183,7 @@ fn settle(
     nation: u16,
     level: u8,
     day: usize,
+    individual: &IndividualTables,
     random: &mut Random,
     controls: &mut Vec<crate::doping_control::Control>,
 ) -> Vec<Faced> {
@@ -1360,7 +1374,8 @@ fn settle(
     for ((((&home, &away), result), &(attendance, gate)), &fans) in
         homes.iter().zip(&aways).zip(&scored).zip(&takings).zip(&visiting)
     {
-        let scorers = mark_match(records, nation, level, md, home, away, result[0], result[1], random);
+        let scorers =
+            mark_match(records, nation, level, md, home, away, result[0], result[1], individual, random);
         let sides = [(nat, home as i16), (nat, away as i16)];
         if let Some(club) = report::human_side(records, sides) {
             let played = report::Played {
@@ -1502,6 +1517,7 @@ fn mark_match(
     away: u16,
     full: u8,
     a_full: u8,
+    individual: &IndividualTables,
     random: &mut Random,
 ) -> [Vec<u16>; 2] {
     let mut scorers: [Vec<u16>; 2] = Default::default();
@@ -1527,6 +1543,9 @@ fn mark_match(
             scored[k] = scored[k].saturating_add(1);
             let id = eleven[k];
             scorers[usize::from(!at_home)].push(id);
+            // Every goal teaches its scorer (`FUN_00740aad`); the
+            // replica's draw names no kind, so only Torinstinkt.
+            crate::training_day::goal_lessons(records, individual, (nation, team), id, -1);
             let names = records.player(id).map(|p| (p.first_name(), p.last_name()));
             if let Some((first, last)) = names {
                 statistics::book_goal(
@@ -2017,7 +2036,9 @@ mod crowd_tests {
         let weakest = before.iter().rev().find(|c| c.attendance != 0).map_or(0, |c| c.attendance);
         let mut random = Random::new(7);
         let day = usize::from(records.globals.day());
-        settle(&mut records, 14, 0, day, &mut random, &mut Vec::new());
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
+        settle(&mut records, 14, 0, day, &tables, &mut random, &mut Vec::new());
         let gates: Vec<i32> = held
             .iter()
             .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
@@ -2082,11 +2103,11 @@ mod two_legs_tests {
         };
         let drawn = ties(&records);
         assert!(!drawn.is_empty(), "the first round drawn");
-        cup_day(&mut records, ITALY, &data.calendar, days[0], &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[0], &data.rules.individual, &mut random);
         for p in ties(&records) {
             assert_eq!(p[0xc] & (CUP_RESULT | CUP_PLAYED | CUP_SECOND_PLAYED), CUP_RESULT, "the first leg only stands");
         }
-        cup_day(&mut records, ITALY, &data.calendar, days[1], &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[1], &data.rules.individual, &mut random);
         for p in ties(&records) {
             assert_eq!(p[0xc] & 0x38, 0x38, "the second leg decides");
             if p[0xc] & CUP_EXTRA != 0 {

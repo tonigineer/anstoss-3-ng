@@ -45,7 +45,9 @@ use chrono::NaiveDate;
 
 use crate::duties::{self, Duty};
 use crate::random::Random;
+use crate::individual::IndividualTables;
 use crate::records::{Player, Records};
+use crate::training_day;
 use crate::{statistics, world};
 
 /// The record's flag byte at +0x1d.
@@ -371,11 +373,14 @@ struct Clock {
 /// each match of the row once the minutes have walked
 /// (`FUN_006f8f44` with the fifth parameter nought); the graded pass and
 /// the clubs' ledgers in that loop (`FUN_00714236`, `FUN_00744d02`) wait
-/// with the club objects.
+/// with the club objects. `lessons`, the individual training's tables,
+/// lets the goals, assists and saved penalties teach the human clubs'
+/// men their abilities as well ([`post_match_lessons`]).
 pub fn play_matches(
     matches: &mut [Match],
     live: bool,
     mut records: Option<&mut Records>,
+    lessons: Option<&IndividualTables>,
     today: NaiveDate,
     random: &mut Random,
 ) {
@@ -431,6 +436,9 @@ pub fn play_matches(
             if live || m.nat_bits == 0 {
                 post_match_wear(m, records);
                 post_match_books(m, records);
+                if let Some(tables) = lessons {
+                    post_match_lessons(m, records, tables);
+                }
             }
         }
     }
@@ -1699,7 +1707,7 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// goal branch; both sit behind the same kind gate and ask a club man,
 /// which every entered man of a club fixture is. The mood byte both
 /// branches shift, live +0x65, has no save copy, and `FUN_006a784b`
-/// beside the miss's mood lift is a club seam. Beside the keeper list
+/// beside the miss's mood lift teaches in [`post_match_lessons`]. Beside the keeper list
 /// the shot list books both events' takers: the shot books' own counters
 /// lift the taker's taken penalty or free-kick byte — the +0x24b and
 /// +0x24d first bytes — and the club at the side's own id pair adds
@@ -1708,9 +1716,10 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// and kind one add the scored byte standing beside them,
 /// `FUN_007410ca`'s `+0xdeb` and `FUN_007411ea`'s `+0xdee` lifts at the
 /// goal; a wide penalty's taken byte stands lifted twice, once by the
-/// shot book and once by the miss branch above. The club counters behind those
-/// buckets (`FUN_006facd8`, `FUN_006a76df`, `FUN_006a7737`,
-/// `FUN_006a778f`, `FUN_007408d1`) and the talks `FUN_00677c87` and
+/// shot book and once by the miss branch above. The lessons behind those
+/// buckets (`FUN_006a76df`, `FUN_006a7737`, `FUN_006a778f`) teach in
+/// [`post_match_lessons`]; the club counters (`FUN_006facd8`,
+/// `FUN_007408d1`) and the talks `FUN_00677c87` and
 /// `FUN_00740959` stay seams; the tail that reads which side the man
 /// stands in and marks him there (`FUN_006782aa`, `FUN_006fac42`) works
 /// only for national sides — the id pair returns nought for clubs — so a
@@ -1840,6 +1849,33 @@ pub fn post_match_books(m: &Match, records: &mut Records) {
                     taken.wrapping_add(fks_taken),
                     scored.wrapping_add(fks_scored),
                 ]);
+            }
+        }
+    }
+}
+
+/// What a walked match teaches the human clubs' men, out of the same
+/// waiting lists as [`post_match_books`]: the original teaches at the
+/// event's moment, behind the same kind gate — the scorer by his goal's
+/// kind (`FUN_00740aad`), the assist man (`FUN_00740dc4`) and the foe
+/// keeper who saved the big chance (`FUN_00741038`), the club at the
+/// keeper's own side. The lessons touch only the individual training's
+/// store and the abilities, which the books leave alone, so their order
+/// against the books does not matter. Nothing here draws a number.
+pub fn post_match_lessons(m: &Match, records: &mut Records, tables: &IndividualTables) {
+    for which in 0..2 {
+        let club = (m.ids[which * 2], m.ids[which * 2 + 1]);
+        let foe = (m.ids[(1 - which) * 2], m.ids[(1 - which) * 2 + 1]);
+        let side = &m.sides[which];
+        for &(id, kind) in side.goal_book.iter().take_while(|&&(id, _)| id != 0) {
+            training_day::goal_lessons(records, tables, club, id, kind);
+        }
+        for &id in side.assist_book.iter().take_while(|&&id| id != 0) {
+            training_day::assist_lesson(records, tables, club, id);
+        }
+        for &(id, saved) in side.keeper_book.iter().take_while(|&&(id, _)| id != 0) {
+            if saved {
+                training_day::save_lesson(records, tables, foe, id);
             }
         }
     }
@@ -2060,7 +2096,7 @@ mod tests {
     fn a_goalless_afternoon_ends_by_the_book() {
         let mut m = fixture();
         let mut r = Random::new(12345);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         // the added time now sits behind the minutes' chance draws in the
         // stream, so it is checked in its band, not by pre-drawing it:
         // the plain fixture's byte 5 gives selector one, 88 up
@@ -2096,7 +2132,7 @@ mod tests {
         b.added_draw = 2 << 2; // its band is the wider one, 87 up
         let mut ms = [b, a];
         let mut r = Random::new(99);
-        play_matches(&mut ms, false, None, test_day(), &mut r);
+        play_matches(&mut ms, false, None, None, test_day(), &mut r);
         assert!((87..=90).contains(&ms[0].ends_at), "{}", ms[0].ends_at);
         assert!((88..=90).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
         assert_eq!(ms[1].half_score, 0x32);
@@ -2110,7 +2146,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 2];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | EXTRA | PENS);
         // the extra time's fresh added-time draw, behind the chances,
         // adds the plain fixture's selector one to 120
@@ -2123,7 +2159,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 1];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | OVER);
     }
 
@@ -2488,7 +2524,7 @@ mod tests {
         let mut plain = fixture();
         let mut ms = [tie, plain];
         let mut r = Random::new(3);
-        play_matches(&mut ms, false, None, test_day(), &mut r);
+        play_matches(&mut ms, false, None, None, test_day(), &mut r);
         assert_eq!(ms[0].sides[0].fatigue, 0);
         assert!(ms[1].sides[0].fatigue > 0);
     }
@@ -2498,7 +2534,7 @@ mod tests {
         let mut tie = fixture();
         tie.nat_bits = 1;
         let mut r = Random::new(3);
-        play_matches(std::slice::from_mut(&mut tie), true, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut tie), true, None, None, test_day(), &mut r);
         assert!(tie.sides[0].fatigue > 0);
     }
 
@@ -3169,7 +3205,7 @@ mod tests {
         // from the first minute the books find their men
         let mut m = fixture();
         m.ids = [0, 0, 0, 0];
-        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), test_day(), &mut Random::new(5));
+        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), None, test_day(), &mut Random::new(5));
         for which in 0..2 {
             let team = records
                 .team(m.ids[which * 2], m.ids[which * 2 + 1])
@@ -3262,7 +3298,7 @@ mod tests {
         tie.ids = [0, 0, 0, 0];
         tie.nat_bits = 1;
         let mut r = Random::new(6);
-        play_matches(&mut [m, tie], false, Some(&mut records), test_day(), &mut r);
+        play_matches(&mut [m, tie], false, Some(&mut records), None, test_day(), &mut r);
         // top wear band through the side's fatigue, ninety minutes on
         // the men: the fourth row scaled twelve tenths, twice over for
         // the eleven that stands on both of this fixture's pitches
@@ -3537,7 +3573,7 @@ mod tests {
         let joker = |id: u16| (read().player(id).unwrap().match_bits() >> 1) & 1;
         let at_home = |id: u16| read().player(id).unwrap().club()[1] as u16 == 0;
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name stands in the walked club's goal list,
         // wholly and per kind
@@ -3626,7 +3662,7 @@ mod tests {
         };
         let (before_gk, before_mate) = (pair(&records, gk), pair(&records, mate));
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name stands in the walked club's keeper list,
         // saved and conceded apart
@@ -3693,7 +3729,7 @@ mod tests {
             (taken(&records, a), taken(&records, b), taken(&records, c));
         let (before_pens, before_fks) = club_pair(&records);
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name meets the walked club's shot list, by the
         // shot's name — and how often its wide chances meet the miss
@@ -3801,7 +3837,7 @@ mod tests {
         };
         let (before_a, before_b) = (counters(&records, a), counters(&records, b));
         let (before_c, before_d) = (counters(&records, c), counters(&records, d));
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let (seen_club, seen_tie) = (row[0], row[1]);
         // every name standing in the walked club's lists meets the
         // records once — the seeded one and the walk's own picks alike

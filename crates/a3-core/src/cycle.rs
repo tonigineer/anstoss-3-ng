@@ -1336,6 +1336,7 @@ impl Cycle {
                                 &self.data.world,
                                 &self.data.calendar,
                                 season,
+                                &self.data.rules.individual,
                             );
                             crate::prematch::crowds(&mut pages, &played.faced);
                             season.prematch = pages;
