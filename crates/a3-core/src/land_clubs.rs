@@ -423,28 +423,160 @@ fn land_section(land: &Section) -> &Section {
 }
 
 /// `FUN_006876b4`: a country played takes the leagues from `next` on, the
-/// main one up to six, another one; each knows its country and level. (Its
-/// league files are the leagues' part.)
-fn take_leagues(records: &mut Records, nation: u8, row: usize, main: bool, next: &mut i16) {
+/// main one up to six, another one; each knows its country and level and
+/// reads its file ([`read_league`]) into its object.
+fn take_leagues(records: &mut Records, dir: &Path, nation: u8, row: usize, main: bool, next: &mut i16) -> io::Result<()> {
     let nation_at = 2 * usize::from(nation);
     records.countries.put(FIRST_LEAGUE + nation_at, *next);
     let most = if main { MAIN_LEAGUES } else { 1 };
-    let files = crate::world::LEAGUE_FILES[row].len();
+    let files = crate::world::LEAGUE_FILES[row];
     let main_country = records.globals.main_country();
     let year = records.globals.start_year();
-    let countries = &mut records.countries;
     let mut level = 0;
     while level < most
-        && level < files
+        && level < files.len()
         && (main_country != i16::from(GERMANY) || year < FOUR_LEAGUES_FROM || level < GERMAN_LEAGUES as usize)
     {
         let at = 2 * usize::try_from(*next).unwrap_or(0);
-        countries.put(LEAGUE_COUNTRY + at, i16::from(nation));
-        countries.put(LEAGUE_LEVEL + at, level as i16);
+        records.countries.put(LEAGUE_COUNTRY + at, i16::from(nation));
+        records.countries.put(LEAGUE_LEVEL + at, level as i16);
+        let liga = Section::read(&find(dir, files[level])?)?;
+        let name = format!("{LEAGUE_AT:#x}[{next}]");
+        let block = records.block_mut(&name).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("no block {name}")))?;
+        let league = &mut League(block);
+        read_league(league, &liga, nation, level as i16, year);
+        // The system's flags (`DAT_008a3aa8`), less the European cup's
+        // place of a league played twice over, and the main country's
+        // bit 0.
+        let mut flags = LEAGUE_FLAGS;
+        if league.get::<i16>(0x6a) != 0 {
+            flags &= !FLAG_TWICE_OFF;
+        }
+        if i16::from(nation) == main_country {
+            flags &= !FLAG_MAIN_OFF;
+        }
+        league.put(0x60, flags);
         *next += 1;
         level += 1;
     }
-    countries.put(LEAGUES + nation_at, level as i16);
+    records.countries.put(LEAGUES + nation_at, level as i16);
+    Ok(())
+}
+
+/// The leagues' objects (`0x1a09d48[li]`, 0x1a88 bytes; the save holds
+/// each from +0x20).
+const LEAGUE_AT: usize = 0x1a09d48;
+const LEAGUE_BASE: usize = 0x20;
+/// What every system's row of the league files' table (`0x8a3a6c`, 0x44
+/// bytes a row) holds at +0x3c (`DAT_008a3aa8`): 0xf0 for all twelve.
+const LEAGUE_FLAGS: u32 = 0xf0;
+const FLAG_TWICE_OFF: u32 = 0x10;
+const FLAG_MAIN_OFF: u32 = 1;
+/// The nations whose league plays its fixture list twice (+0x6a).
+const PLAYS_TWICE: [u8; 2] = [0x2f, 0x39];
+const ENGLAND: u8 = 16;
+/// The fixture list: a row of 0x18 bytes a matchday, each team's place in
+/// the league, pairs of home and away; a copy of it after it.
+const FIXTURES: usize = 0x55a;
+const FIXTURES_COPY: usize = 0x9aa;
+const FIXTURES_LEN: usize = 0x450;
+const FIXTURE_ROW: usize = 0x18;
+
+/// A league object, by the object's offsets.
+struct League<'a>(&'a mut [u8]);
+
+impl League<'_> {
+    fn get<T: crate::records::Field>(&self, at: usize) -> T {
+        T::get(&self.0[at - LEAGUE_BASE..])
+    }
+
+    fn put<T: crate::records::Field>(&mut self, at: usize, value: T) {
+        value.put(&mut self.0[at - LEAGUE_BASE..]);
+    }
+}
+
+/// `FUN_00687897`: a league reads its `LIGA` (name, short name, how many
+/// teams, each one's place in the country's file from 1, the fixture list
+/// of both halves, places from 1) into its object.
+fn read_league(league: &mut League, file: &Section, nation: u8, level: i16, year: u16) {
+    let nation16 = i16::from(nation);
+    league.put(0x54, nation16);
+    league.put(0x56, level);
+    let Some(liga) = file.child("LIGA") else { return };
+    let mut values = liga.values.iter();
+    let mut text = |at: usize, room: usize, league: &mut League| {
+        let bytes: Vec<u8> = values.next().map_or_else(Vec::new, |v| v.chars().map(|c| to_cp1252(c).unwrap_or(b'?')).collect());
+        for k in 0..room {
+            league.put::<u8>(at + k, bytes.get(k).copied().unwrap_or(0));
+        }
+    };
+    text(0x20, 0x20, league);
+    text(0x40, 0x10, league);
+    let mut numbers = liga.values.iter().skip(2).map(|v| atoi(v));
+    league.put(0x58, 3i16);
+    league.put(0x5a, 3i16);
+    league.put(0x5c, 0u32);
+    league.put(0x60, 0u32);
+    league.put(0x64, i16::from(nation == ENGLAND && level > 0));
+    league.put(0x6e, promoted(nation, level, year));
+    league.put(0x70, relegated(nation, level));
+    let teams = numbers.next().unwrap_or(0) as i16;
+    league.put(0x50, teams);
+    let twice = PLAYS_TWICE.contains(&nation);
+    league.put(0x6a, i16::from(twice));
+    let count = usize::try_from(teams).unwrap_or(0);
+    for i in 0..count {
+        league.put(0x72 + 2 * i, (numbers.next().unwrap_or(0) as i16).wrapping_sub(1));
+    }
+    let days = (2 * count).saturating_sub(2);
+    league.put(0x52, days as i16);
+    for day in 0..days {
+        for i in 0..count {
+            league.put(FIXTURES + i + day * FIXTURE_ROW, (numbers.next().unwrap_or(0) as u8).wrapping_sub(1));
+        }
+    }
+    if twice {
+        for day in 0..days {
+            for i in 0..count {
+                let place: u8 = league.get(FIXTURES + day * FIXTURE_ROW + i);
+                league.put(FIXTURES + i + (day + days) * FIXTURE_ROW, place);
+            }
+        }
+        league.put(0x52, (2 * days) as i16);
+    }
+    let fixtures = league.0[FIXTURES - LEAGUE_BASE..FIXTURES - LEAGUE_BASE + FIXTURES_LEN].to_vec();
+    league.0[FIXTURES_COPY - LEAGUE_BASE..FIXTURES_COPY - LEAGUE_BASE + FIXTURES_LEN].copy_from_slice(&fixtures);
+}
+
+/// `FUN_006874bb`: how many teams of a league below the first go up.
+fn promoted(nation: u8, level: i16, year: u16) -> i16 {
+    if level == 0 {
+        return 0;
+    }
+    match nation {
+        GERMANY if level == 1 => 3,
+        GERMANY if year < FOUR_LEAGUES_FROM => 1,
+        GERMANY => 2,
+        ENGLAND => 2,
+        0x14 | 0x3f => 3,
+        0x1c => 4,
+        _ => 0,
+    }
+}
+
+/// `FUN_00687586`: how many teams of a league go down.
+fn relegated(nation: u8, level: i16) -> i16 {
+    match nation {
+        GERMANY => if level == 0 { 3 } else { 4 },
+        ENGLAND => if level == 3 { 1 } else { 3 },
+        0x14 => if level == 0 { 3 } else { 4 },
+        0x18 => 2,
+        0x1c => 4,
+        0x2f | 0x39 => 1,
+        0x33 | 0x43 => 3,
+        0x3f => if level == 0 { 3 } else { 4 },
+        _ => 0,
+    }
 }
 
 /// `FUN_00687e7c` for the main country, from team `first` on: every club
@@ -556,7 +688,7 @@ pub fn read_countries(records: &mut Records, dir: &Path, main: usize, counters: 
     records.countries.put(SLOT + usize::from(nation), 0u8);
     records.countries.put(SLOT_COUNTRY + 2, i16::from(nation));
     let mut leagues = 0;
-    take_leagues(records, nation, main, true, &mut leagues);
+    take_leagues(records, dir, nation, main, true, &mut leagues)?;
     let land = Section::read(&find(dir, LAND_FILES[main])?)?;
     let mut next = read_main(records, &land, nation, main, 0, counters, random);
     let world = crate::world::World::load(dir)?;
@@ -793,5 +925,89 @@ mod tests {
         for what in apart.keys() {
             assert!(APART.contains(&what.as_str()), "{what} parts from the original's first turn: {:?}", &apart[what][..apart[what].len().min(3)]);
         }
+    }
+}
+
+#[cfg(test)]
+mod league_tests {
+    use super::*;
+
+    /// A league of four plays six matchdays; Austria's plays them twice,
+    /// and the copy after the list holds them as the list does.
+    #[test]
+    fn a_liga_reads_into_its_league() {
+        let mut values: Vec<String> = ["Bundesliga", "BL", "4", "3", "1", "4", "2"].iter().map(|s| s.to_string()).collect();
+        values.extend((0..6 * 4).map(|k| (1 + k % 4).to_string()));
+        let file = Section { name: String::new(), values: vec![], children: vec![Section { name: "LIGA".into(), values, children: vec![] }] };
+        let mut bytes = vec![0u8; 0x1a68];
+        let league = &mut League(&mut bytes);
+        read_league(league, &file, 0x2f, 0, 1999);
+        assert_eq!((league.get::<i16>(0x50), league.get::<i16>(0x52), league.get::<i16>(0x54), league.get::<i16>(0x6a)), (4, 12, 0x2f, 1));
+        assert_eq!((league.get::<i16>(0x72), league.get::<i16>(0x78), league.get::<i16>(0x6e), league.get::<i16>(0x70)), (2, 1, 0, 1));
+        assert_eq!((league.get::<u8>(FIXTURES + 6 * FIXTURE_ROW + 3), league.get::<u8>(FIXTURES_COPY + 7 * FIXTURE_ROW + 1)), (3, 1));
+        assert_eq!(&league.0[..3], b"Bun");
+        assert_eq!((promoted(GERMANY, 2, 1999), promoted(GERMANY, 2, 2000), relegated(ENGLAND, 3)), (1, 2, 1));
+    }
+
+    /// The main country's leagues of the oracle's new game in Germany
+    /// (`tools/oracle/new-game.sh`), read from their files: the first turn
+    /// holds them alike.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_games_leagues_read_as_the_originals() {
+        let (Some(game), Some(oracle)) = (std::env::var_os("ANSTOSS3_DIR"), std::env::var_os("ANSTOSS3_ORACLE")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_DIR or ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap();
+        let mut records = Records::blank();
+        records.globals.set_main_country(dump.globals.main_country());
+        records.globals.set_start_year(dump.globals.start_year());
+        let dir = std::path::PathBuf::from(game).join("Data.a3");
+        let mut counters = Counters { persons: 1, players: 1 };
+        read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
+        let leagues = records.countries.leagues(usize::from(GERMANY));
+        assert_eq!(leagues, dump.countries.leagues(usize::from(GERMANY)));
+        const FIELDS: [(usize, usize, &str); 16] = [
+            (0x20, 0x20, "name"),
+            (0x40, 0x10, "short"),
+            (0x50, 2, "teams"),
+            (0x52, 2, "matchdays"),
+            (0x54, 2, "country"),
+            (0x56, 2, "level"),
+            (0x58, 4, "threes"),
+            (0x5c, 4, "int 5c"),
+            (0x60, 4, "flags"),
+            (0x64, 2, "england"),
+            (0x6a, 2, "twice"),
+            (0x6e, 2, "promoted"),
+            (0x70, 2, "relegated"),
+            (0x72, 0x30, "teams' places"),
+            (FIXTURES, FIXTURES_LEN, "fixtures"),
+            (FIXTURES_COPY, FIXTURES_LEN, "fixtures' copy"),
+        ];
+        let mut apart = Vec::new();
+        for li in 0..usize::try_from(leagues).unwrap() {
+            let name = format!("{LEAGUE_AT:#x}[{li}]");
+            let (ours, theirs) = (records.block(&name).unwrap(), dump.block(&name).unwrap());
+            for &(at, len, what) in &FIELDS {
+                let range = at - LEAGUE_BASE..at - LEAGUE_BASE + len;
+                if ours[range.clone()] != theirs[range.clone()] {
+                    apart.push(format!("{li} {what}: {:x?}, not {:x?}", &ours[range.clone()][..len.min(24)], &theirs[range][..len.min(24)]));
+                }
+            }
+            let other: Vec<usize> = (0..ours.len())
+                .filter(|&k| ours[k] != theirs[k])
+                .map(|k| k + LEAGUE_BASE)
+                .filter(|&k| !FIELDS.iter().any(|&(at, len, _)| (at..at + len).contains(&k)))
+                .collect();
+            eprintln!("league {li}: bytes the files do not give: {:x?}", &other[..other.len().min(40)]);
+        }
+        assert!(apart.is_empty(), "{apart:#?}");
     }
 }
