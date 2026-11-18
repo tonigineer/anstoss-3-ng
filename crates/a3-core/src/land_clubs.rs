@@ -704,7 +704,121 @@ pub fn read_countries(records: &mut Records, dir: &Path, main: usize, counters: 
         records.countries.put(FIRST_TEAM + 2 * usize::from(other), next as i16);
         next += read_foreign(records, &land, other, &chosen, &fixed, next, counters, random);
     }
+    read_world(records, dir, &world, nation, &fixed, next, counters, random)
+}
+
+/// Where the teams of `Internat.sav` and the bonus country start
+/// (`DAT_00ae6304`): their stadiums are kept apart, from there on.
+const FOREIGN_START: usize = 0xae6304;
+/// The bonus country's nation (`DAT_00ae62f4`, also `DAT_01b990c8`), 0
+/// without one (`CLandEinstellen`).
+const BONUS_NATION: usize = 0xae62f4;
+/// The clubs abroad (`0x1a28dd8[k]`, forty, 0x13c each; the save holds
+/// each from +0x20): the name, then its country (+0x34) and its number
+/// among the country's (+0x35); and by country where its first stands,
+/// from 1 (`DAT_00ae5bad`), and how many (`DAT_00ae5c22`).
+const ABROAD_AT: usize = 0x1a28dd8;
+const ABROAD: usize = 0x28;
+const ABROAD_NAME: usize = 0x14;
+const ABROAD_COUNTRY: usize = 0x34 - 0x20;
+const ABROAD_NUMBER: usize = 0x35 - 0x20;
+const ABROAD_FIRST: usize = 0xae5bad;
+const ABROAD_COUNT: usize = 0xae5c22;
+/// A `VEREIN` of `Internat.sav` with this nation stands for the bonus
+/// country's.
+const BONUS_PLACE: u8 = 0xff;
+
+/// `FUN_0068a5c1`, last in `FUN_00686684`, from team `first` on: of every
+/// `LAND` of `Internat.sav` whose nation is not played its eight clubs as
+/// teams of the second kind, numbered by their country's count; a `LAND`
+/// of the bonus country (or of nation -1) takes the bonus file's eight
+/// instead ([`read_foreign`]). Then the clubs abroad of `AVereine.sav`.
+/// The teams' stadiums (`FUN_0068b808`, `FUN_0068bccb`, 0xf0 each at
+/// `0x1a3af58` from [`FOREIGN_START`]) and `EUROSIEGER` (into the
+/// program's table `0x8ea150`, not saved) are left out.
+#[allow(clippy::too_many_arguments)]
+fn read_world(
+    records: &mut Records,
+    dir: &Path,
+    world: &crate::world::World,
+    main: u8,
+    fixed: &[(u8, usize)],
+    first: usize,
+    counters: &mut Counters,
+    random: &mut Random,
+) -> io::Result<usize> {
+    let mut next = first;
+    records.countries.put(FOREIGN_START, first as i16);
+    let bonus = world.country(crate::world::BONUS_SLOT).map_or(0, |c| c.nation as u8);
+    records.countries.put(BONUS_NATION, i16::from(bonus));
+    // `FUN_00676c03`: the main country and the more ones played; a game of
+    // one country plays the main one alone.
+    let played = |nation: u8| nation == main;
+    let internat = Section::read(&find(dir, "Internat.sav")?)?;
+    let mut last = 0u8;
+    for land in internat.all("LAND") {
+        for verein in land.all("VEREIN").take(FOREIGN_TEAMS) {
+            let nation = verein.number(0).unwrap_or(0) as u8;
+            if played(nation) || (nation == BONUS_PLACE && played(bonus)) {
+                break;
+            }
+            if nation == bonus || nation == BONUS_PLACE {
+                // `FUN_0068a301` takes the first league of the nation's
+                // system (`DAT_00ae5d0c`), which the bonus country has not:
+                // row 0, the German one's places pick its clubs.
+                let row = usize::from(records.countries.get::<u8>(SYSTEM + usize::from(bonus)));
+                let file = Section::read(&find(dir, LAND_FILES[crate::world::BONUS_SLOT])?)?;
+                let first_league = world.country(row).and_then(|c| c.leagues.first()).map_or(&[][..], |l| &l.clubs[..]);
+                let chosen = foreign_clubs(&file, bonus, first_league, fixed);
+                records.countries.put(FIRST_TEAM + 2 * usize::from(bonus), next as i16);
+                next += read_foreign(records, &file, bonus, &chosen, fixed, next, counters, random);
+                break;
+            }
+            let count: i16 = records.countries.get(TEAM_COUNT + 2 * usize::from(nation));
+            fill_team(records, next, verein, nation, count as u8, counters, random);
+            records.countries.put(FOREIGN_CREST + usize::from(nation) * FOREIGN_TEAMS + count as usize, count as u8);
+            records.countries.put(HAS_TEAMS + usize::from(nation), (count + 1) as u8);
+            records.countries.put(TEAM_COUNT + 2 * usize::from(nation), count + 1);
+            if nation != last {
+                records.countries.put(FIRST_TEAM + 2 * usize::from(nation), next as i16);
+                records.countries.put(KIND + usize::from(nation), KIND_FOREIGN);
+                last = nation;
+            }
+            next += 1;
+        }
+    }
+    read_abroad(records, &Section::read(&find(dir, "AVereine.sav")?)?);
     Ok(next)
+}
+
+/// The clubs abroad (`IVEREINE`, the second part of `FUN_0068a5c1`; each
+/// `IVEREIN` by `FUN_0068cda1`): a name and a country each, numbered
+/// within the country as they follow one another.
+fn read_abroad(records: &mut Records, file: &Section) {
+    let Some(list) = file.child("IVEREINE") else { return };
+    let mut last = None;
+    let mut number = 0u8;
+    for (k, club) in list.all("IVEREIN").take(ABROAD).enumerate() {
+        let name = format!("{ABROAD_AT:#x}[{k}]");
+        let Some(block) = records.block_mut(&name) else { break };
+        let text: Vec<u8> = club.text(0).unwrap_or_default().chars().map(|c| to_cp1252(c).unwrap_or(b'?')).collect();
+        for at in 0..ABROAD_NAME {
+            block[at] = if at + 1 < ABROAD_NAME { text.get(at).copied().unwrap_or(0) } else { 0 };
+        }
+        let country = club.number(1).unwrap_or(0) as u8;
+        block[ABROAD_COUNTRY] = country;
+        if last == Some(country) {
+            block[ABROAD_NUMBER] = number;
+            number += 1;
+        } else {
+            block[ABROAD_NUMBER] = 0;
+            number = 1;
+            last = Some(country);
+            records.countries.put(ABROAD_FIRST + usize::from(country), k as u8 + 1);
+        }
+        let count: u8 = records.countries.get(ABROAD_COUNT + usize::from(country));
+        records.countries.put(ABROAD_COUNT + usize::from(country), count + 1);
+    }
 }
 
 #[cfg(test)]
@@ -801,7 +915,9 @@ mod tests {
         let dir = std::path::PathBuf::from(game).join("Data.a3");
         let mut counters = Counters { persons: 1, players: 1 };
         let teams = read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
-        assert_eq!(teams, 108 + 10 * 8);
+        // The main country's, eight of each other of the eleven, and eight
+        // of each `LAND` of `Internat.sav` (the bonus country's from its file).
+        assert_eq!(teams, 108 + 10 * 8 + 26 * 8);
         let mut apart = std::collections::BTreeMap::<String, Vec<String>>::new();
         let name = |r: &Records, i: u16| r.name(i).to_owned();
         let mut others = std::collections::BTreeMap::<usize, usize>::new();
@@ -925,6 +1041,91 @@ mod tests {
         for what in apart.keys() {
             assert!(APART.contains(&what.as_str()), "{what} parts from the original's first turn: {:?}", &apart[what][..apart[what].len().min(3)]);
         }
+    }
+    /// Clubs abroad of one country number on from 0, a new country starts
+    /// again and notes where its first stands, from 1.
+    #[test]
+    fn clubs_abroad_number_within_their_country() {
+        let club = |name: &str, country: &str| Section {
+            name: "IVEREIN".into(),
+            values: vec![name.into(), country.into()],
+            children: vec![],
+        };
+        let list = Section {
+            name: "IVEREINE".into(),
+            values: vec![],
+            children: vec![club("SC Al-Ahly", "1"), club("River Plate", "4"), club("Boca Juniors", "4"), club("Estudiantes", "4")],
+        };
+        let file = Section { name: String::new(), values: vec![], children: vec![list] };
+        let mut records = Records::blank();
+        read_abroad(&mut records, &file);
+        let block = |k: usize| records.block(&format!("{ABROAD_AT:#x}[{k}]")).unwrap().to_vec();
+        assert_eq!(&block(1)[..12], b"River Plate\0");
+        assert_eq!([block(1)[ABROAD_COUNTRY], block(1)[ABROAD_NUMBER], block(3)[ABROAD_NUMBER]], [4, 0, 2]);
+        let countries = &records.countries;
+        assert_eq!([countries.abroad(1), countries.abroad(4), countries.get::<u8>(ABROAD_COUNT + 4)], [1, 2, 3]);
+    }
+
+    /// How many nations the countries' tables hold rows for (the table of
+    /// foreign crests ends with nation 116).
+    const NATION_COUNT: usize = 117;
+
+    /// The oracle's new game's world after the eleven: the countries'
+    /// tables of every nation, where the foreign teams start, the bonus
+    /// country, and the forty clubs abroad, as the first turn holds them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_games_world_reads_as_the_originals() {
+        let (Some(game), Some(oracle)) = (std::env::var_os("ANSTOSS3_DIR"), std::env::var_os("ANSTOSS3_ORACLE")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_DIR or ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap();
+        let mut records = Records::blank();
+        records.globals.set_main_country(dump.globals.main_country());
+        records.globals.set_start_year(dump.globals.start_year());
+        let dir = std::path::PathBuf::from(game).join("Data.a3");
+        let mut counters = Counters { persons: 1, players: 1 };
+        read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
+        let mut apart = Vec::new();
+        for (what, at, width) in [
+            ("has teams", HAS_TEAMS, 1),
+            ("team count", TEAM_COUNT, 2),
+            ("first team", FIRST_TEAM, 2),
+            ("leagues", LEAGUES, 2),
+            ("kind", KIND, 1),
+            ("foreign crest", FOREIGN_CREST, 8),
+            ("abroad first", ABROAD_FIRST, 1),
+            ("abroad count", ABROAD_COUNT, 1),
+        ] {
+            for n in 0..NATION_COUNT {
+                let row = |c: &crate::records::Countries| (0..width).map(|k| c.get::<u8>(at + n * width + k)).collect::<Vec<u8>>();
+                let (a, b) = (row(&records.countries), row(&dump.countries));
+                if a != b {
+                    apart.push(format!("{what} of {n}: {a:x?}, not {b:x?}"));
+                }
+            }
+        }
+        for (what, at) in [("foreign start", FOREIGN_START), ("bonus nation", BONUS_NATION)] {
+            let (a, b) = (records.countries.get::<i16>(at), dump.countries.get::<i16>(at));
+            if a != b {
+                apart.push(format!("{what}: {a}, not {b}"));
+            }
+        }
+        for k in 0..ABROAD {
+            let name = format!("{ABROAD_AT:#x}[{k}]");
+            let (a, b) = (records.block(&name).unwrap(), dump.block(&name).unwrap());
+            if a != b {
+                let at: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+                apart.push(format!("abroad {k}: at {at:x?}, {:x?}, not {:x?}", &a[..0x18], &b[..0x18]));
+            }
+        }
+        assert!(apart.is_empty(), "{apart:#?}");
     }
 }
 
