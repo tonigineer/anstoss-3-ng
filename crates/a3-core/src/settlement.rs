@@ -495,7 +495,8 @@ fn number_squad(records: &mut Records, squad: &[usize], random: &mut Random) {
 /// `FUN_00672839` clears), and the clubs the walk plans get their
 /// season's sums and grades again (`plan_season`), every club its drawn
 /// +0x1a4 (`clear_drawn`) and a planned one its season tickets' target
-/// (`ticket_target`). The class template's money the replica has not
+/// (`ticket_target`) and the European television's offer
+/// (`draw_european_tv`). The class template's money the replica has not
 /// built, so its clubs stand at nought there. The cycle reaches this from
 /// [`open_season`].
 pub fn clear_bookings(records: &mut Records, random: &mut Random) {
@@ -543,6 +544,7 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
             sign_boards(&mut records.teams[i], system, random);
             sign_shirt(&mut records.teams[i], system, random);
             sign_television(&mut records.teams[i], system, random);
+            draw_european_tv(&mut records.teams[i], random);
             let target = ticket_target(records, &records.teams[i], system, capacity);
             put::<i32>(&mut records.teams[i], SEASON_TICKETS, target);
         }
@@ -998,6 +1000,33 @@ fn sign_television(team: &mut Team, system: usize, random: &mut Random) {
     put::<i32>(team, 0x5b4, money);
     put::<i32>(team, 0x1f4, money);
     put::<i32>(team, 0x2fc, money);
+}
+
+/// The European television's offer the walk draws every planned club
+/// after its sponsors (`FUN_005b9a2a`, the sums the season start's
+/// European TV talks put before a human, `CDiVerhandlungenUefa`): over
+/// the clearing's two millions (`FUN_00672839`), +0x5e8 3 500 000 and
+/// +0x5ec 1 500 000 (f32 0x82e5b4, 0x82e5b0), each one hundredth more
+/// for every step of a draw below eleven, down to hundred thousands and
+/// then down to the 100 000 and 50 000 of `DAT_00a3b37c`, `DAT_00a3b38c`
+/// (`FUN_0067575a`); +0x5f0 a draw below three. Measured on the
+/// original's first new-season day: every planned club holds one of
+/// them.
+const EURO_TV_FIRST: f64 = 3_500_000.0;
+const EURO_TV_SECOND: f64 = 1_500_000.0;
+const EURO_TV_STEP: i32 = 100_000;
+const EURO_TV_ROUND: [i32; 2] = [100_000, 50_000];
+
+fn draw_european_tv(team: &mut Team, random: &mut Random) {
+    let sum = |base: f64, random: &mut Random| {
+        let v = ((f64::from(random.below(11)) / 100.0 + 1.0) * base) as i32;
+        v / EURO_TV_STEP * EURO_TV_STEP
+    };
+    let first = sum(EURO_TV_FIRST, random);
+    let second = sum(EURO_TV_SECOND, random);
+    put::<i32>(team, 0x5e8, first / EURO_TV_ROUND[0] * EURO_TV_ROUND[0]);
+    put::<i32>(team, 0x5ec, second / EURO_TV_ROUND[1] * EURO_TV_ROUND[1]);
+    put::<u8>(team, 0x5f0, random.below(3) as u8);
 }
 
 /// The shirt's contract, signed the same way when the club has none left
@@ -3451,6 +3480,39 @@ mod tests {
             shared += i32::from(want[0] == 0);
         }
         assert!(count > 140 && shared > 0, "{count} planned, {shared} sharing");
+    }
+
+    /// The European television's offer is one of the original's draws:
+    /// on its first new-season day every planned club's +0x5e8, +0x5ec
+    /// and +0x5f0 are reproduced by a draw (`FUN_005b9a2a`), and they
+    /// stand apart from the clearing's two millions.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_european_tv_offer_is_one_of_the_originals_draws() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
+                continue;
+            }
+            let team = &theirs.teams[i];
+            let want = (club::<i32>(team, 0x5e8), club::<i32>(team, 0x5ec), club::<u8>(team, 0x5f0));
+            assert_ne!(want.0, 2_000_000, "{i}");
+            let found = (0..200).any(|seed| {
+                let mut ours = team.clone();
+                draw_european_tv(&mut ours, &mut Random::new(seed));
+                (club::<i32>(&ours, 0x5e8), club::<i32>(&ours, 0x5ec), club::<u8>(&ours, 0x5f0)) == want
+            });
+            assert!(found, "{i}: {want:?}");
+            count += 1;
+        }
+        assert!(count > 140, "{count} planned");
     }
 
     /// The main sponsor's number is one of the original's draws: on its
