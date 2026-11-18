@@ -1620,8 +1620,8 @@ const RANKING_SEASONS: usize = 8;
 /// (`FUN_00423cad`): every country's seasons shift down by one, the oldest
 /// dropping out and the new one at naught, its total the last five summed
 /// anew (an empty row's at naught); then the rows by their totals, the
-/// highest first, by an exchange sort (`FUN_00423bd5`). (The human's notice,
-/// event 0xcf, is not built.)
+/// highest first, by an exchange sort (`FUN_00423bd5`). Its notice, event
+/// 0xcf, is dialog 301 ([`crate::cycle::dialogs::EUROPEAN_RANKING`]).
 pub fn roll_ranking(records: &mut Records) {
     let g = &mut records.globals;
     let float = |g: &crate::records::Globals, at: usize| f32::from_bits(g.get::<u32>(at));

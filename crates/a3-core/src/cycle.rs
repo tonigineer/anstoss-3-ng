@@ -242,6 +242,9 @@ pub mod dialogs {
     /// The careers the season's end closes, `CMitTraenen`
     /// (`IDD_MIT_TRAENEN`, event 0xcd).
     pub const FAREWELLS: u16 = 152;
+    /// The European ranking the season's end rolled on,
+    /// `CUefa5Jahreswertung` (`IDD_UEFA`, event 0xcf).
+    pub const EUROPEAN_RANKING: u16 = 301;
     /// The cup results after the matchday, `CPokalNachSpieltag`
     /// (`IDD_POKAL_NACH_DEM_SPIEL`).
     pub const CUP_RESULTS: u16 = 161;
@@ -1656,6 +1659,7 @@ impl Cycle {
         if let Some((_, Some(farewells))) = &closing {
             self.ask(Request::with(FAREWELLS, Args::Farewells(*farewells)))?;
         }
+        let rolled = closing.is_some();
         if let Some((drawn, _)) = closing {
             let mut guard = self.state();
             let state = &mut *guard;
@@ -1708,6 +1712,12 @@ impl Cycle {
         for manager in humans {
             self.season(|s| s.current = manager);
             self.ask(Request::with(FINANCES, Args::Statement))?;
+        }
+        // The rolled ranking is told once, to all at the table, behind the
+        // statements (`FUN_00423cad` posting event 0xcf after its sort,
+        // dialog 301 by `FUN_005b0432`).
+        if rolled {
+            self.ask(Request::new(EUROPEAN_RANKING))?;
         }
         // The new season's first day follows the statements, where the
         // original's season-end block hands the game to its new-season

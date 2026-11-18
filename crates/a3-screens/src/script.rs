@@ -9427,7 +9427,7 @@ mod tests {
         let turns = "until dialog 417\nnow press 1\n".repeat(5);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
-             now press 1\n{turns}until day 30"
+             now press 1\n{turns}until dialog 301\nnow ok\nuntil day 30"
         );
         let Some(mut runner) = on_save(&game, "seasons-on", &then) else { return };
         let _ = runner.settle();
@@ -9516,7 +9516,7 @@ mod tests {
         compose(&mut game);
         let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
-                    until dialog 417\nnow press 1";
+                    until dialog 417\nnow press 1\nuntil dialog 301\nnow ok";
         let Some(mut runner) = on_save(&game, "season-kept", then) else { return };
         let _ = runner.settle();
         let log = runner.log.join("\n");
@@ -12648,5 +12648,53 @@ mod tests {
             assert!(leaving.iter().all(|id| !squad.contains(id)), "the men are gone");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364's turn rolls the European ranking on and tells it
+    /// (dialog 301, event 0xcf) behind the statement, as the original's
+    /// shot of the same save shows it pixel for pixel: the dialog's
+    /// "Pl.", "Land", "Punkte gesamt" and the five seasons up to 2025/26;
+    /// the countries in their new order, each with its place, its total
+    /// and those seasons' points, the one just played the last and the
+    /// new one, at naught, not shown. OK goes on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_tells_the_rolled_european_ranking() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD
+            .replace("row 5144 0", &format!("row 5144 {row}"))
+            .replace("on 301 ok\n", "")
+            .replace("until dialog 147", "on 152 press 2594\non 417 ok\nuntil dialog 301");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&301];
+        let header = runner.host.view().header(control(dialog, 4034).unwrap()).unwrap().text.clone();
+        assert_eq!(header, "Pl.\\tLand\\tPunkte gesamt\\t21/22\\t22/23\\t23/24\\t24/25\\t25/26");
+        let rows = runner.host.view().list(control(dialog, 4031).unwrap()).unwrap().rows.clone();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let ranked = a3_core::statistics::five_years(records);
+            let shown: Vec<_> = ranked.iter().filter(|(country, _)| *country != 0).collect();
+            assert!(shown.len() > 20, "{}", shown.len());
+            assert_eq!(rows.len(), shown.len());
+            assert!(shown.iter().all(|(_, points)| points[6] == 0.0), "the new season at naught");
+            let fields: Vec<&str> = rows[0].split('\t').collect();
+            assert_eq!(fields.len(), 8, "{}", rows[0]);
+            assert_eq!(fields[0], "1.");
+            assert_eq!(fields[1], game.world.nation(shown[0].0));
+            assert_eq!(fields[2], format!("{:.2}", shown[0].1[0]));
+            assert_eq!(fields[7], format!("{:.2}", shown[0].1[5]));
+            let totals: Vec<f64> = rows.iter().map(|r| r.split('\t').nth(2).unwrap().parse().unwrap()).collect();
+            assert!(totals.windows(2).all(|w| w[0] >= w[1]), "{totals:?}");
+        }
+        runner.run(&Script::parse("now press 4032").unwrap()).unwrap();
+        let _ = runner.settle();
+        assert_ne!(runner.host.view().id, 301, "OK closes it");
+        assert_eq!(runner.host.state().records.as_ref().unwrap().globals.start_year(), 2026);
     }
 }

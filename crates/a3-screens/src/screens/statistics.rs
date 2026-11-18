@@ -2315,7 +2315,7 @@ fn tenths(value: f64) -> String {
 
 /// A double to `places` places as printf writes it, a half rounded up
 /// by the next digit of its exact decimal expansion.
-fn fixed(value: f64, places: usize) -> String {
+pub(crate) fn fixed(value: f64, places: usize) -> String {
     let exact = format!("{:.60}", value.abs());
     let (whole, fraction) = exact.split_once('.').unwrap_or((&exact, "0"));
     let digit = |k: usize| u64::from(fraction.as_bytes().get(k).map_or(0, |b| b - b'0'));
