@@ -590,14 +590,7 @@ fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: 
     if m.flags & (MINUTE_UP | OVER) != 0 {
         return;
     }
-    // A national side's own tactic, which the association's table sets
-    // for the minute from the side's place in the list — not ported.
-    if m.nat_bits & 1 != 0 {
-        national_tactic(&mut m.sides[0], (m.nat_bits as i16 >> 8) & 7);
-    }
-    if m.nat_bits & 2 != 0 {
-        national_tactic(&mut m.sides[1], (m.nat_bits as i16 >> 12) & 7);
-    }
+    national_tactics(m, records);
     let extra = m.flags & EXTRA != 0;
     if m.advantage < 0 {
         if m.advantage as i32 + 90 < clock.minute as i32 {
@@ -733,11 +726,39 @@ fn rate_side(m: &mut Match, which: usize, _extra: bool) {
     r[4] = (r[4] as i32 + r[4] as i32 * mental / 100) as i16;
 }
 
+/// A national side's own tactic, which the association's table sets for
+/// the minute from the side's place in the list: the first side's place
+/// in the marker's bits 8..10, the second's in bits 12..14.
+fn national_tactics(m: &mut Match, records: Option<&Records>) {
+    if m.nat_bits & 1 != 0 {
+        national_tactic(&mut m.sides[0], (m.nat_bits as i16 >> 8) & 7, records);
+    }
+    if m.nat_bits & 2 != 0 {
+        national_tactic(&mut m.sides[1], (m.nat_bits as i16 >> 12) & 7, records);
+    }
+}
+
 /// The association's national-side table (`FUN_006fb8f5`) overwriting a
 /// national side's tactic byte at +0x30 with the entry at its list place
-/// less one, from the exe table at DAT_01bdd6d8 — not ported; it only
-/// ever runs for a tie carrying that side.
-fn national_tactic(_side: &mut Side, _place: i16) {}
+/// less one: `DAT_01bdd6d8 + (place-1)·0x38`, the first data byte (+0x20)
+/// of the four saved raw objects at 0x1bdd6b8, 24 bytes each. Places
+/// outside 1..4 leave the tactic standing; it only ever runs for a tie
+/// carrying that side. Without the save the tactic stands as well.
+fn national_tactic(side: &mut Side, place: i16, records: Option<&Records>) {
+    if !(1..=4).contains(&place) {
+        return;
+    }
+    let Some(block) = records.and_then(|r| r.block(&format!("{NATIONAL_TABLE}[{}]", place - 1))) else {
+        return;
+    };
+    if let Some(&tilt) = block.first() {
+        side.tilt = tilt;
+    }
+}
+
+/// The association's four national-side entries, saved raw (`0x1bdd6b8`
+/// + i·0x38, the loader's 24-byte objects).
+const NATIONAL_TABLE: &str = "0x1bdd6b8";
 
 /// Which side has the minute's set moment, `FUN_006f6857`: the record's
 /// chance slot at +0x450 (the pre-match walk leaves a plain fixture at 5)
@@ -3411,6 +3432,38 @@ mod tests {
         assert!(!run);
         assert_eq!(m.goals, [2, 2]);
         assert_eq!(r, Random::new(4), "the empty minute draws no coin");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_side_plays_the_associations_saved_tactic() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let saved: Vec<u8> =
+            (0..4).map(|i| records.block(&format!("0x1bdd6b8[{i}]")).unwrap()[0]).collect();
+        eprintln!("national tactics {saved:?}");
+        // the side at list place p takes the first byte of the saved entry
+        // p-1 into its tactic (+0x30); places 0 and 5..7 keep the tactic
+        for place in 1..=4i16 {
+            let mut side = fixture().sides[0];
+            side.tilt = 0x7f;
+            national_tactic(&mut side, place, Some(&records));
+            assert_eq!(side.tilt, saved[place as usize - 1]);
+        }
+        for place in [0i16, 5, 7] {
+            let mut side = fixture().sides[0];
+            national_tactic(&mut side, place, Some(&records));
+            assert_eq!(side.tilt, 3);
+        }
+        // the minute reads the second side's place from the marker's top
+        // nibble, the first side's from the byte above the bits
+        let mut m = fixture();
+        m.sides[0].tilt = 0x7f;
+        m.sides[1].tilt = 0x7f;
+        m.nat_bits = 2 | (3 << 8) | (2 << 12);
+        national_tactics(&mut m, Some(&records));
+        assert_eq!([m.sides[0].tilt, m.sides[1].tilt], [0x7f, saved[1]]);
     }
 
     #[test]
