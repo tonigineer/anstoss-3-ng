@@ -1663,6 +1663,9 @@ impl Cycle {
                 // An even year draws the qualifying groups of the
                 // tournament two years on (`FUN_0067c02f`).
                 crate::national::draw_qualifiers(records, &rules.pitch.european, &mut season.random);
+                // The human coaches' friendlies are offered anew out of
+                // the nations no human coaches (`FUN_006b9929`).
+                crate::national::draw_friendlies(records, &mut season.random);
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);

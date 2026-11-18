@@ -749,6 +749,112 @@ fn nation_next(records: &Records, calendar: &Calendar, nation: i16, today: usize
     None
 }
 
+/// The entries a friendly record clears at the turn (`FUN_0063b678`):
+/// the nine candidates and the three booked, back to back from +0.
+const FRIENDLY_ENTRIES: usize = 12;
+/// The nations the turn may offer (`FUN_006b9929`'s loop, 1 to 0x73).
+const FRIENDLY_NATIONS: std::ops::Range<usize> = 1..0x74;
+/// The pools by a nation's strength byte (`DAT_00ae6223`): from 9 the
+/// strong (the pool's +0x1da, `FUN_006bded0`), from 6 the middling
+/// (+0xf0, `FUN_006bdf10`), from 3 the weak (+6, `FUN_006bdf50`); below 3
+/// a nation is never offered.
+const STRONG_FROM: u8 = 9;
+const MIDDLING_FROM: u8 = 6;
+const WEAK_FROM: u8 = 3;
+/// The managers whose national keys the turn reads (`FUN_006b990d`: the
+/// 32 bytes from `DAT_00b5d17a`, numbers 1 to 4).
+const KEYED_MANAGERS: std::ops::RangeInclusive<usize> = 1..=4;
+
+/// The friendlies offered anew at the turn (`FUN_006b9929`, the new
+/// season's block of `FUN_006da3a9`, after `FUN_0067c02f`). First the four
+/// coaches' records clear (`FUN_0063b678`): every candidate and booked
+/// entry's land and team to 0, the scores unplayed. Then every nation from
+/// 1 to 0x73 that none of the four humans coaches goes, in its order,
+/// into the pool of its strength, and for each human with a nation, slot
+/// by slot, three candidates are drawn without putting back
+/// (`FUN_006bde10`: one at random, the pool's last taking its place) —
+/// the first from the strong, else the middling, else the weak; the
+/// second middling, strong, weak; the third weak, middling, strong; 0
+/// when all are empty. Each is the land, 200 for its national team and a
+/// coin at +4 (`FUN_0078a810(2)`, the three after the three lands); they
+/// land in the record of the coach his nation's team names
+/// (`FUN_0063b305`), none where it names none — the draws made all the
+/// same.
+pub fn draw_friendlies(records: &mut Records, random: &mut crate::random::Random) {
+    for k in 0..4 {
+        if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{k}]")) {
+            if b.len() <= FRIENDLY_SCORES + 4 * FRIENDLY_SLOTS {
+                continue;
+            }
+            for e in 0..FRIENDLY_ENTRIES {
+                let at = FRIENDLY_CANDIDATES + e * FRIENDLY_PICK;
+                b[at] = 0;
+                put16(b, at + 2, 0);
+            }
+            for slot in 0..FRIENDLY_SLOTS {
+                b[FRIENDLY_SCORES + 4 * (slot + 1)] = NO_SCORE;
+            }
+        }
+    }
+    let coached: Vec<u8> = KEYED_MANAGERS.map(|id| records.globals.get::<u8>(KEY_NATION + id * KEY)).collect();
+    // The pools: weak, middling, strong.
+    let mut pools: [Vec<u8>; 3] = Default::default();
+    for nation in FRIENDLY_NATIONS {
+        if coached.contains(&(nation as u8)) {
+            continue;
+        }
+        let strength = records.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + nation);
+        let pool = if strength >= STRONG_FROM {
+            2
+        } else if strength >= MIDDLING_FROM {
+            1
+        } else if strength >= WEAK_FROM {
+            0
+        } else {
+            continue;
+        };
+        pools[pool].push(nation as u8);
+    }
+    let take = |pools: &mut [Vec<u8>; 3], order: [usize; 3], random: &mut crate::random::Random| -> u8 {
+        for pool in order {
+            let pool = &mut pools[pool];
+            if !pool.is_empty() {
+                let at = random.below(pool.len() as u32) as usize;
+                return pool.swap_remove(at);
+            }
+        }
+        0
+    };
+    for nation in coached.into_iter().filter(|&n| n != 0) {
+        for slot in 0..FRIENDLY_SLOTS {
+            let lands = [
+                take(&mut pools, [2, 1, 0], random),
+                take(&mut pools, [1, 2, 0], random),
+                take(&mut pools, [0, 1, 2], random),
+            ];
+            let mut picks = [FriendlyPick::default(); FRIENDLY_SLOTS];
+            for (pick, land) in picks.iter_mut().zip(lands) {
+                pick.0 = [land, 0, 200, 0, 0, 0];
+            }
+            for pick in &mut picks {
+                pick.0[4..6].copy_from_slice(&(random.below(2) as u16).to_le_bytes());
+            }
+            let coach = usize::from(coach_number(records, i16::from(nation)));
+            if coach == 0 {
+                continue;
+            }
+            if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) {
+                for (k, pick) in picks.iter().enumerate() {
+                    let at = FRIENDLY_CANDIDATES + slot * FRIENDLY_CAND_SLOT + k * FRIENDLY_PICK;
+                    if at + FRIENDLY_PICK <= b.len() {
+                        b[at..at + FRIENDLY_PICK].copy_from_slice(&pick.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Every national team's next match noted anew at the new season
 /// (`FUN_00630c9f`'s loop over nations 1 to 116, `FUN_0062c90e`): the day,
 /// the opponent's land and team, the kind and the referee cleared, then
@@ -1129,6 +1235,69 @@ mod tests {
                 Success { year: 2003, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
             ]
         );
+    }
+
+    /// The friendlies offered at the turn as the original offered them on
+    /// NewSeason000 (its human coaching nation 23): the coach's record
+    /// holds three slots of three candidates whose lands come out of the
+    /// same strength pools, place by place, as the original's — nine
+    /// lands, none drawn twice, none coached, none below strength 3 —,
+    /// each the national team with a coin at +4; the booked entries and
+    /// scores stand cleared, the other records as the original's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_friendlies_are_offered_out_of_the_original_pools() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves");
+            return;
+        }
+        let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let (mut ours, theirs) = (load(), load());
+        for k in 0..4 {
+            let b = ours.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{k}]")).unwrap();
+            for e in 0..FRIENDLY_ENTRIES {
+                b[e * FRIENDLY_PICK] = 0x55;
+                put16(b, e * FRIENDLY_PICK + 2, 0x5555);
+            }
+            for slot in 0..FRIENDLY_SLOTS {
+                b[FRIENDLY_SCORES + 4 * (slot + 1)] = 7;
+            }
+        }
+        draw_friendlies(&mut ours, &mut crate::random::Random::new(3));
+        let coach = usize::from(coach_number(&theirs, 23));
+        assert_ne!(coach, 0, "nation 23 names its coach");
+        let strength = |n: u8| theirs.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + usize::from(n));
+        let pool = |n: u8| match strength(n) {
+            s if s >= STRONG_FROM => 2,
+            s if s >= MIDDLING_FROM => 1,
+            _ => 0,
+        };
+        for k in 0..4 {
+            let name = format!("{FRIENDLY_RECORDS:#x}[{k}]");
+            let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+            if k + 1 != coach {
+                assert_eq!(a[..0x54], b[..0x54], "record {k} as the original's");
+                continue;
+            }
+            let (mut x, mut y) = (Vec::new(), Vec::new());
+            for e in 0..9 {
+                let (p, q) = (&a[e * FRIENDLY_PICK..(e + 1) * FRIENDLY_PICK], &b[e * FRIENDLY_PICK..(e + 1) * FRIENDLY_PICK]);
+                assert_eq!((p[1], word(p, 2)), (0, 200), "candidate {e}");
+                assert!(word(p, 4) < 2, "candidate {e}'s coin");
+                assert!(p[0] != 23 && strength(p[0]) >= WEAK_FROM, "candidate {e}'s land {}", p[0]);
+                assert_eq!(pool(p[0]), pool(q[0]), "candidate {e}: ours {} theirs {}", p[0], q[0]);
+                x.push(p[0]);
+                y.push(q[0]);
+            }
+            x.sort_unstable();
+            x.dedup();
+            assert_eq!(x.len(), 9, "no land drawn twice");
+            assert!(!y.contains(&23));
+            assert_eq!(a[0x36..0x54], b[0x36..0x54], "booked and scores as the original's");
+        }
     }
 
     /// The original's new season (NewSeason000) noted again from its own
