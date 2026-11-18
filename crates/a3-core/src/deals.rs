@@ -25,8 +25,11 @@
 //! A player whose sale is called off with his contract running out goes
 //! to the free agents (`FUN_0040e8cc`, [`execute_with`]).
 //!
+//! A deal of two millions or more enters the Supertransfers
+//! (`FUN_0070eccd`, [`supertransfer`]).
+//!
 //! Left out: the human clubs' training plans of a player between them (`FUN_00746ddf`),
-//! the news (`FUN_0070eccd`), the record and the all-time lists
+//! the human clubs' record fees and all-time lists
 //! (`FUN_005dbeb7`, `FUN_005dbefc`, `FUN_006d5931`) and the share market's
 //! note (`FUN_00405bf3`).
 
@@ -437,6 +440,62 @@ pub(crate) fn bring_in(records: &mut Records, club: (u8, i16), id: u16, fee: u32
 }
 
 /// A club's fields as the deals name them: country, 0, number.
+/// The Supertransfers (fifty of 0x1c bytes at `DAT_00b1b2e8`, the lists
+/// block's +0xfc30, the dearest first).
+const SUPERTRANSFERS: usize = 0xfc30;
+const SUPERTRANSFER: usize = 0x1c;
+const SUPERTRANSFERS_KEPT: usize = 50;
+/// A fee below this never enters them (`DAT_00a3b314`).
+const SUPERTRANSFER_LEAST: i32 = 2_000_000;
+/// They keep fees in ten thousands (`DAT_00a3b3bc`).
+const TEN_THOUSAND: i32 = 10_000;
+
+/// A transfer entered in the Supertransfers (`FUN_0070eccd`, after the
+/// buyer's history, mid-season through `FUN_0070e82e`/`FUN_0070ee57`): a
+/// fee of two millions or more, in ten thousands no less than the
+/// fiftieth's, goes in above every entry it is not below, those moving one
+/// down and the fiftieth falling out. The entry: the player, his first
+/// and last name — none and his nickname when he is known by it (+0x1b4
+/// bit 31) —, the fee, the club he came from (`from`, a free player's
+/// nation and 200), the buyer's country byte and number, his position and
+/// strength; the bytes between (+6, +0x15, +0x1a) stay as the slot held
+/// them.
+pub(crate) fn supertransfer(records: &mut Records, id: u16, from: [u8; 4], buyer: (u8, i16), fee: u32) {
+    let fee = fee as i32;
+    if fee < SUPERTRANSFER_LEAST {
+        return;
+    }
+    let fee = fee / TEN_THOUSAND;
+    let Some(p) = records.player(id) else { return };
+    let names = if p.shown() & 0x8000_0000 != 0 { [0, p.nickname()] } else { [p.first_name(), p.last_name()] };
+    let (position, strength) = (p.positions()[0], p.strength());
+    let Some(b) = records
+        .block_mut(crate::statistics::LISTS)
+        .and_then(|b| b.get_mut(SUPERTRANSFERS..SUPERTRANSFERS + SUPERTRANSFERS_KEPT * SUPERTRANSFER))
+    else {
+        return;
+    };
+    let fee_at = |b: &[u8], k: usize| i32::from_le_bytes(b[k * SUPERTRANSFER + 0xc..k * SUPERTRANSFER + 0x10].try_into().unwrap());
+    if fee_at(b, SUPERTRANSFERS_KEPT - 1) > fee {
+        return;
+    }
+    let mut k = SUPERTRANSFERS_KEPT - 1;
+    while k > 0 && fee_at(b, k - 1) <= fee {
+        b.copy_within((k - 1) * SUPERTRANSFER..k * SUPERTRANSFER, k * SUPERTRANSFER);
+        k -= 1;
+    }
+    let e = &mut b[k * SUPERTRANSFER..(k + 1) * SUPERTRANSFER];
+    e[0..2].copy_from_slice(&id.to_le_bytes());
+    e[2..4].copy_from_slice(&names[0].to_le_bytes());
+    e[4..6].copy_from_slice(&names[1].to_le_bytes());
+    e[0xc..0x10].copy_from_slice(&fee.to_le_bytes());
+    e[0x10..0x14].copy_from_slice(&from);
+    e[0x14] = buyer.0;
+    e[0x16..0x18].copy_from_slice(&u16::from(buyer.1 as u8).to_le_bytes());
+    e[0x18] = position;
+    e[0x19] = strength;
+}
+
 fn side_bytes(club: (u8, i16)) -> [u8; 4] {
     let mut s = [0u8; 4];
     s[0] = club.0;
@@ -499,8 +558,8 @@ fn shirt_at(records: &Records, club: (u8, i16), id: u16, random: &mut Random) ->
 /// keeps a sale above three millions in mind.
 ///
 /// Left out: the paper's lines for a man of strength 11 up from a first
-/// league (ereignis 0x684, 0x685), the Supertransfers and records
-/// (`FUN_0070eccd`, `FUN_006d5931`), a human buyer's strength step and
+/// league (ereignis 0x684, 0x685), the records
+/// (`FUN_006d5931`), a human buyer's strength step and
 /// message (`FUN_0070e6a3`), the human clubs' training plans
 /// (`FUN_00746ddf`) and the list of the week's moves (`FUN_00759eb9`, not
 /// saved). Then both clubs plan their search anew
@@ -543,6 +602,7 @@ fn carry_out(
     let month = records.globals.date()[1];
     note_in(records, seller, id, week, SOLD, side_bytes(buyer), fee);
     note_in(records, buyer, id, week, CAME, side_bytes(seller), fee);
+    supertransfer(records, id, side_bytes(seller), buyer, fee);
     leave_season(records, id);
     let absent = records.player(id).is_some_and(|p| {
         let [y, d] = p.away_to();
@@ -836,6 +896,7 @@ pub fn execute_with(records: &mut Records, random: &mut Random, agents: &mut Vec
             deal.bytes[SELLER..SELLER + 4].try_into().unwrap()
         };
         note(records, buyer, id, CAME, seller, fee);
+        supertransfer(records, id, seller, buyer, fee);
     }
     // The list stands empty (`FUN_0070f564`).
     if let Some(block) = records.block_mut(AGREED) {
@@ -876,6 +937,41 @@ mod tests {
         // held it (`local_1c`'s unset byte).
         let clean = |e: Option<[u8; 0x14]>| e.map(|mut a| { a[9] = 0; a });
         assert_eq!(clean(entry(&ours)), clean(entry(&theirs)));
+    }
+
+    /// Over the original's season end (SeasonEnd364 to NewSeason000): the
+    /// deals carried out enter the Supertransfers as the original's list
+    /// stands after them, entry for entry and byte for byte.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_ends_deals_enter_the_supertransfers_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let list = |r: &Records| {
+            r.block(crate::statistics::LISTS).unwrap()[SUPERTRANSFERS..SUPERTRANSFERS + SUPERTRANSFERS_KEPT * SUPERTRANSFER]
+                .to_vec()
+        };
+        assert_ne!(list(&before), list(&theirs), "the season end changes the list");
+        let mut random = Random::new(3);
+        let mut agents = crate::free_agents::release(&mut ours, &mut random);
+        execute_with(&mut ours, &mut random, &mut agents);
+        // His strength as it stepped by chance at the buyer (`FUN_0070e588`)
+        // aside where the draws part.
+        let mut stepped = 0;
+        for (k, (a, b)) in list(&ours).chunks(SUPERTRANSFER).zip(list(&theirs).chunks(SUPERTRANSFER)).enumerate() {
+            let id = u16::from_le_bytes([a[0], a[1]]);
+            let (mut a, mut b) = (a.to_vec(), b.to_vec());
+            if a != b && ours.player(id).map(|p| p.strength()) != theirs.player(id).map(|p| p.strength()) {
+                (a[0x19], b[0x19]) = (0, 0);
+                stepped += 1;
+            }
+            assert_eq!(a, b, "entry {k}");
+        }
+        assert!(stepped < 5, "{stepped} strengths drawn apart");
     }
 
     use super::*;
