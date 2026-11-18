@@ -12479,4 +12479,61 @@ mod tests {
         let _ = runner.settle();
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// An even year's turn offers a human standing 9 with the season's
+    /// points past 400 national teams (`FUN_006b9c81`): past A's
+    /// statement into season 2, 2026, dialog 356 lists the nations, the
+    /// caption names him, the first stands chosen with its terms, and OK
+    /// makes him its coach on them before the season start's screens.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn an_even_years_turn_offers_a_human_a_national_team() {
+        use crate::screens::national_offer::NATIONAL_OFFER;
+        use crate::screens::season_start::TALKS;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "national-offer", |records| {
+            records.globals.set_day(320);
+            for slot in 0..records.globals.slots().len() {
+                if records.globals.slots()[slot] > 0 {
+                    let m = &mut records.managers[slot];
+                    m.set_level(9);
+                    m.set_level_bits(0);
+                    m.put::<i16>(0x1f74, 6009);
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1\nuntil dialog 356";
+        let Some(runner) = on_save(&game, "national-offer", open) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, NATIONAL_OFFER, "{log}");
+        let dialog = &game.dialogs[&NATIONAL_OFFER];
+        let view = runner.host.view();
+        let list = view.list(control(dialog, 4543).unwrap()).unwrap();
+        assert!(!list.rows.is_empty() && list.rows.len() <= 10, "{:?}", list.rows);
+        assert_eq!(list.selected, Some(0));
+        assert_eq!(view.text(control(dialog, 4551).unwrap()), list.rows[0]);
+        assert!(view.text(control(dialog, 4547).unwrap()).contains('€'));
+        let first = list.rows[0].clone();
+        drop(runner);
+        let Some(mut runner) = on_save(&game, "national-offer", &format!("{open}\nnow press 4546\nuntil dialog {TALKS}"))
+        else {
+            return;
+        };
+        assert_eq!(runner.host.view().id, TALKS, "{}", runner.log.join("\n"));
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let slot = records.human_slot(0).unwrap();
+            let nation = records.managers[slot].national_team();
+            assert!(nation > 0, "he coaches a nation");
+            assert_eq!(game.club_name(Some(records), nation as u8, 200), first);
+            assert_eq!(a3_core::national::coach_number(records, nation), slot as u8 + 1);
+            assert!(records.managers[slot].get::<i32>(0x1f7c) >= 250_000);
+        }
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

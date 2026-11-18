@@ -199,6 +199,175 @@ pub fn leave(records: &mut Records, slot: usize, reason: u8) {
     crate::career::left_national_team(records, slot, reason);
 }
 
+/// A human manager's record: his season's points (+0x1f74, which
+/// `FUN_006d6264` writes at the season's end through `FUN_006a5580` and
+/// `FUN_006a55a8` reads) and how far his national team came (+0x1f76,
+/// `FUN_006a55ec` from `FUN_0067e660`, read by `FUN_006a55ca`); and the
+/// national contract `FUN_006a566c` sets: 1, the salary, the bonus per
+/// round.
+const SEASON_POINTS: usize = 0x1f74;
+const NATIONAL_STAGE: usize = 0x1f76;
+const CONTRACT_SET: usize = 0x1f78;
+const CONTRACT_SALARY: usize = 0x1f7c;
+const CONTRACT_BONUS: usize = 0x1f80;
+/// The mode whose humans are listed only above standing 8
+/// (`DAT_00b5cbc6`).
+const LISTED_MODE: i16 = 9;
+/// The most nations that offer a human their team (`FUN_006b9c81`'s
+/// `local_e < 10`).
+pub const OFFERS_MOST: usize = 10;
+
+/// What one nation offers in dialog 356 (`CNationaltrainerWerden`, its
+/// +0x1b98, +0x1bf4 and +0x1c30 by row).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Terms {
+    pub nation: i16,
+    pub salary: i32,
+    pub bonus: i32,
+}
+
+/// The national coaches' turn of an even year (`FUN_006b9c81`, in the new
+/// season's block before `FUN_0067c02f`): from the second season on, in
+/// even start years only, every human leaves his national team
+/// (`FUN_006b9872`, reason 0), and those standing above 8 — or every one
+/// outside mode 9 — are listed, strongest first (an exchange sort on
+/// the standing). Each listed one is offered, at most ten, his own nation
+/// first when his national team came past the first stage (+0x1f76 > 1)
+/// and he had one; then by his standing over the ranking's rows, his own
+/// nation never again: 8 to 10, with 400 season points or the stage past
+/// 1, rows 8..15 a third of the times and 15..25 half; 11 with 700
+/// points or the stage from 3 rows 0..20 a third (else as 8); 12 to 15
+/// with 1000 points or the stage from 4 rows 0..15 a third (else as 11);
+/// below 8 with the stage past 2 rows 4..15 a fifth and 15..25 half. The
+/// rows' draws stand where the original's are, some before the full
+/// count is asked. The humans with offers, by their slot, in the list's
+/// order (message 0xc2 each, `FUN_006c0102`, shown at once).
+pub fn draw_offers(records: &mut Records, random: &mut crate::random::Random) -> Vec<(usize, Vec<i16>)> {
+    if records.globals.get::<i16>(SEASON_AT) <= 1 || records.globals.start_year() % 2 != 0 {
+        return Vec::new();
+    }
+    // (slot, standing, season points, stage, his nation)
+    let mut listed: Vec<(usize, i32, i16, i16, i16)> = Vec::new();
+    let mode = records.globals.mode();
+    for slot in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get(slot) else { continue };
+        let standing = m.standing();
+        if standing > 8 || mode != LISTED_MODE {
+            listed.push((slot, standing, m.get(SEASON_POINTS), m.get(NATIONAL_STAGE), m.national_team()));
+        }
+        leave(records, slot, 0);
+    }
+    for i in 0..listed.len() {
+        for j in i + 1..listed.len() {
+            if listed[i].1 < listed[j].1 {
+                listed.swap(i, j);
+            }
+        }
+    }
+    let rows: Vec<i16> = (0..25).map(|k| records.globals.get::<i16>(RANKING_AT + k * RANKING_ROW)).collect();
+    let mut out = Vec::new();
+    for &(slot, standing, points, stage, own) in &listed {
+        let mut nations = Vec::new();
+        if stage > 1 && own > 0 {
+            nations.push(own);
+        }
+        // Rows `from..to`, each drawn `below(k)`; `full_first` asks the
+        // count before the draw, as the later rows do.
+        let mut offer = |from: usize, to: usize, k: u32, full_first: bool, nations: &mut Vec<i16>| {
+            for &row in &rows[from..to] {
+                if full_first && nations.len() >= OFFERS_MOST {
+                    continue;
+                }
+                if row != 0 && row != own && random.below(k) == 0 && nations.len() < OFFERS_MOST {
+                    nations.push(row);
+                }
+            }
+        };
+        let eight = points >= 400 || stage > 1;
+        let eleven = points >= 700 || stage >= 3;
+        let twelve = points >= 1000 || stage >= 4;
+        let tier = match standing {
+            8..=10 => 8,
+            11 => if eleven { 11 } else { 8 },
+            12..=15 => if twelve { 12 } else if eleven { 11 } else { 8 },
+            _ => 0,
+        };
+        match tier {
+            8 if eight => {
+                offer(8, 15, 3, false, &mut nations);
+                offer(15, 25, 2, true, &mut nations);
+            }
+            11 => offer(0, 20, 3, false, &mut nations),
+            12 => offer(0, 15, 3, false, &mut nations),
+            0 if (0..8).contains(&standing) && stage > 2 => {
+                offer(4, 15, 5, false, &mut nations);
+                offer(15, 25, 2, true, &mut nations);
+            }
+            _ => {}
+        }
+        if !nations.is_empty() {
+            out.push((slot, nations));
+        }
+    }
+    out
+}
+
+/// The first offer of each nation as dialog 356 opens
+/// (`CNationaltrainerWerden::FUN_0051fcd9`, seven rounds apiece to
+/// bargain): its flag at +0x1b2c stands set from the turn, so a nation
+/// whose strength byte (`DAT_00ae6223`) is below 8 pays (5..10) × 50,000
+/// and a bonus of (1..4) × 25,000, a stronger one (5..11) × 100,000 and
+/// (4..7) × 25,000 (`DAT_00a3b38c`, `DAT_00a3b37c`, `DAT_00a3b3a4`).
+pub fn first_terms(records: &Records, nations: &[i16], random: &mut crate::random::Random) -> Vec<Terms> {
+    nations
+        .iter()
+        .filter(|&&n| n > 0)
+        .map(|&nation| {
+            let strength = records.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + nation as usize);
+            let (salary, bonus) = if strength < 8 {
+                let salary = (random.below(5) as i32 + 6) * 50_000;
+                (salary, (random.below(3) as i32 + 1) * 25_000)
+            } else {
+                let salary = (random.below(6) as i32 + 5) * 100_000;
+                (salary, (random.below(3) as i32 + 4) * 25_000)
+            };
+            Terms { nation, salary, bonus }
+        })
+        .collect()
+}
+
+/// The human in `slot` takes the national team of `nation` on `terms`,
+/// as the turn closes his dialog's OK (`FUN_006b9c81`'s last loop): he
+/// leaves once more (`FUN_006b9872`, reason 0), becomes its coach
+/// (`FUN_006b9755`: the team's coach bytes and his key, nation and 200,
+/// the nation on his record, a national station of his career
+/// `FUN_006fdb68`) and has the contract (`FUN_006a566c`). The national
+/// club's own refresh behind it (`FUN_006a25c2` … `FUN_006b95ab`) is
+/// club state the replica rebuilds from the records.
+pub fn take(records: &mut Records, slot: usize, terms: Terms) {
+    leave(records, slot, 0);
+    let nation = terms.nation;
+    if !(1..NATIONS as i16).contains(&nation) {
+        return;
+    }
+    let id = slot + 1;
+    if let Some(team) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) {
+        team[COACH] = id as u8;
+        team[COACH + 1] = id as u8;
+    }
+    records.globals.put::<u8>(KEY_NATION + id * KEY, nation as u8);
+    records.globals.put::<u16>(KEY_TEAM + id * KEY, 200);
+    if let Some(m) = records.managers.get_mut(slot) {
+        m.set_national_team(nation);
+    }
+    crate::career::joined_national_team(records, slot, nation as u8);
+    if let Some(m) = records.managers.get_mut(slot) {
+        m.put::<i32>(CONTRACT_SET, 1);
+        m.put::<i32>(CONTRACT_SALARY, terms.salary);
+        m.put::<i32>(CONTRACT_BONUS, terms.bonus);
+    }
+}
+
 /// The talks about changing nation, as the coach's human slot keeps them
 /// in the save (`FUN_00634f89`'s source, the block standing at
 /// `DAT_00a55728` = the slot's object at `0xa55708` plus 0x20, which the
@@ -1387,5 +1556,58 @@ mod tests {
             friendlies += usize::from(y[NEXT_KIND] == NEXT_FRIENDLY);
         }
         assert!(qualifiers >= 1 && friendlies > 100, "{qualifiers} {friendlies}");
+    }
+    /// The original's turn from SeasonEnd364 to NewSeason000 made its
+    /// human (standing 9, 6009 season points) coach of nation 23 for
+    /// 600,000 and 125,000 a round through dialog 356: the offer rule
+    /// lists him with the points the season end leaves and lets him go,
+    /// and taking 23 on the same day leaves the team, his key, his record
+    /// and his career's national stations as the original's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_taken_national_offer_lands_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        if !keeps.join("SeasonEnd364.an3").exists() || !keeps.join("NewSeason000.an3").exists() {
+            eprintln!("no SeasonEnd364 or NewSeason000 among the saves");
+            return;
+        }
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let new = load("NewSeason000.an3");
+        let prepared = || {
+            let mut end = load("SeasonEnd364.an3");
+            end.globals.set_date(new.globals.date());
+            end.globals.put::<i16>(SEASON_AT, new.globals.get::<i16>(SEASON_AT));
+            end.globals.set_start_year(new.globals.start_year());
+            end.managers[0].put::<i16>(SEASON_POINTS, new.managers[0].get::<i16>(SEASON_POINTS));
+            end
+        };
+        let mut end = prepared();
+        let mut offered = Vec::new();
+        for seed in 0..40 {
+            let mut r = prepared();
+            let offers = draw_offers(&mut r, &mut crate::random::Random::new(seed));
+            assert!(offers.iter().all(|(slot, n)| *slot == 0 && !n.is_empty() && n.len() <= OFFERS_MOST));
+            offered.extend(offers.into_iter().flat_map(|(_, n)| n));
+        }
+        assert!(offered.contains(&23), "{offered:?}");
+        let ranks: Vec<i16> = (8..25).map(|k| end.globals.get::<i16>(RANKING_AT + k * RANKING_ROW)).collect();
+        assert!(offered.iter().all(|n| ranks.contains(n)), "{offered:?}");
+        take(&mut end, 0, Terms { nation: 23, salary: 600_000, bonus: 125_000 });
+        let (x, y) = (team_block(&end, 23).unwrap(), team_block(&new, 23).unwrap());
+        assert_eq!(x[COACH..COACH + 2], y[COACH..COACH + 2]);
+        for at in [KEY_NATION + KEY, KEY_TEAM + KEY] {
+            assert_eq!(end.globals.get::<u16>(at) & 0xff, new.globals.get::<u16>(at) & 0xff, "{at:#x}");
+        }
+        let (a, b) = (&end.managers[0], &new.managers[0]);
+        assert_eq!(a.national_team(), 23);
+        for at in [CONTRACT_SET, CONTRACT_SALARY, CONTRACT_BONUS] {
+            assert_eq!(a.get::<i32>(at), b.get::<i32>(at), "{at:#x}");
+        }
+        let (c, d) = (end.career(0).unwrap(), new.career(0).unwrap());
+        assert_eq!(c[0x1c0..0x1c2], d[0x1c0..0x1c2], "national jobs");
+        assert_eq!(c[0x1c3], d[0x1c3], "national stations");
+        assert_eq!(c[0x624..0x624 + 0x1c * 20], d[0x624..0x624 + 0x1c * 20], "the stations");
     }
 }

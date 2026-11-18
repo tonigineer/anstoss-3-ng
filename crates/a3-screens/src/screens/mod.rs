@@ -42,6 +42,7 @@ pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
 pub mod national;
+pub mod national_offer;
 pub mod notepad;
 pub mod nutzung;
 pub mod office;
@@ -218,6 +219,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(national::NationalTalks::default()),
         Box::new(national::NationalFriendlies::default()),
         Box::new(national::NationalTeamInfo::default()),
+        Box::new(national_offer::NationalOffer::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),
@@ -385,6 +387,7 @@ pub fn compose(game: &mut Game) {
     doping_control::compose(&mut game.dialogs);
     court::compose(&mut game.dialogs);
     season_terms::compose(&mut game.dialogs);
+    national_offer::compose(&mut game.dialogs);
     season_start::compose(&mut game.dialogs);
     cup_results::compose(&mut game.dialogs);
     event_text::compose(&mut game.dialogs);

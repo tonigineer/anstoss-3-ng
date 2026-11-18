@@ -248,6 +248,10 @@ pub mod dialogs {
     /// The season's new goal at the turn
     /// (`IDD_VERTRAGSKONDITIONEN_SAISONWECHSEL`, `FUN_005bebe0`'s 0x17b).
     pub const SEASON_GOAL: u16 = 379;
+    /// A nation's offer of its team at an even year's turn
+    /// (`IDD_NATIONALTRAINER_WERDEN`, `CNationaltrainerWerden`, event
+    /// 0xc2).
+    pub const NATIONAL_OFFER: u16 = 356;
     /// The new contract terms after a promotion or relegation
     /// (`IDD_VERTRAGSKONDITIONEN_LIGAWECHSEL`, `FUN_005be00a`'s 0x13a).
     pub const NEW_TERMS: u16 = 314;
@@ -458,6 +462,9 @@ pub enum Args {
     /// (`CVertragskonditionenNeu`): its flag, set on a promotion and
     /// clear on a relegation.
     NewTerms { promoted: bool },
+    /// The nations offering a human their team at an even year's turn,
+    /// each with its first terms (dialog 356's rows).
+    NationalOffers { terms: [crate::national::Terms; crate::national::OFFERS_MOST], count: u8 },
     /// The day's national cups for the cup results (the block at
     /// `0xa3b488`).
     CupResults(crate::cup_results::CupDay),
@@ -1679,6 +1686,7 @@ impl Cycle {
         // ([`crate::settlement::open_season`]) — the game walks on from
         // the new season's day 0.
         let mut told = Vec::new();
+        let mut offers = Vec::new();
         {
             let mut guard = self.state();
             let state = &mut *guard;
@@ -1687,6 +1695,50 @@ impl Cycle {
             {
                 let rules = &self.data.rules;
                 crate::settlement::open_season_with(records, &mut season.random, Some(rules));
+                // An even year's national coaches leave their teams and
+                // hear the nations' offers (`FUN_006b9c81`).
+                offers = crate::national::draw_offers(records, &mut season.random);
+            }
+        }
+        // Each offered human's dialog 356 opens at once, in the list's
+        // order, its first terms drawn as it opens; OK takes the chosen
+        // nation (`FUN_006b9c81`'s last loop), before the qualifiers'
+        // draw reads who coaches whom.
+        for (slot, nations) in std::mem::take(&mut offers) {
+            let asked = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                match (state.season.as_mut(), state.records.as_ref()) {
+                    (Some(season), Some(records)) => {
+                        let slots = records.globals.slots();
+                        let manager = slots[..slot.min(slots.len())].iter().filter(|&&s| s > 0).count();
+                        let firsts = crate::national::first_terms(records, &nations, &mut season.random);
+                        let mut terms = [crate::national::Terms::default(); crate::national::OFFERS_MOST];
+                        for (t, f) in terms.iter_mut().zip(&firsts) {
+                            *t = *f;
+                        }
+                        season.current = manager;
+                        Some((terms, firsts.len().min(crate::national::OFFERS_MOST) as u8))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((terms, count)) = asked else { continue };
+            let reply = self.ask(Request::with(NATIONAL_OFFER, Args::NationalOffers { terms, count }))?;
+            if let Reply::Choice(k) = reply
+                && let Some(&chosen) = terms[..usize::from(count)].get(k)
+                && let Some(records) = self.state().records.as_mut()
+            {
+                crate::national::take(records, slot, chosen);
+            }
+        }
+        {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            if let (Some(season), Some(records)) =
+                (state.season.as_mut(), state.records.as_mut())
+            {
+                let rules = &self.data.rules;
                 // An even year draws the qualifying groups of the
                 // tournament two years on (`FUN_0067c02f`).
                 crate::national::draw_qualifiers(records, &rules.pitch.european, &mut season.random);

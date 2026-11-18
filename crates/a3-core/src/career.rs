@@ -122,6 +122,44 @@ pub fn title(records: &mut Records, slot: usize, country: u16, number: u16, kind
     }
 }
 
+/// The most national stations a career keeps (`FUN_006fdb68`'s 0x14);
+/// the count of national jobs at +0x1c0.
+const NATIONAL_STATIONS_MOST: usize = 0x14;
+const NATIONAL_JOBS: usize = 0x1c0;
+
+/// The human in `slot` becomes coach of `nation` (`FUN_006fdb68`): with
+/// the window full its oldest station goes; the free entry is cleared.
+/// Where his last station is that nation's and closed this year it opens
+/// again (its end date nought); else a new one starts today, the team
+/// 200 and the mark 3, and his national jobs count one more.
+pub fn joined_national_team(records: &mut Records, slot: usize, nation: u8) {
+    let [day, month, year] = records.globals.date();
+    let Some(car) = records.career_mut(slot) else { return };
+    if usize::from(car[NATIONAL_STATIONS]) == NATIONAL_STATIONS_MOST {
+        car.copy_within(NATIONALS_AT + STATION..NATIONALS_AT + NATIONAL_STATIONS_MOST * STATION, NATIONALS_AT);
+        car[NATIONAL_STATIONS] -= 1;
+    }
+    let count = usize::from(car[NATIONAL_STATIONS]);
+    car[NATIONALS_AT + count * STATION..][..STATION].fill(0);
+    if let Some(last) = count.checked_sub(1) {
+        let row = &mut car[NATIONALS_AT + last * STATION..][..STATION];
+        if row[0] == nation && u16::from_le_bytes([row[0xa], row[0xb]]) == year as u16 {
+            row[8..0xc].fill(0);
+            return;
+        }
+    }
+    let row = &mut car[NATIONALS_AT + count * STATION..][..STATION];
+    row[0] = nation;
+    row[2..4].copy_from_slice(&200u16.to_le_bytes());
+    row[4] = day as u8;
+    row[5] = month as u8;
+    row[6..8].copy_from_slice(&(year as u16).to_le_bytes());
+    row[0xd] = 3;
+    car[NATIONAL_STATIONS] += 1;
+    let jobs = u16::from_le_bytes([car[NATIONAL_JOBS], car[NATIONAL_JOBS + 1]]).wrapping_add(1);
+    car[NATIONAL_JOBS..NATIONAL_JOBS + 2].copy_from_slice(&jobs.to_le_bytes());
+}
+
 /// The human in `slot` leaves his national team for `reason`
 /// (`FUN_006fdf90`): his last national station gets today's date and the
 /// reason, its three figures nought. Without a station nothing happens.
