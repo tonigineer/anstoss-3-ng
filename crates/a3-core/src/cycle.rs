@@ -424,6 +424,8 @@ pub enum Args {
     /// The day's national cups for the cup results (the block at
     /// `0xa3b488`).
     CupResults(crate::cup_results::CupDay),
+    /// A day's event for its window (the block at `0xa2f6d8`).
+    Event(crate::event_text::Posted),
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -1126,6 +1128,7 @@ impl Cycle {
                 // training's last draw.
                 let walked = self.season(|s| s.day).unwrap_or(0);
                 let mut slots = None;
+                let mut posted = Vec::new();
                 {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1173,11 +1176,15 @@ impl Cycle {
                                 date,
                                 (&self.data.rules.discipline.mood, &self.data.rules.medical, &self.data.rules.league),
                                 &mut season.recent_events,
+                                &mut posted,
                                 &mut season.random,
                             );
                         }
                     }
                 }
+                // The training's events come up as they happen, before
+                // the booked ones (`FUN_005ef5cb`, event 0xfc).
+                self.day_events(posted)?;
                 self.open_events_on(walked)?;
                 // The day's talks and the planners' appointments follow
                 // the human clubs' training and the day's events
@@ -1952,6 +1959,28 @@ impl Cycle {
     /// the traced original makes at the load, before the turn's screen —
     /// `FUN_0062a325`, which dispatches the day-keyed table at `0x8914e0`
     /// and walks the country's leagues into `FUN_00690a9e`'s squad spans.
+    /// The day's posted events, each in the window its text fits
+    /// (`FUN_005f2234`); none in the first season's quiet days
+    /// (`FUN_005ef56c`).
+    fn day_events(&self, posted: Vec<crate::event_text::Posted>) -> Result<(), Gone> {
+        if posted.is_empty() {
+            return Ok(());
+        }
+        let Some(texts) = a3_files::saq::EventTexts::load(&self.data.dir) else { return Ok(()) };
+        for p in posted {
+            let dialog = {
+                let state = self.state();
+                let Some(records) = state.records.as_ref() else { return Ok(()) };
+                if crate::event_text::quiet(records) {
+                    return Ok(());
+                }
+                crate::event_text::make(records, &texts, &p).dialog()
+            };
+            self.ask(Request::with(dialog, Args::Event(p)))?;
+        }
+        Ok(())
+    }
+
     fn open_events_on(&self, day: usize) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
         for n in 0..managers {

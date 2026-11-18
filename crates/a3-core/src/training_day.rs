@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
 
+use crate::event_text::{Fill, Lead, Posted};
 use crate::lineup;
 use crate::league::LeagueTables;
 use crate::medical::MedicalTables;
@@ -142,6 +143,12 @@ const PLAYER_EVENTS: [(u32, u32); 31] = [
     (30, 42),
     (1, 43),
 ];
+/// The codes of the training's events as they post them: the illness of
+/// 100 and 101, the torn knock of 110, the player events.
+const ILLNESS_EVENT: u16 = 0x61;
+const INJURY_EVENT: u16 = 0x60;
+const PLAYER_EVENT: u16 = 99;
+
 /// A player event stands among the recent ones as its code plus this.
 const PLAYER_EVENT_BASE: i32 = 13_000;
 /// The recent events kept (`FUN_005e5ee0`'s twenty).
@@ -165,6 +172,7 @@ pub fn day(
     date: NaiveDate,
     (mood, medical, league): (&MoodTables, &MedicalTables, &LeagueTables),
     recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) {
     let weekday = today.rem_euclid(7) as usize;
@@ -262,6 +270,7 @@ pub fn day(
                 slot,
                 (mood, medical, league),
                 recent,
+                posted,
                 random,
             );
         }
@@ -332,6 +341,7 @@ fn session(
     slot: usize,
     (mood, medical, league): (&MoodTables, &MedicalTables, &LeagueTables),
     recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) {
     let mut trainable = Vec::new();
@@ -482,7 +492,7 @@ fn session(
         // training luck behind comes when none was met (`FUN_0074a1ec`
         // on its answer of 0).
         let event = pick(&EVENTS, 10_000, random);
-        let met = training_event(records, (country, number), ids, &trainable, (mood, league), event, unit, day_units, (today, date), recent, random);
+        let met = training_event(records, (country, number), ids, &trainable, (mood, league), event, unit, day_units, (today, date), recent, posted, random);
         if !met && !trainable.is_empty() {
             let at = random.below(trainable.len() as u32) as usize;
             let id = trainable[at];
@@ -517,7 +527,8 @@ fn session(
 }
 
 /// The training's event of the day (`FUN_0060c1c0` by its pick out of
-/// [`EVENTS`], 0 for none): whether one was met. Its news is not posted.
+/// [`EVENTS`], 0 for none): whether one was met; the texts of 100, 101
+/// and 110 go to `posted`, those of 105 to 107 not yet.
 /// 100 and 101 tire the trained men by three or five of their condition
 /// when their forms today sum above twelve each — forms of 20 to 80
 /// always do; 102 is a player event ([`player_event`]); 103 and 104 do
@@ -543,6 +554,7 @@ fn training_event(
     day_units: [u8; 3],
     (today, date): (i32, NaiveDate),
     recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) -> bool {
     match event {
@@ -557,10 +569,13 @@ fn training_event(
                         train_condition(p, by);
                     }
                 }
+                // A light or a heavy stomach flu (texts 718, 719).
+                let text = if event == 100 { 0x2ce } else { 0x2cf };
+                posted.push(Posted::plain((country, number), ILLNESS_EVENT, text));
             }
             true
         }
-        102 => player_event(records, (country, number), trainable, tables, unit, day_units, (today, date), recent, random),
+        102 => player_event(records, (country, number), trainable, tables, unit, day_units, (today, date), recent, posted, random),
         108 => {
             let co = records.team(country, number).map_or(0, |t| t.co_trainer());
             if co != 0 {
@@ -606,11 +621,15 @@ fn training_event(
                 } else {
                     None
                 };
+                // The text goes out even for a man out longer already.
                 if let Some((kind, days)) = out
                     && 5 < p.get::<u8>(0x27c)
-                    && days_out(records, p) < 0xb4
                 {
-                    injure(records, id, kind, days, today);
+                    let text = if kind == 0x41 { 0x3b5 } else { 0x3b7 };
+                    if days_out(records, p) < 0xb4 {
+                        injure(records, id, kind, days, today);
+                    }
+                    posted.push(Posted { club: (country, number), code: INJURY_EVENT, text, fill: Fill::Named(id) });
                 }
             }
             true
@@ -910,6 +929,7 @@ fn player_event(
     day_units: [u8; 3],
     day: (i32, NaiveDate),
     recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) -> bool {
     for _ in 0..2 {
@@ -921,7 +941,7 @@ fn player_event(
         if recent.contains(&key) {
             continue;
         }
-        if run_player_event(records, club, trainable, tables, code, unit, day_units, day, random) {
+        if run_player_event(records, club, trainable, tables, code, unit, day_units, day, posted, random) {
             if recent.len() == RECENT {
                 recent.remove(0);
             }
@@ -933,8 +953,11 @@ fn player_event(
 }
 
 /// A player event's run (`FUN_0060d1bf`, by its code less 4): whether
-/// it took place; its news (`FUN_005f1e86`, `FUN_00601043`,
-/// `FUN_005ee619`, none of them drawing) is not posted. Here are:
+/// it took place. Its text goes to `posted` where the original builds it
+/// of its texts and names alone ([`crate::event_text`]; `FUN_005f1e86`,
+/// `FUN_005ee5c0`, `FUN_005ee619`, none of them drawing); those with
+/// values (`FUN_00601043`) or a second part (`FUN_005f2114`) are not
+/// posted. Here are:
 /// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 8, with a
 /// human manager standing below ten (`FUN_006a61e5`) and his record's
 /// `unrest_count` (+0x180, the manager object's +0x94) at four or more:
@@ -1022,6 +1045,7 @@ fn run_player_event(
     unit: usize,
     day_units: [u8; 3],
     (today, date): (i32, NaiveDate),
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) -> bool {
     let trainer = records.team(country, number).map_or(0, |t| t.humans()[0]);
@@ -1031,6 +1055,10 @@ fn run_player_event(
         }
     };
     let gate = UNIT_GATES.get(unit).is_some_and(|&g| g != 0);
+    // Its text, `ereignis.saq`'s `text` with the men it names.
+    let mut post = |text: u16, fill: Fill| {
+        posted.push(Posted { club: (country, number), code: PLAYER_EVENT, text, fill });
+    };
     let knock = |records: &mut Records, id: u16, days: u16| knock_for(records, id, days, today);
     let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| {
         let Some(id) = draw_listed(records, trainable, keepers, random) else { return false };
@@ -1044,6 +1072,7 @@ fn run_player_event(
             if let Some(team) = records.team_mut(country, number) {
                 add_mood(team, if code == 4 { -10 } else { 10 });
             }
+            post(if code == 4 { 7 } else { 8 }, Fill::Plain);
             true
         }
         8 => {
@@ -1057,13 +1086,14 @@ fn run_player_event(
             if !met {
                 return false;
             }
+            post(0xb, Fill::Plain);
             // FUN_005ee85a with -1 over the club's player array
             // (+0xb50, count +0xe2, the team's `players`): only the men
             // the handle sees fit (+0x2c, [days_out] below one) are
             // rolled at, and on the roll's 0 `FUN_00411130` takes a
             // hundredth off the handle's condition (+0x16, the record's
             // +0x1ce) — the word wraps first, the result then sits
-            // within 0 and 10000.  The news (word 0xb) is not posted.
+            // within 0 and 10000.  Its text (0xb) went out first.
             let squad = records.team(country, number).map_or_else(Vec::new, |t| t.players());
             for id in squad {
                 if !records.player(id).is_some_and(|p| days_out(records, p) < 1) {
@@ -1093,8 +1123,7 @@ fn run_player_event(
             // 0xc88, so in practice the fans' discount's byte
             // decides); with a human trainer, `FUN_0040a1ec` reads his
             // standing (`FUN_006a426b`, `FUN_006a61e5`), and at eleven
-            // or more the trap rises by twenty.  The news (word 0x1e)
-            // is not posted.
+            // or more the trap rises by twenty, with its text (0x1e).
             let Some(team) = records.team(country, number) else {
                 return false;
             };
@@ -1115,6 +1144,7 @@ fn run_player_event(
             {
                 return false;
             }
+            post(0x1e, Fill::Plain);
             if let Some(team) = records.team_mut(country, number) {
                 team.set_offside(offside.wrapping_add(0x14));
             }
@@ -1123,6 +1153,7 @@ fn run_player_event(
         9 => {
             let top = records.team(country, number).is_some_and(|t| t.get::<u8>(0x12e) == 0);
             if trainer != 0 && top {
+                post(0xc, Fill::Plain);
                 move_likings(records, (country, number), [0, 0, -10]);
             }
             false
@@ -1136,7 +1167,13 @@ fn run_player_event(
             crate::mood::change(p, 5, -2);
             true
         }
-        15 => trainer != 0 && records.team(country, number).is_some_and(|t| i32::from(t.next_day()) != today + 1),
+        15 => {
+            let met = trainer != 0 && records.team(country, number).is_some_and(|t| i32::from(t.next_day()) != today + 1);
+            if met {
+                post(0x12, Fill::Plain);
+            }
+            met
+        }
         32 => {
             let Some(team) = records.team_mut(country, number) else { return false };
             if team.next_kind() == 2 || team.next_round() != 7 {
@@ -1147,6 +1184,7 @@ fn run_player_event(
                 v = 200;
             }
             team.put::<u8>(0xca, v);
+            post(0x33, Fill::Plain);
             true
         }
         16 => {
@@ -1186,6 +1224,7 @@ fn run_player_event(
         }
         23 => {
             let Some(keeper) = draw_listed(records, trainable, true, random) else { return false };
+            post(0x21, Fill::Named(keeper));
             knock(records, keeper, 5);
             true
         }
@@ -1247,7 +1286,7 @@ fn run_player_event(
             // `FUN_00745d3c(man, 10)`: the side position lands on the
             // free place, the first before the second; the weighing of
             // two standing places is never reached, the drawn man
-            // holds at most one.  The news (word 0x28) is not posted.
+            // holds at most one.  Its text (0x28) names him.
             if places[1] == 0 {
                 places[1] = 10;
             } else {
@@ -1256,6 +1295,7 @@ fn run_player_event(
             if let Some(p) = records.player_mut(man) {
                 p.set_positions(places);
             }
+            post(0x28, Fill::Named(man));
             true
         }
         28 if gate => {
@@ -1274,12 +1314,19 @@ fn run_player_event(
                 return false;
             }
             mood(records, 10);
+            post(0x2f, Fill::Plain);
             true
         }
         30 if gate => {
-            if (trainer == 0 || random.below(2) != 0) && draw_listed(records, trainable, false, random).is_none() {
-                return false;
-            }
+            // Who took the shot in the face: one of the men, or the
+            // trainer himself ("Sie haben", text 0x30) on a two-roll's 0.
+            let lead = if trainer == 0 || random.below(2) != 0 {
+                let Some(id) = draw_listed(records, trainable, false, random) else { return false };
+                Lead::Player(id)
+            } else {
+                Lead::Text(0x30)
+            };
+            post(0x31, Fill::Lead(lead));
             mood(records, 5);
             true
         }
@@ -1296,6 +1343,7 @@ fn run_player_event(
                     tables.set_reasons(p, 0x800);
                 }
             }
+            post(0x34, Fill::Numbered(one, other));
             true
         }
         34 if gate => {
@@ -1305,6 +1353,7 @@ fn run_player_event(
                 tables.set_reasons(p, 0x800);
             }
             fall_out(records, young, elder);
+            post(0x35, Fill::Numbered(young, elder));
             true
         }
         35 if gate => {
@@ -1328,6 +1377,7 @@ fn run_player_event(
                     tables.set_reasons(p, 0x800);
                 }
             }
+            post(0x36, Fill::Numbered(one, other));
             if let Some(team) = records.team_mut(country, number) {
                 team.set_mood(0);
             }
@@ -1347,6 +1397,7 @@ fn run_player_event(
             if one == other {
                 return false;
             }
+            post(0x37, Fill::Numbered(one, other));
             if records.player(other).is_some_and(|p| days_out(records, p) == 0) {
                 knock(records, other, 1);
             }
@@ -1363,6 +1414,7 @@ fn run_player_event(
                     crate::mood::change(p, 1, 1);
                 }
             }
+            post(0x38, Fill::Plain);
             true
         }
         38 => {
@@ -1385,6 +1437,7 @@ fn run_player_event(
             }
             mood(records, -10);
             knock(records, id, 7);
+            post(0x39, Fill::Named(id));
             true
         }
         39 | 40 if gate => {
@@ -1410,6 +1463,7 @@ fn run_player_event(
             if trainer == 0 {
                 return false;
             }
+            post(0x3e, Fill::Plain);
             for &id in trainable {
                 if let Some(p) = records.player_mut(id)
                     && (2..=5).contains(&p.get::<u8>(0x21d))
@@ -1423,10 +1477,12 @@ fn run_player_event(
             if trainer == 0 || gate {
                 return false;
             }
+            post(0x3f, Fill::Plain);
             mood(records, -10);
             true
         }
         43 => {
+            post(0x6db, Fill::Plain);
             mood(records, 5);
             false
         }
@@ -1436,6 +1492,7 @@ fn run_player_event(
             if friend == 0 || !trainable.contains(&friend) {
                 return false;
             }
+            post(0x32, Fill::Numbered(one, friend));
             for id in [one, friend] {
                 if let Some(p) = records.player_mut(id) {
                     crate::mood::change(p, 1, 3);
@@ -1788,7 +1845,7 @@ mod tests {
         let league_tables = LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
         for (event, by) in [(100, 300), (101, 500), (103, 0)] {
             let before = conditions(&records);
-            assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), event, 0, [0, 0, 0], (64, date), &mut recent, &mut random));
+            assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), event, 0, [0, 0, 0], (64, date), &mut recent, &mut Vec::new(), &mut random));
             let after = conditions(&records);
             for (b, a) in before.iter().zip(&after) {
                 assert_eq!(*a, (b - by).max(0), "event {event}");
@@ -1801,36 +1858,41 @@ mod tests {
         if co != 0 && (expected.below(100) as i32) < i32::from(skill) * 7 {
             expected.below(trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count() as u32);
         }
-        assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), 108, 0, [0, 0, 0], (64, date), &mut recent, &mut random));
+        assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), 108, 0, [0, 0, 0], (64, date), &mut recent, &mut Vec::new(), &mut random));
         assert_eq!(random, expected);
         // The player events' plainest: the team's mood ten down and up
         // again, and code 12's one draw over the outfield, one man two
         // more content with the team.
         let mood = i32::from(records.team(club.0, club.1).unwrap().mood());
-        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 4, 0, [0, 0, 0], (64, date), &mut random));
+        let mut posted = Vec::new();
+        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 4, 0, [0, 0, 0], (64, date), &mut posted, &mut random));
         let down = (mood - 10).max(0);
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), down);
-        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 5, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 5, 0, [0, 0, 0], (64, date), &mut posted, &mut random));
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), (down + 10).min(200));
         assert_eq!(random, expected, "the mood events draw nothing");
+        // Each tells the club with a text of its own, the brawl and the
+        // 4:4; code 12's is one with a value, not posted.
+        assert_eq!(posted, [Posted::plain(club, PLAYER_EVENT, 7), Posted::plain(club, PLAYER_EVENT, 8)]);
         let outfield = trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count();
         let team_parts = |records: &Records| -> i32 {
             trainable.iter().map(|&id| i32::from(records.player(id).unwrap().contentment()[1])).sum()
         };
         let before = team_parts(&records);
-        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 12, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 12, 0, [0, 0, 0], (64, date), &mut posted, &mut random));
+        assert_eq!(posted.len(), 2);
         expected.below(outfield as u32);
         assert_eq!(random, expected);
         assert!((0..=2).contains(&(team_parts(&records) - before)));
         // Code 24 in a unit whose row shuts it (unit 1) is no event and
         // draws nothing; code 23 draws a keeper and sets his +0x2f to 5.
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 24, 1, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 24, 1, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held);
         let keepers: Vec<u16> =
             trainable.iter().copied().filter(|&id| records.player(id).unwrap().get::<u8>(0x21d) == 1).collect();
         if !keepers.is_empty() {
-            assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 23, 0, [0, 0, 0], (64, date), &mut random));
+            assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 23, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
             assert!(keepers.iter().any(|&id| records.player(id).unwrap().get::<u16>(0x1de) == 64 + 5));
         }
         // Code 9 draws nothing, answers "not met", and costs a human
@@ -1840,7 +1902,7 @@ mod tests {
         let (trainer, top) = (team.humans()[0], team.get::<u8>(0x12e) == 0);
         let media = |records: &Records| records.managers[usize::from(trainer).max(1) - 1].popularity()[2];
         let before = media(&records);
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 9, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 9, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         let lost = if trainer != 0 && top { before.min(10) } else { 0 };
         assert_eq!(media(&records), before - lost);
         assert_eq!(random, held);
@@ -1848,7 +1910,7 @@ mod tests {
         // human trainer stands at 75 or more, the mood then ten up.
         let backed = trainer != 0 && crate::stock::confidence(&records, usize::from(trainer).max(1) - 1) >= 0x4b;
         let mood_before = i32::from(records.team(club.0, club.1).unwrap().mood());
-        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 29, 0, [0, 0, 0], (64, date), &mut random), backed);
+        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 29, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random), backed);
         let lifted = if backed { (mood_before + 10).min(200) } else { mood_before };
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), lifted);
         // Code 41 lifts every trained defender's team contentment by one
@@ -1862,7 +1924,7 @@ mod tests {
                 .sum()
         };
         let (held, before) = (random.clone(), defenders(&records));
-        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 41, 0, [0, 0, 0], (64, date), &mut random), trainer != 0);
+        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 41, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random), trainer != 0);
         assert!(trainer == 0 || defenders(&records) >= before);
         assert_eq!(random, held);
         // Event 110 puts a man out whose knock's count passed five: the
@@ -1876,7 +1938,7 @@ mod tests {
             p.set_injured_to([0, 0]);
         }
         let held = random.clone();
-        assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), 110, 0, [0, 0, 0], (64, date), &mut recent, &mut random));
+        assert!(training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), 110, 0, [0, 0, 0], (64, date), &mut recent, &mut Vec::new(), &mut random));
         assert_eq!(random, held, "the long knocks draw nothing");
         for (id, kind, days) in [(achilles, 0x41, 182), (groin, 0x42, 100)] {
             let p = records.player(id).unwrap();
@@ -1887,11 +1949,11 @@ mod tests {
         let team = records.team(club.0, club.1).unwrap();
         assert!(crate::league::matchdays(&records, team) < 0x14);
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 35, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 35, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held);
         // Code 38 outside its hard units neither draws nor takes place.
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 38, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 38, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held);
         // Code 34, behind the gate: the young draw (`FUN_005eb2c0`,
         // under 23) and the elder's (`FUN_005eb3b5`, over 30) each roll
@@ -1915,7 +1977,7 @@ mod tests {
         let mut expected = random.clone();
         expected.below(youngs.len() as u32);
         let held = records.player(away).unwrap().dislikes();
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected, "the young draw's roll, no other");
         assert_eq!(records.player(away).unwrap().dislikes(), held);
         // A drawn playing manager is none's company as well: with the
@@ -1926,7 +1988,7 @@ mod tests {
         let one = [manager];
         let mut expected = random.clone();
         expected.below(1);
-        assert!(!run_player_event(&mut records, club, &one, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &one, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected);
         // Back at the club — every pool man cleared, the save has its
         // own loaned men — the pair are seeded as friends and best
@@ -1970,7 +2032,7 @@ mod tests {
         let mut expected = random.clone();
         expected.below(youngs.len() as u32);
         expected.below(elders.len() as u32);
-        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected, "one roll over each draw's men");
         assert_ne!(records.player(young).unwrap().flags() & 0x800, 0, "the young man's reason");
         assert_eq!(records.player(elder).unwrap().flags(), elder_flags);
@@ -1990,7 +2052,7 @@ mod tests {
         let mut expected = random.clone();
         expected.below(youngs.len() as u32);
         expected.below(elders.len() as u32);
-        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &real, (&tables, &league_tables), 34, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected);
         let after = (records.player(young).unwrap().dislikes(), records.player(elder).unwrap().dislikes(), records.player(young).unwrap().best_friend());
         assert_eq!(before, after);
@@ -2007,12 +2069,12 @@ mod tests {
         let held = random.clone();
         let team = records.team(club.0, club.1).unwrap();
         let expected_15 = team.humans()[0] != 0 && team.next_day() != 65;
-        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 15, 0, [0, 0, 0], (64, date), &mut random), expected_15);
+        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 15, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random), expected_15);
         assert_eq!(random, held);
         // Code 43 lifts the mood five and answers "not met"; 37 draws
         // three times with a human trainer and a co-trainer, else none.
         let mood = i32::from(records.team(club.0, club.1).unwrap().mood());
-        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 43, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 43, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), (mood + 5).min(200));
         let team = records.team(club.0, club.1).unwrap();
         let staffed = team.humans()[0] != 0 && team.co_trainer() != 0;
@@ -2022,7 +2084,7 @@ mod tests {
                 thrice.below(trainable.len() as u32);
             }
         }
-        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 37, 0, [0, 0, 0], (64, date), &mut random), staffed);
+        assert_eq!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 37, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random), staffed);
         assert_eq!(random, thrice);
         // The session's injury over many rolls: the man is out from today
         // a day at least, of a kind the table puts out, or only his
@@ -2058,7 +2120,7 @@ mod tests {
         for _ in 0..200 {
             for event in [105, 106, 107] {
                 let before = words(&records);
-                training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), event, 0, [0, 0, 0], (64, date), &mut recent, &mut random);
+                training_event(&mut records, club, &squad, &trainable, (&tables, &league_tables), event, 0, [0, 0, 0], (64, date), &mut recent, &mut Vec::new(), &mut random);
                 let after = words(&records);
                 let changed: Vec<_> = before.iter().zip(&after).filter(|(b, a)| b != a).collect();
                 assert!(changed.len() <= 1, "event {event} changed {} men", changed.len());
@@ -2126,13 +2188,13 @@ mod tests {
         // The gate: the day's two first planned units both free (the
         // plan's 11) means no event and no roll.
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 26, 0, [11, 11, 11], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 26, 0, [11, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held, "two free planned units shut the event");
         // A unit letting it, but no trained defender in the list: the
         // pool stands empty and the six draws roll nothing at all.
         let none: [u16; 0] = [];
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &none, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &none, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held, "an empty pool draws without a roll");
         // The draw's men: the trained real defenders, the playing
         // manager out of the list.
@@ -2180,7 +2242,7 @@ mod tests {
         for _ in 0..6 {
             six.below(defs.len() as u32);
         }
-        assert!(!run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, six, "six failed draws, no seventh");
         // The fit man already standing at place 10 is no event at all:
         // one draw, his places as they were.
@@ -2196,7 +2258,7 @@ mod tests {
         }
         let mut expected = random.clone();
         expected.below(defs.len() as u32);
-        assert!(!run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected);
         assert_eq!(records.player(stood).unwrap().positions(), [state[defs.iter().position(|&y| y == stood).unwrap()].1[0], 10, 0]);
         // One draw names a fitting man: place 10 lands on his free
@@ -2208,7 +2270,7 @@ mod tests {
         let home = state[defs.iter().position(|&y| y == fit).unwrap()].1;
         let mut expected = random.clone();
         expected.below(defs.len() as u32);
-        assert!(run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected);
         assert_eq!(records.player(fit).unwrap().positions(), [home[0], 10, 0]);
         // The first draw's man fits in all but standing away: the draw
@@ -2227,7 +2289,7 @@ mod tests {
         let mut expected = random.clone();
         expected.below(defs.len() as u32);
         expected.below(defs.len() as u32);
-        assert!(run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &defs, (&tables, &league_tables), 26, 0, [0, 11, 11], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, expected, "the away man's draw, then the fitting one's");
         assert_eq!(records.player(man).unwrap().positions(), [state[defs.iter().position(|&y| y == man).unwrap()].1[0], 10, 0]);
         assert_eq!(records.player(away).unwrap().positions(), away_places, "the away man keeps his places");
@@ -2262,7 +2324,7 @@ mod tests {
         // at five — both shut the event without a roll.
         records.managers.get_mut(slot).unwrap().set_unrest_count(0);
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held, "the count below four shuts the event");
         {
             let m = records.managers.get_mut(slot).unwrap();
@@ -2271,7 +2333,7 @@ mod tests {
             m.set_level_bits(0);
         }
         let held = random.clone();
-        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(!run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, held, "the manager at ten standing shuts it");
         // Open: standing nought, count four; the first fit man stands
         // injured to see him out of the rolls, his condition held.
@@ -2310,7 +2372,7 @@ mod tests {
             records.player_mut(men[i].0).unwrap().set_condition(50);
             want[i] = 0;
         }
-        assert!(run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut random));
+        assert!(run_player_event(&mut records, club, &squad, (&tables, &league_tables), 8, 0, [0, 0, 0], (64, date), &mut Vec::new(), &mut random));
         assert_eq!(random, probe, "one roll at a tenth over every fit man, in the squad's order");
         for ((id, _, _), &want) in men.iter().zip(&want) {
             assert_eq!(records.player(*id).map_or(0, |p| p.condition()), want, "man {id}");
@@ -2343,7 +2405,7 @@ mod tests {
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let (tables, league_tables) = (MoodTables::load(&exe).unwrap(), LeagueTables::load(&exe).unwrap());
         let run = |records: &mut Records, random: &mut Random| {
-            run_player_event(records, club, &squad, (&tables, &league_tables), 20, 0, [0, 0, 0], (64, date), random)
+            run_player_event(records, club, &squad, (&tables, &league_tables), 20, 0, [0, 0, 0], (64, date), &mut Vec::new(), random)
         };
         let mut random = Random::from_state(864213, 97531);
         // The range, shut and open: the marketing man's flag is a whole

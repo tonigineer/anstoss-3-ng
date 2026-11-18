@@ -11924,4 +11924,47 @@ mod tests {
         assert_eq!(runner.log.iter().filter(|l| *l == "screen 161").count(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Walking on from A with the generator at 12345/67890, the original
+    /// opens its first event window (dialog 51) on day 64, for a youth
+    /// player out of the day's news (text 861), which the replica does not
+    /// build — its draws part there. The replica's first comes from a
+    /// training: player event 4, the brawl of text 7, in the same window,
+    /// its caption "Ereignis", Union's manager and the club as the
+    /// original's (the caption bar matched pixel for pixel), the ball
+    /// beside it; OK closes it and the day goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_training_brawl_comes_up_in_the_event_window() {
+        let game = game();
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 392 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
+        let then = format!("now random 12345 67890\n{handlers}until dialog 51");
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        let dialog = &game.dialogs[&51];
+        let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let union = records.team(14, 84).unwrap();
+        let manager = &records.managers[usize::from(union.human()) - 1];
+        let club = game.club_name(Some(records), 14, 84);
+        let caption = format!("{} {} {} ({club})", dialog.title, manager.first_name(), manager.last_name());
+        assert_eq!(caption, "ANSTOSS 3 - Ereignis Toni Lubiniecki (1.FC Union Berlin)");
+        assert_eq!(text(crate::screens::discipline::CAPTION_ID), caption);
+        let texts = a3_files::saq::EventTexts::load(&game.dir).unwrap();
+        assert_eq!(text(1451), texts.get(7).unwrap(), "the brawl");
+        assert!(runner.log.iter().all(|l| l != "screen 435"), "nothing larger before");
+        let day = state.season.as_ref().unwrap().day;
+        assert!(day > 64, "{day}");
+        drop(state);
+        drop(runner);
+        let on = format!("{then}\nnow ok\nuntil dialog 147");
+        let Some(runner) = on_save(&game, "A", &on) else { return };
+        assert!(runner.host.state().season.as_ref().unwrap().day >= day);
+    }
 }

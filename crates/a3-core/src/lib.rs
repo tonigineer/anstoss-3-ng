@@ -24,6 +24,7 @@ pub mod europe_entry;
 pub mod discipline;
 pub mod duties;
 pub mod evaluation;
+pub mod event_text;
 pub mod exhibition;
 pub mod fee_talk;
 pub mod finances;
