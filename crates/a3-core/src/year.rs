@@ -427,6 +427,137 @@ const SUPERCUP_GROUNDS: usize = 0xb21a90 - 0xb1f860;
 const CUP_FINAL_GROUNDS: usize = 0xb21aa4 - 0xb1f860;
 const CHAMPIONS_FINAL_GROUND: usize = 0xb21ab8 - 0xb1f860;
 const LEAGUE_CUP_GROUNDS: usize = 0xb21acc - 0xb1f860;
+/// The second European final's ground (`DAT_00b21abc`), and the two the
+/// turn sets by rule (`DAT_00b21ac4`, `DAT_00b21ac8`).
+const SECOND_FINAL_GROUND: usize = 0xb21abc - 0xb1f860;
+const FIXED_FINAL_GROUND: usize = 0xb21ac4 - 0xb1f860;
+const COPIED_FINAL_GROUND: usize = 0xb21ac8 - 0xb1f860;
+/// The four ties of the Ligapokal.
+const LEAGUE_CUP_TIES: usize = 4;
+/// The lands a European final is drawn among (`DAT_008ad4e0`, a word
+/// every four bytes).
+const FINAL_LANDS: [u8; 12] = [23, 47, 51, 24, 6, 58, 13, 16, 14, 20, 28, 63];
+/// A final's land is drawn again while its biggest ground holds no more
+/// than this, five tries at most.
+const FINAL_SEATS: i32 = 30_000;
+const FINAL_TRIES: usize = 5;
+/// England's grounds of a supercup or a final: its national stadium,
+/// taken to hold a hundred thousand (`FUN_0078fb5b`).
+const ENGLAND: u8 = 16;
+const NATIONAL_GROUND: i16 = 0xd3;
+const NATIONAL_SEATS: i32 = 100_000;
+/// The land whose national stadium the third final always takes.
+const FIXED_FINAL_LAND: u8 = 0x1e;
+/// The Ligapokal's ties are drawn among this many places of a league
+/// table, whatever its size.
+const LEAGUE_CUP_PLACES: u32 = 18;
+
+/// The grounds of the season drawn at its turn (`FUN_0078fc80`, the new
+/// season's block of `FUN_006da3a9`), into the block at `DAT_00b21a90`:
+/// each played country's slot takes a club of its first league drawn for
+/// the supercup and its cup final's ground — the biggest stadium of its
+/// clubs, Germany's the Olympiastadion's club of Berlin, England's its
+/// national stadium for both. Germany's four Ligapokal ties are drawn among
+/// the first eighteen places of its second league when it is the main
+/// country, of its first otherwise. Two European finals go to the biggest
+/// ground of a land drawn out of [`FINAL_LANDS`] till it holds more than
+/// thirty thousand; a third stands at land 30's national stadium, a
+/// fourth where the first does.
+pub fn draw_grounds(records: &mut Records, random: &mut crate::random::Random) {
+    let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
+    let main = records.globals.main_country();
+    let mut writes: Vec<(usize, u8, i16)> = Vec::new();
+    for slot in 0..=more {
+        let Ok(country) = u8::try_from(records.countries.slot_country(slot + 1)) else { continue };
+        let (supercup, cup_final) = (SUPERCUP_GROUNDS + 4 * slot, CUP_FINAL_GROUNDS + 4 * slot);
+        if country == ENGLAND {
+            writes.push((supercup, country, NATIONAL_GROUND));
+            writes.push((cup_final, country, NATIONAL_GROUND));
+            continue;
+        }
+        // FUN_00692045's copy of the first league: its size, its places.
+        let first = crate::opponent::League::of(records, country.into(), 0);
+        let teams = first.as_ref().map_or(0, |l| l.teams() as u32);
+        let place = random.below(teams) as usize;
+        writes.push((supercup, country, first.as_ref().map_or(0, |l| l.team(place))));
+        if country == GERMANY {
+            let league = if main == i16::from(GERMANY) { crate::opponent::League::of(records, country.into(), 1) } else { first };
+            for tie in 0..LEAGUE_CUP_TIES {
+                let place = random.below(LEAGUE_CUP_PLACES) as usize;
+                writes.push((LEAGUE_CUP_GROUNDS + 4 * tie, country, league.as_ref().map_or(0, |l| l.team(place))));
+            }
+            writes.push((cup_final, country, olympiastadion(records)));
+        } else {
+            let count = records.countries.team_count(country.into());
+            writes.push((cup_final, country, biggest_ground(records, country, count)));
+        }
+    }
+    for at in [CHAMPIONS_FINAL_GROUND, SECOND_FINAL_GROUND] {
+        for _ in 0..FINAL_TRIES {
+            let land = FINAL_LANDS[random.below(FINAL_LANDS.len() as u32) as usize];
+            let (number, seats) = final_ground(records, land);
+            writes.push((at, land, number));
+            if seats > FINAL_SEATS {
+                break;
+            }
+        }
+    }
+    writes.push((FIXED_FINAL_GROUND, FIXED_FINAL_LAND, NATIONAL_GROUND));
+    let Some(block) = records.block_mut(FINALS_BLOCK) else { return };
+    for (at, country, number) in writes {
+        if let Some(g) = block.get_mut(at..at + 4) {
+            g[0] = country;
+            g[2..4].copy_from_slice(&number.to_le_bytes());
+        }
+    }
+    if let Some(g) = block.get(CHAMPIONS_FINAL_GROUND..CHAMPIONS_FINAL_GROUND + 4).map(|g| <[u8; 4]>::try_from(g).unwrap()) {
+        if let Some(c) = block.get_mut(COPIED_FINAL_GROUND..COPIED_FINAL_GROUND + 4) {
+            c.copy_from_slice(&g);
+        }
+    }
+}
+
+/// A land's ground of a European final and what it holds (`FUN_0078fb5b`).
+fn final_ground(records: &Records, land: u8) -> (i16, i32) {
+    if land == ENGLAND {
+        return (NATIONAL_GROUND, NATIONAL_SEATS);
+    }
+    let number = biggest_ground(records, land, records.countries.team_count(land.into()));
+    (number, crate::presale::ground_capacity(records, land, number))
+}
+
+/// The club of a country's first `count` whose stadium holds the most, the
+/// first of them on a tie, club 1 when none holds any (`FUN_0078fbe5`).
+fn biggest_ground(records: &Records, country: u8, count: i16) -> i16 {
+    let (mut best, mut most) = (1, 0);
+    for number in 0..count {
+        let held = crate::presale::ground_capacity(records, country, number);
+        if most < held {
+            (best, most) = (number, held);
+        }
+    }
+    best
+}
+
+/// Germany's cup final's ground (`FUN_00790016`): the first of its clubs
+/// whose stadium stands in a town of "Berlin" and bears "Olympia" in its
+/// name, else the biggest.
+fn olympiastadion(records: &Records) -> i16 {
+    let count = records.countries.team_count(GERMANY.into());
+    let has = |field: &[u8], word: &[u8]| {
+        let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+        field[..end].windows(word.len()).any(|w| w == word)
+    };
+    for number in 0..count {
+        let Some(i) = records.team_index(GERMANY.into(), number as u16) else { continue };
+        let Some(b) = records.block(&format!("0x1a48138[{i}]")) else { continue };
+        // The stadium's view 0: its name at +2, its town at +0x20.
+        if has(b.get(0x20..0x38).unwrap_or(&[]), b"Berlin") && has(b.get(2..0x20).unwrap_or(&[]), b"Olympia") {
+            return number;
+        }
+    }
+    biggest_ground(records, GERMANY, count)
+}
 
 /// The new season's calendars (`FUN_00775219`'s `FUN_0072dcbf`, then
 /// `FUN_0072f6f3` once the fixtures stand): every human's week planner and
@@ -1080,6 +1211,72 @@ fn in_cup(cup: &[u8], team: &crate::records::Team, code: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn's grounds drawn on NewSeason000 as the original drew them
+    /// there: every slot's country, every cup final's ground (Hertha's
+    /// Olympiastadion, the others' biggest, England's national stadium),
+    /// the third final's and the fourth's as the first's come out byte for
+    /// byte; the drawn ones by the same rule as the original's — the
+    /// supercup's a club of the first league, the Ligapokal's of the first
+    /// eighteen of the second, the finals' a land of the list at its
+    /// biggest ground —, the words between untouched.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_turn_draws_its_grounds_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves");
+            return;
+        }
+        let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let theirs = load();
+        let end = LEAGUE_CUP_GROUNDS + 4 * LEAGUE_CUP_TIES;
+        let at = |r: &Records, k: usize| {
+            let b = r.block(FINALS_BLOCK).unwrap();
+            (b[k], i16::from_le_bytes([b[k + 2], b[k + 3]]))
+        };
+        let in_league = |r: &Records, (country, number): (u8, i16), level: u8, places: usize| {
+            let l = crate::opponent::League::of(r, country.into(), level).unwrap();
+            (0..places).any(|p| l.team(p) == number)
+        };
+        let slots = usize::try_from(theirs.globals.more_count()).unwrap() + 1;
+        for seed in 1..40 {
+            let mut ours = load();
+            for g in ours.block_mut(FINALS_BLOCK).unwrap()[SUPERCUP_GROUNDS..end].chunks_mut(4) {
+                (g[0], g[2], g[3]) = (0x55, 0x55, 0x55);
+            }
+            let k = FIXED_FINAL_GROUND - 4;
+            ours.block_mut(FINALS_BLOCK).unwrap()[k..k + 4].copy_from_slice(&[0; 4]);
+            draw_grounds(&mut ours, &mut crate::random::Random::new(seed));
+            let (a, b) = (ours.block(FINALS_BLOCK).unwrap(), theirs.block(FINALS_BLOCK).unwrap());
+            assert_eq!(a[CUP_FINAL_GROUNDS..CHAMPIONS_FINAL_GROUND], b[CUP_FINAL_GROUNDS..CHAMPIONS_FINAL_GROUND], "the cup finals");
+            assert_eq!(a[FIXED_FINAL_GROUND - 4..COPIED_FINAL_GROUND], b[FIXED_FINAL_GROUND - 4..COPIED_FINAL_GROUND]);
+            assert_eq!(a[COPIED_FINAL_GROUND..LEAGUE_CUP_GROUNDS], a[CHAMPIONS_FINAL_GROUND..SECOND_FINAL_GROUND]);
+            for r in [&ours, &theirs] {
+                for s in 0..slots {
+                    let (country, number) = at(r, SUPERCUP_GROUNDS + 4 * s);
+                    assert_eq!(country, at(&theirs, SUPERCUP_GROUNDS + 4 * s).0);
+                    if country == ENGLAND {
+                        assert_eq!(number, NATIONAL_GROUND);
+                    } else {
+                        assert!(in_league(r, (country, number), 0, 24), "slot {s}: {country}.{number}");
+                    }
+                }
+                for t in 0..LEAGUE_CUP_TIES {
+                    let g = at(r, LEAGUE_CUP_GROUNDS + 4 * t);
+                    assert!(g.0 == GERMANY && in_league(r, g, 1, LEAGUE_CUP_PLACES as usize), "tie {t}: {g:?}");
+                }
+                for k in [CHAMPIONS_FINAL_GROUND, SECOND_FINAL_GROUND] {
+                    let (land, number) = at(r, k);
+                    assert!(FINAL_LANDS.contains(&land));
+                    assert_eq!(number, final_ground(r, land).0, "{land}.{number}");
+                }
+            }
+        }
+        assert_eq!(at(&theirs, CUP_FINAL_GROUNDS), (GERMANY, 11), "Hertha's ground");
+    }
 
     /// On every kept save of the original — mid-season, the new season's
     /// first day, the second season after a cup exit — the calendar the

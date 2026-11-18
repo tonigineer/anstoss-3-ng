@@ -1666,6 +1666,9 @@ impl Cycle {
                 // The human coaches' friendlies are offered anew out of
                 // the nations no human coaches (`FUN_006b9929`).
                 crate::national::draw_friendlies(records, &mut season.random);
+                // The season's grounds are drawn: the supercups', the
+                // Ligapokal's, the cup and European finals' (`FUN_0078fc80`).
+                crate::year::draw_grounds(records, &mut season.random);
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);

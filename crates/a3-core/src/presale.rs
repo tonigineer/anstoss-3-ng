@@ -818,12 +818,17 @@ fn sell_league(records: &Records, sale: &Sale, today: i32, random: &mut Random, 
 /// [`crate::opponent::stadium`]) — the ground of a final on a neutral
 /// ground mostly stands abroad.
 fn capacity(records: &Records, side: &Side) -> i32 {
-    let country = u16::from(side.country);
-    if !records.globals.played(i16::from(side.country)) && !crate::opponent::PLAYABLE.contains(&country) {
-        return crate::opponent::stadium(records, country, side.number.into()).map_or(0, |s| s.capacity);
+    ground_capacity(records, side.country, side.number.into())
+}
+
+/// The same for a club by its country and number.
+pub(crate) fn ground_capacity(records: &Records, country: u8, number: i16) -> i32 {
+    if !records.globals.played(i16::from(country)) && !crate::opponent::PLAYABLE.contains(&u16::from(country)) {
+        return u16::try_from(number).ok().and_then(|n| crate::opponent::stadium(records, country.into(), n)).map_or(0, |s| s.capacity);
     }
+    let Ok(number) = u16::try_from(number) else { return 0 };
     records
-        .team_index(side.country.into(), side.number.into())
+        .team_index(country.into(), number)
         .and_then(|i| records.block(&format!("0x1a48138[{i}]")))
         .and_then(|b| b.get(0x3c..0x40))
         .map_or(0, |c| i32::from_le_bytes(c.try_into().unwrap()))
