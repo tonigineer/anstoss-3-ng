@@ -48,7 +48,7 @@ use crate::random::Random;
 use crate::individual::IndividualTables;
 use crate::records::{Player, Records};
 use crate::training_day;
-use crate::{statistics, world};
+use crate::{statistics, tactics, world};
 
 /// The record's flag byte at +0x1d.
 /// The match is over; its score stands and the minute walk passes it by.
@@ -201,6 +201,28 @@ pub struct Side {
     pub men: u8,
     /// +0x39 (+0x95/+0x289): the count of the side's plain chances.
     pub chances: u8,
+    /// +0x43 (+0x9f/+0x293): the side's bookings of the foul kinds 4 and
+    /// 12, a first card lifting it (`FUN_0065a6b0`, `FUN_0065ab3a`).
+    pub hard_fouls: u8,
+    /// +0x4e (+0xaa/+0x29e): bit 0x10 stands once a man went off for a
+    /// foul of the kinds 4 and 12.
+    pub foul_marks: u16,
+    /// +0xd4,+0xd6 (+0x130,+0x132/+0x324,+0x326): the side's first cards,
+    /// both counters lifted together.
+    pub cautions: [i16; 2],
+    /// +0xd8 (+0x134/+0x328): bit 1 raised by the side's first card.
+    pub caution_bits: u16,
+    /// +0xdc (+0x138/+0x32c): the side's sendings-off.
+    pub reds: i16,
+    /// The side's cautioned men in order — the live player's +0x57 bit 8
+    /// (record +0x25b) the booking raises at the moment; the replica
+    /// keeps no live objects, so the names wait here.
+    pub booked: [u16; LEDGER_SLOTS],
+    /// The side's men sent off in order — the live +0x57 bit 0x10, and
+    /// the man's place in the club's formation +0xa9a cleared; the
+    /// eleven the events read (`pitch_eleven`) leaves these places
+    /// empty.
+    pub sent_off: [u16; LEDGER_SLOTS],
     /// +0xb2 (+0x10e/+0x302): how many talks the side has left.
     pub talk_max: i16,
     /// +0xb4 (+0x110/+0x304): the side's shooting strength, `shot_quality`.
@@ -335,6 +357,8 @@ pub struct Match {
     /// +0x458: the referee, a record index; the pre-match walk draws one
     /// only for a national tie and leaves a plain fixture at 0xffff.
     pub referee: i16,
+    /// +0x45a: the bookings both sides took in the match (`FUN_0065a6b0`).
+    pub bookings: i16,
     /// +0x468: this match's place in the day's row, set by the pre-match
     /// walk.
     pub index: u16,
@@ -784,18 +808,216 @@ fn chance_chooser(m: &Match, random: &mut Random) -> u8 {
     0
 }
 
+/// The kinds a foul is drawn from (`FUN_006746aa`): one table by the
+/// fouling man, walked with a throw of the table's width, each kind as
+/// wide as its entry — `DAT_008a04e8` the plain man's (width 0x21),
+/// `DAT_008a0530` a man of a club in the countries 0x10 and 0x39 (live
+/// +6, record +0x220; 0x1b), `DAT_008a05c0` the second trait bit 0x20
+/// (live +0x12, record +0x1ca; 0x1c), `DAT_008a0578` its bit 2 (0x24) —
+/// and `DAT_008a0608` the other draw's (`FUN_00674794`, width 6). A walk
+/// past 0x21 entries names 1 (0x20 for `FUN_00674794`).
+const FOULS: [i16; 36] = [
+    0, 8, 3, 0, 4, 0, 0, 1, 0, 1, 1, 1, 3, 0, 3, 3, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_COUNTRY: [i16; 36] = [
+    0, 8, 2, 0, 2, 0, 0, 1, 0, 0, 0, 0, 3, 0, 3, 3, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_HARD: [i16; 36] = [
+    0, 12, 3, 0, 6, 0, 0, 3, 0, 2, 1, 2, 3, 0, 3, 3, 2, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_TRAIT: [i16; 36] = [
+    0, 6, 3, 0, 2, 0, 0, 0, 0, 1, 1, 1, 3, 0, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_OTHER: [i16; 36] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+
+/// The kind out of a table: the throw walks the entries, less each one
+/// it passes, and stops at the first it falls under.
+fn foul_kind(table: &[i16; 36], roll: u32, past: i16) -> i16 {
+    let mut left = roll as i16;
+    for (kind, &width) in table.iter().take(0x22).enumerate() {
+        if left < width {
+            return kind as i16;
+        }
+        left -= width;
+    }
+    past
+}
+
+/// The eleven the events read: the club's formation +0xa9a, a man sent
+/// off leaving his place empty (`FUN_0065a6b0` clears it).
+fn pitch_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
+    let off = &m.sides[which].sent_off;
+    saved_eleven(m, which, records)
+        .into_iter()
+        .map(|id| if off.contains(&id) { 0 } else { id })
+        .collect()
+}
+
+/// Whether the man stands cautioned: the live +0x57 bit 8 this match's
+/// first card raised. The record's +0x25b keeps the bit from the man's
+/// last match — every kept save shows hundreds of men with bit 8 or 0x10
+/// standing — and its clearing before the next one is not traced, so
+/// the replica starts every man of the walk uncautioned.
+fn cautioned(side: &Side, p: &Player) -> bool {
+    side.booked.contains(&p.id())
+}
+
+/// The man the manager's tactics name at +0x390 of his club's extra data
+/// (`FUN_0069c313` on the club object: a club's human slot +0x11de one to
+/// four reads `DAT_00a58408`); a computer club names nobody, and a
+/// national side's own block (`DAT_00a559f2`) the replica does not read.
+fn foul_pick(m: &Match, which: usize, records: &Records) -> u16 {
+    if m.nat_bits != 0 {
+        return 0;
+    }
+    let at = which * 2;
+    records
+        .team(m.ids[at], m.ids[at + 1])
+        .and_then(|t| records.extras.get(usize::from(t.human()).checked_sub(1)?))
+        .map_or(0, |extra| extra.picks()[tactics::PROVOKE])
+}
+
+/// The foul's candidates (`FUN_00674c12`): every man of the eleven by his
+/// place, a keeper (type byte live +3 at one) once and always at place
+/// nought; a back (2..5) weighs 140, a midfielder (6..9) 100, any other
+/// 58, a cautioned man 60, 40 and 20; the first trait's bit 0x10 halves
+/// it, else its bit 8 or the second's bit 2 add a half, and the named
+/// man uncautioned another half; the man stands weight/10 + 1 times.
+fn foul_candidates(m: &Match, which: usize, eleven: &[u16], records: &Records) -> Vec<u8> {
+    let marked = foul_pick(m, which, records);
+    let mut list = Vec::new();
+    for (slot, &id) in eleven.iter().enumerate().take(11) {
+        let Some(p) = (id != 0).then(|| records.player(id)).flatten() else {
+            continue;
+        };
+        let position = p.positions()[0];
+        if position == world::GOALKEEPER {
+            list.push(0);
+            continue;
+        }
+        let booked = cautioned(&m.sides[which], p);
+        let mut weight: u16 = match (position, booked) {
+            (2..=5, false) => 140,
+            (2..=5, true) => 60,
+            (6..=9, false) => 100,
+            (6..=9, true) => 40,
+            (_, false) => 58,
+            (_, true) => 20,
+        };
+        let [first, second] = p.traits();
+        if first & 0x10 == 0 {
+            if first & 8 != 0 || second & 2 != 0 {
+                weight += weight / 2;
+            }
+            if id == marked && !booked {
+                weight += weight / 2;
+            }
+        } else {
+            weight /= 2;
+        }
+        for _ in 0..=weight / 10 {
+            list.push(slot as u8);
+        }
+    }
+    list
+}
+
+/// The chooser's foul (`FUN_0065b0b5`, side two's `FUN_0065bd27`): only a
+/// side with more than eight men on the pitch; one throw over the
+/// candidates names the man, an empty place nobody; under
+/// `35 - 2·added` of a hundred the kind comes from `FUN_00674794`'s
+/// table, else from the man's own (`FUN_006746aa`), and the card books.
+fn booking(m: &mut Match, which: usize, records: &Records, random: &mut Random) {
+    if m.sides[which].men <= 8 {
+        return;
+    }
+    let eleven = pitch_eleven(m, which, records);
+    let list = foul_candidates(m, which, &eleven, records);
+    if list.is_empty() {
+        return;
+    }
+    let slot = list[random.below(list.len() as u32) as usize] as usize;
+    let Some(p) = eleven.get(slot).filter(|&&id| id != 0).and_then(|&id| records.player(id)) else {
+        return;
+    };
+    let kind = if (random.below(100) as i32) < 0x23 - 2 * m.added_draw as i32 {
+        foul_kind(&FOULS_OTHER, random.below(6), 0x20)
+    } else {
+        let second = p.traits()[1];
+        let (table, width) = if second & 2 != 0 {
+            (&FOULS_HARD, 0x24)
+        } else if second & 0x20 != 0 {
+            (&FOULS_TRAIT, 0x1c)
+        } else if matches!(p.club()[0], 0x10 | 0x39) {
+            (&FOULS_COUNTRY, 0x1b)
+        } else {
+            (&FOULS, 0x21)
+        };
+        foul_kind(table, random.below(width), 1)
+    };
+    let booked = cautioned(&m.sides[which], p);
+    book_card(m, which, p.id(), &eleven, kind, booked);
+}
+
+/// The card (`FUN_0065a6b0`, side two's `FUN_0065ab3a`, here with the
+/// sixth parameter nought and the seventh one): a man standing in the
+/// eleven lifts the match's bookings at +0x45a. His first card cautions
+/// him and lifts the side's counters, the kinds 4 and 12 its hard
+/// fouls; a cautioned man goes off: his place empties, the side's men
+/// drop by one, its reds rise, and a mood above nought takes 105 of a
+/// hundred (an x87 division the integer one matches). Seams: the
+/// national tie's news and books (`FUN_0073e712`, `FUN_0073e963`,
+/// `FUN_006fcbba`, `FUN_006fabf0`, `FUN_00702eee`) and its keeper's
+/// stand-in at +0x112, the sending-off's own calls (`FUN_0070492e`,
+/// `FUN_00414b25`, `FUN_004131b0`, `FUN_006fad22`, `FUN_004fc3c8`) and
+/// the two sides' strengths recomputed (`FUN_006f794a` twice,
+/// `FUN_006f6c20`, `FUN_006f6c35`), which the replica's walk takes as
+/// the pre-match walk left them.
+fn book_card(m: &mut Match, which: usize, id: u16, eleven: &[u16], kind: i16, booked: bool) {
+    if !eleven.iter().take(11).any(|&x| x == id) {
+        return;
+    }
+    m.bookings += 1;
+    let side = &mut m.sides[which];
+    if !booked {
+        book_in(&mut side.booked, id);
+        side.cautions[0] += 1;
+        side.caution_bits |= 1;
+        side.cautions[1] += 1;
+        if kind == 4 || kind == 12 {
+            side.hard_fouls += 1;
+        }
+    } else {
+        book_in(&mut side.sent_off, id);
+        side.men -= 1;
+        side.reds += 1;
+        if 0 < side.morale {
+            side.morale = (side.morale as i32 * 0x69 / 100) as i16;
+        }
+        if kind == 4 || kind == 12 {
+            side.foul_marks |= 0x10;
+        }
+    }
+}
+
 /// The minute's chance frame, `FUN_006f6007`: what the chooser picked runs
-/// as an event through the match's club (`FUN_0065b0b5`, `FUN_0065bd27` —
-/// seam); then both sides' chance comes out of their rated support and
+/// as a foul through the match's club (`FUN_0065b0b5`, `FUN_0065bd27`,
+/// see `booking`); then both sides' chance comes out of their rated support and
 /// attack, scaled to a common 92 together, the ground's owner lifting the
 /// first side's attack an eighth. A roll under the side's share opens the
 /// chance — its shape by the minute kind and the shot's quality — and the
 /// frame closes with the bookings the last minute left.
 fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
-    // The chooser's set moment becomes an event at the match's club:
+    // The chooser's set moment becomes a foul at the match's club:
     // FUN_0065b0b5 when it picked the first side, FUN_0065bd27 the second
-    // (each through the club slot FUN_0063dd1c) — the events piece.
-    let _ = chance_chooser(m, random);
+    // (each through the club slot FUN_0063dd1c); without the save there
+    // is no club to book.
+    let picked = chance_chooser(m, random);
+    if let (1 | 2, Some(records)) = (picked, records) {
+        booking(m, picked as usize - 1, records, random);
+    }
     // The four chance weights: support and attack per side, as floats.
     let mut w = [
         [m.sides[0].rated[3] as f32, m.sides[0].rated[2] as f32],
@@ -1297,7 +1519,7 @@ fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
 /// formation's place order (or the stand-in's strongest), each looked
 /// up in its record.
 fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
-    saved_eleven(m, which, records)
+    pitch_eleven(m, which, records)
         .into_iter()
         .filter_map(|id| records.player(id))
         .collect()
@@ -1369,7 +1591,7 @@ fn designated_taker(m: &Match, which: usize, records: &Records, duty: Duty, from
             }
         })
         .collect();
-    let eleven = saved_eleven(m, which, records);
+    let eleven = pitch_eleven(m, which, records);
     let pitch = eleven.get(from..).unwrap_or(&[]);
     duties::normalise(&men, &list)
         .into_iter()
@@ -3391,7 +3613,10 @@ mod tests {
                 "the line-up's first short names the keeper"
             );
             let pitch: Vec<u16> = side_men(&m, which, &records).iter().map(|p| p.id()).collect();
-            assert_eq!(pitch, team.lineup().to_vec(), "side {which} plays its manager's eleven");
+            // a man sent off leaves his place empty
+            let standing: Vec<u16> =
+                team.lineup().into_iter().filter(|id| !m.sides[which].sent_off.contains(id)).collect();
+            assert_eq!(pitch, standing, "side {which} plays its manager's eleven");
         }
     }
 
@@ -4084,5 +4309,100 @@ mod tests {
         assert_eq!(seen_tie.sides[0].assist_book[0], c);
         assert_eq!(counters(&records, c), before_c, "the national tie's man is not booked");
         assert_eq!(counters(&records, d), before_d, "the national tie's own-goal man is not booked");
+    }
+
+    #[test]
+    fn fouls_book_yellow_and_red_cards() {
+        use a3_files::an3::Save;
+        // the kind tables walk their throw: entry nought is empty, so the
+        // plain table's first eight throws name kind one; the other draw's
+        // six land on 26..31
+        assert_eq!(foul_kind(&FOULS, 0, 1), 1);
+        assert_eq!(foul_kind(&FOULS, 8, 1), 2);
+        assert_eq!(foul_kind(&FOULS, 11, 1), 4);
+        assert_eq!(foul_kind(&FOULS, 15, 1), 7);
+        assert_eq!(foul_kind(&FOULS_OTHER, 0, 0x20), 26);
+        assert_eq!(foul_kind(&FOULS_OTHER, 5, 0x20), 31);
+        assert_eq!(foul_kind(&FOULS_TRAIT, 27, 1), 1, "a throw past the table names one");
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 1];
+        m.sides[0].men = 11;
+        m.sides[0].morale = 100;
+        let eleven = pitch_eleven(&m, 0, &records);
+        assert_eq!(eleven.len(), 11);
+        // every man of the eleven stands among the candidates, the keeper
+        // once and at place nought
+        let list = foul_candidates(&m, 0, &eleven, &records);
+        for (slot, &id) in eleven.iter().enumerate() {
+            let p = records.player(id).unwrap();
+            let n = list.iter().filter(|&&s| s as usize == slot).count();
+            if p.positions()[0] == world::GOALKEEPER {
+                assert_eq!(slot, 0);
+                assert_eq!(n, 1, "the keeper stands once");
+            } else {
+                assert!(1 < n, "a field man stands his weight's tenth and one");
+            }
+        }
+        // a first card cautions the man, a second sends him off
+        let man = eleven[3];
+        book_card(&mut m, 0, man, &eleven, 4, false);
+        assert_eq!(m.bookings, 1);
+        assert_eq!(m.sides[0].booked[0], man);
+        assert_eq!(m.sides[0].cautions, [1, 1]);
+        assert_eq!(m.sides[0].caution_bits, 1);
+        assert_eq!(m.sides[0].hard_fouls, 1, "kind 4 is a hard foul");
+        assert_eq!(m.sides[0].men, 11);
+        assert!(cautioned(&m.sides[0], records.player(man).unwrap()));
+        let weighed = foul_candidates(&m, 0, &eleven, &records);
+        assert!(
+            weighed.iter().filter(|&&s| s == 3).count() < list.iter().filter(|&&s| s == 3).count(),
+            "a cautioned man weighs less"
+        );
+        book_card(&mut m, 0, man, &eleven, 2, true);
+        assert_eq!(m.bookings, 2);
+        assert_eq!(m.sides[0].sent_off[0], man);
+        assert_eq!(m.sides[0].reds, 1);
+        assert_eq!(m.sides[0].men, 10);
+        assert_eq!(m.sides[0].morale, 105, "the side's mood takes 105 of a hundred");
+        assert_eq!(m.sides[0].foul_marks, 0, "kind 2 leaves the mark");
+        assert_eq!(m.sides[0].cautions, [1, 1], "the red card is no caution");
+        let pitch = pitch_eleven(&m, 0, &records);
+        assert_eq!(pitch[3], 0, "his place stands empty");
+        assert!(!side_men(&m, 0, &records).iter().any(|p| p.id() == man));
+        // a man off the pitch books nothing
+        book_card(&mut m, 0, man, &pitch, 4, true);
+        assert_eq!(m.bookings, 2);
+        // a side down to eight men draws no foul at all
+        let mut few = fixture();
+        few.ids = [0, 0, 0, 1];
+        few.sides[0].men = 8;
+        let mut random = Random::new(3);
+        let before = random.clone();
+        booking(&mut few, 0, &records, &mut random);
+        assert_eq!(random, before);
+        assert_eq!(few.bookings, 0);
+        // a full side draws its man out of the eleven and books him
+        let mut full = fixture();
+        full.ids = [0, 0, 0, 1];
+        full.sides[0].men = 11;
+        booking(&mut full, 0, &records, &mut Random::new(3));
+        assert_eq!(full.bookings, 1);
+        let named = full.sides[0].booked[0];
+        assert!(named != 0 && eleven.contains(&named));
+        // the walk's chooser hands the minute's foul to its side
+        let booked = (1u64..200).any(|seed| {
+            let mut m = fixture();
+            m.ids = [0, 0, 0, 1];
+            m.sides[0].men = 11;
+            m.sides[1].men = 11;
+            let mut random = Random::new(seed);
+            for _ in 0..90 {
+                chance_minute(&mut m, &Clock::default(), Some(&records), &mut random);
+            }
+            0 < m.bookings
+        });
+        assert!(booked, "ninety minutes book a card now and then");
     }
 }
