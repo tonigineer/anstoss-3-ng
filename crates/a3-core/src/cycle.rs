@@ -1718,6 +1718,10 @@ impl Cycle {
                 // the replica's settlement reckons the closed tables
                 // itself, so they take them behind it.
                 crate::promotion::take(records, &drawn);
+                // The humans' contracts turn a year against the leagues
+                // the new season plays in, as the original's leagues hold
+                // them by its managers' season end (`FUN_00624ad4`).
+                crate::career::turn_years(records);
             }
         }
         let humans = self.season(|s| {

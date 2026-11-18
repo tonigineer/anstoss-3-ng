@@ -3,6 +3,7 @@
 # broke (477). A save at the season's end walks the season end first: its
 # players' development (22), each human's statement (417), the European
 # ranking it rolls (301), an even year's national offers (356, declined),
+# the season's goal of a human whose contract ran on a second year (379),
 # then the new season's start screens up to the first turn.
 once 9 choose 4771 1; ok
 on 424 row 5144 0; ok
@@ -11,6 +12,7 @@ on 22 press 1306
 on 417 ok
 on 301 ok
 on 356 press 4542
+on 379 ok
 on 422 ok
 on 420 ok
 on 421 ok
