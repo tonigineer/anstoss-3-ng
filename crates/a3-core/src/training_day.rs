@@ -15,14 +15,18 @@
 //! rolls for the ability one works on and his learning it
 //! (`FUN_00747246`), the snapshot kept again (`FUN_00746d33`); and what
 //! a match's goals, assists and saved penalties teach (`FUN_00747855`).
+//! And the training camp: the year calendar's camp sets the share of
+//! each session by its place's ball (`FUN_006504e9`), brings its room
+//! happenings (`FUN_0060ff69`) and the lonely rooms' toll; the camp
+//! ticked before a match works on the squad as the match day begins
+//! (`FUN_0059a2ea`, [`camp_before_match`]).
 //!
-//! What is not here yet: the camp's level out of the year calendar,
-//! which sets the share of a session in a camp (`FUN_005eab71`,
-//! `FUN_005eac44`, `DAT_008ab31a`); the national check of the trained
+//! What is not here yet: the national check of the trained
 //! (`FUN_006feff8`); what the day's news posts once its category is
 //! picked (`FUN_005ee5c0` with `FUN_005ef430` and `FUN_005f1eaf`; the
 //! pick itself stands in [`crate::news`]), and the events' news; the
-//! camp's own happenings (`FUN_0060ff69`); the player-manager's block
+//! camp's family happening (`FUN_0060f7b9`'s 0x44a, a child's age
+//! behind it), which waits on a team count no code raises; the player-manager's block
 //! behind the club's byte +0x8a; and the third case of `FUN_00745d3c`,
 //! which weighs two standing places — reached only in `FUN_00745281`'s
 //! own side block, itself not here, since the day's site stands with
@@ -46,6 +50,7 @@ use crate::season::ClubState;
 use crate::statistics;
 use crate::training::{self, FREE};
 use crate::world;
+use crate::year::{self, YearTables};
 
 /// The unit rows (`DAT_008aa590`, 0x34 bytes each): the flags of a
 /// unit's side effects at +0x14 and the talent for individual training
@@ -195,10 +200,13 @@ const KEEPER_COLUMNS: usize = 16;
 /// on a keeper's Abschläge and Abwürfe (Krafttraining's).
 const HALVES: [(u32, usize); 3] = [(0x100, 3), (0x200, 23), (0x400, 24)];
 
-/// The share of a session the men take with the club's co-trainer, by
-/// the camp's level above it (`DAT_008aad7c`); without either a
-/// hundred.
+/// The share of a session the men take in a training camp, by the
+/// level of its place (`DAT_008aad7c`); outside one a hundred, or the
+/// first with the club's co-trainer.
 const SHARES: [i32; 8] = [95, 95, 98, 101, 104, 107, 110, 110];
+/// A camp's last day reads past the table (its level the byte before the
+/// places', 118), where the exe holds nought (`0x8aae68`).
+const PAST_SHARES: i32 = 0;
 /// The club flag (team +0x874's low byte, the club's +0xfd) that halves
 /// the next session's share, and goes with it.
 const HALF_SHARE: u8 = 4;
@@ -290,7 +298,7 @@ pub fn day(
     world: &world::World,
     today: i32,
     date: NaiveDate,
-    (mood, medical, league, individual): (&MoodTables, &MedicalTables, &LeagueTables, &IndividualTables),
+    (mood, medical, league, individual, camps): (&MoodTables, &MedicalTables, &LeagueTables, &IndividualTables, &YearTables),
     recent: &mut Vec<i32>,
     posted: &mut Vec<Posted>,
     random: &mut Random,
@@ -318,6 +326,13 @@ pub fn day(
         let ids = team.players();
         let gates = team.get::<u16>(0x95c);
         let secret = team.passing() & training::SECRET != 0;
+        // The camp the trainer's year calendar (the club's +0x8a) has the
+        // club in today, by its level (`FUN_006504e9`'s frame +0xa).
+        let camp = usize::from(team.humans()[0])
+            .checked_sub(1)
+            .and_then(|trainer| records.calendars.get(trainer))
+            .zip(usize::try_from(today).ok())
+            .and_then(|(calendar, d)| year::camp_level(camps, calendar, d));
         let flags = state.training.flags;
         let mut plan = state.training.plan();
         // The men's own training as the club's store keeps it, an entry
@@ -393,6 +408,7 @@ pub fn day(
                 today,
                 date,
                 slot,
+                camp,
                 (mood, medical, league),
                 recent,
                 posted,
@@ -410,8 +426,11 @@ pub fn day(
             store.set_entries(&entries);
             state.individual = entries;
         }
-        if flags & training::CAMP != 0 {
-            // `FUN_0060ff69`'s camp happenings are not here.
+        // In a camp of the calendar (`FUN_005eab71`) its rooms bring the
+        // day's happenings, then a lonely room now and then costs the
+        // will to win.
+        if camp.is_some() {
+            camp_happenings(records, (country, number), &ids, today, posted, random);
             if random.below(7) == 0 {
                 let mut rooms = [0; 0x15];
                 for &id in &ids {
@@ -618,6 +637,7 @@ fn session(
     today: i32,
     date: NaiveDate,
     slot: usize,
+    camp: Option<u8>,
     (mood, medical, league): (&MoodTables, &MedicalTables, &LeagueTables),
     recent: &mut Vec<i32>,
     posted: &mut Vec<Posted>,
@@ -625,7 +645,7 @@ fn session(
 ) {
     let mut trainable = Vec::new();
     let mut injured = Vec::new();
-    let share = share(records, (country, number));
+    let share = share(records, (country, number), camp);
     let lift = records.team(country, number).map_or(0, |t| t.get::<u8>(FITNESS_LIFT));
     // What the unit took off the first freshness word of the men before
     // him, at a hundred percent (`FUN_0074a1ec`'s +0x10 of the frame).
@@ -818,20 +838,320 @@ fn session(
 }
 
 /// The share of a session the men take, in percent (`FUN_0074a1ec`'s
-/// +0xe of the frame): a hundred, or with a co-trainer the first of
-/// [`SHARES`] — the camp's level, which would move it on, is not here;
-/// half of it for the session after the club's flag, which goes.
-fn share(records: &mut Records, (country, number): (u16, u16)) -> i32 {
+/// +0xe of the frame): in a camp [`SHARES`] by its level; outside one
+/// the decompile's frame says a hundred, the original's dumps of
+/// Probe1's week (no camp, a co-trainer) the first of [`SHARES`], so the
+/// co-trainer takes that; half of it for the session after the club's
+/// flag, which goes.
+fn share(records: &mut Records, (country, number): (u16, u16), camp: Option<u8>) -> i32 {
     let Some(team) = records.team_mut(country, number) else { return 100 };
-    let camp: i32 = -1;
-    let level = if team.co_trainer() > 0 { camp + 1 } else { camp };
-    let mut share = usize::try_from(level).map_or(100, |l| SHARES[l.min(SHARES.len() - 1)]);
+    let mut share = match camp {
+        Some(level) => SHARES.get(usize::from(level)).copied().unwrap_or(PAST_SHARES),
+        None if team.co_trainer() > 0 => SHARES[0],
+        None => 100,
+    };
     let flags = team.get::<u8>(CLUB_FLAGS);
     if flags & HALF_SHARE != 0 {
         share /= 2;
     }
     team.put::<u8>(CLUB_FLAGS, flags & !HALF_SHARE);
     share
+}
+
+/// A camp's rooms (`CZimmerbelegung`): twenty of two men each.
+const ROOMS: usize = 20;
+/// The rounds of happenings a camp's day brings at most (`FUN_0060ff69`).
+const CAMP_ROUNDS: usize = 5;
+/// The event code of the camp's room happenings, and their texts in
+/// `ereignis.saq`: his best friend in another room (two), his room-mate
+/// the one he hates (two), one he cannot stand (falling out, making up).
+const CAMP_EVENT: u16 = 0x60;
+const FRIEND_ELSEWHERE: [u16; 2] = [0x613, 0x614];
+const HATED_MATE: [u16; 2] = [0x615, 0x616];
+const DISLIKED_MATE: [u16; 2] = [0x617, 0x618];
+/// The record's bit (+0x1b4) of a man a camp happening met, who meets no
+/// other (`FUN_007003aa`; only the player's reset `FUN_007074e5` clears
+/// it), and the one of a man the team shuts out.
+const CAMP_MET: u32 = 0x40000;
+const OSTRACISED: u32 = 0x20000;
+/// From this many days out a man has no camp happening.
+const CAMP_DAYS_OUT: i32 = 8;
+/// The team byte (+0x8ed) the camp's wife's happening waits for at 20 —
+/// raised by `FUN_0069a77c`, which nothing in the decompile calls.
+const CAMP_COUNT: usize = 0x8ed;
+/// The wife's happening: before day 42, one in fifteen, the wife's bits
+/// (2 to 4 of the partner byte) at 1, his private contentment 15 and up
+/// to nine more down (`FUN_00702c39`, `FUN_007010d9`; event 0x449 with
+/// its values, not posted here).
+const WIFE_DAYS: i32 = 0x2a;
+const WIFE_COUNT: u8 = 20;
+const WIFE_ODDS: u32 = 15;
+
+/// The day's happenings of a camp (`FUN_0060ff69`): up to five rounds,
+/// as long as one finds a pair to post about.
+fn camp_happenings(
+    records: &mut Records,
+    club: (u16, u16),
+    ids: &[u16],
+    today: i32,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    for _ in 0..CAMP_ROUNDS {
+        if !camp_round(records, club, ids, today, posted, random) {
+            break;
+        }
+    }
+}
+
+/// One round of a camp's happenings (`FUN_0060f7b9`). The rooms fill in
+/// the squad's order, two to a room, the rest left out; then room by
+/// room the first man fit for one (not met before, under eight days out,
+/// no manager; `FUN_0060f774`), with a room-mate:
+/// - his best friend, of the squad and fit, sleeps elsewhere: both are
+///   five less content with the trainer or, on rand(2)'s 0, three
+///   ([`FRIEND_ELSEWHERE`]);
+/// - else his room-mate, fit, is the one he hates: both ten less or him
+///   alone fifteen ([`HATED_MATE`]);
+/// - else the mate is shut out by the team or one of those he cannot
+///   stand, and on rand(10)'s 0, fit: both ten less on rand(3) below 2,
+///   else they make up ([`reconcile`], [`DISLIKED_MATE`]).
+///
+/// Then the room-mate the same way for his best friend. Each pair met
+/// takes [`CAMP_MET`] and ends the round. With none, one of the squad is
+/// drawn for the family's happenings before the round ends empty.
+fn camp_round(
+    records: &mut Records,
+    club: (u16, u16),
+    ids: &[u16],
+    today: i32,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let mut rooms = [[0u16; 2]; ROOMS];
+    let mut filled = [0usize; ROOMS];
+    for &id in ids {
+        let Some(player) = records.player(id) else { continue };
+        let Ok(room) = usize::try_from(player.room()) else { continue };
+        if room < ROOMS && filled[room] < 2 {
+            rooms[room][filled[room]] = id;
+            filled[room] += 1;
+        }
+    }
+    let in_squad = |id: u16| id != 0 && ids.contains(&id);
+    let fit = |records: &Records, id: u16| {
+        in_squad(id)
+            && id <= crate::mood::LAST_REAL_ID
+            && records
+                .player(id)
+                .is_some_and(|p| p.shown() & CAMP_MET == 0 && days_out(records, p) < CAMP_DAYS_OUT)
+    };
+    let mut met = |records: &mut Records, pair: [u16; 2], by: [i32; 2], text: u16| {
+        for (id, by) in pair.into_iter().zip(by) {
+            if let Some(p) = records.player_mut(id) {
+                p.set_shown(p.shown() | CAMP_MET);
+                if by != 0 {
+                    crate::mood::change_trainer(p, by);
+                }
+            }
+        }
+        posted.push(Posted { club, code: CAMP_EVENT, text, fill: Fill::Numbered(pair[0], pair[1]) });
+    };
+    let friend_of = |records: &Records, id: u16| records.player(id).map_or(0, |p| p.best_friend());
+    for [one, mate] in rooms {
+        if fit(records, one) && mate > 0 {
+            let friend = friend_of(records, one);
+            if in_squad(friend) && friend != mate && fit(records, friend) {
+                let (by, text) = if random.below(2) != 0 { (-5, FRIEND_ELSEWHERE[0]) } else { (-3, FRIEND_ELSEWHERE[1]) };
+                met(records, [one, friend], [by, by], text);
+                return true;
+            }
+            let hates = records.player(one).map_or(0, |p| p.hates());
+            if hates == mate && fit(records, mate) {
+                if random.below(2) != 0 {
+                    met(records, [one, mate], [-10, -10], HATED_MATE[0]);
+                } else {
+                    met(records, [one, mate], [-15, 0], HATED_MATE[1]);
+                }
+                return true;
+            }
+            let shunned = records.player(mate).is_some_and(|p| p.shown() & OSTRACISED != 0)
+                || records.player(one).is_some_and(|p| p.dislikes().contains(&mate));
+            if shunned && random.below(10) == 0 && fit(records, mate) {
+                if random.below(3) < 2 {
+                    met(records, [one, mate], [-10, -10], DISLIKED_MATE[0]);
+                } else {
+                    reconcile(records, one, mate);
+                    met(records, [one, mate], [0, 0], DISLIKED_MATE[1]);
+                }
+                return true;
+            }
+        }
+        if fit(records, mate) && one > 0 {
+            let friend = friend_of(records, mate);
+            if in_squad(friend) && friend != one && fit(records, friend) {
+                let (by, text) = if random.below(2) != 0 { (-5, FRIEND_ELSEWHERE[0]) } else { (-3, FRIEND_ELSEWHERE[1]) };
+                met(records, [mate, friend], [by, by], text);
+                return true;
+            }
+        }
+    }
+    // One of the squad drawn, none a manager or away (`FUN_005ebbf6`
+    // with its flag; the handle's +0x6a), for the family's happenings.
+    if ids.is_empty() {
+        return false;
+    }
+    let id = ids[random.below(ids.len() as u32) as usize];
+    if id > crate::mood::LAST_REAL_ID || records.player(id).is_none_or(|p| p.away_to()[0] != 0) {
+        return false;
+    }
+    let count = records.team(club.0, club.1).map_or(0, |t| t.get::<u8>(CAMP_COUNT));
+    let married = |records: &Records| records.player(id).is_some_and(|p| p.partner() & 3 == 3);
+    if today < WIFE_DAYS && count == WIFE_COUNT && random.below(WIFE_ODDS) == 0 && married(records) {
+        let by = -15 - random.below(10) as i32;
+        if let Some(p) = records.player_mut(id) {
+            p.set_partner(p.partner() & 0xe3 | 1 << 2);
+            crate::mood::change_private(p, by);
+        }
+    }
+    false
+}
+
+/// Two men making up (`FUN_00703d61`): the first hates the other no more
+/// and the other nobody — nor whom that one hated, on down the chain
+/// (`FUN_00703b8e`, `FUN_00703b1a`); and each leaves the other's list of
+/// those he cannot stand ([`forgive`]).
+fn reconcile(records: &mut Records, one: u16, other: u16) {
+    if records.player(one).is_some_and(|p| p.hates() == other) {
+        if let Some(p) = records.player_mut(one) {
+            p.set_hates(0);
+        }
+        let mut next = other;
+        while let Some(p) = records.player_mut(next) {
+            let hated = p.hates();
+            if hated == 0 {
+                break;
+            }
+            p.set_hates(0);
+            next = hated;
+        }
+    }
+    forgive(records, one, other);
+}
+
+/// `other` off `one`'s list of those he cannot stand, then `one` off
+/// `other`'s, and back while either moves (`FUN_00703930`): the list
+/// closes up behind him, its last entry staying where it was, and the
+/// nought meant for it falls on the third of his friends (+0x1fc). Where
+/// he stands last nothing moves, and the original's call back would
+/// never end: the replica stops there.
+fn forgive(records: &mut Records, mut one: u16, mut other: u16) {
+    loop {
+        let Some(p) = records.player_mut(one) else { return };
+        let mut list = p.dislikes();
+        let mut at = None;
+        for (k, &id) in list.iter().enumerate() {
+            if id == other {
+                at = Some(k);
+                break;
+            }
+            if id == 0 {
+                return;
+            }
+        }
+        let Some(at) = at else { return };
+        for k in at..2 {
+            list[k] = list[k + 1];
+        }
+        let moved = list != p.dislikes();
+        p.set_dislikes(list);
+        let mut friends = p.friends();
+        friends[2] = 0;
+        p.set_friends(friends);
+        if !moved {
+            return;
+        }
+        std::mem::swap(&mut one, &mut other);
+    }
+}
+
+/// The count of camps before matches in the team's flags (+0x308).
+const CAMPS_HELD: u32 = 0x300;
+
+/// The camp a club booked before its match (`FUN_0059a2ea`, which the
+/// match day's `FUN_006ef296` runs for both sides of every match before
+/// it is played), where its flag [`training::CAMP`] stands: the camp's
+/// conditions work on the team ([`camp_conditions`]); the first camp of
+/// the season makes each of the squad three or four more content with
+/// the team, the second each on rand(100) below 50, any later costs ten
+/// of the team's mood; the flag goes, and the count of camps (bits 8
+/// and 9) stands at one after the first, else at two. The new season
+/// clears the count (`FUN_00772bee`).
+pub fn camp_before_match(
+    records: &mut Records,
+    clubs: &mut BTreeMap<(usize, usize), ClubState>,
+    world: &world::World,
+    (country, number): (u8, i16),
+    tables: &MoodTables,
+    random: &mut Random,
+) {
+    let Ok(team_number) = u16::try_from(number) else { return };
+    let Some(team) = records.team(country.into(), team_number) else { return };
+    let flags = team.training_flags();
+    if flags & training::CAMP == 0 {
+        return;
+    }
+    let ids = team.players();
+    camp_conditions(records, (country, number), tables, random);
+    let count = (flags & CAMPS_HELD) >> 8;
+    if count < 2 {
+        let chance = if count == 0 { 100 } else { 50 };
+        for &id in &ids {
+            if random.below(100) < chance {
+                let by = 3 + random.below(2) as i32;
+                if let Some(p) = records.player_mut(id) {
+                    crate::mood::change(p, 1, by);
+                }
+            }
+        }
+    } else {
+        crate::interview::team_mood(records, tables, (country, number), -10);
+    }
+    let held = if count == 0 { 1 } else { 2 };
+    let flags = flags & !(CAMPS_HELD | training::CAMP) | held << 8;
+    if let Some(team) = records.team_mut(country.into(), team_number) {
+        team.set_training_flags(flags);
+    }
+    let slot = world.countries.iter().position(|c| c.as_ref().is_some_and(|c| c.nation == u16::from(country)));
+    if let Some(state) = slot.and_then(|slot| clubs.get_mut(&(slot, usize::from(team_number)))) {
+        state.training.flags = flags;
+    }
+}
+
+/// The camp's conditions at work (`FUN_0077225c`), at a club its trainer
+/// (+0x8a) runs: m, the mean of his three sliders (food, going out,
+/// control, 0 to 4; the manager's +0x135e), moves the team's mood by
+/// 2 − m; then each of the first |m − 2| of the squad gains, or with m
+/// below 2 loses, two points of freshness on rand(2)'s 0, else of
+/// condition — a rand over the squad drawn before each and not used.
+fn camp_conditions(records: &mut Records, (country, number): (u8, i16), tables: &MoodTables, random: &mut Random) {
+    let Some(team) = records.team(country.into(), number as u16) else { return };
+    let trainer = usize::from(team.humans()[0]);
+    let ids = team.players();
+    let Some(manager) = trainer.checked_sub(1).and_then(|t| records.managers.get(t)) else { return };
+    let m = manager.camp_rules().iter().map(|&r| i32::from(r)).sum::<i32>() / 3;
+    crate::interview::team_mood(records, tables, (country, number), 2 - m);
+    let s = m - 2;
+    for k in 0..s.unsigned_abs() as usize {
+        random.below(ids.len() as u32);
+        let freshness = random.below(2) == 0;
+        let Some(p) = ids.get(k).and_then(|&id| records.player_mut(id)) else { continue };
+        if freshness {
+            train_freshness(p, 2 * s.signum());
+        } else {
+            train_condition(p, 2 * s.signum());
+        }
+    }
 }
 
 /// What a session does to one trained man (`FUN_0074ae97`). Out or
@@ -3340,5 +3660,117 @@ mod tests {
         assert!(entries.iter().any(|e| e.id == fit && !e.youth && e.intensity == individual::HARD));
         let bare = entries.iter().find(|e| e.id == gone).expect("a bare entry");
         assert_eq!((bare.ability, bare.intensity, bare.youth), (0, individual::OUT, false));
+    }
+
+    /// A's club in a camp at place 2 (its ball 4) from day 100: the
+    /// session's share is 104, on the camp's last day nought, after it
+    /// the co-trainer's 95 or a hundred again. Two men sharing room 0,
+    /// the first hating the second, fall out (ten each, or fifteen for
+    /// him) and meet nothing more; making up closes the list behind the
+    /// one forgiven and clears the third friend. The camp before a match
+    /// with the sliders at 4 costs two of the mood and brings the first
+    /// two men two points; the first such camp makes every man three or
+    /// four more content with the team, the third costs ten of the mood.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn a_camp_works_on_the_squad() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let (camps, tables) = (YearTables::load(&exe).unwrap(), MoodTables::load(&exe).unwrap());
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let trainer = usize::from(records.team(club.0, club.1).unwrap().humans()[0]) - 1;
+
+        assert_eq!(camps.places[1].ball, 4);
+        year::book_camp(&mut records.calendars[trainer], 100, 2);
+        let level = |records: &Records, d: usize| year::camp_level(&camps, &records.calendars[trainer], d);
+        assert_eq!((level(&records, 99), level(&records, 100), level(&records, 101), level(&records, 102)), (None, Some(4), Some(118), None));
+        assert_eq!(share(&mut records, club, Some(4)), 104);
+        assert_eq!(share(&mut records, club, Some(118)), 0);
+        let co = records.team(club.0, club.1).unwrap().co_trainer() > 0;
+        assert_eq!(share(&mut records, club, None), if co { 95 } else { 100 });
+
+        let squad = records.team(club.0, club.1).unwrap().players();
+        let fit: Vec<u16> = squad
+            .iter()
+            .copied()
+            .filter(|&id| id <= crate::mood::LAST_REAL_ID && records.player(id).is_some_and(|p| days_out(&records, p) < 8))
+            .collect();
+        let (one, mate) = (fit[0], fit[1]);
+        for &id in &squad {
+            let p = records.player_mut(id).unwrap();
+            p.set_room(-1);
+            p.set_shown(p.shown() & !CAMP_MET);
+            p.set_best_friend(0);
+            p.set_hates(0);
+        }
+        for id in [one, mate] {
+            records.player_mut(id).unwrap().set_room(0);
+        }
+        records.player_mut(one).unwrap().set_hates(mate);
+        let trusts = |records: &Records, id: u16| records.player(id).unwrap().contentment()[0];
+        let before = [trusts(&records, one), trusts(&records, mate)];
+        let mut posted = Vec::new();
+        let mut random = Random::from_state(1357, 2468);
+        assert!(camp_round(&mut records, club, &squad, 100, &mut posted, &mut random));
+        let after = [trusts(&records, one), trusts(&records, mate)];
+        let fell = [i32::from(before[0]) - i32::from(after[0]), i32::from(before[1]) - i32::from(after[1])];
+        assert!(fell == [10, 10] || fell == [15, 0], "{fell:?}");
+        assert_eq!(posted[0].code, CAMP_EVENT);
+        assert!(HATED_MATE.contains(&posted[0].text));
+        assert_eq!(posted[0].fill, Fill::Numbered(one, mate));
+        assert!([one, mate].iter().all(|&id| records.player(id).unwrap().shown() & CAMP_MET != 0));
+        assert!(!camp_round(&mut records, club, &squad, 100, &mut posted, &mut random));
+        assert_eq!(posted.len(), 1);
+
+        let (x, y) = (fit[2], fit[3]);
+        records.player_mut(one).unwrap().set_dislikes([x, mate, y]);
+        records.player_mut(one).unwrap().set_friends([x, y, mate]);
+        records.player_mut(mate).unwrap().set_dislikes([one, 0, 0]);
+        reconcile(&mut records, one, mate);
+        assert_eq!(records.player(one).unwrap().hates(), 0);
+        assert_eq!(records.player(one).unwrap().dislikes(), [x, y, y]);
+        assert_eq!(records.player(one).unwrap().friends(), [x, y, 0]);
+        assert_eq!(records.player(mate).unwrap().dislikes(), [0, 0, 0]);
+
+        let world = world::World::load(&dir.join("Data.a3")).unwrap();
+        let mut clubs = BTreeMap::new();
+        records.managers[trainer].set_camp_rules([4, 4, 4]);
+        let flags = records.team(club.0, club.1).unwrap().training_flags() & !CAMPS_HELD;
+        records.team_mut(club.0, club.1).unwrap().set_mood(100);
+        records.team_mut(club.0, club.1).unwrap().set_training_flags(flags | training::CAMP);
+        let held: Vec<(i16, i16, u8)> = squad
+            .iter()
+            .map(|&id| records.player(id).unwrap())
+            .map(|p| (p.condition(), p.freshness()[0], p.contentment()[1]))
+            .collect();
+        camp_before_match(&mut records, &mut clubs, &world, (country, number), &tables, &mut random);
+        let team = records.team(club.0, club.1).unwrap();
+        assert_eq!(team.mood(), 98);
+        assert_eq!(team.training_flags() & (training::CAMP | CAMPS_HELD), 0x100);
+        for (k, (&id, &(condition, fresh, content))) in squad.iter().zip(&held).enumerate() {
+            let p = records.player(id).unwrap();
+            let gained = i32::from(p.condition()) - i32::from(condition) + i32::from(p.freshness()[0]) - i32::from(fresh);
+            if k < 2 {
+                assert!(gained == 200 || condition >= 9800 || fresh >= 9800, "{id}: {gained}");
+            } else {
+                assert_eq!(gained, 0);
+            }
+            let more = i32::from(p.contentment()[1]) - i32::from(content);
+            assert!(more == 3 || more == 4 || p.contentment()[1] == 120, "{id}: {more}");
+        }
+        // Without the flag nothing moves; the third camp costs ten.
+        let held = random.clone();
+        camp_before_match(&mut records, &mut clubs, &world, (country, number), &tables, &mut random);
+        assert_eq!(random, held);
+        records.managers[trainer].set_camp_rules([2, 2, 2]);
+        let flags = records.team(club.0, club.1).unwrap().training_flags();
+        records.team_mut(club.0, club.1).unwrap().set_training_flags(flags | training::CAMP | 0x200);
+        camp_before_match(&mut records, &mut clubs, &world, (country, number), &tables, &mut random);
+        let team = records.team(club.0, club.1).unwrap();
+        assert_eq!(team.mood(), 88);
+        assert_eq!(team.training_flags() & (training::CAMP | CAMPS_HELD), 0x200);
     }
 }

@@ -1207,7 +1207,13 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
-                                (&self.data.rules.discipline.mood, &self.data.rules.medical, &self.data.rules.league, &self.data.rules.individual),
+                                (
+                                    &self.data.rules.discipline.mood,
+                                    &self.data.rules.medical,
+                                    &self.data.rules.league,
+                                    &self.data.rules.individual,
+                                    &self.data.rules.year,
+                                ),
                                 &mut season.recent_events,
                                 &mut posted,
                                 &mut season.random,
@@ -1331,6 +1337,21 @@ impl Cycle {
                             // The breaks at half time likewise, one for
                             // each human side (`FUN_0064987a`).
                             let mut breaks = crate::halftime::breaks(records, season.day, &fixtures);
+                            // A camp booked before the match works on
+                            // each side as the day's matches begin, home
+                            // first (`FUN_006ef296`'s `FUN_0059a2ea`).
+                            for (sides, _) in &fixtures {
+                                for &side in sides {
+                                    crate::training_day::camp_before_match(
+                                        records,
+                                        &mut season.clubs,
+                                        &self.data.world,
+                                        side,
+                                        &self.data.rules.discipline.mood,
+                                        &mut season.random,
+                                    );
+                                }
+                            }
                             let played = crate::matches::play_day(
                                 records,
                                 &self.data.world,

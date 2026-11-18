@@ -142,6 +142,9 @@ pub struct YearTables {
     pub places: Vec<Place>,
     pub place_pictures: Vec<u16>,
     pub ball_pictures: Vec<u16>,
+    /// The ball read for a camp's last day, whose marker names no place:
+    /// the byte a place before the table's first (`DAT_008ab31a` − 0x38).
+    pub no_place_ball: u8,
 }
 
 impl YearTables {
@@ -172,6 +175,7 @@ impl YearTables {
             places,
             place_pictures: every_fourth(exe, PLACE_PICTURES_AT, PLACE_PICTURES)?,
             ball_pictures: every_fourth(exe, BALL_PICTURES_AT, BALL_PICTURES)?,
+            no_place_ball: exe.bytes(PLACES_AT - PLACE_SIZE + 2, 1)?[0],
         })
     }
 
@@ -244,6 +248,35 @@ pub fn in_camp(calendar: &Planner, d: usize) -> bool {
         .rev()
         .find(|&e| day(calendar, e).kind() == CAMP)
         .is_some_and(|e| day(calendar, e).camp_start())
+}
+
+/// From this day on the calendar has no club in a camp (`FUN_005eab71`,
+/// `FUN_005eac44`).
+pub const CAMP_DAYS: usize = 0x16b;
+
+/// The place of the camp a day lies in, from 1: the last camp marker's
+/// up to the day, 0 for none or for a camp's last day, whose marker names
+/// none (`FUN_0072f34b`).
+pub fn camp_place(calendar: &Planner, d: usize) -> i16 {
+    (0..=d)
+        .rev()
+        .find(|&e| day(calendar, e).kind() == CAMP)
+        .map_or(0, |e| day(calendar, e).place())
+}
+
+/// The level of the camp a club's calendar has it in on a day, as the
+/// day's training reads it (`FUN_006504e9`): none outside a camp and
+/// from [`CAMP_DAYS`] on (`FUN_005eab71`), else its place's ball
+/// (`DAT_008ab31a`, `FUN_005eac44`) — on the camp's last day the byte
+/// before the table's first, [`YearTables::no_place_ball`].
+pub fn camp_level(tables: &YearTables, calendar: &Planner, d: usize) -> Option<u8> {
+    if d >= CAMP_DAYS || !in_camp(calendar, d) {
+        return None;
+    }
+    match camp_place(calendar, d) {
+        0 => Some(tables.no_place_ball),
+        place => tables.places.get(usize::try_from(place - 1).ok()?).map(|p| p.ball),
+    }
 }
 
 /// A party or an event booked on a day, what else its entry held cleared
@@ -1209,3 +1242,4 @@ fn every_fourth(exe: &Exe, at: u32, count: usize) -> io::Result<Vec<u16>> {
     let bytes = exe.bytes(at, 4 * count)?;
     Ok(bytes.chunks(4).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())
 }
+
