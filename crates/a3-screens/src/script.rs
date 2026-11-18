@@ -13024,4 +13024,142 @@ mod tests {
             assert_eq!((kept, booked), (fixed, before), "the fixed sum kept");
         }
     }
+
+    /// What the replica's new game still sets up otherwise than the
+    /// original's, each the matter of a part of new-game-exact. The
+    /// replica keeps no records of a new game, only its own season
+    /// (new-game-exact-records, -rebase). The original's start settings
+    /// draw the order the managers take their turns in (`FUN_006a4fc5`):
+    /// Bert goes first there, signs with the first club that offers (SSV
+    /// Ulm) and has its squad, confidence and the condition and freshness
+    /// of its training weeks; Anna stays without a club, her training
+    /// camps' rules nought. Every manager starts with the game's eighteen
+    /// week templates, which the replica gives only a loaded game
+    /// (new-game-exact-managers).
+    const NEW_GAME_APART: [&str; 8] =
+        ["clubs", "confidence", "order", "records", "squads", "templates", "training weeks", "views"];
+
+    /// Where the replica's game at a new game's first turn parts from the
+    /// original's dump of the same turn, by what: the date, the managers
+    /// as a loaded game reads them (`a3_core::load::season`) — names,
+    /// clubs, national teams, levels, confidence, views, formations, week
+    /// templates and plans —, the human clubs' squads by name, and the
+    /// records block by block (`an3::compare`, without the blocks of real
+    /// time and of what the writer left on the stack).
+    fn new_game_apart(
+        state: &a3_core::state::GameState,
+        dump: &a3_files::an3::Save,
+        data: &a3_core::data::Data,
+    ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+        use a3_files::an3;
+        let mut apart = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+        let records = a3_core::records::Records::from_save(dump.clone()).unwrap();
+        let oracle = a3_core::load::season(&records, data, a3_core::random::Random::new(0));
+        let replica = state.season.as_ref().expect("the new game's season");
+        let mut differ = |what: &'static str, a: String, b: String| {
+            if a != b {
+                apart.entry(what).or_default().push(format!("{a}, not {b}"));
+            }
+        };
+        differ("date", replica.date().to_string(), oracle.date().to_string());
+        // The managers by name; the order they take their turns in apart.
+        let order = |season: &a3_core::season::Season| -> Vec<String> {
+            season.managers.iter().map(|m| format!("{} {}", m.first_name, m.last_name)).collect()
+        };
+        differ("order", order(replica).join(", "), order(&oracle).join(", "));
+        let club = |club: Option<(usize, usize)>| {
+            club.and_then(|(slot, c)| Some(data.world.country(slot)?.clubs.get(c)?.name.clone()))
+                .unwrap_or_else(|| "no club".into())
+        };
+        // A list's entries one by one: how many part, and the first.
+        let entries = |a: Vec<String>, b: Vec<String>| -> (String, String) {
+            let parting: Vec<usize> = (0..a.len().max(b.len())).filter(|&i| a.get(i) != b.get(i)).collect();
+            let Some(&i) = parting.first() else { return (String::new(), String::new()) };
+            let at = |list: &[String]| list.get(i).cloned().unwrap_or_else(|| "nothing".into());
+            (format!("{} of {} entries apart, #{i} {}", parting.len(), a.len(), at(&a)), at(&b))
+        };
+        for r in &replica.managers {
+            let name = format!("{} {}", r.first_name, r.last_name);
+            let Some(o) = oracle.managers.iter().find(|o| format!("{} {}", o.first_name, o.last_name) == name) else {
+                differ("names", name, "no such manager".into());
+                continue;
+            };
+            let mut differ = |what, a: String, b: String| {
+                if a != b {
+                    differ(what, format!("{name}: {a}"), b);
+                }
+            };
+            differ("clubs", club(r.club), club(o.club));
+            differ("national teams", format!("{:?}", r.national_team), format!("{:?}", o.national_team));
+            differ("levels", r.level.to_string(), o.level.to_string());
+            differ("confidence", r.confidence.to_string(), o.confidence.to_string());
+            let views = |m: &a3_core::season::Manager| {
+                format!("{} {} {} {} {:?}", m.menu, m.list_view, m.training_pictures, m.individual_rule, m.camp_rules)
+            };
+            differ("views", views(r), views(o));
+            let formations = |m: &a3_core::season::Manager| m.formations.iter().map(|f| format!("{f:?}")).collect();
+            let (a, b) = entries(formations(r), formations(o));
+            differ("formations", a, b);
+            let templates = |m: &a3_core::season::Manager| m.templates.iter().map(|t| format!("{t:?}")).collect();
+            let (a, b) = entries(templates(r), templates(o));
+            differ("templates", a, b);
+            let weeks = |m: &a3_core::season::Manager| m.weeks.iter().map(|w| format!("{w:?}")).collect();
+            let (a, b) = entries(weeks(r), weeks(o));
+            differ("training weeks", a, b);
+        }
+        let names = |players: &[a3_core::world::Player]| -> Vec<String> {
+            players.iter().map(|p| format!("{} {}", p.first_name, p.last_name)).collect()
+        };
+        for (&at, o) in &oracle.clubs {
+            let r = replica.clubs.get(&at).map_or_else(Vec::new, |r| names(&r.players));
+            let (a, b) = entries(r, names(&o.players));
+            differ("squads", if a.is_empty() { a } else { format!("{}: {a}", club(Some(at))) }, b);
+        }
+        match &state.records {
+            None => differ("records", "none".into(), "the dump's".into()),
+            Some(records) => {
+                for d in an3::compare(&records.to_save(), dump).blocks {
+                    if !an3::REAL_TIME.contains(&d.name.as_str()) && !an3::LEFTOVERS.contains(&d.name.as_str()) {
+                        differ("blocks", d.to_string(), String::new());
+                    }
+                }
+            }
+        }
+        apart
+    }
+
+    /// The new game of `scripts/new-game.txt` at its first turn (the
+    /// line-up, dialog 147) against the original's dump of that turn
+    /// (`tools/oracle/new-game.sh`, rand() seeded 1): whatever parts must
+    /// be among [`NEW_GAME_APART`], and each of those must still part, so
+    /// a part that brings its matter into line takes it off the list.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_against_the_oracles_first_turn() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves; tools/oracle/new-game.sh writes it");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let game = game();
+        let script: String = NEW_GAME.lines().filter(|l| !l.starts_with("until")).map(|l| format!("{l}\n")).collect();
+        let (runner, result) = Runner::play(&game, &Script::parse(&format!("{script}until dialog 147")).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let state = runner.host.state();
+        let apart = new_game_apart(&state, &dump, &game.data);
+        for (what, list) in &apart {
+            eprintln!("{what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
+        }
+        for what in apart.keys() {
+            assert!(NEW_GAME_APART.contains(what), "{what} parts from the original's new game: {:?}", apart[what]);
+        }
+        for what in NEW_GAME_APART {
+            assert!(apart.contains_key(what), "{what} agrees with the original's new game now: take it off NEW_GAME_APART");
+        }
+    }
 }
