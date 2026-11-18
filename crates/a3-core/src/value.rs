@@ -97,6 +97,15 @@ impl ValueTables {
             })
             .sum()
     }
+
+    /// What the best players' pick values a player at (`FUN_00708b80`):
+    /// his abilities' and character's percent and a hundred, weighed by
+    /// his form today.
+    pub fn pick_value(&self, p: &crate::records::Player) -> i32 {
+        let percent = self.pick_percent(p.good(), p.traits(), p.positions()[0] == 1);
+        let share = (f64::from(crate::statistics::form_today(p)) * 1.5 + 85.0) / 100.0;
+        (f64::from(percent + 100) * share) as i32
+    }
 }
 
 /// What the market value goes by.

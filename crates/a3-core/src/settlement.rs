@@ -1555,7 +1555,8 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
 /// The new season as [`open_season`] opens it, when the game's rules are
 /// at hand: the kept countries' clubs taking new players where they are
 /// thin ([`crate::newplayer::for_kept_club`] by the contract and value
-/// tables) and the boards setting every club's goals before the walk plans
+/// tables), every club marking the men it counts on
+/// ([`crate::squad_rank::mark_counted_on`]) and the boards setting every club's goals before the walk plans
 /// the clubs by them ([`crate::season::open_goals`], `FUN_00772bee` in
 /// `FUN_0065e659`, which comes before `FUN_0042b2fc`).
 pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Option<&crate::season::Rules>) {
@@ -1571,6 +1572,9 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     // The ranked leagues' clubs by their squads (`FUN_00778394`).
     crate::squad_rank::rank(records);
     crate::squad_rank::keep_scores(records);
+    if let Some((_, values)) = tables {
+        crate::squad_rank::mark_counted_on(records, values);
+    }
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);

@@ -968,9 +968,7 @@ const SQUAD_EASE: i32 = 0x12;
 /// Whether the pick values him above 120 (`FUN_00708b80`: the pick's
 /// percent weighed by his form), for which a club pays more.
 pub(crate) fn wanted(values: &crate::value::ValueTables, p: &crate::records::Player) -> bool {
-    let percent = values.pick_percent(p.good(), p.traits(), p.positions()[0] == 1);
-    let share = (f64::from(crate::statistics::form_today(p)) * 1.5 + 85.0) / 100.0;
-    (f64::from(percent + 100) * share) as i32 > WANTED
+    values.pick_value(p) > WANTED
 }
 
 /// How much more or less a club pays him than his own (`FUN_0076e55c`'s
