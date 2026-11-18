@@ -3452,7 +3452,7 @@ mod tests {
         let root = patched(&dir, "A", "league-days", |_| {});
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+        let play = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
                     on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
@@ -8554,7 +8554,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_hosted_hall_shows_its_results() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
                     on 380 press 4731\non 270 press 3734\non 499 ok\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\n\
@@ -9902,7 +9902,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
-        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+        let play = "on 89 press 1875\non 41 ok\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
                     on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
@@ -9946,7 +9946,7 @@ mod tests {
         let root = patched(&dir, "A", "ability-book", |_| {});
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+        let walk = "on 89 press 1875\non 41 ok\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
                     on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
@@ -10963,7 +10963,7 @@ mod tests {
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+        let week = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
                     on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
@@ -11201,7 +11201,7 @@ mod tests {
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
                         on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\n\
@@ -11475,7 +11475,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_table_after_the_matchday_shows_the_human_league() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
                     on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok";
@@ -11521,7 +11521,7 @@ mod tests {
             eprintln!("no A among the saves; the oracle's copy has it");
             return;
         }
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
                     on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 161 ok";
@@ -11577,7 +11577,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_match_report_opens_after_the_match() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
                     on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok";
@@ -11636,7 +11636,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_last_information_shows_before_the_match() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
                     on 308 choose 4095 0";
@@ -11698,7 +11698,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_match_stops_at_half_time_for_the_talk() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
                     on 308 choose 4095 0\non 96 ok";
@@ -11768,7 +11768,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_doping_control_reports_after_the_match() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
-        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
                         on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
@@ -11928,23 +11928,24 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player out of the day's news (text 861), which the replica does not
-    /// build — its draws part there. The replica's first comes from a
-    /// training: player event 4, the brawl of text 7, in the same window,
-    /// its caption "Ereignis", Union's manager and the club as the
-    /// original's (the caption bar matched pixel for pixel), the ball
-    /// beside it; OK closes it and the day goes on.
+    /// build — its draws part there. With the generator at 12348/67899
+    /// (the court's draw of day 67 moves the replica's later ones) its
+    /// first comes from a training: player event 4, the brawl of text 7,
+    /// in the same window, its caption "Ereignis", Union's manager and the
+    /// club as the original's (the caption bar matched pixel for pixel),
+    /// the ball beside it; OK closes it and the day goes on.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_training_brawl_comes_up_in_the_event_window() {
         let game = game();
-        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 392 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
                         on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12345 67890\n{handlers}until dialog 51");
+        let then = format!("now random 12348 67899\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
@@ -11966,5 +11967,84 @@ mod tests {
         let on = format!("{then}\nnow ok\nuntil dialog 147");
         let Some(runner) = on_save(&game, "A", &on) else { return };
         assert!(runner.host.state().season.as_ref().unwrap().day >= day);
+    }
+
+    /// Walking on from A, the court Union's planner booked for day 67
+    /// sits: Diogo Leite's red card waits for its verdict, and dialog 89
+    /// opens on it — the club behind the title, "Die Sperre Ihres
+    /// Spielers Diogo Leite" and the verdict, with Nein hidden and no
+    /// question where the court leaves him under two matches; OK closes
+    /// it, the case cleared and the lawyer's red-card tariff (R4, 30
+    /// thousand) booked. With four matches on his card the court lets the
+    /// club appeal: the question with the lawyers' advice, Nein shown; OK
+    /// files the appeal for the next sitting, Nein does not.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_court_hears_a_red_card_and_asks_to_appeal() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 417 press 1\n\
+                        until dialog 89";
+        const LEITE: u16 = 3261;
+        let game = game();
+        let Some(runner) = on_save(&game, "A", handlers) else { return };
+        let dialog = &game.dialogs[&89];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[control(dialog, id).unwrap()].hidden;
+        let costs = |runner: &Runner| {
+            let state = runner.host.state();
+            state.records.as_ref().unwrap().team(14, 84).unwrap().get::<i32>(0x2b4 + 0x278)
+        };
+        let club = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        assert_eq!(text(&runner, 9924), format!("{} {club}", dialog.title));
+        let told = text(&runner, 1876);
+        assert!(told.starts_with("Die Sperre Ihres Spielers Diogo Leite "), "{told:?}");
+        let verdicts = [game.text(2103).to_owned(), game.text(2795).to_owned()];
+        assert!(verdicts.iter().any(|v| told.ends_with(v.as_str())), "{told:?}");
+        assert_eq!(text(&runner, 1878), "");
+        assert!(hidden(&runner, 1877) && !hidden(&runner, 1875));
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 67);
+        let before = costs(&runner);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", &handlers.replace("until dialog 89", "on 89 press 1875\nuntil day 68"))
+        else {
+            return;
+        };
+        assert_eq!(seen(&runner, 89), 1, "{}", runner.log.join("\n"));
+        {
+            let state = runner.host.state();
+            let r = state.records.as_ref().unwrap().player(LEITE).unwrap();
+            assert_eq!(r.get::<u8>(0x22f) & 0xc0, 0, "the verdict is in");
+        }
+        assert_eq!(costs(&runner), before + 30_000);
+        drop(runner);
+        let root = patched(&dir, "A", "court-four", |records| {
+            let r = records.player_mut(LEITE).unwrap();
+            r.put::<u8>(0x22f, 0x84);
+            r.put::<i16>(0x1f2, 90);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let Some(runner) = on_save(&game, "court-four", handlers) else { return };
+        let question = text(&runner, 1878);
+        let advice = [2105, 2106].map(|t| format!("{} {}", game.text(2104), game.text(t)));
+        assert!(advice.contains(&question), "{question:?}");
+        assert!(!hidden(&runner, 1877));
+        let told = text(&runner, 1876);
+        assert!(told.contains(" wird auf ") && told.ends_with(" Spiele festgelegt."), "{told:?}");
+        drop(runner);
+        for (button, appealed) in [(1875, 0x40), (1877, 0)] {
+            let then = handlers.replace("until dialog 89", &format!("on 89 press {button}\nuntil day 68"));
+            let Some(runner) = on_save(&game, "court-four", &then) else { return };
+            let state = runner.host.state();
+            let r = state.records.as_ref().unwrap().player(LEITE).unwrap();
+            assert_eq!(r.get::<u8>(0x22f) & 0xc0, appealed, "{button}");
+            assert!((3..=5).contains(&(r.get::<u8>(0x22f) & 0x1f)));
+        }
     }
 }

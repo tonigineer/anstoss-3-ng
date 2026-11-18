@@ -242,6 +242,9 @@ pub mod dialogs {
     /// The cup results after the matchday, `CPokalNachSpieltag`
     /// (`IDD_POKAL_NACH_DEM_SPIEL`).
     pub const CUP_RESULTS: u16 = 161;
+    /// The association's court on its planner day, `CGerichtDialog`
+    /// (`IDD_GERICHT`).
+    pub const COURT: u16 = 89;
 }
 
 use self::dialogs::*;
@@ -421,6 +424,8 @@ pub enum Args {
     /// The doping control of a human's club after the match
     /// (`DAT_00a2e0b8`).
     Doping(crate::doping_control::Control),
+    /// A case the association's court heard (`DAT_00a3b44c`).
+    Court(crate::court::Case),
     /// The day's national cups for the cup results (the block at
     /// `0xa3b488`).
     CupResults(crate::cup_results::CupDay),
@@ -1016,6 +1021,9 @@ impl Cycle {
                         // It forgets the last friendlies more than six
                         // weeks gone (`FUN_0043539b`).
                         crate::friendly::forget_last_friendlies(records, season.day as i16);
+                        // The week's negotiations and the court's day go
+                        // into the human clubs' planners (`FUN_0072d850`).
+                        crate::court::book_week(records);
                         crate::stock::roll_week(records, season.day as i32, &mut season.random);
                     }
                 }
@@ -1854,6 +1862,27 @@ impl Cycle {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
         self.poaching_talks()?;
         for n in 0..managers {
+            // The association's court sits for the manager's club
+            // (`FUN_00628309`, its planner's +4 the bans it hears).
+            let court = {
+                let mut state = self.state();
+                let state = &mut *state;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_ref())
+                else {
+                    return Ok(());
+                };
+                season.current = n;
+                records.human_slot(n).and_then(|slot| {
+                    let booked = records.planners.get(slot)?.day(season.day);
+                    let manager = records.managers.get(slot)?;
+                    (booked.kind == crate::court::COURT && manager.country() != 0)
+                        .then(|| ((manager.country() as u8, manager.team() as i16), booked.player))
+                })
+            };
+            if let Some((club, kind)) = court {
+                self.court(club, kind)?;
+                continue;
+            }
             let booked = {
                 let mut state = self.state();
                 let state = &mut *state;
@@ -1948,6 +1977,34 @@ impl Cycle {
         }
         self.season(|s| s.current = 0);
         Ok(())
+    }
+
+    /// The court's sitting for a club: each case it tells opens dialog 89
+    /// at once (event 0xa3 run by `FUN_006c03ba`), its OK or Nein the
+    /// answer to an appeal's question; a computer club takes the lawyers'
+    /// advice.
+    fn court(&self, club: (u8, i16), kind: u16) -> Result<(), Gone> {
+        let mut hearing = crate::court::Hearing::new(club, kind);
+        loop {
+            let case = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut())
+                else {
+                    return Ok(());
+                };
+                hearing.next(records, &mut season.random)
+            };
+            let Some(case) = case else { return Ok(()) };
+            let yes = if case.shown {
+                self.ask(Request::with(COURT, Args::Court(case)))? == Reply::Ok
+            } else {
+                case.advised
+            };
+            if let Some(records) = self.state().records.as_mut() {
+                crate::court::answer(records, &case, yes);
+            }
+        }
     }
 
     /// What the year calendars booked on the day just walked, manager by
