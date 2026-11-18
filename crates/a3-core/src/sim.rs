@@ -117,16 +117,25 @@ const WEAR_MULT: [i32; 5] = [8, 9, 10, 11, 12];
 /// three freshness values — a full match lifts the man's condition a
 /// little and drains his freshness well below it, the shorter bands lift
 /// and drain less. `FUN_006f8b3f` takes the sibling
-/// rows at `DAT_008a6f24` (a third of the size, condition barely lifted)
-/// when the record's short at +0x24 stands above nought — no ported walk
-/// ever raises that byte, so the played rows always answer; the seam waits
-/// with whatever fixture would.
+/// rows [`FRIENDLY_WEAR_ROWS`] when the record's short at +0x24 is not
+/// nought, as the friendlies' and tournaments' walk (`FUN_006f3b7a`) has
+/// it; the competitions' walks answer with these.
 const WEAR_ROWS: [[i32; 4]; 5] = [
     [10, -30, -60, -25],
     [40, -90, -270, -135],
     [70, -162, -450, -225],
     [100, -225, -630, -315],
     [120, -340, -810, -405],
+];
+/// The rows a friendly or a tournament's game writes (`DAT_008a6f24`),
+/// as [`WEAR_ROWS`]: the condition barely lifted, the freshness drained
+/// about half as much.
+const FRIENDLY_WEAR_ROWS: [[i32; 4]; 5] = [
+    [0, -18, -36, -18],
+    [20, -45, -135, -72],
+    [40, -80, -225, -108],
+    [50, -125, -315, -153],
+    [60, -160, -670, -315],
 ];
 /// A shootout's regulation round lists five takers a side
 /// (`FUN_005ddea7`'s `FUN_005de669(club, list, 0, 5)` on each side).
@@ -1625,6 +1634,11 @@ fn wear_band(fatigue: i16, extra: bool) -> usize {
 /// behind the club's slot at +0x11de, asked by `FUN_0069bec0` — is exactly
 /// this man; both wait with the club objects and their staff, seam here.
 fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
+    wear_by_rows(p, minutes, mult, &WEAR_ROWS);
+}
+
+/// [`wear_man`] by the `rows` the match's kind takes.
+fn wear_by_rows(p: &mut Player, minutes: i32, mult: i32, rows: &[[i32; 4]; 5]) {
     let band = if minutes < 30 {
         0
     } else if minutes < 60 {
@@ -1636,7 +1650,7 @@ fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
     } else {
         4
     };
-    let row = WEAR_ROWS[band];
+    let row = rows[band];
     let scaled = |d: i32| d * mult / 10;
     let cond = i32::from(p.condition()) + scaled(row[0]);
     p.set_condition(cond.clamp(0, 10_000) as i16);
@@ -1668,6 +1682,30 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
             if let Some(p) = records.player_mut(id) {
                 wear_man(p, minutes, mult);
             }
+        }
+    }
+}
+
+/// What a friendly or a tournament's game leaves on a side's men
+/// (`FUN_006f3b7a`'s last loop, `FUN_006f8f44` with the fifth parameter
+/// nought): the walk takes the side's stance from the club's effort
+/// (`FUN_006f7d4d`, club +0xa9 into side +0x32), the fatigue
+/// sums the stance's percentage over the ninety minutes — the hundred and
+/// twenty of extra time —, and its band names the multiplier, halved for
+/// the man at the keeper's spot (his +0x28, `FUN_006f6fc7`); the friendly
+/// rows (the record's +0x24 set) by each man's minutes. The eleven the
+/// team keeps stand the whole game, the replica's games knowing no
+/// substitutions yet.
+pub fn friendly_wear(records: &mut Records, (country, number): (u8, i16), extra: bool) {
+    let Some(team) = u16::try_from(number).ok().and_then(|n| records.team(country.into(), n)) else { return };
+    let minutes = if extra { 120 } else { 90 };
+    let pct = MINUTE_PCT.get(usize::from(team.effort())).copied().unwrap_or(100);
+    let mult = WEAR_MULT[wear_band((pct * minutes) as i16, extra)];
+    for id in team.lineup() {
+        if let Some(p) = records.player_mut(id).filter(|_| id != 0) {
+            // The man byte +0x28 at one halves it: the keeper's.
+            let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
+            wear_by_rows(p, minutes, mult, &FRIENDLY_WEAR_ROWS);
         }
     }
 }
@@ -2716,6 +2754,27 @@ mod tests {
         wear_man(&mut p, 20, 11);
         assert_eq!(p.condition(), 11);
         assert_eq!(p.freshness(), [0, -66, -27]);
+    }
+
+    #[test]
+    fn a_friendly_wears_by_its_own_rows() {
+        // as the original's dumps of Probe1's pre-season tournaments have
+        // it: ninety minutes at the normal effort's hundred a minute, the
+        // multiplier ten, lift a man fifty and drain 125, 315 and 153
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_condition(5850);
+        p.set_freshness([5807, -985, -468]);
+        wear_by_rows(&mut p, 90, WEAR_MULT[wear_band(90 * 100, false)], &FRIENDLY_WEAR_ROWS);
+        assert_eq!(p.condition(), 5900);
+        assert_eq!(p.freshness(), [5682, -1300, -621]);
+        // extra time at the harder effort's 105 stands in the band of
+        // eleven; the keeper's halved five takes 30, 80, 335 and 157
+        assert_eq!(WEAR_MULT[wear_band(120 * 105, true)], 11);
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_freshness([6335, 0, 0]);
+        wear_by_rows(&mut p, 120, 10 / 2, &FRIENDLY_WEAR_ROWS);
+        assert_eq!(p.condition(), 30);
+        assert_eq!(p.freshness(), [6255, -335, -157]);
     }
 
     #[test]

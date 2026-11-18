@@ -35,6 +35,9 @@ const GATE: usize = 0x23c;
 const LAST_SHARE: usize = 0x2560;
 /// Mood, respect and will within their bounds.
 const MOST: i32 = 200;
+/// The staff person's byte at his record's +4 (+6 of the copy
+/// `FUN_006317c6` makes), the kind `FUN_0040a1ec` answers with.
+const PERSON_KIND: usize = 0x24;
 
 /// What the human should see of the day's tournaments: the Turniere drawn
 /// today (their pairings) and those whose day ended (their results).
@@ -75,18 +78,30 @@ pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, ran
         }
     }
     games.extend(fixtures.into_iter().map(Game::Tournament));
-    // The first loop: each game's referee drawn, its crowd and gate.
-    let gates: Vec<crate::crowd::Gate> = games
-        .iter()
-        .map(|game| {
-            random.below(REFEREES);
-            let round = match game {
-                Game::Friendly { .. } => FRIENDLY_ROUND,
-                Game::Tournament(f) => TURNIER_ROUNDS[f.game],
-            };
-            crate::crowd::gate(records, calendar, tables, game.sides(), round, random)
-        })
-        .collect();
+    // The first loop: each game's referee drawn, its crowd and gate, and
+    // its computer sides lined up (`FUN_0042a702`).
+    let mut gates = Vec::with_capacity(games.len());
+    for game in &games {
+        random.below(REFEREES);
+        let round = match game {
+            Game::Friendly { .. } => FRIENDLY_ROUND,
+            Game::Tournament(f) => TURNIER_ROUNDS[f.game],
+        };
+        gates.push(crate::crowd::gate(records, calendar, tables, game.sides(), round, random));
+        let (home, away, _) = game.sides();
+        for (country, number) in [home, away] {
+            if let Ok(number) = u16::try_from(number) {
+                crate::autolineup::line_up_computer(records, data, country.into(), number);
+            }
+        }
+    }
+    // The second: each computer side's tactics chosen against the other
+    // (`FUN_0042c1aa`), the home side first.
+    for game in &games {
+        let (home, away, _) = game.sides();
+        computer_tactics(records, home, away, true, random);
+        computer_tactics(records, away, home, false, random);
+    }
     // The games scored; their results move the clubs (`FUN_00714236`).
     let outcomes: Vec<Outcome> = games
         .iter()
@@ -100,9 +115,13 @@ pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, ran
             outcome
         })
         .collect();
+    // Each game's result moves the clubs (`FUN_00714236`), then its
+    // minutes wear the men (`FUN_006f8f44`).
     for (game, outcome) in games.iter().zip(&outcomes) {
         let (home, away, _) = game.sides();
         after_result(records, home, away, i32::from(outcome.goals.0) - i32::from(outcome.goals.1));
+        crate::sim::friendly_wear(records, home, outcome.extra);
+        crate::sim::friendly_wear(records, away, outcome.extra);
     }
     for (game, outcome) in games.iter().zip(&outcomes) {
         match game {
@@ -166,6 +185,55 @@ fn strengths(records: &Records, club: (u8, i16)) -> [i16; 4] {
 /// at the kick-off from the side's parts): here their sum in points.
 fn strength(records: &Records, club: (u8, i16)) -> i32 {
     strengths(records, club).iter().map(|&s| i32::from(s)).sum::<i32>() / 10
+}
+
+/// A computer club's tactics against the other side (`FUN_0042c1aa`;
+/// a human club keeps its own): normal effort and hardness, no flags,
+/// and its tilt at four at home, three away. Under a trainer whose kind
+/// (his person's +4, `FUN_0040a1ec`; none, two) stands outside 0 to 3 it
+/// plays harder — effort two, hardness one — where both clubs' table
+/// places (club +0x109) sum under eight, and all out against a side more
+/// than fourteen stronger on the day (club +0xdf2). Its passing is rolled
+/// short-long and safe-risky at three or four, keeping position at one or
+/// two; then a side more than twenty five, and again more than fifty,
+/// stronger tilts one forward (up to six), one that much weaker one back.
+fn computer_tactics(records: &mut Records, club: (u8, i16), other: (u8, i16), home: bool, random: &mut Random) {
+    let Some(own) = team(records, club) else { return };
+    if own.humans()[0] != 0 {
+        return;
+    }
+    let staff = own.staff();
+    let trainer = if staff[0] != 0 { staff[0] } else { staff[1] };
+    let kind = match trainer {
+        0 => 2,
+        id => records.persons.get(usize::from(id)).map_or(2, |p| p.get::<i8>(PERSON_KIND)),
+    };
+    let together = u32::from(own.table_place()) + team(records, other).map_or(0, |t| u32::from(t.table_place())) < 8;
+    let ahead = strength(records, club) - strength(records, other);
+    let mut tilt: u8 = if home { 4 } else { 3 };
+    let (mut effort, mut hardness) = (4, 2);
+    if !(0..=3).contains(&kind) {
+        if together {
+            (effort, hardness) = (2, 1);
+        }
+        if ahead < -14 {
+            effort = 0;
+        }
+    }
+    let passing = [3 + random.below(2), 3 + random.below(2), 1 + random.below(2)];
+    for (by, step) in [(50, 1i8), (25, 1), (-50, -1), (-25, -1)] {
+        let moves = if step > 0 { ahead > by && tilt < 6 } else { ahead < by && tilt != 0 };
+        if moves {
+            tilt = tilt.wrapping_add_signed(step);
+        }
+    }
+    let Some(own) = team_mut(records, club) else { return };
+    own.set_style(tilt);
+    own.set_effort(effort);
+    own.set_hardness(hardness);
+    own.set_tactic_flags(0);
+    let word = own.passing() & !0x1ff | passing[0] as u16 | (passing[1] as u16) << 3 | (passing[2] as u16) << 6;
+    own.set_passing(word);
 }
 
 /// A game scored as the replica scores the leagues': the side at its
