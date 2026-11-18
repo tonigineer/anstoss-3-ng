@@ -11229,7 +11229,7 @@ mod tests {
                         on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n\
-                        on 356 press 4542\n";
+                        on 356 press 4542\non 379 ok\non 314 ok\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let then = format!(

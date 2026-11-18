@@ -1089,7 +1089,7 @@ impl Cycle {
                         // The clubs' week on the transfer market comes
                         // first (`FUN_0042958d`): last years weighed,
                         // retirements announced.
-                        crate::transfer_week::week(records, &mut season.random);
+                        crate::transfer_week::week(records, &self.data.rules, &mut season.random);
                         // The human clubs' trials go on a week, or end
                         // (`FUN_0064e25b`), each man gone back told to
                         // his club below.

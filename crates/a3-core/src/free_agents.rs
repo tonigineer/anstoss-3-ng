@@ -284,6 +284,22 @@ pub(crate) fn fresh_contract(
     tables: (&ContractTables, &ValueTables),
     random: &mut Random,
 ) -> Option<[u8; 0x14]> {
+    terms_over(records, id, level, tables, [0; 0x14], random)
+}
+
+/// `FUN_00709fb6` over the contract `t` as it stands: the salary and the
+/// bonuses anew, the fresh years added to those it holds, the release
+/// fee spared the one-in-five draw when it held one already (and
+/// reckoned at the years so summed), the terms' word cleared but for the
+/// player's option, one time in two; the rest of `t` as it was.
+pub(crate) fn terms_over(
+    records: &Records,
+    id: u16,
+    level: u8,
+    tables: (&ContractTables, &ValueTables),
+    mut t: [u8; 0x14],
+    random: &mut Random,
+) -> Option<[u8; 0x14]> {
     let month = u32::from(records.globals.date()[1]);
     let p = records.player(id)?;
     let age = age(records, p);
@@ -303,8 +319,9 @@ pub(crate) fn fresh_contract(
         9 => (f64::from(salary) / share / 2.5) as i32 as u16,
         _ => 0,
     };
-    let years = fresh_years(p, age, random);
-    let fee = if p.strength() >= 7 && random.below(5) == 0 {
+    let years = (t[0xc] as i8).wrapping_add(fresh_years(p, age, random));
+    let held = u16::from_le_bytes([t[6], t[7]]) != 0;
+    let fee = if p.strength() >= 7 && (held || random.below(5) == 0) {
         let worth = Worth {
             strength: p.strength(),
             position,
@@ -321,7 +338,6 @@ pub(crate) fn fresh_contract(
         0
     };
     let option: u16 = if random.below(2) != 0 { 0x1000 } else { 0 };
-    let mut t = [0u8; 0x14];
     t[0..2].copy_from_slice(&salary.to_le_bytes());
     t[2..4].copy_from_slice(&appearance.to_le_bytes());
     t[4..6].copy_from_slice(&goal.to_le_bytes());

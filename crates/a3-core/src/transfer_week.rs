@@ -21,12 +21,16 @@
 //! of 18 more at 35 (37), of ten more at 32 (35). A human club's player
 //! is weighed thus only in his last two years.
 //!
+//! Before that, every fourth week, a club of the main or a more country
+//! with no human manager offers the men it counts on fresh contracts
+//! (`FUN_0042991e`, the club's number and the day alike modulo four).
+//!
 //! Left out so far: the rest of the computer clubs' business that follows
 //! in `FUN_004279f8` and `FUN_004297e1` — their scouting and bids, sales
-//! and loans, the wanted positions (`FUN_006c41b1`, `FUN_0042991e`,
-//! `FUN_00427494`) — and the European clubs' (`FUN_0069d3dd`) and the
-//! closing passes (`FUN_004290b3`, `FUN_00428ea5`); the draws between
-//! clubs are not the original's while those are missing.
+//! and loans, the wanted positions (`FUN_006c41b1`, `FUN_00427494`) — and
+//! the European clubs' (`FUN_0069d3dd`) and the closing passes
+//! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
+//! original's while those are missing.
 
 use chrono::NaiveDate;
 
@@ -55,15 +59,19 @@ const KEEPER: u8 = 1;
 const BEFORE_MONTH: u16 = 7;
 
 /// The week's business of every club, in the original's order.
-pub fn week(records: &mut Records, random: &mut Random) {
+pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Random) {
     let today = i32::from(records.globals.day());
     if today > LATE {
         crate::transfers::fix_late_terms(records);
     }
-    let kept = (1..COUNTRIES).filter(|&c| records.countries.kind(c) == KEPT).map(|c| c as u16);
-    let countries: Vec<u16> = kept.chain(crate::opponent::played_nations(records)).collect();
-    for country in countries {
+    let kept: Vec<u16> = (1..COUNTRIES).filter(|&c| records.countries.kind(c) == KEPT).map(|c| c as u16).collect();
+    let played = crate::opponent::played_nations(records);
+    let countries = kept.iter().map(|&c| (c, false)).chain(played.iter().map(|&c| (c, true)));
+    for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            if played && today & 3 == i32::from(number & 3) {
+                renew(records, rules, (country, number), random);
+            }
             let Some(team) = records.team(country, number) else { continue };
             if team.level() >= LEVELS {
                 continue;
@@ -233,12 +241,168 @@ fn weigh(records: &mut Records, id: u16, human: bool, today: i32, random: &mut R
     }
 }
 
+/// The month after which, up to June, a club offers the men it counts
+/// on more alike (`FUN_0042991e`).
+const SPRING: std::ops::RangeInclusive<u16> = 3..=6;
+/// R+0x27f's 0x40: he takes no further extension (`FUN_00707834`).
+const NO_EXTENSION: u8 = 0x40;
+/// The terms' bit of a man his club counts on (R+0x15e,
+/// [`crate::squad_rank`]).
+const COUNTED_ON: u16 = 0x40;
+/// The reason his club pleases him with his contract, and the one of
+/// the club it clears (`FUN_00770800`, `FUN_00770942`).
+const CONTRACT_PLEASES: u32 = 0x100000;
+const CONTRACT_GRIEVANCE: u32 = 0x4000;
+/// What his new terms are worth to him, within these (R+0x160, L+0x99).
+const WORTH_RANGE: (i32, i32) = (80, 200);
+
+/// A club offers the men it counts on fresh contracts (`FUN_0042991e`),
+/// unless a human manages it. Of those it may keep (`FUN_00426cc6`) and
+/// would (`FUN_004270b0`), one with three years left takes two more one
+/// time in a hundred, one with two four times in a hundred, either off
+/// the transfer list then; every other one is offered terms afterwards,
+/// in his squad's order, by a chance in a hundred: from March to June 30
+/// for one in his last year stronger than 9, 7 or 5 (by the club's
+/// league: the first, the second, any other), else 15; in the other
+/// months twice his strength and 14 for such a one, else his strength
+/// and 7.
+fn renew(records: &mut Records, rules: &crate::season::Rules, (country, number): (u16, u16), random: &mut Random) {
+    let Some(team) = records.team(country, number) else { return };
+    if team.humans()[1] != 0 {
+        return;
+    }
+    let spring = SPRING.contains(&records.globals.date()[1]);
+    let bar = match team.level() {
+        0 => 9,
+        1 => 7,
+        _ => 5,
+    };
+    let squad = team.players();
+    let mut offered = Vec::new();
+    for &id in &squad {
+        let Some(p) = records.player(id) else { continue };
+        if !may_keep(records, p) || !would_keep(records, p) {
+            continue;
+        }
+        let years = years_left(records, p);
+        let strength = i32::from(p.strength());
+        let longer = match years {
+            3 => random.below(100) == 0,
+            2 => random.below(100) < 4,
+            _ => {
+                let top = years == 1 && strength > bar;
+                offered.push((id, match (spring, top) {
+                    (true, true) => 30,
+                    (true, false) => 15,
+                    (false, true) => strength * 2 + 14,
+                    (false, false) => strength + 7,
+                }));
+                false
+            }
+        };
+        if longer {
+            if let Some(p) = records.player_mut(id) {
+                p.set_contract((p.contract() & !0xfff) | ((p.contract() & 0xfff) + 2));
+            }
+            off_list(records, id);
+        }
+    }
+    for (id, chance) in offered {
+        if (random.below(100) as i32) < chance {
+            extend(records, rules, (country, number), id, random);
+            off_list(records, id);
+        }
+    }
+}
+
+/// A computer club gives him a new contract (`FUN_00426f52`) when he is
+/// under 35 or stronger than 4, and no talks are pending about him: the
+/// years he has left and one more, and under 31 up to three, under 36 up
+/// to one more drawn; fresh terms over his own (`FUN_00709fb6`); what
+/// they are worth to him at the club (`FUN_00709c52`), within 80 and
+/// 200, as the least his will to stay must reach — from 80 on his club
+/// pleasing him with them, the grievance gone.
+fn extend(records: &mut Records, rules: &crate::season::Rules, (country, number): (u16, u16), id: u16, random: &mut Random) {
+    let Some(p) = records.player(id) else { return };
+    let age = age(records, p);
+    if !(age < 35 || p.strength() > 4) || crate::transfers::pending(records, id) {
+        return;
+    }
+    let years = years_left(records, p) as i8;
+    let years = match age {
+        ..31 => years + 1 + random.below(4) as i8,
+        ..36 => years + 1 + random.below(2) as i8,
+        _ => years + 1,
+    };
+    let Some(team) = records.team(country, number) else { return };
+    let tables = (&rules.contract, &rules.value);
+    let old = crate::transfers::terms(records, id);
+    let Some(mut t) = crate::free_agents::terms_over(records, id, team.level(), tables, old, random) else { return };
+    t[0xc] = years as u8;
+    let word = |at: usize| u16::from_le_bytes([t[at], t[at + 1]]);
+    let start = i32::from(records.globals.start_year());
+    if let Some(p) = records.player_mut(id) {
+        p.set_salary(word(0));
+        p.set_appearance_bonus(word(2));
+        p.set_goal_bonus(word(4));
+        p.set_fixed_fee(word(6));
+        p.set_terms(word(0xe));
+        p.set_contract((p.contract() & !0xfff) | (start + i32::from(years)) as u16);
+    }
+    let (Some(p), Some(team)) = (records.player(id), records.team(country, number)) else { return };
+    let mut own = crate::transfers::terms(records, id);
+    own[8..12].fill(0);
+    let Some(worth) = crate::transfers::offer_worth(records, tables, p, team, &own) else { return };
+    let worth = worth.min(WORTH_RANGE.1);
+    let p = records.player_mut(id).expect("he is there");
+    if worth < WORTH_RANGE.0 {
+        p.put::<u8>(0x160, WORTH_RANGE.0 as u8);
+    } else {
+        rules.discipline.mood.set_reasons(p, CONTRACT_PLEASES);
+        crate::mood::clear_reasons(p, CONTRACT_GRIEVANCE);
+        p.put::<u8>(0x160, worth as u8);
+    }
+}
+
+/// Whether his club may keep him longer (`FUN_00426cc6`): free to say he
+/// retires, open to an extension, with under six years left and his age
+/// and those under 37.
+fn may_keep(records: &Records, p: &Player) -> bool {
+    let years = years_left(records, p);
+    free_to_retire(records, p) && p.problems() & NO_EXTENSION == 0 && years < 6 && age(records, p) + years < 37
+}
+
+/// Whether his club would (`FUN_004270b0`): not retiring, open to an
+/// extension, not passed over, under 36, counted on, under four years
+/// left — of three only stronger than 3, of two stronger than 1 — and no
+/// deal for next season.
+fn would_keep(records: &Records, p: &Player) -> bool {
+    let (years, strength) = (years_left(records, p), p.strength());
+    p.retiring() & RETIRES == 0
+        && p.problems() & NO_EXTENSION == 0
+        && !passed_over(p)
+        && age(records, p) < 36
+        && p.terms() & COUNTED_ON != 0
+        && years < 4
+        && !(years == 3 && strength < 4)
+        && !(years == 2 && strength < 2)
+        && p.next_club()[0] == 0
+}
+
+/// Off the transfer list, his listing's mark gone (`FUN_0075a636`).
+fn off_list(records: &mut Records, id: u16) {
+    crate::rollover::delist_transfer(records, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_retiring(p.retiring() & !LISTED);
+    }
+}
+
 /// He says he retires: off the transfer list, his listing's mark gone
 /// (`FUN_0075a636`, `FUN_0075a71f`), his retirement marked.
 fn retire(records: &mut Records, id: u16) {
-    crate::rollover::delist_transfer(records, id);
+    off_list(records, id);
     if let Some(p) = records.player_mut(id) {
-        p.set_retiring((p.retiring() & !LISTED) | RETIRES);
+        p.set_retiring(p.retiring() | RETIRES);
     }
 }
 
@@ -327,6 +491,11 @@ mod tests {
         Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap()
     }
 
+    fn rules() -> crate::season::Rules {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        crate::data::Data::load(&dir).unwrap().rules
+    }
+
     /// The game on a day of its season, as the week's start has it.
     fn on_day(records: &mut Records, day: u16) {
         use chrono::Datelike;
@@ -376,7 +545,7 @@ mod tests {
         on_day(&mut records, 336);
         let before = last_years(&records);
         let listed_before = crate::transfers::listings(&records).len();
-        week(&mut records, &mut Random::new(5));
+        week(&mut records, &rules(), &mut Random::new(5));
         let listed: Vec<u16> = crate::transfers::listings(&records).iter().map(|l| l.id).collect();
         let (mut onto, mut retiring, mut left) = (0, 0, 0);
         for &(id, _) in &before {
@@ -437,13 +606,14 @@ mod tests {
             ages
         };
         let mut random = Random::new(7);
+        let rules = rules();
         let listed = |records: &Records| -> Vec<u16> {
             crate::transfers::listings(records).iter().map(|l| l.id).collect()
         };
         let listed_before = listed(&records);
         for day in (70..=364).step_by(7) {
             on_day(&mut records, day);
-            week(&mut records, &mut random);
+            week(&mut records, &rules, &mut random);
             if day <= 210 {
                 assert!(listed(&records).iter().all(|id| listed_before.contains(id)), "day {day}");
             }
@@ -453,6 +623,65 @@ mod tests {
         assert!(off < 0.1, "{} marks against the original's {}", ours.len(), theirs.len());
         assert!(ours.iter().all(|&age| age >= 26), "{ours:?}");
         assert_eq!(ours.iter().max(), theirs.iter().max());
+    }
+
+    /// The men who stayed at a computer club of the main or a more
+    /// country from one game to another, and of those whose contract runs
+    /// longer in the second: how many by the years it had left in the
+    /// first, and the least worth a last year's new contract holds
+    /// (R+0x160; those with more years only add two).
+    fn extended(a: &Records, b: &Records) -> ([usize; 4], u8) {
+        let (mut by_years, mut least) = ([0; 4], u8::MAX);
+        for country in crate::opponent::played_nations(a) {
+            for number in 0..a.countries.team_count(usize::from(country)).max(0) as u16 {
+                let (x, y) = (a.team(country, number).unwrap(), b.team(country, number).unwrap());
+                let ours = y.players();
+                if x.humans() != [0, 0] {
+                    for id in x.players().into_iter().filter(|id| ours.contains(id)) {
+                        assert_eq!(a.player(id).unwrap().contract(), b.player(id).unwrap().contract(), "human club's {id}");
+                    }
+                    continue;
+                }
+                for id in x.players().into_iter().filter(|id| ours.contains(id)) {
+                    let (p, q) = (a.player(id).unwrap(), b.player(id).unwrap());
+                    if q.contract() & 0xfff > p.contract() & 0xfff {
+                        let years = years_left(a, p);
+                        by_years[(years as usize).min(3)] += 1;
+                        if years == 1 {
+                            least = least.min(q.get::<u8>(0x160));
+                        }
+                    }
+                }
+            }
+        }
+        (by_years, least)
+    }
+
+    /// From save A's day 63 to the season's end the computer clubs of the
+    /// main and the more countries keep the men they count on longer as
+    /// often as the original's season did (its SeasonEnd364: 233 of them
+    /// in their last year, 265 with two left, 108 with three, the human
+    /// club none): each count within a fifth, the replica's every new
+    /// contract of a last year worth 80 at least to the man (the
+    /// original's one of 233 below came another way).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_clubs_keep_their_men_longer_as_the_original() {
+        let a = kept("A.an3");
+        let (theirs, _) = extended(&a, &kept("SeasonEnd364.an3"));
+        let mut records = kept("A.an3");
+        let (rules, mut random) = (rules(), Random::new(7));
+        for day in (70..=364).step_by(7) {
+            on_day(&mut records, day);
+            week(&mut records, &rules, &mut random);
+        }
+        let (ours, least) = extended(&a, &records);
+        assert_eq!((theirs[0], ours[0]), (0, 0));
+        for k in 1..4 {
+            let off = (ours[k] as f64 / theirs[k] as f64 - 1.0).abs();
+            assert!(off < 0.2, "{k} years left: {} against the original's {}", ours[k], theirs[k]);
+        }
+        assert!(least >= 80, "{least}");
     }
 }
 
@@ -501,3 +730,4 @@ mod season_tests {
         assert!(x == y, "{} bytes differ", (0..x.len()).filter(|&k| x[k] != y[k]).count());
     }
 }
+

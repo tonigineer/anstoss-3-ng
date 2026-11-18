@@ -1723,7 +1723,7 @@ fn computer_bid(
 }
 
 /// What terms are worth to the player at a club (`FUN_00709c52`).
-fn offer_worth(
+pub(crate) fn offer_worth(
     records: &Records,
     tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
     p: &crate::records::Player,
