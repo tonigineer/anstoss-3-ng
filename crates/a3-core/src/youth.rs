@@ -138,8 +138,13 @@ pub fn youths(records: &Records, country: u8, number: u16) -> (Vec<u16>, usize) 
 
 /// His youth class by his birthday: 0 C, 1 B, 2 A (`FUN_0066b0c1`).
 pub fn class(records: &Records, id: u16) -> usize {
+    class_in(records, id, i32::from(records.globals.start_year()))
+}
+
+/// His youth class counted in the season of `year`.
+pub(crate) fn class_in(records: &Records, id: u16, year: i32) -> usize {
     let Some(r) = records.player(id) else { return 0 };
-    let mut age = i32::from(records.globals.start_year()) - i32::from(r.birth_year());
+    let mut age = year - i32::from(r.birth_year());
     if r.birth_month() < SEASON_MONTH {
         age += 1;
     }
@@ -230,6 +235,11 @@ pub(crate) fn leave_youth(records: &mut Records, (country, number): (u8, u16), i
     if let Some(r) = records.players.get_mut(usize::from(id)) {
         r.put(YOUTH_GOALS, 0u8);
     }
+}
+
+/// His youth goals gone (`FUN_00706cb1`).
+pub(crate) fn clear_goals(r: &mut Player) {
+    r.put(YOUTH_GOALS, 0u8);
 }
 
 /// His goals as a youth or an amateur of the pool.
@@ -351,7 +361,7 @@ pub fn pool(records: &Records, country: u8, number: u16) -> [Vec<u16>; 2] {
 }
 
 /// Stores a club's pool (`FUN_00408036`).
-fn store_pool(records: &mut Records, country: u8, number: u16, lists: &[Vec<u16>; 2]) {
+pub(crate) fn store_pool(records: &mut Records, country: u8, number: u16, lists: &[Vec<u16>; 2]) {
     let Some(i) = records.team_index(country.into(), number) else { return };
     let Some(block) = records.block_mut(&format!("{POOL_AT:#x}[{i}]")) else { return };
     for (n, list) in lists.iter().enumerate() {

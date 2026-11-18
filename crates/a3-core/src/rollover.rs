@@ -45,8 +45,9 @@
 //!
 //! Left out: the stadium byte the season's
 //! end clears (`FUN_00638335`'s object +0x68); for the countries
-//! played the contracts that run out (`FUN_006b3f92`), the amateurs'
-//! retirements and the computer clubs' new youth and strength.
+//! played the computer clubs' contract renewals and their old men's
+//! retirements (`FUN_004288d5`). (The contracts that run out are
+//! [`crate::free_agents`].)
 //! The original draws with its own generator, so the men
 //! who grow are others than the original's.
 
@@ -197,8 +198,9 @@ pub fn count_first_seasons(records: &mut Records) {
 /// no reserve team clears its two season words and closes every player's
 /// season (`FUN_0070665a`), and its reserve team, if it has one
 /// (team +0x873), does the same, each with its staff standing run
-/// down ([`close_staff`]). (The retirements from a club's amateurs,
-/// `FUN_00407ecd`, are not built.)
+/// down ([`close_staff`]). A club with no reserve team lets its old
+/// amateurs go ([`retire_amateurs`]); then its youths close their season
+/// ([`close_youths`]).
 pub fn close_played(records: &mut Records, random: &mut Random) {
     let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
@@ -222,10 +224,81 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
                     }
                 }
             }
+            if reserve < 0 {
+                retire_amateurs(records, country as u8, number, random);
+            }
+            close_youths(records, country as u8, number);
         }
         // The country's youth leagues move their teams up and down
         // after its clubs (`FUN_006b44cb`'s `FUN_00670ac5`).
         crate::youth_league::close_season(records, country);
+    }
+}
+
+/// An amateur this many years older than his strength ends his career
+/// at the season's end, and past this age one draw in three
+/// (`FUN_006b4727`); ids from this on are left alone.
+const AMATEUR_YEARS_OVER: i32 = 0x1d;
+const AMATEUR_OLD: i32 = 0x1e;
+const AMATEUR_CHECKED_BELOW: u16 = 17000;
+
+/// A club with no reserve team lets its old amateurs end their careers
+/// (`FUN_006b4727` over the pool's amateurs, `FUN_00407ecd` and
+/// `FUN_00408036`): one whose age (`FUN_006ff01b`) is above his strength
+/// and 29, or one past 30 with a draw of three at nought, goes into the
+/// pool (`FUN_0066d975`); the others close up in their order. (The note
+/// `FUN_005dbeb7` makes is left out.)
+fn retire_amateurs(records: &mut Records, country: u8, number: u16, random: &mut Random) {
+    let Some(today) = crate::free_agents::today(records) else { return };
+    let [up, amateurs] = crate::youth::pool(records, country, number);
+    let mut kept = Vec::with_capacity(amateurs.len());
+    for id in amateurs {
+        let Some(p) = records.player(id).filter(|_| id < AMATEUR_CHECKED_BELOW) else {
+            kept.push(id);
+            continue;
+        };
+        let age = crate::statistics::age_on(p, today);
+        if i32::from(p.strength()) + AMATEUR_YEARS_OVER < age || age > AMATEUR_OLD && random.below(3) == 0 {
+            end_career(records, id, random);
+        } else {
+            kept.push(id);
+        }
+    }
+    crate::youth::store_pool(records, country, number, &[up, kept]);
+}
+
+/// R+0x26f's bits a youth keeps into the next season (`FUN_006b4727`).
+const YOUTH_BITS_KEPT: u8 = 0xf3;
+
+/// A club's youths close their season (`FUN_006b4727`'s youth pass, the
+/// year counted one on): each loses R+0x26f's bits 2 and 3 and his youth
+/// goals (`FUN_00706cb1`), and of those supported (R+0x1b4 bit 30,
+/// `FUN_00706ba6`) each class of next season (`FUN_0066b0c1`) keeps one:
+/// the strongest, of equals the later in the list (`FUN_00706bc8`).
+fn close_youths(records: &mut Records, country: u8, number: u16) {
+    let next = i32::from(records.globals.start_year()) + 1;
+    let (ids, _) = crate::youth::youths(records, country, number);
+    let mut holder: [Option<u16>; 3] = [None; 3];
+    for id in ids {
+        let Some(p) = records.player_mut(id) else { continue };
+        p.set_retiring(p.retiring() & YOUTH_BITS_KEPT);
+        crate::youth::clear_goals(p);
+        if p.shown() & crate::youth::SUPPORTED == 0 {
+            continue;
+        }
+        let strength = p.strength();
+        let class = crate::youth::class_in(records, id, next);
+        let drop = match holder[class] {
+            None => None,
+            Some(h) if records.player(h).is_some_and(|q| q.strength() > strength) => Some(id),
+            Some(h) => Some(h),
+        };
+        if drop != Some(id) {
+            holder[class] = Some(id);
+        }
+        if let Some(p) = drop.and_then(|d| records.player_mut(d)) {
+            p.set_shown(p.shown() & !crate::youth::SUPPORTED);
+        }
     }
 }
 
@@ -1521,5 +1594,97 @@ mod tests {
         let e: [u8; 0x14] = extra.get(0xde0 + 99 * 0x14);
         assert_eq!((i16::from_le_bytes([e[0], e[1]]), e[2], e[3]), (2026, 7, CAREER_END));
         assert_eq!((u16::from_le_bytes([e[4], e[5]]), u16::from_le_bytes([e[6], e[7]]), e[0xc], e[0xd]), (11, 22, 7, 4));
+    }
+
+    /// The played countries' amateurs and youths over the original's
+    /// pair: of the clubs with no reserve team every amateur older than
+    /// his strength and 29 is gone from the pool in both, every one of 30
+    /// or younger stays in ours, and the youths still at their club stand
+    /// with no youth goals, no bits 2 and 3, and the original's supported
+    /// flags — one a class at most.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_played_countries_amateurs_and_youths_close_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        let mut random = Random::new(7);
+        crate::free_agents::release(&mut ours, &mut random);
+        close_played(&mut ours, &mut random);
+        let today = crate::free_agents::today(&before).unwrap();
+        let (mut gone, mut stayed, mut youths, mut supported) = (0, 0, 0, 0);
+        let mut old = [0; 3];
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)) as u16 {
+                let [first, reserve] = before.team(country, number).unwrap().linked();
+                if first >= 0 {
+                    continue;
+                }
+                let c = country as u8;
+                let (x, y) = (crate::youth::pool(&ours, c, number)[1].clone(), crate::youth::pool(&theirs, c, number)[1].clone());
+                for id in crate::youth::pool(&before, c, number)[1].clone() {
+                    let p = before.player(id).unwrap();
+                    let age = crate::statistics::age_on(p, today);
+                    if reserve >= 0 || id >= AMATEUR_CHECKED_BELOW {
+                        continue;
+                    }
+                    if age > i32::from(p.strength()) + AMATEUR_YEARS_OVER {
+                        assert!(!x.contains(&id) && !y.contains(&id), "amateur {id} of {age} stays");
+                        gone += 1;
+                    } else if age <= AMATEUR_OLD {
+                        assert!(x.contains(&id), "amateur {id} of {age} gone");
+                        stayed += 1;
+                    } else {
+                        old[0] += 1;
+                        old[1] += i32::from(!x.contains(&id));
+                        old[2] += i32::from(!y.contains(&id));
+                    }
+                }
+                let (now, _) = crate::youth::youths(&theirs, c, number);
+                let mut classes = [0; 3];
+                for id in crate::youth::youths(&ours, c, number).0.into_iter().filter(|id| now.contains(id)) {
+                    let (o, t) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    youths += 1;
+                    assert_eq!(crate::youth::goals(o), 0, "youth {id}");
+                    assert_eq!(o.retiring() & !YOUTH_BITS_KEPT, 0, "youth {id}");
+                    assert_eq!(o.shown() & crate::youth::SUPPORTED, t.shown() & crate::youth::SUPPORTED, "youth {id}");
+                    if o.shown() & crate::youth::SUPPORTED != 0 {
+                        supported += 1;
+                        classes[crate::youth::class_in(&ours, id, i32::from(ours.globals.start_year()) + 1)] += 1;
+                    }
+                }
+                assert!(classes.iter().all(|&n| n <= 1), "{country}/{number}: {classes:?}");
+            }
+        }
+        // The pair holds no amateur past 30 (they are drawn 20 to 29), so
+        // an old one is made: the first of a club's two goes into the
+        // pool, the second closes up.
+        assert_eq!((gone, old[0]), (0, 0));
+        assert!(stayed > 200 && youths > 500 && supported > 0, "{stayed} {youths} {supported}");
+        let mut ours = read("SeasonEnd364.an3");
+        let (c, number, [a, b]) = crate::opponent::played_nations(&ours)
+            .into_iter()
+            .flat_map(|c| (0..ours.countries.team_count(usize::from(c)) as u16).map(move |n| (c as u8, n)))
+            .find_map(|(c, n)| {
+                let linked = ours.team(c.into(), n)?.linked();
+                let list = &crate::youth::pool(&ours, c, n)[1];
+                (linked == [-1, -1] && list.len() >= 2 && list[1] < AMATEUR_CHECKED_BELOW).then(|| (c, n, [list[0], list[1]]))
+            })
+            .expect("a club with two amateurs");
+        let year = ours.globals.start_year();
+        ours.player_mut(a).unwrap().set_birth_year(year - 45);
+        ours.player_mut(b).unwrap().set_birth_year(year - 25);
+        close_played(&mut ours, &mut random);
+        let list = &crate::youth::pool(&ours, c, number)[1];
+        assert_eq!(list.first(), Some(&b), "{list:?}");
+        assert!(!list.contains(&a));
+        let block = ours.block(POOL).unwrap();
+        let pooled = |id: u16| (0..POOL_SIZE).any(|k| u16::from_le_bytes([block[POOL_ENTRIES + 4 * k], block[POOL_ENTRIES + 4 * k + 1]]) == id);
+        assert!(pooled(a) && !pooled(b));
     }
 }
