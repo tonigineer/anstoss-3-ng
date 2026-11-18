@@ -234,7 +234,7 @@ const LAST: u16 = 0x80;
 /// The rule that gives a point more for three goals.
 const THREE_GOALS: u32 = 0x80;
 const BONUS_GOALS: i32 = 3;
-const TEAM_FLAGS: usize = 0x12a;
+pub(crate) const TEAM_FLAGS: usize = 0x12a;
 /// The tie-break by goals scored first.
 const GOALS_FIRST: i16 = 1;
 
@@ -4194,6 +4194,69 @@ fn reckon_with(records: &Records, league: &League, kind: u8, penalties: bool, bo
     }
     for row in &mut rows {
         row.points = row.points.max(0);
+    }
+    rows
+}
+
+/// A play-off group's table (`FUN_006d75a9` of kind 0) from its record
+/// (`0x1baa1e0`'s 0x1d0 bytes): its clubs (+4 their count, +0xc on), each
+/// starting from its points at +0x1e on less three for each penalty of
+/// its flags (`flags_of`: team +0x12a, `FUN_0063e470`), then its fourteen matchdays'
+/// pairs of places (+0x60, 8 bytes a matchday) with the scores at +0xd0
+/// (0x20 a home side, 4 an away one; 0xff unplayed); no points below
+/// nought, and sorted only once a matchday is played (+0x1c).
+pub(crate) fn group_table(rec: &[u8], flags_of: impl Fn(i16) -> u16) -> Vec<Row> {
+    const COUNT: usize = 4;
+    const TEAMS: usize = 0xc;
+    const PLAYED: usize = 0x1c;
+    const POINTS: usize = 0x1e;
+    const SCHEDULE: usize = 0x60;
+    const MATCHDAYS: usize = 14;
+    const SCORES: usize = 0xd0;
+    let word = |at: usize| rec.get(at..at + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]));
+    let byte = |at: usize| rec.get(at).copied().unwrap_or(0xff);
+    let n = usize::try_from(word(COUNT)).unwrap_or(0).min(8);
+    let mut rows: Vec<Row> = (0..n)
+        .map(|i| {
+            let team = word(TEAMS + 2 * i);
+            let flags = flags_of(team);
+            let points = i32::from(word(POINTS + 2 * i)) - PENALTY_POINTS * i32::from(flags & PENALTY);
+            Row { place: i, team, points, flags, ..Row::default() }
+        })
+        .collect();
+    for md in 0..MATCHDAYS {
+        for a in (0..n).step_by(2) {
+            let (home, away) = (usize::from(byte(SCHEDULE + md * 8 + a)), usize::from(byte(SCHEDULE + md * 8 + a + 1)));
+            let at = SCORES + home * 0x20 + away * 4;
+            let (h, g) = (byte(at), byte(at + 1));
+            if h == 0xff || home >= n || away >= n {
+                continue;
+            }
+            let (h, g) = (i32::from(h), i32::from(g));
+            for (side, own, other) in [(home, h, g), (away, g, h)] {
+                let r = &mut rows[side];
+                r.games += 1;
+                r.goals_for += own;
+                r.goals_against += other;
+                match own.cmp(&other) {
+                    std::cmp::Ordering::Greater => {
+                        r.points += 3;
+                        r.won += 1;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        r.points += 1;
+                        r.drawn += 1;
+                    }
+                    std::cmp::Ordering::Less => r.lost += 1,
+                }
+            }
+        }
+    }
+    for row in &mut rows {
+        row.points = row.points.max(0);
+    }
+    if word(PLAYED) != 0 {
+        sort(&mut rows, false);
     }
     rows
 }
