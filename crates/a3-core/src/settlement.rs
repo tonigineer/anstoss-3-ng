@@ -1122,6 +1122,111 @@ fn plan_bonuses(team: &mut Team, system: usize) {
     put::<i32>(team, LAST_BONUS, drop);
 }
 
+/// The manager's skill the computer signs a human's main sponsor at
+/// (`FUN_006741be`'s 5 to `FUN_00716a87`).
+const LEFT_TALK_SKILL: i64 = 5;
+
+/// The season start's talks a human manager left to the computer
+/// (`CMyStartDialog::FUN_006741be`, which `FUN_00671d57` hands the ticks
+/// of dialog 422 at `CSaisonstartVerhandlungen` +0xa08 … +0xa1c, in the
+/// boxes' order of [`crate::finances::season_talks`]): each box left
+/// unticked has the computer sign what the walk signs a planned club
+/// with — the main sponsor where club +0x509 holds no years
+/// (`FUN_00716a87` at a manager's skill of five: the offer, its number,
+/// the sponsor's rate at +0x504 and +0x1fc), the boards where +0x5a1
+/// holds none (`FUN_007176cf`), the team bonuses (`FUN_00672611`), the
+/// merchandise where +0x5a9 holds none (`FUN_00717462`), the kit
+/// supplier where +0x5b1 holds none (`FUN_00717709`) and for a club in
+/// Europe (team +0x110 0x4000, `FUN_0069a2e5`) the European television's
+/// offer (`FUN_005b9a2a`), booked at once where [`european_tv_booked`]
+/// says so. The original passes the main sponsor's tick for the boards
+/// as well (its +0xa0c is never read), so the boards follow that box.
+/// Like the walk's, the signing here sets the plan's sums that go with
+/// each contract, which the original's plan rest (`FUN_00673566`) reckons
+/// after the preparation.
+pub fn sign_left_talks(records: &mut Records, i: usize, ticked: [bool; 6], random: &mut Random) {
+    let Some(team) = records.teams.get(i) else { return };
+    let country = team.country();
+    let system = usize::from(records.countries.cup_system(usize::from(country)));
+    let first = usize::try_from(records.countries.first_team(usize::from(country))).unwrap_or(0);
+    let holders = records.block(HOLDERS).map(<[u8]>::to_vec).unwrap_or_default();
+    let held = holder(&holders, country, i.wrapping_sub(first));
+    let capacity = records
+        .block(&format!("{STADIUMS}[{i}]"))
+        .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
+        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let [sponsor, _boards, kit, bonuses, merchandise, television] = ticked;
+    let team = &mut records.teams[i];
+    if !sponsor && club::<u8>(team, 0x509) == 0 {
+        // The rate and +0x1fc close `FUN_00716a87` and draw nothing; the
+        // plan's sponsors reckoned from them follow the offer.
+        put::<i32>(team, 0x504, if team.level() < 3 { PLAN_RATE_TOP } else { PLAN_RATE_LOW });
+        let set = club::<u16>(team, 0x304);
+        put::<u16>(team, 0x1fc, if set == 0 { PLAN_1FC } else { set });
+        sign_main_sponsor(team, system, LEFT_TALK_SKILL, held, capacity, random);
+        number_sponsor(team, system, random);
+    }
+    if !sponsor && club::<u8>(team, 0x5a1) == 0 {
+        sign_boards(team, system, random);
+    }
+    if !bonuses {
+        plan_bonuses(team, system);
+    }
+    if !merchandise && club::<u8>(team, 0x5a9) == 0 {
+        sign_shirt(team, system, random);
+    }
+    if !kit && club::<u8>(team, 0x5b1) == 0 {
+        sign_television(team, system, random);
+    }
+    if !television && team.get::<u16>(FLAGS_AT) & EUROPE_FLAG != 0 {
+        draw_european_tv(team, random);
+        book_european_tv(records, i);
+    }
+}
+
+/// The European television's first sum (club +0x5e8) goes to the season's
+/// television money, the plan's (+0x13c) and the booked (+0x244), and
+/// leaves nought behind, where [`european_tv_booked`] says so
+/// (`FUN_006741be`'s and `FUN_00671d57`'s tail after the talks).
+pub fn book_european_tv(records: &mut Records, i: usize) {
+    if !records.teams.get(i).is_some_and(|t| european_tv_booked(records, t)) {
+        return;
+    }
+    let team = &mut records.teams[i];
+    let first = club::<i32>(team, 0x5e8);
+    for at in [0x13c, 0x244] {
+        let v = club::<i32>(team, at);
+        put::<i32>(team, at, v.wrapping_add(first));
+    }
+    put::<i32>(team, 0x5e8, 0);
+}
+
+/// Whether the European television's first sum is booked at once
+/// (`CMyStartDialog::FUN_00424e42(0x50000004)` → `FUN_00424a35` for id
+/// 4, its kind 0x100): the Champions League's finder (`FUN_0042451e`)
+/// missing the club or giving it -1, the UEFA cup's (`FUN_0042462b`)
+/// giving it a round code checked against round one (the short at
+/// 0x877280 for id 4) — out at -1 no, out later yes, in it yes unless
+/// the UEFA cup's round (`DAT_00b5d166`) lies past one and the code is
+/// not past it. A club in the Champions League (kind 0x400) is not. With
+/// neither finder having it the original reads a third list through a
+/// stray object (`FUN_004247f5` on its ECX), which is not followed: no.
+const UEFA_FIRST_ROUND: i16 = 1;
+
+pub fn european_tv_booked(records: &Records, team: &Team) -> bool {
+    let Some([(champions, _), (uefa, _)]) = crate::opponent::europe_codes(records, team) else { return false };
+    if champions != 0 && champions != -1 {
+        return false;
+    }
+    if champions == 0 && uefa == 0 {
+        return false;
+    }
+    if uefa < 0 {
+        return !(uefa == -UEFA_FIRST_ROUND || -uefa < UEFA_FIRST_ROUND);
+    }
+    if UEFA_FIRST_ROUND < records.globals.uefa_round() { UEFA_FIRST_ROUND < uefa } else { true }
+}
+
 /// The players' pay the clearing carries into the plan at +0x17c
 /// (`FUN_006202c1`, as [`crate::forecast`] reckons it): the pay booked —
 /// nought, the bookings just cleared — and the squad's wage bill

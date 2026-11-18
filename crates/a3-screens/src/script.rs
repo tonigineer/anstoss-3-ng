@@ -12861,4 +12861,61 @@ mod tests {
         let crate::controls::ControlState::Check(check) = &runner.host.view().controls[c].state else { panic!() };
         assert_eq!(check.text, " Fernsehgelder  (bei Teilnahme)");
     }
+
+    /// SeasonEnd364's season start with the main sponsor's box unticked:
+    /// the computer signs what the manager left it (`FUN_006741be`) — the
+    /// main sponsor, and the boards with it, whose own tick the original
+    /// never reads — while the talks kept stay as they were; the
+    /// European television's talks (dialog 475) come up for the club in
+    /// Europe, and the preparation follows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_start_talks_left_unticked_are_signed() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let turn = "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422";
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", turn);
+        let team_of = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+            let nation = game.world.country(slot).unwrap().nation;
+            records.team(nation, number as u16).unwrap().clone()
+        };
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let before = team_of(&runner);
+        let talks = a3_core::finances::season_talks(&before, runner.host.state().records.as_ref().unwrap().globals.preparation());
+        drop(runner);
+        let years = |t: &a3_core::records::Team, at: usize| t.get::<u8>(at + a3_core::finances::CLUB_TO_TEAM);
+        let then = format!("{turn}\nnow click 2185\nnow ok\nuntil dialog 419");
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", &then);
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, 419, "{}", runner.log.join("\n"));
+        // The television's box kept for a club in Europe opens its talks,
+        // as the original does on this save.
+        let tv = talks[5].ticked && a3_core::finances::in_europe(&before);
+        assert_eq!(runner.log.iter().any(|l| l == "screen 475"), tv, "{}", runner.log.join("\n"));
+        assert_eq!(runner.log.iter().any(|l| l == "screen 384"), tv, "its OK asks first");
+        let after = team_of(&runner);
+        for (k, at) in [(0, 0x509), (1, 0x5a1)] {
+            if talks[0].open && talks[k].open {
+                assert_ne!(years(&after, at), 0, "the computer signed {at:#x}");
+            } else {
+                assert_eq!(years(&after, at), years(&before, at), "{at:#x} as it was");
+            }
+        }
+        if talks[0].open {
+            assert_ne!(after.get::<u16>(0x4ea + a3_core::finances::CLUB_TO_TEAM), 0, "the sponsor's number");
+        }
+        for (k, at) in [(2, 0x5b1), (4, 0x5a9)] {
+            if talks[k].ticked {
+                assert_eq!(years(&after, at), years(&before, at), "{at:#x} kept for the manager");
+            }
+        }
+    }
 }

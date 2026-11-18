@@ -267,6 +267,9 @@ pub mod dialogs {
     /// The season start's negotiations the manager leads himself
     /// (`IDD_SAISONSTART_VERHANDLUNGEN`, `CSaisonstartVerhandlungen`).
     pub const SEASON_START_TALKS: u16 = 422;
+    /// The European television's talks a manager leads himself
+    /// (`IDD_VERHANDLUNGEN_UEFA_CUP`, `CDiVerhandlungenUefa`).
+    pub const EURO_TV_TALKS: u16 = 475;
     /// The season's preparation (`CVorbereitung`).
     pub const SEASON_PREPARATION: u16 = 419;
     /// The overviews of the season's start (`CSaisonstartAuslosungen`).
@@ -1878,9 +1881,11 @@ impl Cycle {
         // Each human club's manager then has the season start's event 0x82
         // (`FUN_00671c60`, one entry per club of `FUN_006355f4` for the
         // manager at club +0x8b, run in turn by `CMyStartDialog::
-        // FUN_00671d57`): the negotiations he leads himself (dialog 422)
-        // — the European TV talks behind them (`CDiVerhandlungenUefa`)
-        // only after a deal there, which is not built — and the season's
+        // FUN_00671d57`): the negotiations he leads himself (dialog 422),
+        // whose ticks come back one bit each, those he leaves signed by
+        // the computer (`FUN_006741be`), the European TV talks behind
+        // them where he keeps those and his club is in Europe
+        // (`CDiVerhandlungenUefa`, dialog 475) — and the season's
         // preparation (dialog 419), unless it is the first season and the
         // option at `DAT_00b5d19a` leaves it to the computer
         // (`FUN_0042b589`, `FUN_00409d99`). Under the same condition the
@@ -1899,7 +1904,15 @@ impl Cycle {
         };
         for manager in humans {
             self.season(|s| s.current = manager);
-            self.ask(Request::new(SEASON_START_TALKS))?;
+            let ticks = match self.ask(Request::new(SEASON_START_TALKS))? {
+                Reply::Choice(ticks) => ticks,
+                _ => 0,
+            };
+            let ticked: [bool; 6] = std::array::from_fn(|k| ticks >> k & 1 != 0);
+            if self.leave_talks(manager, ticked) {
+                self.ask(Request::new(EURO_TV_TALKS))?;
+                self.on_club(manager, crate::settlement::book_european_tv);
+            }
             if !quick {
                 self.ask(Request::new(SEASON_PREPARATION))?;
             }
@@ -2503,6 +2516,40 @@ impl Cycle {
             };
         }
         if manager.club.is_some() { line_up_view(season, LINEUP) } else { DRESSING_ROOM }
+    }
+
+    /// Works on a manager's club's record, by its index among the teams.
+    fn on_club<T>(&self, manager: usize, work: impl FnOnce(&mut Records, usize) -> T) -> Option<T> {
+        let mut state = self.state();
+        let (slot, number) = state.season.as_ref()?.managers.get(manager)?.club?;
+        let nation = self.data.world.country(slot)?.nation;
+        let records = state.records.as_mut()?;
+        let i = records.team_index(nation, u16::try_from(number).ok()?)?;
+        Some(work(records, i))
+    }
+
+    /// The season start's talks a manager left unticked, signed by the
+    /// computer (`FUN_006741be`); whether the European TV talks follow —
+    /// their box ticked and the club in Europe (team +0x110 0x4000,
+    /// `FUN_0069a2e5`) —, the offer's two sums then cleared for them
+    /// (`FUN_00671d57`: club +0x5e8, +0x5ec).
+    fn leave_talks(&self, manager: usize, ticked: [bool; 6]) -> bool {
+        let mut state = self.state();
+        let state = &mut *state;
+        let Some(season) = state.season.as_mut() else { return false };
+        let Some((slot, number)) = season.managers.get(manager).and_then(|m| m.club) else { return false };
+        let Some(nation) = self.data.world.country(slot).map(|c| c.nation) else { return false };
+        let Some(records) = state.records.as_mut() else { return false };
+        let Some(i) = u16::try_from(number).ok().and_then(|n| records.team_index(nation, n)) else { return false };
+        crate::settlement::sign_left_talks(records, i, ticked, &mut season.random);
+        let team = &mut records.teams[i];
+        let talks = ticked[5] && crate::finances::in_europe(team);
+        if talks {
+            for at in [0x5e8, 0x5ec] {
+                team.put::<i32>(at + crate::finances::CLUB_TO_TEAM, 0);
+            }
+        }
+        talks
     }
 
     /// The announcement the current manager's turn opens with, if any: the

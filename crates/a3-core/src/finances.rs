@@ -601,8 +601,9 @@ const PLAN_OTHER_COSTS: [usize; 5] = [0x90, 0x98, 0xa0, 0xe8, 0x8c];
 /// club's season block copied into its extra data, the kept accounts'
 /// other costs set to the plan's with the departments, and from the
 /// second season on the mark that a last season stands. The season start's
-/// negotiations it then opens (`CSaisonstartVerhandlungen`, the European
-/// TV talks) are not built.
+/// negotiations it then opens (`CSaisonstartVerhandlungen`) the cycle asks
+/// for, the talks left unticked signed by
+/// [`crate::settlement::sign_left_talks`].
 pub fn keep_last_season(records: &mut Records) {
     let second = records.globals.seasons() > 1;
     for n in 0..usize::from(records.globals.humans()) {
@@ -642,12 +643,17 @@ const SEASON_TALK_CONTRACTS: [Option<usize>; 6] = [Some(0x509), Some(0x5a1), Som
 const NORMAL_PREPARATION: u8 = 5;
 const IN_EUROPE: u16 = 0x4000;
 
+/// A club in Europe this season (team +0x110 0x4000, `FUN_0069a2e5`).
+pub fn in_europe(team: &Team) -> bool {
+    team.get::<u16>(0x110) & IN_EUROPE != 0
+}
+
 pub fn season_talks(team: &Team, preparation: u8) -> [SeasonTalk; 6] {
     let ticked = preparation == NORMAL_PREPARATION;
     std::array::from_fn(|k| {
         let open = match SEASON_TALK_CONTRACTS[k] {
             Some(at) => team.get::<u8>(at + CLUB_TO_TEAM) == 0,
-            None if k == 5 => team.get::<u16>(0x110) & IN_EUROPE != 0,
+            None if k == 5 => in_europe(team),
             None => true,
         };
         SeasonTalk { ticked: ticked && open, open }
