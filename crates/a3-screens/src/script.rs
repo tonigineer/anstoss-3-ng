@@ -9423,7 +9423,7 @@ mod tests {
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
-                        on 381 wait\non 356 press 4542\n";
+                        on 381 wait\non 356 press 4542\non 152 press 2594\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(5);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
@@ -12584,6 +12584,69 @@ mod tests {
             assert_eq!(records.player(youth).unwrap().retiring() & 0x10, 0);
         }
         runner.run(&Script::parse("now ok\nuntil dialog 147").unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364 patched so that twelve of Union's men end their
+    /// careers: the season's end tells them first (dialog 152, the
+    /// original's shot of the same save matching but for strengths its
+    /// own development drew) — the club in the caption, "Saison 2025/26"
+    /// over the first ten, "Name, F.", position, strength, age — and OK,
+    /// the last page, goes on to the statement while they are gone from
+    /// the squad.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_says_goodbye_to_the_leaving_men() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.join("saves/SeasonEnd364.an3").exists() && !dir.parent().unwrap().join("saves-kept/SeasonEnd364.an3").exists() {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        }
+        let mut leaving = Vec::new();
+        let root = patched(&dir, "SeasonEnd364", "farewells", |records| {
+            let (country, number) = a3_core::statistics::human_clubs(records)[0];
+            let squad = records.team(country.into(), number as u16).unwrap().players();
+            leaving = squad[squad.len() - 12..].to_vec();
+            for &id in &leaving {
+                let p = records.player_mut(id).unwrap();
+                p.set_retiring(p.retiring() | 0x80);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // The loaded game's turn reaches the season's end at once.
+        let row = game.save_games().iter().position(|s| s.name == "farewells").unwrap();
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", "until dialog 152");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&152];
+        assert_eq!(runner.host.view().text(control(dialog, 2593).unwrap()), "Saison 2025/26");
+        assert_eq!(
+            runner.host.view().text(control(dialog, 9924).unwrap()),
+            "ANSTOSS 3 - Spieler des 1.FC Union Berlin, die ihre Karriere beenden..."
+        );
+        let rows = runner.host.view().list(control(dialog, 2595).unwrap()).unwrap().rows.clone();
+        assert_eq!(rows.len(), 10, "ten of twelve");
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let r = records.player(leaving[0]).unwrap();
+            let [day, month, year] = records.globals.date();
+            let today = chrono::NaiveDate::from_ymd_opt(year.into(), month.into(), day.into()).unwrap();
+            let fields: Vec<&str> = rows[0].split('\t').collect();
+            assert_eq!(fields.len(), 4, "{}", rows[0]);
+            assert!(fields[0].contains(", ") || r.shown() & 0x8000_0000 != 0, "{}", rows[0]);
+            assert_eq!(fields[2], r.strength().to_string());
+            assert_eq!(fields[3], a3_core::statistics::age_on(r, today).to_string());
+        }
+        runner.run(&Script::parse("now press 2594\nuntil dialog 417").unwrap()).unwrap();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let (country, number) = a3_core::statistics::human_clubs(records)[0];
+            let squad = records.team(country.into(), number as u16).unwrap().players();
+            assert!(leaving.iter().all(|id| !squad.contains(id)), "the men are gone");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

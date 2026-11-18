@@ -239,6 +239,9 @@ pub mod dialogs {
     /// The doping control after the match, `CDopingAusgabe`
     /// (`IDD_DOPING_AUSGABE`).
     pub const DOPING_CONTROL: u16 = 41;
+    /// The careers the season's end closes, `CMitTraenen`
+    /// (`IDD_MIT_TRAENEN`, event 0xcd).
+    pub const FAREWELLS: u16 = 152;
     /// The cup results after the matchday, `CPokalNachSpieltag`
     /// (`IDD_POKAL_NACH_DEM_SPIEL`).
     pub const CUP_RESULTS: u16 = 161;
@@ -456,6 +459,9 @@ pub enum Args {
     /// The doping control of a human's club after the match
     /// (`DAT_00a2e0b8`).
     Doping(crate::doping_control::Control),
+    /// The human clubs' men whose careers the season's end closes
+    /// (`DAT_00a321f4`).
+    Farewells(crate::rollover::Farewells),
     /// A case the association's court heard (`DAT_00a3b44c`).
     Court(crate::court::Case),
     /// The new contract terms of the season's turn
@@ -1619,7 +1625,7 @@ impl Cycle {
             return Ok(());
         }
         self.season(|s| s.statement = true);
-        {
+        let closing = {
             // The leagues draw next season's clubs (`FUN_006b24f2`), the
             // seasons go into their archive and the first leagues' into
             // the all-time tables, the clubs take their season's flags
@@ -1630,14 +1636,30 @@ impl Cycle {
             // season-end block).
             let mut guard = self.state();
             let state = &mut *guard;
+            match (state.season.as_mut(), state.records.as_mut()) {
+                (Some(season), Some(records)) => {
+                    let drawn = crate::promotion::draw(records, &mut season.random);
+                    crate::promotion::count(records);
+                    // Every trial at the human clubs ends with the season
+                    // (`FUN_0074d52b`), told to no one.
+                    let _ = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
+                    crate::statistics::archive_strengths(records);
+                    crate::development::develop_played(records, false, &mut season.random);
+                    Some((drawn, crate::rollover::farewells(records)))
+                }
+                _ => None,
+            }
+        };
+        // The careers about to end are told first, every human club's on
+        // a page of one notice (`FUN_0066d435` posting event 0xcd ahead of
+        // its retirements).
+        if let Some((_, Some(farewells))) = &closing {
+            self.ask(Request::with(FAREWELLS, Args::Farewells(*farewells)))?;
+        }
+        if let Some((drawn, _)) = closing {
+            let mut guard = self.state();
+            let state = &mut *guard;
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
-                let drawn = crate::promotion::draw(records, &mut season.random);
-                crate::promotion::count(records);
-                // Every trial at the human clubs ends with the season
-                // (`FUN_0074d52b`), told to no one.
-                let _ = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
-                crate::statistics::archive_strengths(records);
-                crate::development::develop_played(records, false, &mut season.random);
                 crate::rollover::retire_announced(records, &mut season.random);
                 crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);

@@ -38,7 +38,12 @@
 //!
 //! The thin clubs' new players come from [`crate::newplayer`].
 //!
-//! Left out: the national legends (`FUN_0066df9e`), the stadium byte the season's
+//! The national legends a career's end would note (`FUN_0066df9e`, the
+//! saved tables at `0x8e0f78` and `0x8e1d88`) stay empty in the original:
+//! it notes a man only when his nickname's text (`FUN_006feb05`) is no
+//! pointer at all, which it always is — so the replica notes none.
+//!
+//! Left out: the stadium byte the season's
 //! end clears (`FUN_00638335`'s object +0x68); for the countries
 //! played the contracts that run out (`FUN_006b3f92`), the amateurs'
 //! retirements and the computer clubs' new youth and strength.
@@ -605,8 +610,9 @@ fn pool(records: &mut Records, id: u16, random: &mut Random) {
 /// A player ends his career at his club (`FUN_0070de6c`): out of its
 /// squad and its line-up (`FUN_0070e01a`, `FUN_0070d9c5`), off the
 /// transfer list and the watch lists, his retiring bits gone, and into
-/// the pool (`FUN_0066d975`). (His national legends, `FUN_0066df9e`, and
-/// the other lists he is taken from are not built.)
+/// the pool (`FUN_0066d975`). (His national legends, `FUN_0066df9e`, the
+/// original never notes; the other lists he is taken from are not
+/// built.)
 pub fn retire(records: &mut Records, country: u16, number: u16, id: u16, random: &mut Random) {
     if let Some(team) = records.team_mut(country, number) {
         let squad: Vec<u16> = team.players().into_iter().filter(|&p| p != id).collect();
@@ -670,11 +676,56 @@ pub(crate) fn push_history(extra: &mut crate::records::Extra, entry: [u8; HISTOR
     extra.put(HISTORY_COUNT, count + 1);
 }
 
+/// How many of a club's leaving players the notice names (`FUN_0066d435`
+/// keeps ten of each club at `0xa32206`).
+pub const FAREWELLS_SHOWN: usize = 10;
+/// The human clubs the notice has pages for.
+pub const FAREWELL_CLUBS: usize = 4;
+
+/// The human clubs' players who end their careers with the season, as
+/// its notice names them (`FUN_0066d435`'s first walk into the block at
+/// `0xa321f4` that dialog 152 copies, event 0xcd): each human club with
+/// any man retiring (R+0x26f's bit 7), by country and number, and the
+/// first ten of them in its squad's order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Farewells {
+    pub clubs: [(u8, i16); FAREWELL_CLUBS],
+    pub players: [[u16; FAREWELLS_SHOWN]; FAREWELL_CLUBS],
+    pub count: u8,
+}
+
+/// The notice of the careers the season's end will close, before they
+/// close (`FUN_0066d435` posts event 0xcd ahead of its retirements); none
+/// when no human club loses a man.
+pub fn farewells(records: &Records) -> Option<Farewells> {
+    let mut notice = Farewells::default();
+    for (country, number) in crate::statistics::human_clubs(records) {
+        let k = usize::from(notice.count);
+        if k == FAREWELL_CLUBS {
+            break;
+        }
+        let Ok(team) = u16::try_from(number) else { continue };
+        let leaving: Vec<u16> = squad(records, u16::from(country), team)
+            .into_iter()
+            .filter(|&id| records.player(id).is_some_and(|p| p.retiring() & RETIRES != 0))
+            .collect();
+        if leaving.is_empty() {
+            continue;
+        }
+        notice.clubs[k] = (country, number);
+        for (slot, &id) in notice.players[k].iter_mut().zip(&leaving) {
+            *slot = id;
+        }
+        notice.count += 1;
+    }
+    (notice.count > 0).then_some(notice)
+}
+
 /// The season's end retires the players who said they would end their
 /// careers (R+0x26f's bit 7; `FUN_0066d435`): the human clubs' first,
 /// each into his club's history, then every club's of the countries
 /// played (`FUN_0066d815`). (The human's notice of them, event 0xcd, is
-/// not built.)
+/// [`farewells`], taken before.)
 pub fn retire_announced(records: &mut Records, random: &mut Random) {
     let retiring = |records: &Records, country: u16, number: u16| -> Vec<u16> {
         squad(records, country, number)
@@ -1389,6 +1440,52 @@ mod tests {
                 })
                 .count() as i16;
             assert_eq!(i16::from_le_bytes([b[2 * class], b[2 * class + 1]]), held, "class {class}'s count");
+        }
+    }
+
+    /// The notice names the human clubs' leaving men before they go, ten
+    /// of a club at most, in its squad's order; the original's legends
+    /// stay empty across its season end, and so do the replica's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_notice_names_the_human_clubs_leaving_men() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        assert_eq!(farewells(&ours), None, "SeasonEnd364's human club loses no man");
+        // Twelve of the human club's men say they will go, the last of
+        // the squad first.
+        let humans = crate::statistics::human_clubs(&ours);
+        let (country, number) = humans[0];
+        let men = squad(&ours, country.into(), number as u16);
+        for &id in men.iter().rev().take(12) {
+            let p = ours.player_mut(id).unwrap();
+            p.set_retiring(p.retiring() | RETIRES);
+        }
+        let notice = farewells(&ours).expect("the human club loses men");
+        assert_eq!((notice.count, notice.clubs[0]), (1, (country, number)));
+        assert_eq!(notice.players[0].to_vec(), men[men.len() - 12..men.len() - 2].to_vec(), "the first ten");
+        for k in 0..usize::from(notice.count) {
+            let (country, number) = notice.clubs[k];
+            assert!(humans.contains(&(country, number)));
+            let leaving: Vec<u16> = squad(&ours, country.into(), number as u16)
+                .into_iter()
+                .filter(|&id| ours.player(id).unwrap().retiring() & RETIRES != 0)
+                .take(FAREWELLS_SHOWN)
+                .collect();
+            let named: Vec<u16> = notice.players[k].iter().copied().filter(|&id| id != 0).collect();
+            assert_eq!(named, leaving, "club {country}/{number}");
+            assert!(!named.is_empty());
+        }
+        retire_announced(&mut ours, &mut Random::new(3));
+        assert_eq!(farewells(&ours), None, "nobody left to name");
+        for legends in ["0x8e0f78", "0x8e1d88"] {
+            assert!(theirs.block(legends).unwrap().iter().all(|&b| b == 0), "the original's {legends}");
+            assert!(ours.block(legends).unwrap().iter().all(|&b| b == 0), "ours {legends}");
         }
     }
 
