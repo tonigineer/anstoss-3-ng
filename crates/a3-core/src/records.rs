@@ -973,6 +973,9 @@ record! {
     0x2e => birth_day, set_birth_day: u8;
     0x2f => birth_month, set_birth_month: u8;
     0x30 => birth_year, set_birth_year: u16;
+    /// His position as a player, the main one of the player standing for
+    /// him (`FUN_006a3fc7` copies it to his player's +0x21d).
+    0x32 => position, set_position: u8;
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];

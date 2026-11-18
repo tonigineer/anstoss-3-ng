@@ -821,9 +821,92 @@ fn read_abroad(records: &mut Records, file: &Section) {
     }
 }
 
+/// The first of the four players standing for the human managers, one
+/// each by his number (`Player_ARRAY_00c02550[17000 + k]`).
+pub const MANAGER_PLAYERS: usize = 17001;
+
+/// `FUN_006a3fc7(nation, mode)`, after `FUN_00686684` and `FUN_0068716b`
+/// (the new game passes `DAT_00b5cbb0` and `DAT_00b5cbc6`): every manager
+/// record takes the game's mode (+0x12a), and the player standing for him
+/// his names into the pool (`FUN_0068b511`, which trims the record's own
+/// in place), his birthday, his position as main position, strength 1 and
+/// the nation.
+pub fn managers_as_players(records: &mut Records, nation: u8, mode: i16) {
+    let mut pool = Pool::new(&mut records.names);
+    for (k, manager) in records.managers.iter_mut().enumerate() {
+        manager.set_mode(mode);
+        let player = &mut records.players[MANAGER_PLAYERS + k];
+        player.set_first_name(pool.index(&manager.first_name()));
+        player.set_last_name(pool.index(&manager.last_name()));
+        player.set_birth_day(manager.birth_day());
+        player.set_birth_month(manager.birth_month());
+        player.set_birth_year(manager.birth_year());
+        let mut positions = player.positions();
+        positions[0] = manager.position();
+        player.set_positions(positions);
+        player.set_strength(1);
+        player.set_nation(nation);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A manager's player takes his names once into the pool, his birthday
+    /// and position, strength 1 and the nation; his record the mode.
+    #[test]
+    fn a_manager_stands_as_a_player_of_strength_one() {
+        let mut records = Records::blank();
+        records.managers[1].clear_with_names("Anna", "Alpha");
+        records.managers[1].set_birth_day(3);
+        records.managers[1].set_birth_year(1970);
+        records.managers[1].set_position(4);
+        managers_as_players(&mut records, 14, 9);
+        let player = &records.players[MANAGER_PLAYERS + 1];
+        assert_eq!((records.name(player.first_name()), records.name(player.last_name())), ("Anna", "Alpha"));
+        assert_eq!((player.birth_day(), player.birth_year(), player.positions()[0], player.strength(), player.nation()), (3, 1970, 4, 1, 14));
+        assert_eq!((records.players[MANAGER_PLAYERS].first_name(), records.managers[3].mode()), (0, 9));
+    }
+
+    /// The managers of the oracle's new game stand as players 17001 to
+    /// 17004 of its first turn, their records in its mode.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_games_managers_stand_as_players_as_the_originals() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap();
+        let mut records = Records::blank();
+        records.names = dump.names.clone();
+        for (ours, theirs) in records.managers.iter_mut().zip(&dump.managers) {
+            *ours = theirs.clone();
+            ours.set_mode(0);
+        }
+        let (nation, mode) = (dump.globals.main_country() as u8, dump.globals.mode());
+        eprintln!("nation {nation}, mode {mode}");
+        managers_as_players(&mut records, nation, mode);
+        for k in 0..crate::records::MANAGERS {
+            let (ours, theirs) = (&records.players[MANAGER_PLAYERS + k], &dump.players[MANAGER_PLAYERS + k]);
+            let apart: Vec<usize> = (0..ours.bytes().len()).filter(|&b| ours.bytes()[b] != theirs.bytes()[b]).collect();
+            eprintln!("player {}: {} {} apart at {apart:x?}", MANAGER_PLAYERS + k, dump.name(theirs.first_name()), dump.name(theirs.last_name()));
+            assert_eq!(
+                (ours.first_name(), ours.last_name(), ours.birthday(), ours.positions()[0], ours.strength(), ours.nation()),
+                (theirs.first_name(), theirs.last_name(), theirs.birthday(), theirs.positions()[0], theirs.strength(), theirs.nation())
+            );
+            assert_eq!(records.managers[k].mode(), dump.managers[k].mode());
+        }
+        let mut names = dump.names.clone();
+        Pool::new(&mut names);
+        assert_eq!(records.names, names);
+    }
 
     /// The team's fields `FUN_0068d411` and `FUN_0068a38c` write, as bytes:
     /// where, how many, what.
