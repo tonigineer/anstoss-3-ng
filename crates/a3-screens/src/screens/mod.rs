@@ -27,6 +27,7 @@ pub mod interview;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
+pub mod match_report;
 pub mod licence;
 pub mod konfig3d;
 pub mod market;
@@ -283,6 +284,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(tactics::TacticsScreen::default()),
         Box::new(tables_after::TablesAfter::default()),
         Box::new(interview::InterviewScreen::default()),
+        Box::new(match_report::MatchReport::default()),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),

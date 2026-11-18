@@ -65,6 +65,7 @@ pub mod rollover;
 pub mod rooms;
 pub mod presale;
 pub mod promotion;
+pub mod report;
 pub mod season;
 pub mod season_odds;
 pub mod search_plan;

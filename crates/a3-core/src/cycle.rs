@@ -225,6 +225,9 @@ pub mod dialogs {
     /// The interview after the match, `CInterviewDialog`
     /// (`IDD_INTERVIEW`).
     pub const INTERVIEW: u16 = 383;
+    /// The match report after the match, `CSpielberichtStandard`
+    /// (`IDD_SPIELBERICHT_STANDARD`).
+    pub const MATCH_REPORT: u16 = 332;
 }
 
 use self::dialogs::*;
@@ -251,6 +254,21 @@ const TEXT_MENU_CHOICE: u8 = 2;
 const WEEK_DAYS: usize = 7;
 /// Whether the game shows the tournaments' screens (`DAT_00b5d14f`).
 const TOURNAMENT_SCREENS: usize = 0xb5d14f;
+/// The game's switch for the Spielbericht after the match (byte 0x07 of
+/// the switches at `0xb5d13c`, `DAT_00b5d143`), on at 1.
+const REPORT_SWITCH: usize = 0x07;
+/// From this day of the season the report follows every match; before it
+/// only with the preparation normal (5) or "nur Pflichtspiele" (12)
+/// (`FUN_006ef262`, `DAT_00b5d152`).
+const REPORTS_FROM: usize = 42;
+const FULL_PREPARATIONS: [u8; 2] = [5, 12];
+
+/// Whether the day's match reports open their dialog (`FUN_006ef262`
+/// posting event 0xce, `FUN_00551818` opening it).
+fn reports_shown(records: &Records, day: usize) -> bool {
+    (day >= REPORTS_FROM || FULL_PREPARATIONS.contains(&records.globals.preparation()))
+        && records.globals.game_options()[REPORT_SWITCH] == 1
+}
 /// The game option "Spielankündigung vor jedem Spiel" (its byte among the
 /// switches at `0xb5d13c`), on; how many days ahead it announces a match.
 const ANNOUNCE_OPTION: usize = 2;
@@ -382,6 +400,10 @@ pub enum Args {
     /// The leagues the table after the matchday steps through, by country
     /// and level (the list at 0x1c2efd0 the dialog copies, `FUN_007291e4`).
     Tables { leagues: [(u16, u8); crate::matches::TABLES_MOST], count: u8 },
+    /// The human clubs whose match reports the Spielbericht after the
+    /// match shows, the first opened, the others by their crests
+    /// (`FUN_00551818`'s list, the dialog's +0x3328).
+    Reports { clubs: [(u8, i16); 4], count: u8 },
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -1169,6 +1191,7 @@ impl Cycle {
                     }
                 }
                 let mut tables = Vec::new();
+                let mut reported = Vec::new();
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1231,7 +1254,16 @@ impl Cycle {
                             // The matchday's end lists the leagues for
                             // the table after it (`FUN_007108d3`'s
                             // `FUN_00729216`), once the results stand.
-                            tables = crate::matches::tables_after(records, &played);
+                            tables = crate::matches::tables_after(records, &played.leagues);
+                            // The reports of the humans' matches stand
+                            // written (`FUN_00550f29`); the Spielbericht
+                            // follows from the season's 42nd day, before
+                            // it only with a full preparation
+                            // (`FUN_006ef262`, event 0xce), and only with
+                            // the game's switch for it on (`FUN_00551818`).
+                            if reports_shown(records, season.day) {
+                                reported = played.reported.clone();
+                            }
                             // The youth leagues play beside them
                             // (`FUN_0062a959`, after the day's matches).
                             crate::youth_league::play_day(
@@ -1248,7 +1280,7 @@ impl Cycle {
                             // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
                             // first match that draws one, its questions
                             // read anew from the file.
-                            let fixtures = crate::interview::fixtures(records, &played);
+                            let fixtures = crate::interview::fixtures(records, &played.leagues);
                             if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
                                 season.interview = crate::interview::Interview::begin(
                                     records,
@@ -1276,6 +1308,16 @@ impl Cycle {
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
+                }
+                // The match report first (event 0xce), its clubs' crests
+                // to step between them.
+                if !reported.is_empty() {
+                    let mut clubs = [(0, 0); 4];
+                    for (slot, &club) in clubs.iter_mut().zip(&reported) {
+                        *slot = club;
+                    }
+                    let count = reported.len().min(clubs.len()) as u8;
+                    self.ask(Request::with(MATCH_REPORT, Args::Reports { clubs, count }))?;
                 }
                 // The table after the matchday, its leagues one by one
                 // (event 200, `FUN_00729370`).

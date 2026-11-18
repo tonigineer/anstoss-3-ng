@@ -1448,6 +1448,23 @@ impl Report {
         (self.byte(0xc) & 0x10 != 0).then(|| [self.byte(9), self.byte(8)])
     }
 
+    /// The half's score, home side's first (+0x12, +0x13).
+    pub fn half(&self) -> [u8; 2] {
+        [self.byte(0x12), self.byte(0x13)]
+    }
+
+    /// The record's flag byte (+0x1d): bit 0 a match not played, 0x80
+    /// extra time, 0x40 penalties.
+    pub fn state(&self) -> u8 {
+        self.byte(0x1d)
+    }
+
+    /// The TV station that showed it (+0x60f, see
+    /// [`crate::report::station_name`]).
+    pub fn station(&self) -> u8 {
+        self.byte(0x60f)
+    }
+
     /// Whether it went to extra time, to penalties.
     pub fn extra(&self) -> (bool, bool) {
         let flags = self.byte(0xc);
