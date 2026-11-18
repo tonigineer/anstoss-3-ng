@@ -283,7 +283,7 @@ pub(crate) fn permutation(n: usize, random: &mut Random) -> Vec<usize> {
 /// Who may come up into a country's first league (`FUN_00680706`): with
 /// one league the clubs outside it, in their order; else the second
 /// league's clubs.
-fn risers(records: &Records, country: u16) -> Vec<i16> {
+pub(crate) fn risers(records: &Records, country: u16) -> Vec<i16> {
     if records.countries.leagues(usize::from(country)) == 1 {
         (0..records.countries.team_count(usize::from(country)).max(0))
             .filter(|&k| level(records, country, k) > 9)
@@ -331,7 +331,7 @@ fn single(records: &Records, country: u16, moves: &mut Moves, order_of: &mut Ord
 /// Who may come up into a country's second league (`FUN_006807da`): with
 /// fewer than three leagues the clubs outside them, in their order; else
 /// the clubs of its third league on.
-fn below_second(records: &Records, country: u16) -> Vec<i16> {
+pub(crate) fn below_second(records: &Records, country: u16) -> Vec<i16> {
     let leagues = records.countries.leagues(usize::from(country));
     if leagues < 3 {
         (0..records.countries.team_count(usize::from(country)).max(0))

@@ -188,6 +188,13 @@ impl Search {
     /// share in a hundred of all needs (100 when they sum under one,
     /// `FUN_006a0e9b`) and 25 more, times the budget's hundredth.
     pub(crate) fn budget_for(&self, k: usize) -> u32 {
+        self.budget_with(k, SHARE_BASE)
+    }
+
+    /// The same with `base` more on the share (nought when the club looks
+    /// at the other clubs' men in the season's second half,
+    /// `FUN_00425a99`).
+    pub(crate) fn budget_with(&self, k: usize, base: i32) -> u32 {
         let wanted = self.wanted();
         let share = match wanted.get(k) {
             None => 0,
@@ -196,7 +203,7 @@ impl Search {
                 if sum < 1 { 100 } else { (i32::from(w.need) * 100 / sum) as i16 }
             }
         };
-        ((self.budget() / 100).wrapping_mul(i32::from(share) + SHARE_BASE)) as u32
+        ((self.budget() / 100).wrapping_mul(i32::from(share) + base)) as u32
     }
 }
 

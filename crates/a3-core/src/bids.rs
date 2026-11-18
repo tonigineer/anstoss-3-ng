@@ -4,8 +4,9 @@
 //! wanted position in turn (`FUN_0075905a`), takes the most promising man
 //! it can pay for and wants, and books a talk with his club
 //! (`FUN_00426a9c`) — and stops at the first position that found one.
-//! None found anywhere, it looks among the free and foreign players
-//! (`FUN_004266a6`, not built).
+//! None found anywhere, it looks over the squads of clubs drawn from the
+//! played countries (`FUN_004266a6`) and asks the club of the best man
+//! it finds there to talk.
 
 use crate::random::Random;
 use crate::records::{Player, Records, Team};
@@ -133,10 +134,11 @@ pub(crate) fn bid(
         }
         if best.0 > 0 {
             let kind = if want.deal == LOAN { crate::transfers::LOAN_TALK } else { crate::transfers::PURCHASE };
-            book(records, busy, best.0 as u16, best.1, side, want.status, kind);
+            book(records, busy, best.0 as u16, best.1, side, want.status, kind, None, 0);
             return;
         }
     }
+    elsewhere(records, rules, side, busy, random);
 }
 
 /// Whether a listing is one the walk stops at (`FUN_0075905a`): the
@@ -190,11 +192,7 @@ fn price(records: &Records, rules: &crate::season::Rules, p: &Player) -> u32 {
 /// level his strength is still wanted at (`0x8abbcc`).
 fn suits(records: &Records, p: &Player, team: &Team) -> bool {
     let (country, level) = (u16::from(team.country()), team.level());
-    let mut lv = if i16::try_from(country).ok() == Some(records.globals.main_country()) {
-        i16::from(level.min(if country == ENGLAND { 3 } else { 2 }))
-    } else {
-        0
-    };
+    let mut lv = club_level(records, country, level);
     if late_in_league(records, country, level) {
         let place = crate::league::place(team);
         if crate::league::teams(records, country as u8, level) - BOTTOM < place {
@@ -204,6 +202,17 @@ fn suits(records: &Records, p: &Player, team: &Team) -> bool {
         }
     }
     lv <= i16::from(LEVEL_BY_STRENGTH.get(usize::from(p.strength())).copied().unwrap_or(0))
+}
+
+/// A club's level as its bids weigh a man (`FUN_006755b8`): the main
+/// country's league, to the second (England's to the third); another
+/// country's nought.
+fn club_level(records: &Records, country: u16, level: u8) -> i16 {
+    if i16::try_from(country).ok() == Some(records.globals.main_country()) {
+        i16::from(level.min(if country == ENGLAND { 3 } else { 2 }))
+    } else {
+        0
+    }
 }
 
 /// Whether a played country's league is in its last five matchdays
@@ -219,26 +228,269 @@ fn late_in_league(records: &Records, country: u16, level: u8) -> bool {
 }
 
 /// The talk booked (`FUN_00426a9c`): where the man has one, the club
-/// joins it (`FUN_00762246`, no weight) and marks the talk's day; else on
-/// the first day of the week from its second neither club has marked
-/// (`FUN_00426972`) a new one (`FUN_0076215b`), both clubs marking it.
-fn book(records: &mut Records, busy: &mut Busy, player: u16, seller: Side, buyer: Side, status: u8, kind: i16) -> bool {
+/// joins it (`FUN_00762246`, at its weight) and marks the talk's day;
+/// else a new one (`FUN_0076215b`) on the day of the week given, or
+/// without one on the first from its second neither club has marked
+/// (`FUN_00426972`), both clubs marking it.
+#[allow(clippy::too_many_arguments)]
+fn book(
+    records: &mut Records,
+    busy: &mut Busy,
+    player: u16,
+    seller: Side,
+    buyer: Side,
+    status: u8,
+    kind: i16,
+    on: Option<i16>,
+    weight: u8,
+) -> bool {
     if let Some(day) = crate::transfers::talk_day(records, player).filter(|&d| d >= 0) {
-        if !crate::transfers::join_bid(records, player, buyer, status, 0) {
+        if !crate::transfers::join_bid(records, player, buyer, status, weight) {
             return false;
         }
         busy.mark(buyer, day % 7);
         return true;
     }
     let taken = busy.of(seller) | busy.of(buyer);
-    let Some(d) = (1..=6).find(|&d| taken & (1 << d) == 0) else { return false };
+    let Some(d) = on.or_else(|| (1..=6).find(|&d| taken & (1 << d) == 0)) else { return false };
     let day = records.globals.week_start() + d;
-    if !crate::transfers::book_bid(records, kind, day, player, seller, buyer, status) {
+    if !crate::transfers::book_bid(records, kind, day, player, seller, buyer, status, weight) {
         return false;
     }
     busy.mark(seller, d);
     busy.mark(buyer, d);
     true
+}
+
+/// Below this level a club looks elsewhere, below this squad (now and
+/// for next season, `FUN_0070f125`).
+const LOOKING_LEVELS: u8 = 10;
+const LOOKING_SQUAD: usize = 24;
+/// The chance in a hundred a club of the played countries' first
+/// leagues, their second ones and the rest enters the clubs looked over,
+/// by the looking club's level: the first, the second, any other.
+const LOOK_CHANCES: [[Option<u32>; 3]; 3] =
+    [[Some(100), Some(50), None], [Some(80), Some(100), Some(50)], [Some(30), Some(70), Some(100)]];
+/// A human's club among the first leagues' is drawn in eighty
+/// (`FUN_004260d6`).
+const HUMAN_DRAW: u32 = 80;
+/// The clubs drawn to be looked over, each once at most.
+const LOOK_DRAWS: usize = 10;
+/// The pool's room (`FUN_004266a6`'s 2000 bytes).
+const POOL_MOST: usize = 500;
+/// The calendar month from which the second half's look applies.
+const SECOND_HALF: u16 = 7;
+/// The years left under which the first half looks at a man.
+const FIRST_HALF_YEARS: i32 = 4;
+/// R+0x27a (L+0xc8): the weeks before he is looked at again, set to
+/// four and a draw of twenty once his club is asked.
+const ASKED: usize = 0x27a;
+const ASKED_BASE: i8 = 4;
+const ASKED_DRAW: u32 = 20;
+/// The terms' bits that keep him out: on loan with his club, and in the
+/// second half also 0x800.
+const KEPT_FIRST: u16 = 0x100;
+const KEPT_SECOND: u16 = 0x900;
+/// The weight the club takes its seat with in the second half.
+const SECOND_WEIGHT: u8 = 10;
+/// A listing for sale with no terms (`FUN_0075a277`), and with terms 3
+/// (`FUN_0075a3cc`).
+const NO_TERMS: u8 = 0;
+
+/// A computer club that found nobody listed looks elsewhere
+/// (`FUN_004266a6`): below level ten, with fewer than 24 men and fewer
+/// than 24 for next season. Of the played countries' clubs — the first
+/// leagues', the second ones', those below — each enters the pool on a
+/// draw of a hundred (a human's of the first leagues on one of eighty)
+/// under its chance for the club's level; before July it looks as in the
+/// season's first half (`FUN_004254b0`), else as in the second
+/// (`FUN_00425a99`).
+fn elsewhere(records: &mut Records, rules: &crate::season::Rules, buyer: Side, busy: &mut Busy, random: &mut Random) {
+    let Some(team) = records.team(u16::from(buyer.0), buyer.1 as u16) else { return };
+    let level = team.level();
+    if level >= LOOKING_LEVELS || next_squad_full(records, buyer) || usize::from(team.player_count()) >= LOOKING_SQUAD {
+        return;
+    }
+    let nations = crate::opponent::played_nations(records);
+    let mut pool: Vec<Side> = Vec::new();
+    for (tier, chance) in LOOK_CHANCES[usize::from(level.min(2))].iter().enumerate() {
+        let Some(chance) = *chance else { continue };
+        for &country in &nations {
+            let teams = match tier {
+                0 => crate::opponent::League::of(records, country, 0)
+                    .map_or_else(Vec::new, |l| (0..l.teams()).map(|i| l.team(i)).collect()),
+                1 => crate::promotion::risers(records, country),
+                _ => crate::promotion::below_second(records, country),
+            };
+            for number in teams {
+                let human = tier == 0 && crate::statistics::is_human(records, country as u8, number);
+                if random.below(if human { HUMAN_DRAW } else { 100 }) < chance {
+                    pool.push((country as u8, number));
+                }
+            }
+        }
+    }
+    pool.truncate(POOL_MOST);
+    look(records, rules, buyer, &pool, busy, random, records.globals.date()[1] >= SECOND_HALF);
+}
+
+/// Whether a club has 24 men for next season already (`FUN_0070f125`):
+/// those of its squad with no other club next season who do not retire,
+/// and those it has bought or will have back (`FUN_0070f041`).
+fn next_squad_full(records: &Records, club: Side) -> bool {
+    let Some(team) = records.team(u16::from(club.0), club.1 as u16) else { return true };
+    let staying = team
+        .players()
+        .into_iter()
+        .filter_map(|id| records.player(id))
+        .filter(|p| p.next_club()[0] == 0 && p.retiring() & 0x80 == 0)
+        .count();
+    let coming = records.agreed().iter().filter(|a| a.seller != club && a.buyer == club).count();
+    staying + coming >= LOOKING_SQUAD
+}
+
+/// The best man found for a wanted position: his promise, his price, the
+/// pool's club and him.
+#[derive(Clone, Copy)]
+struct Found {
+    promise: i16,
+    price: u32,
+    at: usize,
+    id: u16,
+}
+
+/// The look over the pool (`FUN_004254b0` in the first half,
+/// `FUN_00425a99` in the second): ten draws of it, each club once, the
+/// club's own passed by. Of its men not asked lately (R+0x27a), whom his
+/// club may sell (`FUN_00426d83`), not on loan there, not banned — in the
+/// first half with under four years left — one of a wanted position
+/// whose promise lies within one of the wish, of a club (`FUN_00758594`)
+/// at a strength the club's level still wants, is weighed at his price
+/// (`FUN_0070a393`; in the first half `FUN_0070a45c`, nothing in his last
+/// year for a status of nought) under the position's budget (its share,
+/// in the first half 25 more): the highest promise, then the cheapest.
+/// The first half weighs a man for the first wanted position of his
+/// only. The first position with one is asked for: a man listed for sale
+/// gets the club's bid (`FUN_00426a9c`; in the second half, with no talk
+/// yet, on a day both clubs are free, `FUN_007585c6`, else at weight
+/// ten); one not listed and without a talk, on a day both are free, goes
+/// onto the list — in the first half before the talk is booked, for no
+/// terms in his last year, else for terms 3 (`FUN_0075a3cc`); in the
+/// second after it is, at weight ten — and is left alone for four weeks
+/// and a draw of twenty.
+fn look(
+    records: &mut Records,
+    rules: &crate::season::Rules,
+    buyer: Side,
+    pool: &[Side],
+    busy: &mut Busy,
+    random: &mut Random,
+    second: bool,
+) {
+    let search = Search::of(records, buyer);
+    let wanted = search.wanted();
+    let base = if second { 0 } else { 25 };
+    let budgets: Vec<u32> = (0..3).map(|k| search.budget_with(k, base)).collect();
+    let mut found: [Option<Found>; 3] = [None; 3];
+    let Some(team) = records.team(u16::from(buyer.0), buyer.1 as u16) else { return };
+    let level = club_level(records, u16::from(buyer.0), team.level());
+    let mut seen = vec![false; pool.len()];
+    for _ in 0..LOOK_DRAWS {
+        if pool.is_empty() {
+            break;
+        }
+        let at = random.below(pool.len() as u32) as usize;
+        if std::mem::replace(&mut seen[at], true) || pool[at] == buyer {
+            continue;
+        }
+        let Some(club) = records.team(u16::from(pool[at].0), pool[at].1 as u16) else { continue };
+        for id in club.players() {
+            let Some(p) = records.player(id) else { continue };
+            let years = crate::transfer_week::years_left(records, p);
+            let kept = if second { KEPT_SECOND } else { KEPT_FIRST };
+            if (!second && years >= FIRST_HALF_YEARS)
+                || p.get::<u8>(ASKED) as i8 > 0
+                || p.terms() & kept != 0
+                || !crate::transfer_week::may_sell(records, p)
+                || crate::load::days_to(&records.globals, p.long_to()) > 0
+            {
+                continue;
+            }
+            let promise = crate::free_agents::promise(p, crate::free_agents::age(records, p));
+            for (k, want) in wanted.iter().enumerate() {
+                if p.positions()[0] != want.position {
+                    continue;
+                }
+                let close = (i32::from(promise) - i32::from(want.strength)).abs() <= 1;
+                if !close && !second {
+                    break;
+                }
+                if !close || !wanted_at(p, level) {
+                    continue;
+                }
+                let price = if !second && years == 1 && want.status == 0 { 0 } else { price(records, rules, p) };
+                let best = found[k].map_or((0, 2_000_000_000), |f| (f.promise, f.price));
+                if price < budgets[k] && (promise > best.0 || (promise == best.0 && price < best.1)) {
+                    found[k] = Some(Found { promise, price, at, id });
+                }
+                if !second {
+                    break;
+                }
+            }
+        }
+    }
+    let Some((k, f)) = found.iter().enumerate().find_map(|(k, f)| f.filter(|f| f.id > 0).map(|f| (k, f))) else {
+        return;
+    };
+    let (seller, status, id) = (pool[f.at], wanted[k].status, f.id);
+    let purchase = crate::transfers::PURCHASE;
+    let listed = crate::transfers::list_entries(records)
+        .into_iter()
+        .find(|e| u16::from_le_bytes([e[0], e[1]]) == id)
+        .map(|e| e[0xc]);
+    let talk = crate::transfers::talk_day(records, id).is_some_and(|d| d >= 0);
+    match listed {
+        Some(kind) if kind != crate::transfers::SALE => {}
+        Some(_) if !second => {
+            book(records, busy, id, seller, buyer, status, purchase, None, 0);
+        }
+        Some(_) if talk => {
+            book(records, busy, id, seller, buyer, status, purchase, None, SECOND_WEIGHT);
+        }
+        Some(_) => {
+            if let Some(d) = crate::transfers::this_week_day(records, random, seller, buyer) {
+                book(records, busy, id, seller, buyer, status, purchase, Some(d), 0);
+            }
+        }
+        None if talk => {}
+        None => {
+            let Some(d) = crate::transfers::this_week_day(records, random, seller, buyer) else { return };
+            let asked = if second {
+                let booked = book(records, busy, id, seller, buyer, status, purchase, Some(d), SECOND_WEIGHT);
+                if booked {
+                    crate::transfers::list_for_terms(records, id, crate::transfers::POACHED);
+                }
+                booked
+            } else {
+                let years = records.player(id).map_or(0, |p| crate::transfer_week::years_left(records, p));
+                let terms = if years == 1 { NO_TERMS } else { crate::transfers::POACHED };
+                crate::transfers::list_for_terms(records, id, terms)
+                    && book(records, busy, id, seller, buyer, status, purchase, Some(d), 0)
+            };
+            if asked {
+                let weeks = random.below(ASKED_DRAW) as i8 + ASKED_BASE;
+                if let Some(r) = records.players.get_mut(usize::from(id)) {
+                    r.put::<u8>(ASKED, weeks as u8);
+                }
+            }
+        }
+    }
+}
+
+/// Whether a man of a club is of a strength the club's level still
+/// wants (`FUN_00758594`).
+fn wanted_at(p: &Player, level: i16) -> bool {
+    p.club()[0] != 0 && level <= i16::from(LEVEL_BY_STRENGTH.get(usize::from(p.strength())).copied().unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -248,8 +500,8 @@ mod tests {
     /// The original's week of day 63 (Office at day 62 → A) booked four
     /// seats in three talks for men on the transfer list the day before:
     /// (14,20) for 2168, (14,13) and (14,57) for the loan of 3272, (59,3)
-    /// for 3262 (the rest of A's talks are for men listed that week by
-    /// the clubs' other bids). The replica's week from Office on twenty
+    /// for 3262 (the rest of A's talks are for men the clubs asked for
+    /// elsewhere, below). The replica's week from Office on twenty
     /// draws books about as many, the original's bids of the played
     /// country among them, each on a day of the week after its first, the
     /// buyers seated with the wanted status 1 and no weight, a loan's talk
@@ -273,7 +525,8 @@ mod tests {
             r.globals.set_half_weeks(a.globals.half_weeks());
             crate::transfer_week::week(&mut r, &rules, &mut Random::new(seed));
             for t in crate::transfers::appointments(&r) {
-                let l = listed.iter().find(|l| l.id == t.player).expect("a listed man");
+                // The men not listed are those the clubs asked for elsewhere.
+                let Some(l) = listed.iter().find(|l| l.id == t.player) else { continue };
                 let his = office.player(t.player).unwrap().club();
                 assert_eq!(t.clubs[0], (his[0], i16::from(his[1])), "{t:?}");
                 assert!((64..=69).contains(&t.day), "{t:?}");
@@ -287,5 +540,60 @@ mod tests {
         for bid in [(2168, (14, 20)), (3272, (14, 13)), (3272, (14, 57))] {
             assert!(booked.contains(&bid), "{bid:?} in {booked:?}");
         }
+    }
+
+    /// The same week of the original asked six clubs for men they had not
+    /// listed (A, September, the second half's look): kind 3 a day of the
+    /// drawn rows on (67, 68), the asking club seated second at weight
+    /// ten with the wanted status 1, the man listed for sale on terms 3
+    /// that day and left alone for 4 to 23 weeks (R+0x27a 15, 23, 15, 19,
+    /// 12, 14). The replica's week from Office on twenty draws asks about
+    /// as many, each so.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_computer_clubs_ask_for_unlisted_men_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (a, rules) = (load("A.an3"), crate::data::Data::load(&dir).unwrap().rules);
+        let office = load("Office.an3");
+        let asked_in = |r: &Records, before: &Records| -> Vec<crate::transfers::Appointment> {
+            let was = crate::transfers::listings(before);
+            crate::transfers::appointments(r)
+                .into_iter()
+                .filter(|t| !was.iter().any(|l| l.id == t.player) && t.weights.get(1) == Some(&SECOND_WEIGHT))
+                .collect()
+        };
+        let check = |r: &Records, t: &crate::transfers::Appointment| {
+            let l = crate::transfers::listings(r).into_iter().find(|l| l.id == t.player).expect("listed");
+            assert_eq!((l.kind, l.terms, l.day), (crate::transfers::SALE, crate::transfers::POACHED, 63), "{t:?}");
+            let p = r.player(t.player).unwrap();
+            assert!((4..=23).contains(&p.get::<u8>(ASKED)), "{t:?}");
+            assert_eq!(t.clubs[0], (p.club()[0], i16::from(p.club()[1])), "{t:?}");
+            assert!(r.globals.played(i16::from(p.club()[0])), "{t:?}");
+            assert_eq!((t.kind, t.statuses[1]), (crate::transfers::PURCHASE, 1), "{t:?}");
+            assert!([64, 65, 66, 67, 68].contains(&t.day), "{t:?}");
+        };
+        let original = asked_in(&a, &office);
+        assert_eq!(original.len(), 6);
+        for t in &original {
+            check(&a, t);
+        }
+        let mut asked = 0;
+        for seed in 1..=20 {
+            let mut r = load("Office.an3");
+            r.globals.set_day(63);
+            r.globals.set_date(a.globals.date());
+            r.globals.set_week_start(63);
+            r.globals.set_half_weeks(a.globals.half_weeks());
+            crate::transfer_week::week(&mut r, &rules, &mut Random::new(seed));
+            for t in asked_in(&r, &office) {
+                check(&r, &t);
+                asked += 1;
+            }
+        }
+        println!("{asked} asked in twenty weeks");
+        assert!((40..=240).contains(&asked), "{asked} asked in twenty weeks");
     }
 }

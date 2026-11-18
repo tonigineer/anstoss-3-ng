@@ -28,14 +28,15 @@
 //! After it a computer club's transfer budget is refilled and, in the
 //! first week of November, its wanted positions planned anew
 //! ([`crate::search_plan::refill`]); on a draw of its odds it bids for
-//! the listed men of the positions it wants ([`crate::bids::bid`]); then
+//! the listed men of the positions it wants ([`crate::bids::bid`]), or,
+//! with none listed it wants, for men of other clubs of the played
+//! countries (`FUN_004266a6`); then
 //! it may let go of a man of a position it holds too many of, for a fee
 //! or, early in the season, on loan (the end of `FUN_004279f8`).
 //!
 //! Left out so far: the rest of the computer clubs' business that follows
 //! in `FUN_004279f8` and `FUN_004297e1` — the men they scouted, their
-//! looking among the free and foreign players when nobody listed suits
-//! (`FUN_004266a6`), their other bids (`FUN_006c41b1`, `FUN_00427494`)
+//! other bids (`FUN_006c41b1`, `FUN_00427494`)
 //! — and
 //! the European clubs' (`FUN_0069d3dd`) and the closing passes
 //! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
@@ -215,7 +216,7 @@ fn age(records: &Records, p: &Player) -> i32 {
 }
 
 /// The years his contract has left, as his object holds them.
-fn years_left(records: &Records, p: &Player) -> i32 {
+pub(crate) fn years_left(records: &Records, p: &Player) -> i32 {
     (i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year())).max(0)
 }
 
@@ -616,7 +617,7 @@ fn sell(records: &mut Records, rules: &crate::season::Rules, (country, number): 
 /// retiring, open to an extension, not passed over, no deal for next
 /// season, his terms no bar, no talks pending about him, and before the
 /// season's late weeks free to move twice more.
-fn may_sell(records: &Records, p: &Player) -> bool {
+pub(crate) fn may_sell(records: &Records, p: &Player) -> bool {
     p.id() <= LAST_REAL_ID
         && p.retiring() & RETIRES == 0
         && p.problems() & NO_EXTENSION == 0
@@ -662,6 +663,7 @@ mod tests {
     fn on_day(records: &mut Records, day: u16) {
         use chrono::Datelike;
         records.globals.set_day(day);
+        records.globals.set_week_start(day as i16);
         let d = records.globals.date_of(day as i16).unwrap();
         records.globals.set_date([d.day() as u16, d.month() as u16, d.year() as u16]);
     }
@@ -770,9 +772,14 @@ mod tests {
         let mut random = Random::new(7);
         let rules = rules();
         // A last year goes onto the list at terms 0; the sales are for a
-        // fee.
+        // fee. A man a club asked for elsewhere in his last year goes on
+        // at terms 0 too, marked as asked (R+0x27a).
         let listed = |records: &Records| -> Vec<u16> {
-            crate::transfers::listings(records).iter().filter(|l| l.terms == 0).map(|l| l.id).collect()
+            crate::transfers::listings(records)
+                .iter()
+                .filter(|l| l.terms == 0 && records.player(l.id).is_some_and(|p| p.get::<u8>(0x27a) == 0))
+                .map(|l| l.id)
+                .collect()
         };
         let listed_before = listed(&records);
         for day in (70..=364).step_by(7) {
@@ -855,6 +862,8 @@ mod tests {
     /// main and more countries listed after `since`, of the kept
     /// countries in the last thirty days; and the loans listed after it,
     /// as (age today, counted on, for the fee alone).
+    const SALE_RUNS: u64 = 5;
+
     fn sales(records: &Records, since: i16) -> (usize, usize, Vec<(i32, bool, bool)>) {
         let (mut played, mut kept, mut loans) = (0, 0, Vec::new());
         let today = records.globals.day() as i16;
@@ -884,25 +893,32 @@ mod tests {
     /// both) to twice; loans for the fee alone of men they count on, as
     /// the original's three and four, each under 22 when listed in the
     /// half weeks 20 to 40 (days 70 to 140), more of them standing (the
-    /// original's bids take loans as they come).
+    /// original's bids take loans as they come). The counts are the
+    /// replica's mean over five draws, each spread by some ten.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_clubs_let_go_of_their_spare_men_as_the_original() {
         let (s2, s2c) = (sales(&kept("S2.an3"), 63), sales(&kept("S2c.an3"), 63));
         assert_eq!((s2.0, s2c.0, s2.1, s2c.1), (100, 78, 9, 9));
         assert!([&s2.2, &s2c.2].iter().all(|l| l.len() >= 3 && l.iter().all(|&(_, on, fee)| on && fee)));
-        let mut records = kept("A.an3");
-        let (rules, mut random) = (rules(), Random::new(7));
-        for day in (70..=210).step_by(7) {
-            on_day(&mut records, day);
-            records.globals.set_half_weeks(day / 7 * 2);
-            week(&mut records, &rules, &mut random);
+        let rules = rules();
+        let (mut played, mut kept_too) = (0, 0);
+        for seed in 1..=SALE_RUNS {
+            let mut records = kept("A.an3");
+            let mut random = Random::new(seed);
+            for day in (70..=210).step_by(7) {
+                on_day(&mut records, day);
+                records.globals.set_half_weeks(day / 7 * 2);
+                week(&mut records, &rules, &mut random);
+            }
+            let (p, k, loans) = sales(&records, 63);
+            (played, kept_too) = (played + p, kept_too + k);
+            assert!(loans.len() >= 4, "{loans:?}");
+            assert!(loans.iter().all(|&(age, on, fee)| age <= 22 && on && fee), "{loans:?}");
         }
-        let (played, kept, loans) = sales(&records, 63);
+        let (played, kept) = (played / SALE_RUNS as usize, kept_too / SALE_RUNS as usize);
         assert!((100..150).contains(&played), "{played} listed for a fee");
         assert!((9..=18).contains(&kept), "{kept} of the kept countries");
-        assert!(loans.len() >= 4, "{loans:?}");
-        assert!(loans.iter().all(|&(age, on, fee)| age <= 22 && on && fee), "{loans:?}");
     }
 }
 

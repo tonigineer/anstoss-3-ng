@@ -383,7 +383,7 @@ pub fn book(
 /// A computer club's new appointment (`FUN_0076215b`): the kind, the day,
 /// two clubs, the player; the seller's dword at +8 and as the first club
 /// (its status and weight bytes left as the place held them), the buyer
-/// second with its status and no weight, the terms cleared; only while
+/// second with its status and weight, the terms cleared; only while
 /// there is room and the day has not gone by. (The seller's second byte is
 /// the original's stale stack, written here as nought.)
 pub(crate) fn book_bid(
@@ -394,6 +394,7 @@ pub(crate) fn book_bid(
     seller: Side,
     buyer: Side,
     status: u8,
+    weight: u8,
 ) -> bool {
     let today = records.globals.day() as i16;
     let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return false };
@@ -415,7 +416,7 @@ pub(crate) fn book_bid(
     b[at] = buyer.0;
     put16(b, at + 2, i16::from(buyer.1 as u8));
     b[at + 4] = status;
-    b[at + 5] = 0;
+    b[at + 5] = weight;
     b[e + TALK_TERMS..e + TALK_TERMS + TERMS].fill(0);
     put16(b, 0, count as i16 + 1);
     true
@@ -797,12 +798,25 @@ fn purchase_day(records: &Records, random: &mut crate::random::Random, his: Side
     if next_week_full(records, buyer) || next_week_full(records, his) {
         return 0;
     }
+    free_day(records, random, his, buyer, records.globals.week_start() + 7).unwrap_or(0)
+}
+
+/// The day of this week, from its first, for a purchase talk a computer
+/// club seeks with a man's club (`FUN_007585c6`): none when either has
+/// three talks this week (`FUN_00764a25`); else the first of a drawn row
+/// free for both.
+pub(crate) fn this_week_day(records: &Records, random: &mut crate::random::Random, his: Side, buyer: Side) -> Option<i16> {
     let start = records.globals.week_start();
+    if talks_from(records, buyer, start) >= 3 || talks_from(records, his, start) >= 3 {
+        return None;
+    }
+    free_day(records, random, his, buyer, start)
+}
+
+/// The first day of a drawn row from `start` neither club is busy on.
+fn free_day(records: &Records, random: &mut crate::random::Random, his: Side, buyer: Side, start: i16) -> Option<i16> {
     let row = random.below(3) as usize;
-    PURCHASE_DAYS[row]
-        .into_iter()
-        .find(|&d| !busy(records, his, start + d + 7) && !busy(records, buyer, start + d + 7))
-        .unwrap_or(0)
+    PURCHASE_DAYS[row].into_iter().find(|&d| !busy(records, his, start + d) && !busy(records, buyer, start + d))
 }
 
 /// After the day's talks, a manager's agreed poaching talk
