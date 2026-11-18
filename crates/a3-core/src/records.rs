@@ -2044,6 +2044,13 @@ impl Records {
         Some((self.name(name), *bytes.get(5)?, *bytes.get(6)?))
     }
 
+    /// A referee's country (his record's +4, `FUN_0063161e`), the foreign
+    /// men's own.
+    pub fn referee_country(&self, id: i16) -> Option<u8> {
+        let id = usize::try_from(id).ok().filter(|id| (1..=REFEREES).contains(id))?;
+        self.block(&format!("{REFEREE_AT:#x}[{id}]"))?.get(4).copied()
+    }
+
     /// Whether a referee takes money (his record's +8, which the black
     /// cash box asks, `FUN_004c8823`).
     pub fn referee_corruptible(&self, id: i16) -> bool {

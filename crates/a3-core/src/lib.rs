@@ -67,6 +67,7 @@ pub mod playtime;
 pub mod prematch;
 pub mod random;
 pub mod records;
+pub mod referee_booking;
 pub mod refit;
 pub mod render;
 pub mod rollover;

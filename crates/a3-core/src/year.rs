@@ -930,7 +930,7 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
 
 /// Every played club's next match noted anew (`FUN_0062bfc9`): its
 /// opponent, kind and referee cleared first, then the match found set; a
-/// human club keeps its referee, which the original draws anew (not built).
+/// human club has its referee drawn for it ([`human_referee`]).
 /// A human club's cup tie found this way opens its sales record at once
 /// (the original's `FUN_0077d425`), the home club's prices and all; the
 /// ticket office's block holds a club's own fixtures, so a computer club's
@@ -954,13 +954,16 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             // noted, and would open nothing ([`crate::presale::open_international`]).
             let tie = next.filter(|m| human && matches!(m.kind, NEXT_CUP | NEXT_SUPERCUP | NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO));
             let listed = tie.and_then(|m| listed_ground(records, &data.calendar, team, &m));
+            let own = (team.country(), i16::from(team.number()));
+            // The referee is drawn before the tie's sales record opens.
+            let referee = next
+                .filter(|_| human)
+                .and_then(|m| human_referee(records, &data.calendar, own, &m, listed.is_some(), today as i32, random));
             let Some(team) = records.team_mut(country, number) else { continue };
             team.set_next_country(0);
             team.set_next_number(0);
             team.set_next_kind(0);
-            if !human {
-                team.set_referee(0);
-            }
+            team.set_referee(referee.unwrap_or(0));
             if let Some(m) = next {
                 team.set_next_day(m.day);
                 team.set_next_country(m.opponent.0);
@@ -988,6 +991,39 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             }
         }
     }
+}
+
+/// A human club's referee for its next match (`FUN_0062bfc9`'s draws),
+/// none where the original's fixture list for the day comes out empty:
+/// the league's from the country's men (`FUN_006cdc0f`), the cup's and the
+/// supercup's too, holding either way on a listed — neutral — ground
+/// (`FUN_006cdbf1`, a German supercup tie always); the international ones
+/// from the foreign men (`FUN_00424407`) — a champion's or UEFA cup tie on
+/// a day of the European code, either way for its days 20 to 24
+/// (`FUN_0062cf7f`), an Intertoto tie on one of its days (`FUN_0062d067`),
+/// the world cup's on its day (`FUN_00630d38`) and the European
+/// supercup's, both finals, either way. The home club comes first, the
+/// club itself where it plays at home.
+fn human_referee(records: &mut Records, calendar: &crate::calendar::Calendar, own: (u8, i16), m: &NextMatch, listed: bool, today: i32, random: &mut crate::random::Random) -> Option<i16> {
+    let first = usize::try_from(m.day).map_or(0, |d| calendar.entry(0, d));
+    let (home, away) = if m.venue == 0 { (own, m.opponent) } else { (m.opponent, own) };
+    let national = |records: &mut Records, random: &mut crate::random::Random, both: bool| {
+        crate::referee_booking::national(records, home.0, home.1, away.1, m.day, today, both, random)
+    };
+    let international = |records: &mut Records, random: &mut crate::random::Random, both: bool| {
+        crate::referee_booking::international(records, home, away, m.day, today, both, random)
+    };
+    Some(match m.kind {
+        NEXT_LEAGUE => national(records, random, false),
+        NEXT_CUP | NEXT_SUPERCUP => national(records, random, listed),
+        NEXT_EUROPE..=NEXT_UEFA if first & COMPETITION == EUROPEAN => {
+            international(records, random, EUROPEAN_FINALS.contains(&(first & 0x1f)))
+        }
+        NEXT_INTERTOTO if first & COMPETITION == INTERTOTO => international(records, random, false),
+        NEXT_EUROPEAN_SUPERCUP => international(records, random, true),
+        NEXT_WORLD_CUP if first & COMPETITION == WORLD_CUP_DAY => international(records, random, true),
+        _ => return None,
+    })
 }
 
 /// The German league's country, whose supercup the finder grounds apart.
@@ -1363,6 +1399,46 @@ mod tests {
             }
         }
         assert!(days > 36 * saves && supercup > 0, "{days} {supercup}");
+    }
+
+    /// On the original's saves the human clubs' referees come out as the
+    /// original noted them: noted anew from the day before, a club whose
+    /// next match stands as the save has it finds that match's booking and
+    /// its man again.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_human_clubs_referees_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut seen = Vec::new();
+        for name in ["NewSeason000.an3", "A.an3", "A2.an3", "S2c.an3", "S2late.an3"] {
+            let path = keeps.join(name);
+            if !path.exists() {
+                eprintln!("no {name} among the kept saves");
+                continue;
+            }
+            let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+            let theirs = load();
+            let mut ours = load();
+            let today = (theirs.globals.day() as usize).saturating_sub(1);
+            let mut random = crate::random::Random::new(1);
+            note_next_matches(&mut ours, &data, today, &mut random);
+            for country in crate::opponent::played_nations(&theirs) {
+                for t in 0..theirs.countries.team_count(usize::from(country)).max(0) as u16 {
+                    let (Some(a), Some(b)) = (theirs.team(country, t), ours.team(country, t)) else { continue };
+                    let next = |x: &crate::records::Team| (x.next_day(), x.next_country(), x.next_number(), x.next_venue(), x.next_kind());
+                    if a.humans() == [0, 0] || a.level() >= NO_LEAGUE || next(a) != next(b) || a.next_kind() == 0 {
+                        continue;
+                    }
+                    assert_eq!(b.referee(), a.referee(), "{name} {country}/{t} next {:?}", next(a));
+                    seen.push((name, a.next_kind(), a.referee()));
+                }
+            }
+        }
+        assert!(seen.iter().filter(|s| s.2 != 0).count() >= 3, "{seen:?}");
+        eprintln!("{seen:?}");
     }
 
     /// On the original's saves — the new season's first day, mid-season,
