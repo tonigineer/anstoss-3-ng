@@ -848,11 +848,15 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
                 // The champion's cup's finder misses the club; the one days
                 // of its qualifiers' two legs and of the neutral final
                 // return without a second look, the rest fall through to
-                // the UEFA cup's table.
-                if matches!(first & 0xff, 2 | 3) {
-                    if let Some((opponent, venue)) = uefa_tie(records, team) {
-                        return Some(at(opponent, venue, NEXT_UEFA, 0));
-                    }
+                // the UEFA cup's finders by the same id (`FUN_0041fa14`).
+                let uefa = match first & 0xff {
+                    2 | 3 => uefa_tie(records, team).map(|(o, v)| (o, v, 0)),
+                    4..=9 | 0xc..=0x11 => uefa_counter_run(records, team, first),
+                    UEFA_FINAL => uefa_final(records, team).map(|(o, v)| (o, v, 0)),
+                    _ => None,
+                };
+                if let Some((opponent, venue, round)) = uefa {
+                    return Some(at(opponent, venue, NEXT_UEFA, round));
                 }
             }
             for (day, tie, kind) in [(EUROPEAN_SUPERCUP_DAY, EUROPEAN_SUPERCUP_TIE, NEXT_EUROPEAN_SUPERCUP), (WORLD_CUP_DAY, WORLD_CUP_TIE, NEXT_WORLD_CUP)] {
@@ -1057,7 +1061,8 @@ const EUROPEAN_FINALS: std::ops::RangeInclusive<u32> = 0x14..=0x18;
 /// (`FUN_006d1104`), the champion's cup's own (`FUN_0041e17c`), and the
 /// supercup's (`FUN_006cd7fb`) — the slot's for a neutral day, and for
 /// Germany the Ligapokal's ground of each of its first four ties, the
-/// slot's for its final. The UEFA cup's final, day 22, is not noted.
+/// slot's for its final; the UEFA cup's final, day 22, its own
+/// (`FUN_0042055a`).
 pub(crate) fn listed_ground(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, m: &NextMatch) -> Option<(u8, i16)> {
     let day = usize::try_from(m.day).ok()?;
     let slot = usize::from(records.countries.slot(usize::from(team.country())));
@@ -1067,7 +1072,8 @@ pub(crate) fn listed_ground(records: &Records, calendar: &crate::calendar::Calen
     match m.kind {
         NEXT_EUROPE | NEXT_UEFA => {
             let listed = EUROPEAN_FINALS.contains(&(calendar.entry(0, day) & 0x1f));
-            (listed && m.kind == NEXT_EUROPE).then(|| ground(CHAMPIONS_FINAL_GROUND))
+            // Of the UEFA cup's days only its final, 22, is one of them.
+            listed.then(|| ground(if m.kind == NEXT_EUROPE { CHAMPIONS_FINAL_GROUND } else { SECOND_FINAL_GROUND }))
         }
         NEXT_CUP => {
             let code = fixture(records, calendar, team, day);
@@ -1199,10 +1205,8 @@ fn champions_tie(records: &Records, team: &crate::records::Team, code: u32) -> O
 /// 41 of them while the associations serve their first season, 44 from the
 /// second on. The entry's first side plays at home, the second away; the
 /// object keeps its sides in the order of the leg coming, so both legs'
-/// days read the one way. The kind is 7 and the round 0. Not built: the
-/// later ids' counter-run finder `FUN_004205a4`, which asks the exe's
-/// static stage table at 0x877280, and the neutral final `FUN_0042055a`,
-/// whose home stands in a runtime global the save keeps nowhere.
+/// days read the one way. The kind is 7 and the round 0. The later
+/// rounds' days ask [`uefa_counter_run`], the final's [`uefa_final`].
 fn uefa_tie(records: &Records, team: &crate::records::Team) -> Option<((u8, i16), i16)> {
     let ties = records.block(crate::europe_entry::UEFA_CUP)?;
     let count = if records.globals.seasons() < 2 { 0x29 } else { 0x2c };
@@ -1223,6 +1227,57 @@ fn uefa_tie(records: &Records, team: &crate::records::Team) -> Option<((u8, i16)
         }
     }
     None
+}
+
+/// The UEFA cup's rounds by the first row's id (the exe's static table at
+/// 0x877280, a short each for the id's low six bits): ids 4 … 9 the
+/// second round to the fourth, 12 … 17 the quarter-final to the
+/// semi-final, a round's two legs in turn; -1 where no round stands.
+const UEFA_STAGES: [i8; 0x12] = [-1, -1, 0, 0, 1, 1, 2, 2, 3, 3, -1, -1, 4, 4, 5, 5, 6, 6];
+/// The UEFA cup's final on a neutral ground, its id on the first row.
+const UEFA_FINAL: u32 = 0x16;
+/// The UEFA cup's tie on a day of a later round (`FUN_004205a4`): the
+/// round's ties stand in the object's run from its start to the next
+/// round's — the starts at the save block's +0 a word each — the round
+/// noted as the club's. An even id is the first leg, the entry's first
+/// side at home (`FUN_00676aaf`); an odd one the return leg, its second
+/// side at home (`FUN_00676b58`).
+fn uefa_counter_run(records: &Records, team: &crate::records::Team, code: u32) -> Option<((u8, i16), i16, u8)> {
+    let b = records.block(crate::europe_entry::UEFA_CUP)?;
+    let stage = usize::try_from(*UEFA_STAGES.get((code & 0x3f) as usize)?).ok()?;
+    let start = |s: usize| -> Option<i64> { Some(i64::from(i32::from_le_bytes(b.get(4 * s..4 * s + 4)?.try_into().ok()?))) };
+    let (first, last) = (start(stage)?, start(stage + 1)?);
+    let turned = code % 2 == 1;
+    for n in first.max(0)..last {
+        let at = crate::europe_entry::UEFA_TIES + usize::try_from(n).ok()? * INTERTOTO_TIE;
+        let Some(t) = b.get(at..at + INTERTOTO_TIE) else { continue };
+        let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+        if supercup_side(&t[0..4], team) {
+            return Some((side(4), i16::from(turned), stage as u8));
+        }
+        if supercup_side(&t[4..8], team) {
+            return Some((side(0), i16::from(!turned), stage as u8));
+        }
+    }
+    None
+}
+
+/// The UEFA cup's final (`FUN_0042055a`): the one tie at the last round's
+/// start (the save block's +0x1c), its first side at home, the ground the
+/// turn drew for it (`DAT_00b21abc`, [`SECOND_FINAL_GROUND`]). The finder
+/// writes no round; the original notes whatever word an earlier day's
+/// finder left on its stack, which the replica does not follow — it
+/// notes nought.
+fn uefa_final(records: &Records, team: &crate::records::Team) -> Option<((u8, i16), i16)> {
+    let b = records.block(crate::europe_entry::UEFA_CUP)?;
+    let n = usize::try_from(i32::from_le_bytes(b.get(0x1c..0x20)?.try_into().ok()?)).ok()?;
+    let at = crate::europe_entry::UEFA_TIES + n * INTERTOTO_TIE;
+    let t = b.get(at..at + 8)?;
+    let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+    if supercup_side(&t[0..4], team) {
+        return Some((side(4), 0));
+    }
+    supercup_side(&t[4..8], team).then(|| (side(0), 1))
 }
 
 /// The world's final a club plays (`FUN_00676aaf` on the tie at `at` of
@@ -1595,6 +1650,46 @@ mod tests {
         // The UEFA cup's are many: `A.an3` stands the day before a leg, so
         // its 41 ties note their two sides over the league's club slots.
         assert!(all > 400 && eight >= 5 && five >= 20 && seven >= 500 && misses.is_empty(), "{} misses of {all} ({eight} Intertoto, {five} European, {seven} UEFA):\n{}", misses.len(), misses.join("\n"));
+    }
+
+    /// The original's saves note no club's later UEFA round in the days
+    /// looked over — the draw comes after their last notes — so the
+    /// finders are read against the drawn ties themselves: on `S2c.an3`
+    /// the quarter-final's (ties 138 … 145, ids 12 and 13: its legs the
+    /// first side and then the second at home, round 4), on `S2late.an3`
+    /// the final's (tie 152, id 22, the first side at home, round nought),
+    /// the day before each.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_uefa_cups_later_rounds_name_the_drawn_ties() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut checked = 0;
+        for (name, ties, round) in [("S2c.an3", 138..146, 4), ("S2late.an3", 152..153, 0)] {
+            let n = Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+            let days: Vec<_> = (0..SEASON_DAYS).filter(|&d| {
+                let c = data.calendar.entry(0, d);
+                c & COMPETITION == EUROPEAN && (if round == 0 { c & 0xff == UEFA_FINAL } else { matches!(c & 0xff, 12 | 13) })
+            }).collect();
+            assert!(!days.is_empty(), "{name}");
+            let b = n.block(crate::europe_entry::UEFA_CUP).unwrap().to_vec();
+            for k in ties {
+                let t = &b[crate::europe_entry::UEFA_TIES + k * INTERTOTO_TIE..][..8];
+                let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+                for &d in &days {
+                    let back = data.calendar.entry(0, d) % 2 == 1;
+                    for (own, other, home) in [(side(0), side(4), !back), (side(4), side(0), back)] {
+                        let team = n.team(own.0.into(), own.1 as u16).unwrap();
+                        let m = next_match(&n, &data.calendar, team, d - 1).unwrap();
+                        assert_eq!(m, NextMatch { day: d as i16, opponent: other, venue: i16::from(!home), kind: NEXT_UEFA, round }, "{name} tie {k} day {d}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked >= 34, "{checked}");
     }
 
     /// The world's two finals on the calendar's first row: a club on
