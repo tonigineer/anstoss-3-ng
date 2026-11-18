@@ -305,7 +305,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(european_ranking::EuropeanRanking),
         Box::new(court::Court),
         Box::new(season_terms::SeasonTerms::default()),
-        Box::new(season_start::SeasonStart),
+        Box::new(season_start::SeasonStart::default()),
         Box::new(cup_results::CupResults::default()),
         Box::new(event_text::EventText),
         Box::new(render::Render::default()),

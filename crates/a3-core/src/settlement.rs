@@ -1201,6 +1201,84 @@ pub fn book_european_tv(records: &mut Records, i: usize) {
     put::<i32>(team, 0x5e8, 0);
 }
 
+/// One station's bid in the European television's talks with a human
+/// (`CDiVerhandlungenUefa`, dialog 475, a 0x1c-byte part of it from
+/// +0x2470 each): its fixed sum (+0x14) and its sum per home match
+/// (+0x18) as they stand, and how far its patience has run (+0x10).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct TvBid {
+    pub fixed: i32,
+    pub per_home: i32,
+    pub strain: i32,
+}
+
+/// From this strain the station breaks the talks off (`FUN_005ba04d`).
+pub const TV_PATIENCE: i32 = 15;
+/// Which of the three offers each station makes, by a draw below six
+/// (`DAT_0088c620`): 0 a fixed sum alone, 1 both, 2 a sum per home match
+/// alone.
+const TV_BID_KINDS: [[u8; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+/// The offers' sums (`FUN_005b9b1d`): eight tenths of these and one
+/// hundredth more for every step of a draw below eleven, down to hundred
+/// thousands (f32 0x81c088, 0x82e5bc, 0x82e5b4, 0x82e5b0, 0x82e5b8).
+const TV_BID_FLOOR: f32 = 0.8;
+const TV_FIXED_ALONE: f32 = 6_000_000.0;
+const TV_FIXED: f32 = 3_500_000.0;
+const TV_PER_HOME: f32 = 1_500_000.0;
+const TV_PER_HOME_ALONE: f32 = 2_500_000.0;
+/// What one round of bargaining raises both sums by: 1.1 and a draw
+/// below fifteen in hundredths (f32 0x82e5c0).
+const TV_RAISE: f32 = 1.1;
+
+/// The three stations' first bids (`FUN_005ba500`): one draw below six
+/// deals out the kinds, then each station draws its sums in turn.
+pub fn tv_bids(random: &mut Random) -> [TvBid; 3] {
+    let kinds = TV_BID_KINDS[random.below(6) as usize];
+    let mut sum = |base: f32| {
+        let v = ((f64::from(random.below(11)) / 100.0 + f64::from(TV_BID_FLOOR)) * f64::from(base)) as i32;
+        v / EURO_TV_STEP * EURO_TV_STEP
+    };
+    kinds.map(|kind| match kind {
+        0 => TvBid { fixed: sum(TV_FIXED_ALONE), ..TvBid::default() },
+        1 => {
+            let fixed = sum(TV_FIXED);
+            TvBid { fixed, per_home: sum(TV_PER_HOME), strain: 0 }
+        }
+        _ => TvBid { per_home: sum(TV_PER_HOME_ALONE), ..TvBid::default() },
+    })
+}
+
+/// One "Verhandeln" with a station (`FUN_005ba04d`): its strain grows by
+/// one to five; still short of [`TV_PATIENCE`], it raises the sum per home
+/// match and then the fixed sum by its own draw each. Whether it stays in
+/// the talks.
+pub fn tv_bargain(bid: &mut TvBid, random: &mut Random) -> bool {
+    bid.strain += random.below(5) as i32 + 1;
+    if bid.strain >= TV_PATIENCE {
+        return false;
+    }
+    let mut raise = |v: i32| ((f64::from(random.below(15)) / 100.0 + f64::from(TV_RAISE)) * f64::from(v)) as i32;
+    bid.per_home = raise(bid.per_home);
+    bid.fixed = raise(bid.fixed);
+    true
+}
+
+/// A bid's sums as the talks write and sign them: the fixed sum down to
+/// hundred thousands, the one per home match to fifty thousands
+/// (`DAT_00a3b37c`, `DAT_00a3b38c`).
+pub fn tv_terms(bid: &TvBid) -> (i32, i32) {
+    (bid.fixed / EURO_TV_ROUND[0] * EURO_TV_ROUND[0], bid.per_home / EURO_TV_ROUND[1] * EURO_TV_ROUND[1])
+}
+
+/// The station's bid signed (`FUN_005ba88c`): its sums go to the club's
+/// +0x5e8 and +0x5ec, the station's place to +0x5f0.
+pub fn sign_tv_bid(team: &mut Team, bid: &TvBid, station: u8) {
+    let (fixed, per_home) = tv_terms(bid);
+    put::<i32>(team, 0x5e8, fixed);
+    put::<i32>(team, 0x5ec, per_home);
+    put::<u8>(team, 0x5f0, station);
+}
+
 /// Whether the European television's first sum is booked at once
 /// (`CMyStartDialog::FUN_00424e42(0x50000004)` → `FUN_00424a35` for id
 /// 4, its kind 0x100): the Champions League's finder (`FUN_0042451e`)

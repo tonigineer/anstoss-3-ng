@@ -87,15 +87,28 @@ fn keeper(records: &Records, (country, number): (u8, i16)) -> Option<u8> {
 /// country's block (`DAT_019fab6a`), none for a country the game does not
 /// follow.
 pub fn station_name(records: &Records, station: u8) -> Option<String> {
-    const STATIONS_AT: usize = 0x2b9a - 0x20;
-    const STATION_SIZE: usize = 0x32;
-    const NAME: usize = 0x1c;
     let slot = usize::from(station >> 3);
     let country = records.countries.slot_country(slot + 1);
     if !records.globals.played(country) {
         return None;
     }
-    let at = STATIONS_AT + usize::from(station & 3) * STATION_SIZE;
+    station_in_slot(records, slot, usize::from(station & 3))
+}
+
+/// A country's station by its place among them (`FUN_006810fc` for the
+/// country and the place), none for a country the game does not follow.
+pub fn country_station(records: &Records, country: u8, place: usize) -> Option<String> {
+    if !records.globals.played(i16::from(country)) {
+        return None;
+    }
+    station_in_slot(records, usize::from(records.countries.slot(usize::from(country))), place)
+}
+
+fn station_in_slot(records: &Records, slot: usize, place: usize) -> Option<String> {
+    const STATIONS_AT: usize = 0x2b9a - 0x20;
+    const STATION_SIZE: usize = 0x32;
+    const NAME: usize = 0x1c;
+    let at = STATIONS_AT + place * STATION_SIZE;
     let block = records.block(&format!("0x19f7fd0[{slot}]"))?;
     Some(crate::records::text(block.get(at..at + NAME)?, NAME))
 }

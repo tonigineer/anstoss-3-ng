@@ -12918,4 +12918,103 @@ mod tests {
             }
         }
     }
+
+    /// SeasonEnd364's European television talks (dialog 475): the
+    /// country's three stations bid as the original draws them after the
+    /// talks left to the computer (`FUN_005ba500`), a "Verhandeln" raises
+    /// the left one's bid (`FUN_005ba04d`), and "Unterschreiben" on the
+    /// middle one signs its sums into the club after the notice
+    /// (`FUN_005ba88c`), the cycle booking the fixed sum where it does.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_european_tv_talks_bargain_and_sign() {
+        use a3_core::settlement::{TvBid, tv_bargain, tv_bids, tv_terms};
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let turn = "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422";
+        let play = |then: &str| {
+            let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", &format!("{turn}{then}"));
+            let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+            result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            runner
+        };
+        let club = |runner: &Runner| {
+            let state = runner.host.state();
+            let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+            let nation = game.world.country(slot).unwrap().nation;
+            state.records.as_ref().unwrap().team_index(nation, number as u16).unwrap()
+        };
+        // What the talks draw: the computer's signing of the talks left
+        // unticked first, then the bids, on the season's random.
+        let runner = play("");
+        let i = club(&runner);
+        let (mut random, country, names, before, tv) = {
+            let mut state = runner.host.state();
+            let state = &mut *state;
+            let records = state.records.as_mut().unwrap();
+            let talks = a3_core::finances::season_talks(&records.teams[i], records.globals.preparation());
+            let mut random = state.season.as_ref().unwrap().random.clone();
+            a3_core::settlement::sign_left_talks(records, i, talks.map(|t| t.ticked), &mut random);
+            let tv = talks[5].ticked && a3_core::finances::in_europe(&records.teams[i]);
+            let country = records.teams[i].country();
+            let names: Vec<String> =
+                (0..3).map(|k| a3_core::report::country_station(records, country, k).unwrap()).collect();
+            let at = a3_core::finances::CLUB_TO_TEAM;
+            let before = [0x13c, 0x244].map(|o| records.teams[i].get::<i32>(o + at));
+            (random, country, names, before, tv)
+        };
+        drop(runner);
+        assert!(tv, "SeasonEnd364's club keeps the television's talks in Europe");
+        let mut bids = tv_bids(&mut random);
+        let mut kinds: Vec<u8> = bids.iter().map(|b| u8::from(b.fixed != 0) + 2 * u8::from(b.per_home != 0)).collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, [1, 2, 3], "one fixed sum, one per home match, one both");
+        let money = |v: i32| crate::screens::playerinfo::money(&game, i64::from(v));
+        let words = |b: &TvBid| {
+            let (fixed, per_home) = tv_terms(b);
+            match (fixed, per_home) {
+                (f, 0) => format!("Fixbetrag {}", money(f)),
+                (0, p) => format!("Pro Heimspiel {}", money(p)),
+                (f, p) => format!("Fixbetrag {}, pro Heimspiel {}", money(f), money(p)),
+            }
+        };
+        let dialog = &game.dialogs[&475];
+        let at = |id: u16| crate::screens::control(dialog, id).unwrap();
+        let runner = play("\nnow ok\nuntil dialog 475");
+        let view = runner.host.view();
+        assert_eq!(view.id, 475, "{}", runner.log.join("\n"));
+        for (k, (name, offer)) in [(6051, 6052), (6055, 6056), (6053, 6054)].into_iter().enumerate() {
+            assert_eq!(view.text(at(name)), names[k], "station {k} of {country}");
+            assert_eq!(view.text(at(offer)), words(&bids[k]), "station {k}'s offer");
+        }
+        drop(runner);
+        // One round with the left station: never its last.
+        let was = bids[0];
+        assert!(tv_bargain(&mut bids[0], &mut random));
+        assert!(bids[0].fixed >= was.fixed && bids[0].per_home >= was.per_home);
+        let runner = play("\nnow ok\nuntil dialog 475\nnow choose 6058 0");
+        let view = runner.host.view();
+        assert_eq!(view.text(at(6052)), words(&bids[0]), "the raised offer");
+        assert_eq!(view.chosen(at(6058)), crate::controls::options::NONE, "the item let go");
+        drop(runner);
+        // Signed with the middle one: its notice, then its sums the club's.
+        let runner = play("\nnow ok\nuntil dialog 475\nnow choose 6058 0\nnow choose 6059 1\nuntil dialog 419");
+        assert!(runner.log.iter().any(|l| l == "screen 380"), "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        let team = &state.records.as_ref().unwrap().teams[i];
+        let at = a3_core::finances::CLUB_TO_TEAM;
+        let (fixed, per_home) = tv_terms(&bids[1]);
+        assert_eq!(team.get::<i32>(0x5ec + at), per_home);
+        assert_eq!(team.get::<u8>(0x5f0 + at), 1);
+        let booked = [0x13c, 0x244].map(|o| team.get::<i32>(o + at));
+        let kept = team.get::<i32>(0x5e8 + at);
+        if kept == 0 {
+            assert_eq!(booked, before.map(|b| b + fixed), "the fixed sum booked");
+        } else {
+            assert_eq!((kept, booked), (fixed, before), "the fixed sum kept");
+        }
+    }
 }
