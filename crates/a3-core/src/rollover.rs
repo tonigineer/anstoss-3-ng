@@ -953,9 +953,9 @@ pub(crate) fn note_strength(player: &mut Player, strength: u8) {
 /// The humans' appointment lists (`DAT_01b9ffc8`, one of 0x11a bytes per
 /// slot: a count, then 20 entries of 14 bytes — day, month, year, kind,
 /// a value, the player).
-const APPOINTMENTS: &str = "0x1b9ffc8";
-const APPOINTMENT_LIST: usize = 0x11a;
-const APPOINTMENT: usize = 14;
+pub(crate) const APPOINTMENTS: &str = "0x1b9ffc8";
+pub(crate) const APPOINTMENT_LIST: usize = 0x11a;
+pub(crate) const APPOINTMENT: usize = 14;
 const APPOINTMENTS_MOST: usize = 20;
 /// A child's birthday among the player's (record +0x174, four bytes each).
 const CHILDREN_BIRTHDAYS: usize = 0x174;
@@ -986,7 +986,20 @@ fn add_appointment(list: &mut [u8], entry: [u8; APPOINTMENT]) {
     list[..2].copy_from_slice(&count.to_le_bytes());
 }
 
-fn appointment(day: u8, month: u8, year: u16, kind: u16, value: u16, id: u16) -> [u8; APPOINTMENT] {
+/// An appointment into the list of a club's human slot, 1 to 4 (club
+/// +0x11de, the team's +0xb5): `FUN_006a694b` reads the list,
+/// [`add_appointment`] puts it in, `FUN_006a69a6` writes it back — for any
+/// other club nothing.
+pub(crate) fn book_appointment(records: &mut Records, human: u8, entry: [u8; APPOINTMENT]) {
+    let Some(slot) = usize::from(human).checked_sub(1).filter(|&s| s < 4) else { return };
+    if let Some(block) = records.block_mut(APPOINTMENTS)
+        && let Some(list) = block.get_mut(slot * APPOINTMENT_LIST..(slot + 1) * APPOINTMENT_LIST)
+    {
+        add_appointment(list, entry);
+    }
+}
+
+pub(crate) fn appointment(day: u8, month: u8, year: u16, kind: u16, value: u16, id: u16) -> [u8; APPOINTMENT] {
     let mut e = [0; APPOINTMENT];
     e[0] = day;
     e[1] = month;
