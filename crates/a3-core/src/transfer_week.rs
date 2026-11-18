@@ -25,7 +25,10 @@
 //! with no human manager offers the men it counts on fresh contracts
 //! (`FUN_0042991e`, the club's number and the day alike modulo four).
 //!
-//! After it a computer club's transfer budget is refilled and, in the
+//! After it a computer club keeps the men it was asked to keep where its
+//! next manager's move was agreed, those with under three years left on
+//! fresh terms (`FUN_004279f8` after its first loop); then its transfer
+//! budget is refilled and, in the
 //! first week of November, its wanted positions planned anew
 //! ([`crate::search_plan::refill`]); on a draw of its odds it bids for
 //! the listed men of the positions it wants ([`crate::bids::bid`]), or,
@@ -35,8 +38,7 @@
 //! or, early in the season, on loan (the end of `FUN_004279f8`).
 //!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — the men they scouted, their
-//! other bids (`FUN_006c41b1`, `FUN_00427494`)
+//! in `FUN_004279f8` and `FUN_004297e1` — their other bids (`FUN_006c41b1`, `FUN_00427494`)
 //! — and
 //! the European clubs' (`FUN_0069d3dd`) and the closing passes
 //! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
@@ -92,6 +94,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
                 weigh(records, id, human, today, random);
             }
             if !human {
+                keep_asked(records, rules, (country, number), random);
                 crate::search_plan::refill(records, random, (country as u8, number as i16));
                 crate::bids::bid(records, rules, (country, number), SALE_ODDS[usize::from(played)], &mut busy, random);
                 sell(records, rules, (country, number), SALE_ODDS[usize::from(played)], random);
@@ -355,16 +358,7 @@ fn extend(records: &mut Records, rules: &crate::season::Rules, (country, number)
     let old = crate::transfers::terms(records, id);
     let Some(mut t) = crate::free_agents::terms_over(records, id, team.level(), tables, old, random) else { return };
     t[0xc] = years as u8;
-    let word = |at: usize| u16::from_le_bytes([t[at], t[at + 1]]);
-    let start = i32::from(records.globals.start_year());
-    if let Some(p) = records.player_mut(id) {
-        p.set_salary(word(0));
-        p.set_appearance_bonus(word(2));
-        p.set_goal_bonus(word(4));
-        p.set_fixed_fee(word(6));
-        p.set_terms(word(0xe));
-        p.set_contract((p.contract() & !0xfff) | (start + i32::from(years)) as u16);
-    }
+    put_terms(records, id, &t);
     let (Some(p), Some(team)) = (records.player(id), records.team(country, number)) else { return };
     let mut own = crate::transfers::terms(records, id);
     own[8..12].fill(0);
@@ -377,6 +371,64 @@ fn extend(records: &mut Records, rules: &crate::season::Rules, (country, number)
         rules.discipline.mood.set_reasons(p, CONTRACT_PLEASES);
         crate::mood::clear_reasons(p, CONTRACT_GRIEVANCE);
         p.put::<u8>(0x160, worth as u8);
+    }
+}
+
+/// A contract's terms as `FUN_00709fb6` leaves them on him: salary,
+/// bonuses, release fee, the terms' word, and his years from the
+/// closing season on.
+fn put_terms(records: &mut Records, id: u16, t: &[u8; 0x14]) {
+    let word = |at: usize| u16::from_le_bytes([t[at], t[at + 1]]);
+    let end = i32::from(records.globals.start_year()) + i32::from(t[0xc] as i8);
+    if let Some(p) = records.player_mut(id) {
+        p.set_salary(word(0));
+        p.set_appearance_bonus(word(2));
+        p.set_goal_bonus(word(4));
+        p.set_fixed_fee(word(6));
+        p.set_terms(word(0xe));
+        p.set_contract((p.contract() & !0xfff) | end as u16);
+    }
+}
+
+/// The five ids of the men a team was asked to keep (team +0x388, read
+/// by `FUN_0069d7f5`, written back by `FUN_0069d7ae`): put there where
+/// a manager's move for next season is agreed (`FUN_006695c8`, the
+/// deal's +0xe0), cleared at the season's end (`FUN_00699524`).
+const TO_KEEP: usize = 0x388;
+const TO_KEEP_COUNT: usize = 5;
+/// With fewer years left than this he gets fresh terms (B+0x94 < 3).
+const KEEP_BELOW: i32 = 3;
+
+/// A computer club keeps the men it was asked to (`FUN_004279f8` after
+/// its first loop): each id of its list that is in its squad
+/// (`FUN_006968c4`) and whom it may keep (`FUN_00426cc6`) comes off the
+/// list, with under three years left on fresh terms over his own
+/// (`FUN_0070a155` → `FUN_00709fb6`: salary and bonuses anew, his years
+/// and his fresh ones). One not in its squad, or not to be kept yet,
+/// stays on the list.
+fn keep_asked(records: &mut Records, rules: &crate::season::Rules, (country, number): (u16, u16), random: &mut Random) {
+    let Some(team) = records.team(country, number) else { return };
+    let (squad, level) = (team.players(), team.level());
+    let mut ids: [u16; TO_KEEP_COUNT] = std::array::from_fn(|k| team.get::<u16>(TO_KEEP + 2 * k));
+    if ids == [0; TO_KEEP_COUNT] {
+        return;
+    }
+    let tables = (&rules.contract, &rules.value);
+    for slot in ids.iter_mut().filter(|id| **id != 0 && squad.contains(id)) {
+        let id = *slot;
+        let Some(p) = records.player(id).filter(|p| may_keep(records, p)) else { continue };
+        if years_left(records, p) < KEEP_BELOW {
+            let own = crate::transfers::terms(records, id);
+            if let Some(t) = crate::free_agents::terms_over(records, id, level, tables, own, random) {
+                put_terms(records, id, &t);
+            }
+        }
+        *slot = 0;
+    }
+    if let Some(team) = records.team_mut(country, number) {
+        for (k, id) in ids.into_iter().enumerate() {
+            team.put::<u16>(TO_KEEP + 2 * k, id);
+        }
     }
 }
 
@@ -702,6 +754,61 @@ mod tests {
     /// transfer list or says he retires, while the list has room, and
     /// the late listings stand at terms 0; the save's own listings, by
     /// then long stale, come off at the week's end.
+    /// A computer club asked to keep five men (save A, day 63): the two
+    /// of its squad it may keep come off its list, the one with a year
+    /// left on fresh terms of more years, the one with three as he was;
+    /// one passed over and one not of its squad stay on it, untouched.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_computer_club_keeps_the_men_it_was_asked_to() {
+        let mut records = kept("A.an3");
+        let rules = rules();
+        let mut found = None;
+        'clubs: for country in crate::opponent::played_nations(&records) {
+            for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                let team = records.team(country, number).unwrap();
+                if team.humans() != [0, 0] || team.level() >= LEVELS {
+                    continue;
+                }
+                let squad = team.players();
+                let pick = |years: i32| {
+                    squad.iter().copied().find(|&id| {
+                        let p = records.player(id).unwrap();
+                        years_left(&records, p) == years && may_keep(&records, p)
+                    })
+                };
+                let barred = squad.iter().copied().find(|&id| !may_keep(&records, records.player(id).unwrap()));
+                if let (Some(one), Some(three), Some(barred)) = (pick(1), pick(3), barred) {
+                    found = Some((country, number, one, three, barred));
+                    break 'clubs;
+                }
+            }
+        }
+        let (country, number, one, three, barred) = found.expect("a club with such men");
+        let stranger = (1..u16::MAX).find(|&id| records.player(id).is_some() && !records.team(country, number).unwrap().players().contains(&id)).unwrap();
+        let list = [one, 0, three, barred, stranger];
+        let team = records.team_mut(country, number).unwrap();
+        for (k, id) in list.into_iter().enumerate() {
+            team.put::<u16>(TO_KEEP + 2 * k, id);
+        }
+        let before = |records: &Records, id: u16| {
+            let p = records.player(id).unwrap();
+            (p.contract(), p.salary(), p.terms())
+        };
+        let (b1, b3, bb, bs) = (before(&records, one), before(&records, three), before(&records, barred), before(&records, stranger));
+        keep_asked(&mut records, &rules, (country, number), &mut Random::new(3));
+        let team = records.team(country, number).unwrap();
+        let left: Vec<u16> = (0..TO_KEEP_COUNT).map(|k| team.get::<u16>(TO_KEEP + 2 * k)).collect();
+        assert_eq!(left, [0, 0, 0, barred, stranger]);
+        let p = records.player(one).unwrap();
+        assert!(years_left(&records, p) >= 1 + 2, "{one}: {} years", years_left(&records, p));
+        assert!(p.salary() > 0);
+        assert_eq!(p.contract() & !0xfff, b1.0 & !0xfff);
+        assert_eq!(before(&records, three), b3);
+        assert_eq!(before(&records, barred), bb);
+        assert_eq!(before(&records, stranger), bs);
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_last_weeks_list_every_last_year() {
