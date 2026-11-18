@@ -1675,6 +1675,9 @@ impl Cycle {
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
                 crate::year::note_next_matches(records, &self.data, 0, &mut season.random);
+                // And every national team its own (`FUN_00630c9f`'s
+                // `FUN_0062c90e`).
+                crate::national::note_next_matches(records, &self.data.calendar, 0);
                 // The human clubs' squads changed with the turn — players
                 // gone, new ones come — so each club the season follows
                 // stands anew as its records now have it, as a load would

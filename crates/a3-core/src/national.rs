@@ -480,20 +480,210 @@ pub fn date_entry(records: &Records, nation: i16) -> Option<usize> {
 /// its three pairs of nations, a pair dropped when an index points past
 /// the entry's count.
 pub fn international_pairs(records: &Records, entry: usize, column: usize) -> Vec<(i16, i16)> {
-    let Some(all) = records.block(&format!("{DATE_ENTRIES:#x}")) else {
-        return Vec::new();
-    };
-    let Some(e) = all.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY) else {
-        return Vec::new();
+    (0..3).filter_map(|k| international_pair(records, entry, column, k)).collect()
+}
+
+/// The `k`-th pair of one column (`FUN_006b8149`), none when an index
+/// points past the entry's count.
+fn international_pair(records: &Records, entry: usize, column: usize, k: usize) -> Option<(i16, i16)> {
+    let e = records.block(&format!("{DATE_ENTRIES:#x}"))?.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY)?;
+    let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+    let at = DATE_PAIRS + column * 6 + k * 2;
+    let (a, b) = (usize::from(*e.get(at)?), usize::from(*e.get(at + 1)?));
+    (a < count && b < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * b)))
+}
+
+/// Whether entry `entry` of the international dates names `nation`
+/// (`FUN_006b7d18`).
+fn entry_holds(records: &Records, entry: usize, nation: i16) -> bool {
+    let Some(e) = records.block(&format!("{DATE_ENTRIES:#x}")).and_then(|b| b.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY)) else {
+        return false;
     };
     let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
-    (0..3)
-        .filter_map(|k| {
-            let at = DATE_PAIRS + column * 6 + k * 2;
-            let (a, b) = (usize::from(*e.get(at)?), usize::from(*e.get(at + 1)?));
-            (a < count && b < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * b)))
-        })
-        .collect()
+    (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+}
+
+/// A national team's next-match fields in its block (the loaded club's
+/// +0xb44 to +0xb4f, a team's +0x250 on): the day, the opponent's land and
+/// team (200 a national team), where it is played (0 at home), its kind
+/// and its referee.
+const NEXT_COUNTRY: usize = 0x252 - 0x20;
+const NEXT_NUMBER: usize = 0x254 - 0x20;
+const NEXT_VENUE: usize = 0x256 - 0x20;
+const NEXT_KIND: usize = 0x258 - 0x20;
+const NEXT_REFEREE: usize = 0x25a - 0x20;
+/// The kinds `FUN_0062c90e` gives a national team's next match: a
+/// qualifier, a friendly, a match of the tournament.
+pub const NEXT_QUALIFIER: u8 = 12;
+pub const NEXT_FRIENDLY: u8 = 13;
+pub const NEXT_TOURNAMENT: u8 = 14;
+/// The flags of the international row the finder reads: a tournament's
+/// day, a friendly's (its low two bits the slot), a qualifier's (its low
+/// six bits the matchday).
+const TOURNAMENT_FLAG: u32 = 0x0200_0000;
+const FRIENDLY_FLAG: u32 = 0x0400_0000;
+const QUALIFIER_FLAG: u32 = 0x0800_0000;
+/// The international dates' first six entries are the qualifying groups,
+/// the next eight the tournament's (`0x1ba0cfc`), and its knockout ties
+/// follow from `0x1ba13cc`, fourteen bytes each, the home side's four
+/// bytes first.
+const QUALIFYING_GROUPS: usize = 6;
+const TOURNAMENT_GROUPS: usize = 8;
+const KNOCKOUT_TIES: usize = 0x1ba13cc - 0x1ba07e0;
+const KNOCKOUT_TIE: usize = 0xe;
+/// The knockout rounds by their day's number (`FUN_0067ee05`'s calls of
+/// `FUN_0067ecd4`): the last sixteen, only in a world cup's year, then
+/// the quarter-finals, semi-finals and final — the first tie and how many.
+const KNOCKOUTS: [(usize, usize); 4] = [(0, 8), (8, 4), (12, 2), (14, 1)];
+/// What `FUN_0063b488` leaves in the finder's six bytes for a nation no
+/// human coaches: it copies nothing, and the stack the team's loader left
+/// behind holds the nation at +0 and -1 at +4 (NewSeason000), so every
+/// such team counts its first friendly as booked against itself.
+const UNBOOKED_LEFTOVER: [u8; 2] = [0xff, 0xff];
+
+/// A national team's next match as `FUN_0062c90e` writes it: the day, the
+/// opponent's four bytes (the second only where the original copies all
+/// four), where it is played where the original writes it, and the kind.
+struct NationNext {
+    day: i16,
+    land: u8,
+    pad: Option<u8>,
+    team: i16,
+    venue: Option<i16>,
+    kind: u8,
+}
+
+/// Whether a human coaches `nation` (`FUN_00677428` with 200: the four
+/// humans' national keys from `FUN_006b990d`).
+fn human_coached(records: &Records, nation: i16) -> bool {
+    (1..=4).any(|id| i16::from(records.globals.get::<u8>(KEY_NATION + id * KEY)) == nation && records.globals.get::<u16>(KEY_TEAM + id * KEY) == 200)
+}
+
+/// The national team's next match from the day after `today` to the
+/// year's last (`FUN_0062c90e`): on a friendly's day the slot booked —
+/// for a nation without a human coach the loader's leftover — on a
+/// qualifier's day its pairing in the first of the six groups that names
+/// it (the column the matchday's, five on in an odd year), on a
+/// tournament's day of an odd year its group's first two pairings or its
+/// knockout tie (`FUN_0067ee05`).
+fn nation_next(records: &Records, calendar: &Calendar, nation: i16, today: usize) -> Option<NationNext> {
+    let year = i32::from(records.globals.start_year() as i16);
+    for day in today + 1..crate::calendar::DAYS {
+        let code = calendar.entry(INTERNATIONAL_ROW, day);
+        let at = |land: i16, venue: i16, kind: u8| NationNext { day: day as i16, land: land as u8, pad: None, team: 200, venue: Some(venue), kind };
+        match code & 0x7f00_0000 {
+            FRIENDLY_FLAG => {
+                let slot = (code & 3) as usize;
+                let pick = if coach_number(records, nation) != 0 {
+                    friendly_booked(records, nation).get(slot).map_or([0; FRIENDLY_PICK], |p| p.0)
+                } else if slot == 0 {
+                    [nation as u8, 0, 0, 0, UNBOOKED_LEFTOVER[0], UNBOOKED_LEFTOVER[1]]
+                } else {
+                    [0; FRIENDLY_PICK]
+                };
+                if pick[0] != 0 {
+                    return Some(NationNext {
+                        day: day as i16,
+                        land: pick[0],
+                        pad: Some(pick[1]),
+                        team: i16::from_le_bytes([pick[2], pick[3]]),
+                        venue: Some(i16::from_le_bytes([pick[4], pick[5]])),
+                        kind: NEXT_FRIENDLY,
+                    });
+                }
+            }
+            QUALIFIER_FLAG => {
+                let column = (code & 0x3f) as usize + (year % 2) as usize * 5;
+                if let Some(group) = (0..QUALIFYING_GROUPS).find(|&g| entry_holds(records, g, nation)) {
+                    for (home, away) in (0..3).filter_map(|k| international_pair(records, group, column, k)) {
+                        if home == nation {
+                            return Some(at(away, 0, NEXT_QUALIFIER));
+                        }
+                        if away == nation {
+                            return Some(at(home, 1, NEXT_QUALIFIER));
+                        }
+                    }
+                }
+            }
+            TOURNAMENT_FLAG if year % 2 == 1 => {
+                let round = (code & 0x3f) as usize;
+                if round < 3 {
+                    let Some(group) = (QUALIFYING_GROUPS..QUALIFYING_GROUPS + TOURNAMENT_GROUPS).find(|&g| entry_holds(records, g, nation)) else { continue };
+                    for (home, away) in (0..2).filter_map(|k| international_pair(records, group, round, k)) {
+                        // The group's matches write no ground.
+                        let other = if home == nation { away } else if away == nation { home } else { continue };
+                        return Some(NationNext { venue: None, ..at(other, 0, NEXT_TOURNAMENT) });
+                    }
+                } else if let Some(&(first, count)) = KNOCKOUTS.get(round - 3) {
+                    // The last sixteen are played only in a world cup's year
+                    // (`FUN_0067bb89`).
+                    if round == 3 && year % 4 != 1 {
+                        continue;
+                    }
+                    let Some(dates) = records.block(&format!("{DATE_ENTRIES:#x}")) else { continue };
+                    let ours = |side: &[u8]| i16::from(side[0]) == nation && u16::from_le_bytes([side[2], side[3]]) == 200;
+                    for t in first..first + count {
+                        let Some(tie) = dates.get(KNOCKOUT_TIES + t * KNOCKOUT_TIE..KNOCKOUT_TIES + t * KNOCKOUT_TIE + 8) else { break };
+                        let (side, venue) = if ours(&tie[0..4]) {
+                            (&tie[4..8], 0)
+                        } else if ours(&tie[4..8]) {
+                            (&tie[0..4], 1)
+                        } else {
+                            continue;
+                        };
+                        return Some(NationNext {
+                            day: day as i16,
+                            land: side[0],
+                            pad: Some(side[1]),
+                            team: i16::from_le_bytes([side[2], side[3]]),
+                            venue: Some(venue),
+                            kind: NEXT_TOURNAMENT,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every national team's next match noted anew at the new season
+/// (`FUN_00630c9f`'s loop over nations 1 to 116, `FUN_0062c90e`): the day,
+/// the opponent's land and team, the kind and the referee cleared, then
+/// the match found written. A human coach's team has its referee drawn
+/// for the match (`FUN_00424407`, not built), and keeps the one it had.
+pub fn note_next_matches(records: &mut Records, calendar: &Calendar, today: usize) {
+    for nation in 1..NATIONS as i16 {
+        if team_block(records, nation).is_none() {
+            continue;
+        }
+        let next = nation_next(records, calendar, nation, today);
+        let human = human_coached(records, nation);
+        let Some(b) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) else { continue };
+        if b.len() < NEXT_REFEREE + 2 {
+            continue;
+        }
+        put16(b, NEXT_DAY, 0);
+        b[NEXT_COUNTRY] = 0;
+        put16(b, NEXT_NUMBER, 0);
+        b[NEXT_KIND] = 0;
+        if !(human && next.is_some()) {
+            put16(b, NEXT_REFEREE, 0);
+        }
+        if let Some(m) = next {
+            put16(b, NEXT_DAY, m.day);
+            b[NEXT_COUNTRY] = m.land;
+            if let Some(pad) = m.pad {
+                b[NEXT_COUNTRY + 1] = pad;
+            }
+            put16(b, NEXT_NUMBER, m.team);
+            if let Some(venue) = m.venue {
+                put16(b, NEXT_VENUE, venue);
+            }
+            b[NEXT_KIND] = m.kind;
+        }
+    }
 }
 
 /// The successes at the big tournaments (`CInfoNationalteam`'s table,
@@ -838,5 +1028,37 @@ mod tests {
                 Success { year: 2003, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
             ]
         );
+    }
+
+    /// The original's new season (NewSeason000) noted again from its own
+    /// groups and bookings, the fields standing as SeasonEnd364 left them:
+    /// every national team's next match comes out as the original's — the
+    /// human coach's qualifier, the rest's first friendly against the
+    /// loader's leftover — but for the referee the original draws.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_nations_next_matches_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (end, mut b, n) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let fields = NEXT_DAY..NEXT_REFEREE + 2;
+        for nation in 1..NATIONS as i16 {
+            let name = format!("{NATIONAL_TEAMS:#x}[{nation}]");
+            let before = end.block(&name).unwrap()[fields.clone()].to_vec();
+            b.block_mut(&name).unwrap()[fields.clone()].copy_from_slice(&before);
+        }
+        note_next_matches(&mut b, &data.calendar, 0);
+        let (mut qualifiers, mut friendlies) = (0, 0);
+        for nation in 1..NATIONS as i16 {
+            let (x, y) = (team_block(&b, nation).unwrap(), team_block(&n, nation).unwrap());
+            let upto = if human_coached(&n, nation) { NEXT_REFEREE } else { NEXT_REFEREE + 2 };
+            assert_eq!(x[NEXT_DAY..upto], y[NEXT_DAY..upto], "nation {nation}");
+            qualifiers += usize::from(y[NEXT_KIND] == NEXT_QUALIFIER);
+            friendlies += usize::from(y[NEXT_KIND] == NEXT_FRIENDLY);
+        }
+        assert!(qualifiers >= 1 && friendlies > 100, "{qualifiers} {friendlies}");
     }
 }
