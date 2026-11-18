@@ -362,20 +362,7 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
         }
         dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
         if id == LINEUP {
-            let spots = rules.pitch.formations.first().map_or([(0, 0); FIELD], |f| f.1);
-            for control in &mut dialog.controls {
-                let Some(id) = control.id else { continue };
-                let at = if (FIELD_BOXES..FIELD_BOXES + FIELD as u16).contains(&id) {
-                    let (x, y) = spots[usize::from(id - FIELD_BOXES)];
-                    PITCH_ORIGIN + Vec2::new(f32::from(x), f32::from(y))
-                } else if (BENCH_BOXES..BENCH_BOXES + BENCH as u16).contains(&id) {
-                    BENCH_ORIGIN + Vec2::new(0.0, BENCH_STEP * f32::from(id - BENCH_BOXES))
-                } else {
-                    continue;
-                };
-                control.kind = Kind::Player;
-                control.rect = Rect::from_corners(at, at + BOX_SIZE);
-            }
+            place_boxes(dialog, rules, FIELD_BOXES, BENCH_BOXES);
         }
         if id == LINEUP_LIST {
             // The small pitch's markers, which the screen moves and labels.
@@ -390,6 +377,25 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
             dialog.controls.push(menu_control());
         }
         add_bar(dialog, rules);
+    }
+}
+
+/// The line-up's boxes as players' boxes, where the first formation and
+/// the bench put them: eleven from `field` on, seven from `bench` on.
+pub(crate) fn place_boxes(dialog: &mut Dialog, rules: &Rules, field: u16, bench: u16) {
+    let spots = rules.pitch.formations.first().map_or([(0, 0); FIELD], |f| f.1);
+    for control in &mut dialog.controls {
+        let Some(id) = control.id else { continue };
+        let at = if (field..field + FIELD as u16).contains(&id) {
+            let (x, y) = spots[usize::from(id - field)];
+            PITCH_ORIGIN + Vec2::new(f32::from(x), f32::from(y))
+        } else if (bench..bench + BENCH as u16).contains(&id) {
+            BENCH_ORIGIN + Vec2::new(0.0, BENCH_STEP * f32::from(id - bench))
+        } else {
+            continue;
+        };
+        control.kind = Kind::Player;
+        control.rect = Rect::from_corners(at, at + BOX_SIZE);
     }
 }
 
@@ -1379,6 +1385,38 @@ fn show_lineup(
     boxes: Boxes,
     sort: Sort,
 ) {
+    show_lineup_in(view, dialog, game, season, state, records, boxes, sort, (FIELD_BOXES, BENCH_BOXES));
+}
+
+/// The line-up as half time shows it (`CHalbzeitpause`, `FUN_004bace2`):
+/// the same boxes, squad and comparison, its boxes under ids of its own.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn show_break_lineup(
+    view: &mut View,
+    dialog: &Dialog,
+    game: &Game,
+    season: &Season,
+    state: &ClubState,
+    records: Option<&Records>,
+    field: u16,
+    bench: u16,
+) {
+    show_lineup_in(view, dialog, game, season, state, records, Boxes::Refill, Sort::default(), (field, bench));
+}
+
+/// The line-up into the boxes from `field` and `bench` on.
+#[allow(clippy::too_many_arguments)]
+fn show_lineup_in(
+    view: &mut View,
+    dialog: &Dialog,
+    game: &Game,
+    season: &Season,
+    state: &ClubState,
+    records: Option<&Records>,
+    boxes: Boxes,
+    sort: Sort,
+    (field_boxes, bench_boxes): (u16, u16),
+) {
     let pitch = &game.rules.pitch;
     let players = &state.players;
     let lineup = &state.lineup;
@@ -1392,7 +1430,7 @@ fn show_lineup(
     let duties = a3_core::duties::on_pitch(players, &state.duties, &lineup.field);
     let spots = if list_view { &[][..] } else { &lineup.spots[..] };
     for (i, (&spot, &player)) in spots.iter().zip(&lineup.field).enumerate() {
-        let Some(c) = control(dialog, FIELD_BOXES + i as u16) else { continue };
+        let Some(c) = control(dialog, field_boxes + i as u16) else { continue };
         let position = pitch.position(spot);
         let shown = match player {
             Some(p) => PlayerBox {
@@ -1415,7 +1453,7 @@ fn show_lineup(
     // The bench shows no duties.
     let bench = if boxes == Boxes::Refill && !list_view { &lineup.bench[..] } else { &[] };
     for (i, &player) in bench.iter().enumerate() {
-        let Some(c) = control(dialog, BENCH_BOXES + i as u16) else { continue };
+        let Some(c) = control(dialog, bench_boxes + i as u16) else { continue };
         let shown = player.map_or_else(PlayerBox::default, |p| filled(p, players[p].positions[0]));
         view.set_player(c, shown);
     }

@@ -231,6 +231,11 @@ pub mod dialogs {
     /// The last information before the match, `CInfoseiteHaupt`
     /// (`IDD_INFOSEITE_HAUPT`), with a page `CInfoseiteSpiel` a match.
     pub const PREMATCH: u16 = 96;
+    /// Half time of a human club's match, `CHalbzeitpause`
+    /// (`IDD_HALBZEIT`), and the talk behind it, `CHalbzeitAnsprache`
+    /// (`IDD_HALBZEIT_ANSPRACHE`).
+    pub const HALFTIME: u16 = 93;
+    pub const HALFTIME_TALK: u16 = 499;
 }
 
 use self::dialogs::*;
@@ -1263,6 +1268,9 @@ impl Cycle {
                             } else {
                                 Vec::new()
                             };
+                            // The breaks at half time likewise, one for
+                            // each human side (`FUN_0064987a`).
+                            let mut breaks = crate::halftime::breaks(records, season.day, &fixtures);
                             let played = crate::matches::play_day(
                                 records,
                                 &self.data.world,
@@ -1271,6 +1279,9 @@ impl Cycle {
                             );
                             crate::prematch::crowds(&mut pages, &played.faced);
                             season.prematch = pages;
+                            crate::halftime::scores(&mut breaks, &played.faced);
+                            season.halftime = breaks;
+                            season.halftime_at = 0;
                             // The matchday's end lists the leagues for
                             // the table after it (`FUN_007108d3`'s
                             // `FUN_00729216`), once the results stand.
@@ -1335,6 +1346,21 @@ impl Cycle {
                     self.ask(Request::new(PREMATCH))?;
                     if let Some(season) = self.state().season.as_mut() {
                         season.prematch.clear();
+                    }
+                }
+                // Half time of each human side's match (event 0xb6,
+                // `FUN_0064a816`): the break until it is done, then the
+                // talk, whose line OK keeps.
+                let breaks = self.state().season.as_ref().map_or(0, |s| s.halftime.len());
+                for at in 0..breaks {
+                    self.season(|s| s.halftime_at = at);
+                    self.ask(Request::new(HALFTIME))?;
+                    if let Reply::Choice(talk) = self.ask(Request::new(HALFTIME_TALK))? {
+                        self.season(|s| {
+                            if let Some(b) = s.halftime.get_mut(at) {
+                                b.talk = u8::try_from(talk).unwrap_or(0);
+                            }
+                        });
                     }
                 }
                 // The match report first (event 0xce), its clubs' crests

@@ -29,6 +29,7 @@ pub mod jobs;
 pub mod kalkulation;
 pub mod match_report;
 pub mod prematch;
+pub mod halftime;
 pub mod licence;
 pub mod konfig3d;
 pub mod market;
@@ -287,6 +288,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(interview::InterviewScreen::default()),
         Box::new(match_report::MatchReport::default()),
         Box::new(prematch::Prematch),
+        Box::new(halftime::Halftime),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),
@@ -363,6 +365,7 @@ pub fn compose(game: &mut Game) {
     youth_tables::compose(&mut game.dialogs);
     tables_after::compose(&mut game.dialogs);
     prematch::compose(&mut game.dialogs);
+    halftime::compose(&mut game.dialogs, &game.data.rules);
     doping::compose(&mut game.dialogs);
     doping_report::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);

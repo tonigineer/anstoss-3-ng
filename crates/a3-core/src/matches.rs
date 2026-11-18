@@ -105,6 +105,8 @@ pub struct Faced {
     pub sides: [(u8, i16); 2],
     pub attendance: i32,
     pub fans: Option<i32>,
+    /// The half's score, home first (+0x12, +0x13).
+    pub half: [u8; 2],
 }
 
 /// What a match of today is: a league's, on its matchday counted from 1,
@@ -452,7 +454,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         if let Some(club) = report::human_side(records, played.sides) {
             played.scorers = scorers;
             report::write(records, &played, random);
-            reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None });
+            reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None, half: played.half });
         }
     }
     // Every club that came through its tie gets what the round pays: the
@@ -1355,7 +1357,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
                 ..Default::default()
             };
             report::write(records, &played, random);
-            reported.push(Faced { club, sides, attendance, fans: Some(fans) });
+            reported.push(Faced { club, sides, attendance, fans: Some(fans), half: [result[2], result[3]] });
         }
     }
     // Every offered Toto match keeps its result, wherever it stands in

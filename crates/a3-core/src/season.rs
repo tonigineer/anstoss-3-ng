@@ -434,6 +434,10 @@ pub struct Season {
     /// 96 shows it, a page a match (`CInfoseiteHaupt`'s copy of the list
     /// at `0x1bdd7b8`, `FUN_006fa703`).
     pub prematch: Vec<crate::prematch::Page>,
+    /// The day's breaks at half time of the human sides' matches, and the
+    /// one dialogs 93 and 499 show (`FUN_0064987a`'s blocks).
+    pub halftime: Vec<crate::halftime::Break>,
+    pub halftime_at: usize,
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -876,6 +880,8 @@ impl Season {
             interview: None,
             interview_recent: Default::default(),
             prematch: Vec::new(),
+            halftime: Vec::new(),
+            halftime_at: 0,
             before_match: false,
             random,
             donations: Vec::new(),

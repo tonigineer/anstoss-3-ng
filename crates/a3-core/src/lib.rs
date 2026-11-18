@@ -38,6 +38,7 @@ pub mod human_day;
 pub mod illegal;
 pub mod individual;
 pub mod internationals;
+pub mod halftime;
 pub mod interview;
 pub mod joining;
 pub mod jobs;

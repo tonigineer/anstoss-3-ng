@@ -3453,7 +3453,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3897,7 +3897,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -8001,7 +8001,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_week_walks_to_its_dial() {
         let game = game();
-        let load = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\n";
+        let load = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\n";
         let walk = format!("{load}until dialog 2");
         let dialled = format!("{walk}\nnow press 9932\nnow press 9932\nuntil dialog 2");
         let Some(plain) = on_save(&game, "A", &walk) else { return };
@@ -8392,7 +8392,7 @@ mod tests {
     fn a_joined_turnier_shows_its_draw_and_results() {
         let game = game();
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
-                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 419 ok\non 477 ok\n\
                     on 380 press 4731\non 381 wait\non 2 wait\non 384 press 4741\non 99 press 2\non 423 ok";
         let draw = format!(
             "now click bar 6\nuntil dialog 348\nnow drag at 540 253 to 180 222\nuntil dialog 296\n\
@@ -9406,7 +9406,7 @@ mod tests {
                         on 364 ok\n\
                         on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
-                        on 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 383 click at 460 210\non 99 press 2\n\
+                        on 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 383 click at 460 210\non 99 press 2\n\
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
@@ -9903,7 +9903,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9947,7 +9947,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -10964,7 +10964,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
         let list = control(&game.dialogs[&25], 1313).unwrap();
@@ -11204,7 +11204,7 @@ mod tests {
         let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
-                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 383 click at 460 210\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 383 click at 460 210\n\
                         on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
@@ -11369,7 +11369,7 @@ mod tests {
     fn the_seller_talks_over_the_fee_in_dialog_308() {
         let game = game();
         let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
-                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
                     on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 308")) else { return };
@@ -11405,7 +11405,7 @@ mod tests {
     fn computer_clubs_settle_a_purchase_talk_and_the_player_moves() {
         let game = game();
         let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
-                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
                     on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
         let Some(before) = on_save(&game, "A", "") else { return };
@@ -11451,7 +11451,7 @@ mod tests {
     fn computer_clubs_plan_their_search_anew_after_a_transfer() {
         let game = game();
         let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
-                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
                     on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")) else { return };
@@ -11478,7 +11478,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 332 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 269")) else { return };
         let dialog = &game.dialogs[&269];
         let view = runner.host.view();
@@ -11524,7 +11524,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok";
         let row = game.save_games().iter().position(|s| s.name == "A").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let play = |then: &str| Runner::play(&game, &Script::parse(&format!("{}\n{then}", load.trim_end())).unwrap());
@@ -11580,7 +11580,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 332")) else { return };
         assert_eq!(seen(&runner, 269), 0, "the report comes before the table");
         let dialog = &game.dialogs[&332];
@@ -11683,7 +11683,75 @@ mod tests {
         assert!(view.controls[combo].hidden);
         drop(state);
         drop(runner);
-        let runner = on_save(&game, "A", &format!("{ways}\non 96 ok\nuntil dialog 332")).unwrap();
+        let runner = on_save(&game, "A", &format!("{ways}\non 96 ok\non 93 press 1943\non 499 ok\nuntil dialog 332")).unwrap();
         assert_eq!(seen(&runner, 96), 1, "{}", runner.log.join("\n"));
+    }
+
+    /// Walking on from A, Union's 4th matchday stops at half time behind
+    /// the last information: dialog 93 opens on Union's match with both
+    /// clubs, the half's score as the report keeps it and the 45th minute
+    /// in its caption, the eleven in their boxes, the bench, three to come
+    /// on and Union's break on its bar. Its OK opens the talk, its twelve
+    /// lines under the club and the half's score; OK keeps the chosen
+    /// line, and the report follows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_stops_at_half_time_for_the_talk() {
+        let game = game();
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 96 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 93")) else { return };
+        assert_eq!(seen(&runner, 96), 1, "the break comes behind the last information");
+        assert_eq!(seen(&runner, 332), 0, "and before the report");
+        let dialog = &game.dialogs[&93];
+        let view = runner.host.view();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.halftime.len(), 1, "{:?}", season.halftime);
+        let shown = &season.halftime[0];
+        assert_eq!(shown.club, (14, 84));
+        let report = a3_core::statistics::match_report(records, records.team(14, 84).unwrap()).unwrap();
+        assert_eq!(shown.goals, report.half());
+        let at = |id: u16| dialog.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        let [(hc, hn), (ac, an)] = shown.sides;
+        let (home, away) = (game.club_name(Some(records), hc, hn), game.club_name(Some(records), ac, an));
+        let caption = view.text(at(9947));
+        let score = format!("{home} - {away} {} : {} Chancen (0:0)", shown.goals[0], shown.goals[1]);
+        assert!(caption.starts_with(&score), "{caption:?} {score:?}");
+        assert!(caption.ends_with(", 45. Minute"), "{caption:?}");
+        let boxes = (1916..1927).filter_map(|id| view.controls[at(id)].state.as_player()).filter(|b| b.filled).count();
+        assert_eq!(boxes, 11, "the eleven on the pitch");
+        assert!(view.controls[at(1927)].state.as_player().is_some_and(|b| b.filled), "the bench");
+        assert_eq!(view.text(at(1942)), "Ausgewechselt: 3");
+        for id in [2554, 2566] {
+            let age = view.text(at(id)).parse::<f32>().unwrap();
+            assert!((17.0..36.0).contains(&age), "the eleven's average age {age}");
+        }
+        let bar = view.controls[at(6269)].state.as_options().unwrap();
+        let own = shown.own_goals();
+        assert_eq!(bar.labels[0], format!("{} {}:{}", game.club_name(Some(records), 14, 84), own[0], own[1]));
+        assert!(bar.off[1..].iter().all(|&off| off));
+        drop(state);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\non 93 press 1943\nuntil dialog 499")) else { return };
+        let talk = &game.dialogs[&499];
+        let view = runner.host.view();
+        let at = |id: u16| talk.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        let union = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        let caption = view.text(at(9947));
+        assert!(caption.starts_with(&format!("ANSTOSS 3 - Halbzeitansprache - {union} (")), "{caption:?}");
+        let lines = view.controls[at(4767)].state.as_list().unwrap();
+        assert_eq!(lines.rows.len(), 12);
+        assert_eq!(lines.rows[0], game.text(4413));
+        assert_eq!(lines.rows[11], game.text(4423));
+        drop(runner);
+        let then = format!("{ways}\non 93 press 1943\nonce 499 row 4767 2; ok\nuntil dialog 332");
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        assert_eq!(seen(&runner, 499), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().unwrap().halftime[0].talk, 3, "the third line, 'Konzentriert weiter so!'");
     }
 }

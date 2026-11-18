@@ -78,6 +78,8 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         interview: None,
         interview_recent: Default::default(),
         prematch: Vec::new(),
+        halftime: Vec::new(),
+        halftime_at: 0,
         // A game saved in the middle of a matchday goes on with the turns
         // before its matches.
         before_match: records.globals.resume() == MATCHES_RESUMED,
