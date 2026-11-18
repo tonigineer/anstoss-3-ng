@@ -1,5 +1,7 @@
 # Loads the first save of the list — the newest — and stops on the line-up
-# of its first human manager's turn.
+# of its first human manager's turn, past the windows of the records he
+# broke (477).
 once 9 choose 4771 1; ok
 on 424 row 5144 0; ok
+on 477 ok
 until dialog 147

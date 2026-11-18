@@ -51,6 +51,7 @@ pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
 pub mod poaching;
+pub mod render;
 pub mod fee;
 pub mod popups;
 pub mod save;
@@ -295,6 +296,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(court::Court),
         Box::new(cup_results::CupResults::default()),
         Box::new(event_text::EventText),
+        Box::new(render::Render::default()),
         Box::new(prematch::Prematch),
         Box::new(halftime::Halftime),
         Box::new(comparison::Comparison::default()),
@@ -380,6 +382,7 @@ pub fn compose(game: &mut Game) {
     court::compose(&mut game.dialogs);
     cup_results::compose(&mut game.dialogs);
     event_text::compose(&mut game.dialogs);
+    render::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);

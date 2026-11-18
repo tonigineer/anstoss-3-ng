@@ -67,6 +67,7 @@ pub mod prematch;
 pub mod random;
 pub mod records;
 pub mod refit;
+pub mod render;
 pub mod rollover;
 pub mod rooms;
 pub mod presale;

@@ -18,4 +18,5 @@ on 435 ok
 on 96 ok
 on 161 ok
 on 380 press 4731
+on 477 ok
 until dialog 147

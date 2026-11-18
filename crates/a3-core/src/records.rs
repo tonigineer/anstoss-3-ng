@@ -1083,6 +1083,11 @@ record! {
     /// Two running figures the stations' rows carry when he leaves a club
     /// (the manager object's +0xe0 and +0xe2, `FUN_006fddfe`), never shown.
     0x214 => station_figures, set_station_figures: [i16; 2];
+    /// What the hub shows him over a 3D picture at his next turn, by bit:
+    /// bits 0 to 20 the records he broke, 0x4000000, 0x8000000 and
+    /// 0x10000000 three more events; cleared at that turn (the manager
+    /// object's +0xe4, [`crate::render`]).
+    0x218 => render_events, set_render_events: u32;
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;

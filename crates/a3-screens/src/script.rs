@@ -729,7 +729,9 @@ mod tests {
     /// A game loaded mid-week turns on its saved day and then walks only
     /// the rest of its week: the traced original of save "Toni" (day 62,
     /// its week from 56, 7 Nov) showed dialog 147 again at day 63, with
-    /// the week's wait 381 just before it — not seven days on at 69.
+    /// the week's wait 381 just before it — not seven days on at 69 — and
+    /// between them the window of the record the save holds, which the
+    /// turn before the match leaves alone.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_load_mid_week_turns_again_at_its_weeks_boundary() {
@@ -746,6 +748,7 @@ mod tests {
              on 461 ok
              on 270 ok
              on 381 wait
+             on 477 ok
              until day 64",
         )
         .unwrap();
@@ -758,6 +761,7 @@ mod tests {
         assert_eq!(season.day, 64, "{}", runner.log.join("\n"));
         assert_eq!(seen(&runner, 147), 2, "{}", runner.log.join("\n"));
         assert_eq!(seen(&runner, 381), 1, "{}", runner.log.join("\n"));
+        assert_eq!(seen(&runner, 477), 1, "{}", runner.log.join("\n"));
         // The saved week's start (56) stood through the saved day's turn;
         // the planner counts from 63 only since the new week opened.
         assert_eq!(records.globals.week_start(), 63);
@@ -12046,5 +12050,49 @@ mod tests {
             assert_eq!(r.get::<u8>(0x22f) & 0xc0, appealed, "{button}");
             assert!((3..=5).contains(&(r.get::<u8>(0x22f) & 0x1f)));
         }
+    }
+
+    /// A's turn opens, as the original's, on the window of the record its
+    /// manager broke, the dearest sale: his name in the caption,
+    /// "Herzlichen Glückwunsch" and the record's three lines, cancel gone;
+    /// OK leads on to the line-up, and the record is not shown again
+    /// (`FUN_00650b84`, `CRender`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_broken_record_opens_its_window_before_the_line_up() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "A") else {
+            eprintln!("no A among the saves; the oracle's copy has it");
+            return;
+        };
+        let script = format!("once 9 choose 4771 1; ok\non 424 row 5144 {row}; ok\nuntil dialog 477");
+        let (runner, result) = Runner::play(&game, &Script::parse(&script).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&477];
+        let view = runner.host.view();
+        let shown = |id: u16| {
+            let c = control(dialog, id).unwrap();
+            (!view.controls[c].hidden).then(|| view.text(c).to_owned())
+        };
+        assert_eq!(shown(9924).as_deref(), Some("ANSTOSS 3 - Ereignis für Toni Lubiniecki"));
+        let lines: Vec<String> =
+            (0..5).filter_map(|i| shown(9941 + i).or_else(|| shown(9951 + i))).filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines,
+            [
+                "Herzlichen Glückwunsch",
+                "Sie haben damit den Rekord",
+                "für den teuersten Verkauf",
+                "eines Spielers verbessert!"
+            ]
+        );
+        assert!(control(dialog, 2).is_none() && control(dialog, 1).is_some());
+        drop(view);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", "") else { return };
+        assert_eq!(seen(&runner, 477), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.managers[records.human_slot(0).unwrap()].render_events(), 0);
     }
 }

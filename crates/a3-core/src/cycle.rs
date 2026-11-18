@@ -431,6 +431,9 @@ pub enum Args {
     CupResults(crate::cup_results::CupDay),
     /// A day's event for its window (the block at `0xa2f6d8`).
     Event(crate::event_text::Posted),
+    /// A record the current manager broke, for its window over the 3D
+    /// picture (`DAT_00a321fc`, kind 5).
+    Render(crate::render::Broken),
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -2083,6 +2086,11 @@ impl Cycle {
         if let Some(announcement) = self.announcement() {
             self.ask(Request::new(announcement))?;
         }
+        // Then the records he broke, a window each over the 3D picture
+        // (`FUN_00650b84` asm 0x65116f).
+        for broken in self.records_broken() {
+            self.ask(Request::with(crate::render::RENDER, Args::Render(broken)))?;
+        }
         // A manager with a note on his page reads it before his turn screen:
         // the hub opens the notepad, and only then its own dialog — office,
         // text menu or line-up, all guarded by the same `strlen`
@@ -2183,6 +2191,25 @@ impl Cycle {
             && team.next_day() < today + ANNOUNCE_AHEAD;
         let league = team.next_kind() == LEAGUE_MATCH;
         due.then_some(if league { LEAGUE_ANNOUNCEMENT } else { MATCH_ANNOUNCEMENT })
+    }
+
+    /// The records the current manager broke that open their windows, his
+    /// word of them cleared: the club manager's hub alone looks
+    /// (`FUN_00650b84`), not the clubless one (`FUN_0065270d`) nor the
+    /// turns before the matches (`FUN_00652a86`) — save "Toni", saved in
+    /// such a turn with the record set, opens on its line-up in the
+    /// original and shows the record at the next turn.
+    fn records_broken(&self) -> Vec<crate::render::Broken> {
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let (Some(season), Some(records)) = (state.season.as_ref(), state.records.as_mut()) else {
+            return Vec::new();
+        };
+        if season.before_match || season.manager().and_then(|m| m.club).is_none() {
+            return Vec::new();
+        }
+        let Some(slot) = records.human_slot(season.current) else { return Vec::new() };
+        crate::render::take_broken(records, slot)
     }
 
     /// Whether the current manager left text on his notepad page: what
