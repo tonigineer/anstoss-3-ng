@@ -228,6 +228,9 @@ pub mod dialogs {
     /// The match report after the match, `CSpielberichtStandard`
     /// (`IDD_SPIELBERICHT_STANDARD`).
     pub const MATCH_REPORT: u16 = 332;
+    /// The last information before the match, `CInfoseiteHaupt`
+    /// (`IDD_INFOSEITE_HAUPT`), with a page `CInfoseiteSpiel` a match.
+    pub const PREMATCH: u16 = 96;
 }
 
 use self::dialogs::*;
@@ -1245,12 +1248,29 @@ impl Cycle {
                         // clubs' records — the human's game among them,
                         // its 3D match being out of the replica's scope.
                         if let Some(records) = state.records.as_mut() {
+                            // The last information before the humans'
+                            // matches is taken as they stand before the
+                            // first is played (`FUN_006ef296`'s records,
+                            // `FUN_006fa448`), the crowd once they are.
+                            let fixtures = crate::matches::human_fixtures(
+                                records,
+                                &self.data.world,
+                                &self.data.calendar,
+                                season.day,
+                            );
+                            let mut pages = if crate::prematch::live(records, season.day) {
+                                crate::prematch::pages(records, &self.data, season, &fixtures)
+                            } else {
+                                Vec::new()
+                            };
                             let played = crate::matches::play_day(
                                 records,
                                 &self.data.world,
                                 &self.data.calendar,
                                 season,
                             );
+                            crate::prematch::crowds(&mut pages, &played.faced);
+                            season.prematch = pages;
                             // The matchday's end lists the leagues for
                             // the table after it (`FUN_007108d3`'s
                             // `FUN_00729216`), once the results stand.
@@ -1308,6 +1328,14 @@ impl Cycle {
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
+                }
+                // The last information before the match (event 0x74,
+                // `FUN_004cb878`): a page for each human club's match.
+                if self.state().season.as_ref().is_some_and(|s| !s.prematch.is_empty()) {
+                    self.ask(Request::new(PREMATCH))?;
+                    if let Some(season) = self.state().season.as_mut() {
+                        season.prematch.clear();
+                    }
                 }
                 // The match report first (event 0xce), its clubs' crests
                 // to step between them.

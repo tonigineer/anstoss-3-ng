@@ -430,6 +430,10 @@ pub struct Season {
     /// save keeps (`DAT_00b621d8`).
     pub interview: Option<crate::interview::Interview>,
     pub interview_recent: crate::interview::Recent,
+    /// The last information before the day's human matches while dialog
+    /// 96 shows it, a page a match (`CInfoseiteHaupt`'s copy of the list
+    /// at `0x1bdd7b8`, `FUN_006fa703`).
+    pub prematch: Vec<crate::prematch::Page>,
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -871,6 +875,7 @@ impl Season {
             fee_talk: None,
             interview: None,
             interview_recent: Default::default(),
+            prematch: Vec::new(),
             before_match: false,
             random,
             donations: Vec::new(),

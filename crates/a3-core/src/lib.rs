@@ -58,6 +58,7 @@ pub mod news;
 pub mod noracsa;
 pub mod opponent;
 pub mod playtime;
+pub mod prematch;
 pub mod random;
 pub mod records;
 pub mod refit;

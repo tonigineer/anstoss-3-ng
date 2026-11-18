@@ -51,7 +51,7 @@ pub fn play_day(
 ) -> MatchDay {
     let day = season.day;
     let mut played = Vec::new();
-    let mut reported = Vec::new();
+    let mut faced = Vec::new();
     for slot in 0..world::SLOTS {
         let Some(nation) = world.country(slot).map(|country| country.nation) else {
             continue;
@@ -59,7 +59,7 @@ pub fn play_day(
         if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
             continue;
         }
-        reported.extend(cup_day(records, nation, calendar, day, &mut season.random));
+        faced.extend(cup_day(records, nation, calendar, day, &mut season.random));
         supercup_day(records, nation, calendar, day, &mut season.random);
         league_cup_day(records, nation, calendar, day, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
@@ -74,22 +74,115 @@ pub fn play_day(
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                reported.extend(settle(records, nation, level, day, &mut season.random));
+                faced.extend(settle(records, nation, level, day, &mut season.random));
                 played.push((nation, level));
             }
         }
     }
-    MatchDay { leagues: played, reported }
+    let reported = faced.iter().map(|f| f.club).collect();
+    MatchDay { leagues: played, reported, faced }
 }
 
 /// What a day's matches leave for the dialogs behind them: the leagues
 /// that played, by country and level, and of each match a human's club
 /// played, that club (`FUN_00551818`: the home side where it is a
-/// human's, else the away side), in the order of the day's matches.
+/// human's, else the away side), in the order of the day's matches, and
+/// the match itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MatchDay {
     pub leagues: Vec<(u16, u8)>,
     pub reported: Vec<(u8, i16)>,
+    pub faced: Vec<Faced>,
+}
+
+/// A match a human's club played: the club its report is shown for, both
+/// sides, home first, the crowd, and the visiting fans where the replica
+/// draws them (the match record's +0x34 and +0x54, which the original
+/// reckons before the match, `FUN_0078b26c` in `FUN_006ef296`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Faced {
+    pub club: (u8, i16),
+    pub sides: [(u8, i16); 2],
+    pub attendance: i32,
+    pub fans: Option<i32>,
+}
+
+/// What a match of today is: a league's, on its matchday counted from 1,
+/// or a national cup's tie, by its calendar code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fixture {
+    League { level: u8, matchday: usize },
+    Cup { code: u32 },
+}
+
+/// The matches a human's club plays today, home side first, in the order
+/// [`play_day`] plays them, before any is played: the national cup's ties
+/// and the leagues' matchdays that are due (the day's match records the
+/// original marks at +0x474 in `FUN_006ef296`, `FUN_00677428` over both
+/// sides).
+pub fn human_fixtures(records: &Records, world: &World, calendar: &Calendar, day: usize) -> Vec<([(u8, i16); 2], Fixture)> {
+    let mut fixtures = Vec::new();
+    for slot in 0..world::SLOTS {
+        let Some(nation) = world.country(slot).map(|country| country.nation) else {
+            continue;
+        };
+        if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
+            continue;
+        }
+        let nat = u8::try_from(nation).unwrap_or(0);
+        if let Some((code, ties)) = cup_ties(records, nation, calendar, day) {
+            let turned = code & CUP_SECOND != 0;
+            let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]) as i16;
+            for (_, p) in ties {
+                let (h, a) = if turned { (4, 0) } else { (0, 4) };
+                fixtures.push(([(p[h], u16_at(&p, h + 2)), (p[a], u16_at(&p, a + 2))], Fixture::Cup { code }));
+            }
+        }
+        for level in 0..records.countries.leagues(usize::from(nation)) {
+            let level = level as u8;
+            let Some(row) = calendar.row(nation, usize::from(level)) else { continue };
+            let Some(matchday) = calendar.matchday(row, day) else { continue };
+            let Some(league) = League::of(records, nation, level) else { continue };
+            if league.played() + 1 != matchday {
+                continue;
+            }
+            for (home, away, _) in league.open_games() {
+                fixtures.push(([(nat, league.team(home)), (nat, league.team(away))], Fixture::League { level, matchday }));
+            }
+        }
+    }
+    fixtures.retain(|&(sides, _)| report::human_side(records, sides).is_some());
+    fixtures
+}
+
+/// The country's cup round of the day, if the day is one: its calendar
+/// code and the ties still to play, by their pairing's index and bytes —
+/// a first game finds its pairing open, a second leg or a replay its first
+/// game played and nothing decided yet.
+fn cup_ties(records: &Records, nation: u16, calendar: &Calendar, day: usize) -> Option<(u32, Vec<(usize, [u8; PAIRING])>)> {
+    let row = calendar.row(nation, 0)?;
+    let entry = calendar.entry(row, day);
+    if entry & 0x7f00_0000 != CUP_CODE {
+        return None;
+    }
+    let round = usize::try_from(entry & 0xffff).unwrap_or(0);
+    let slot = records.countries.slot(usize::from(nation));
+    let cup = records.block(&format!("{CUPS_AT:#x}[{slot}]"))?;
+    let mode = usize::from(*cup.get(0x24 - 0x20)?).min(5);
+    let (start, count) = cup_pairings(mode, round)?;
+    let turned = entry & CUP_SECOND != 0;
+    let ties = (start..start + count)
+        .filter_map(|q| {
+            let p = cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING)?;
+            let open = if turned {
+                p[0xc] & CUP_RESULT != 0 && p[0xc] & (CUP_PLAYED | CUP_SECOND_PLAYED) == 0
+            } else {
+                p[0xc] & CUP_RESULT == 0
+            };
+            (p[0] != 0 && p[4] != 0 && open).then(|| Some((q, p.try_into().ok()?)))?
+        })
+        .collect();
+    Some((entry, ties))
 }
 
 /// The game's switch for the table after the matchday (byte 0x08 of the
@@ -190,14 +283,10 @@ const YEAR_CUP: u8 = 0x08;
 /// its season's cup takings (club +0x234). The human's year calendar keeps
 /// its entries: the played round fills its score into the day's entry, the
 /// new drawing names his next tie there — and drops it once he is out.
-fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<(u8, i16)> {
-    let Some(row) = calendar.row(nation, 0) else {
+fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<Faced> {
+    let Some((entry, ties)) = cup_ties(records, nation, calendar, day) else {
         return Vec::new();
     };
-    let entry = calendar.entry(row, day);
-    if entry & 0x7f00_0000 != CUP_CODE {
-        return Vec::new();
-    }
     let round = usize::try_from(entry & 0xffff).unwrap_or(0);
     let slot = records.countries.slot(usize::from(nation));
     let name = format!("{CUPS_AT:#x}[{slot}]");
@@ -205,7 +294,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         return Vec::new();
     };
     let mode = usize::from(mode).min(5);
-    let Some((start, count)) = cup_pairings(mode, round) else {
+    let (Some((start, count)), Some(row)) = (cup_pairings(mode, round), calendar.row(nation, 0)) else {
         return Vec::new();
     };
     let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
@@ -221,18 +310,9 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     let mut through: Vec<(u8, u16)> = Vec::new();
     let mut beaten: Vec<(u8, u16)> = Vec::new();
     let mut reports: Vec<report::Played> = Vec::new();
-    for q in start..start + count {
-        // A first game finds its pairing open; a second leg or a replay
-        // its first game played and nothing decided yet.
-        let Some(p) = records
-            .block(&name)
-            .and_then(|cup| cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING))
-            .filter(|p| p[0] != 0 && p[4] != 0)
-            .filter(|p| if turned { p[0xc] & CUP_RESULT != 0 && p[0xc] & (CUP_PLAYED | CUP_SECOND_PLAYED) == 0 } else { p[0xc] & CUP_RESULT == 0 })
-        else {
-            continue;
-        };
-        let mut tie: [u8; PAIRING] = p.try_into().unwrap_or([0; PAIRING]);
+    for (q, open) in ties {
+        let p: &[u8] = &open;
+        let mut tie = open;
         let held = |country: u8, at: usize| {
             records
                 .team(u16::from(country), u16_at(p, at))
@@ -372,7 +452,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         if let Some(club) = report::human_side(records, played.sides) {
             played.scorers = scorers;
             report::write(records, &played, random);
-            reported.push(club);
+            reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None });
         }
     }
     // Every club that came through its tie gets what the round pays: the
@@ -1074,7 +1154,7 @@ fn mark_cup(
 /// the visiting fans, the away club the travelling gate of the game. The
 /// human's year calendar fills the day's fixture with the new score, its
 /// flag saying the result stands.
-fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mut Random) -> Vec<(u8, i16)> {
+fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mut Random) -> Vec<Faced> {
     let Some(league) = League::of(records, nation, level) else {
         return Vec::new();
     };
@@ -1151,6 +1231,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
     }
     let nat = u8::try_from(nation).unwrap_or(0);
     let takings: Vec<(i32, i32)> = booked.iter().map(|&(att, money, _)| (att, money)).collect();
+    let mut visiting = Vec::with_capacity(games.len());
     for ((((home, _, _), (&team, (att, money, cap))), &away), &result) in
         games.iter().zip(homes.iter().zip(booked)).zip(&aways).zip(&scored)
     {
@@ -1164,6 +1245,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         let luck = 8 + i32::try_from(random.below(7)).unwrap_or(8);
         let fans = plan.max(0).wrapping_mul(luck) / 100;
         let fans = fans.clamp(0, att.max(0));
+        visiting.push(fans);
         // The home club: its gate held among its gates, the money booked,
         // and — where it has a human's extra block — the visiting fans and
         // the gate's income of this home game, as the statistics pages
@@ -1256,7 +1338,9 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
     // clubs' reports of their matches (`FUN_00550f29`), the matchday from
     // 0 their kind.
     let mut reported = Vec::new();
-    for (((&home, &away), result), &(attendance, gate)) in homes.iter().zip(&aways).zip(&scored).zip(&takings) {
+    for ((((&home, &away), result), &(attendance, gate)), &fans) in
+        homes.iter().zip(&aways).zip(&scored).zip(&takings).zip(&visiting)
+    {
         let scorers = mark_match(records, nation, level, md, home, away, result[0], result[1], random);
         let sides = [(nat, home as i16), (nat, away as i16)];
         if let Some(club) = report::human_side(records, sides) {
@@ -1271,7 +1355,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
                 ..Default::default()
             };
             report::write(records, &played, random);
-            reported.push(club);
+            reported.push(Faced { club, sides, attendance, fans: Some(fans) });
         }
     }
     // Every offered Toto match keeps its result, wherever it stands in

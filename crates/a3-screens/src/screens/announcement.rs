@@ -50,8 +50,8 @@ const STRENGTHS: u16 = 2984;
 const ADVANCE: u16 = 2985;
 const GAMES: u16 = 4570;
 const GAME_TABS: [f32; 3] = [0.0, 150.0, 158.0];
-const SEASON_TEXT: u16 = 1852;
-const MATCHDAY_TEXT: u16 = 1529;
+pub(crate) const SEASON_TEXT: u16 = 1852;
+pub(crate) const MATCHDAY_TEXT: u16 = 1529;
 const CAPTION_ID: u16 = 9935;
 /// The season tickets the home side's plan counts on (club +0x124, team
 /// +0x39c), which the sales add to.
@@ -132,7 +132,7 @@ pub(crate) fn button_works(cx: &Cx) -> bool {
 
 /// "11." — a number with the game's ordinal suffix, which is "." for all
 /// (`FUN_00730af1`).
-fn ordinal(n: impl std::fmt::Display) -> String {
+pub(crate) fn ordinal(n: impl std::fmt::Display) -> String {
     format!("{n}.")
 }
 
@@ -143,33 +143,15 @@ fn key(game: &Game, team: &Team) -> Option<(usize, usize)> {
 
 /// A club's crest, drawn whole: the announcements' bitmaps keep black
 /// (`FUN_00696161` into `FUN_007966ab`).
-fn crest(game: &Game, records: &Records, team: &Team) -> Option<Picture> {
+pub(crate) fn crest(game: &Game, records: &Records, team: &Team) -> Option<Picture> {
     let file = game.rules.crest(&game.world, Some(records), key(game, team)?)?;
     Some(Picture { black_clear: false, ..Picture::file(file) })
 }
 
-/// What a team counts for, its four parts reckoned anew from its line-up
-/// as the game does first (`FUN_006a18c2`) and summed, in whole points:
-/// a human's club as he has set it; a computer's club with the line-up its
-/// co-trainer puts up, free in its system (`FUN_0042c802`), which the
-/// original has it pick afresh before the match.
+/// What a team counts for before its match ([`a3_core::prematch::strength`]).
 fn strength(cx: &Cx, team: &Team) -> i32 {
-    let (game, pitch) = (cx.game, &cx.game.rules.pitch);
-    let season = cx.state.season.as_ref();
-    let parts = key(game, team).and_then(|key| {
-        if season?.manager()?.club == Some(key) {
-            let club = season?.clubs.get(&key)?;
-            return Some(pitch.parts(&club.lineup, &club.players, &club.fitness));
-        }
-        let mut club = a3_core::load::club(cx.state.records.as_ref()?, &game.data, key)?;
-        if !season?.managers.iter().any(|m| m.club == Some(key)) {
-            let mode = a3_core::autolineup::FREE | a3_core::autolineup::FOREIGNERS;
-            a3_core::autolineup::co_trainer(pitch, &mut club, mode);
-        }
-        Some(pitch.parts(&club.lineup, &club.players, &club.fitness))
-    });
-    let parts = parts.unwrap_or_else(|| team.strengths().map(i32::from));
-    parts.iter().sum::<i32>() / 10
+    let Some(records) = cx.state.records.as_ref() else { return 0 };
+    a3_core::prematch::strength(records, &cx.game.data, cx.state.season.as_ref(), team)
 }
 
 /// What both announcements show of a league match (`FUN_0054f27e`, and
@@ -221,7 +203,7 @@ fn show_league_match<'a>(
 }
 
 /// "2:1", or "-" for a game not found.
-fn goals(g: Option<(u8, u8)>) -> String {
+pub(crate) fn goals(g: Option<(u8, u8)>) -> String {
     g.map_or_else(|| "-".to_owned(), |(a, b)| format!("{a}:{b}"))
 }
 
@@ -311,7 +293,7 @@ const CALLED: [Called; 13] = [
     Called::Text(3512),
 ];
 /// The rounds' names (`DAT_00888100`).
-const ROUNDS: [u16; 8] = [1864, 1865, 1866, 4296, 1867, 1868, 1869, 1870];
+pub(crate) const ROUNDS: [u16; 8] = [1864, 1865, 1866, 4296, 1867, 1868, 1869, 1870];
 /// "Ligapokal" for the supercup of the country 0xe, its "Vorrunde";
 /// the cup winners' group games; the finals; the relegation's
 /// "Finalrunde" in the country 0x3b.

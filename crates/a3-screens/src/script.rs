@@ -3453,7 +3453,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3897,7 +3897,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -9903,7 +9903,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9947,7 +9947,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -10964,7 +10964,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
         let list = control(&game.dialogs[&25], 1313).unwrap();
@@ -11478,7 +11478,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 332 ok";
+                    on 308 choose 4095 0\non 96 ok\non 332 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 269")) else { return };
         let dialog = &game.dialogs[&269];
         let view = runner.host.view();
@@ -11524,7 +11524,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 332 ok\non 269 ok";
+                    on 308 choose 4095 0\non 96 ok\non 332 ok\non 269 ok";
         let row = game.save_games().iter().position(|s| s.name == "A").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let play = |then: &str| Runner::play(&game, &Script::parse(&format!("{}\n{then}", load.trim_end())).unwrap());
@@ -11580,7 +11580,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0";
+                    on 308 choose 4095 0\non 96 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 332")) else { return };
         assert_eq!(seen(&runner, 269), 0, "the report comes before the table");
         let dialog = &game.dialogs[&332];
@@ -11623,5 +11623,67 @@ mod tests {
         drop(runner);
         let runner = on_save(&game, "A", &format!("{ways}\non 332 ok\nuntil dialog 269")).unwrap();
         assert_eq!(seen(&runner, 332), 1, "{}", runner.log.join("\n"));
+    }
+
+    /// Walking on from A, Union's 4th matchday is a human's match after
+    /// the season's 42nd day: before its report dialog 96 opens on one
+    /// page in the middle of the one-page background — the league and
+    /// matchday, both clubs, their places, the strengths, Union's ground
+    /// with the played match's crowd, its visiting fans and pitch — the
+    /// other places' pages hidden with the display's combo. OK goes on to
+    /// the report.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_last_information_shows_before_the_match() {
+        let game = game();
+        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 96")) else { return };
+        assert_eq!(seen(&runner, 332), 0, "the information comes before the report");
+        let dialog = &game.dialogs[&96];
+        let page = &game.dialogs[&98];
+        let view = runner.host.view();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.prematch.len(), 1, "{:?}", season.prematch);
+        let shown = &season.prematch[0];
+        assert!(shown.sides.contains(&(14, 84)), "{:?}", shown.sides);
+        // The one-page slot is the first of the ten.
+        let per = page.controls.len();
+        let first = dialog.controls.iter().position(|c| c.id == Some(2025)).unwrap();
+        let at = |id: u16| first + page.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        assert!(view.controls[first..first + per].iter().all(|c| !c.hidden));
+        assert!(view.controls[first + per..first + 10 * per].iter().all(|c| c.hidden));
+        assert_eq!(dialog.controls[at(2025)].rect.min, bevy_math::Vec2::new(174.0, 144.0));
+        assert!(view.text(at(6424)).starts_with("1. Bundesliga "), "{:?}", view.text(at(6424)));
+        assert!(view.text(at(6424)).ends_with(" - 4. Spieltag"), "{:?}", view.text(at(6424)));
+        let [(hc, hn), (ac, an)] = shown.sides;
+        assert_eq!(view.text(at(2027)), game.club_name(Some(records), hc, hn));
+        assert_eq!(view.text(at(2032)), game.club_name(Some(records), ac, an));
+        assert!(view.text(at(2029)).starts_with('(') && view.text(at(2029)).ends_with(".)"));
+        assert_eq!(view.text(at(2028)).chars().count(), 3, "three matchdays played");
+        let strengths = view.text(at(2036)).split(" : ").map(|s| s.parse::<i32>().unwrap()).collect::<Vec<_>>();
+        assert_eq!(strengths.len(), 2);
+        assert!(strengths.iter().all(|&s| s > 0), "{strengths:?}");
+        let report = a3_core::statistics::match_report(records, records.team(14, 84).unwrap()).unwrap();
+        assert_eq!(shown.attendance, report.attendance());
+        let crowd = view.text(at(2037));
+        assert!(crowd == report.attendance().to_string() || crowd.ends_with(" (A)"), "{crowd:?}");
+        assert!(view.text(at(2038)).parse::<i32>().is_ok_and(|f| (0..=shown.attendance).contains(&f)));
+        assert!(!view.text(at(6449)).is_empty());
+        let pitches = [2203, 2204, 2205, 2206, 2207, 2208].map(|id| game.text(id).to_owned());
+        assert!(pitches.contains(&view.text(at(2040)).to_owned()), "{:?}", view.text(at(2040)));
+        let backdrop = dialog.controls.iter().position(|c| c.id == Some(9948)).unwrap();
+        let picture = view.controls[backdrop].state.as_bitmap().unwrap().picture.clone();
+        assert_eq!(picture, Some(crate::controls::bitmap::Picture::graphic(3097)));
+        let combo = dialog.controls.iter().position(|c| c.id == Some(6479)).unwrap();
+        assert!(view.controls[combo].hidden);
+        drop(state);
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 96 ok\nuntil dialog 332")).unwrap();
+        assert_eq!(seen(&runner, 96), 1, "{}", runner.log.join("\n"));
     }
 }
