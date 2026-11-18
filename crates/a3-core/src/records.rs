@@ -1890,6 +1890,13 @@ impl Records {
         })
     }
 
+    /// The records a new game starts from, before `FUN_00686684` and
+    /// `FUN_0068716b` read the data files into them: every block of the
+    /// save blank ([`Save::blank`]).
+    pub fn blank() -> Self {
+        Self::from_save(Save::blank()).expect("a blank save has every block the records read")
+    }
+
     /// The save with the records written back into their blocks.
     pub fn to_save(&self) -> Save {
         let mut save = self.save.clone();
@@ -2236,6 +2243,15 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn a_new_games_records_start_blank() {
+        let records = Records::blank();
+        assert_eq!((records.players.len(), records.teams.len(), records.managers.len()), (PLAYERS, TEAMS, MANAGERS));
+        assert!(records.players.iter().all(|player| player.bytes().iter().all(|&b| b == 0)));
+        assert!(records.teams.iter().all(|team| team.name().is_empty()));
+        assert!(a3_files::an3::compare(&records.to_save(), &Save::blank()).blocks.is_empty());
+    }
 
     #[test]
     fn fields_read_and_write_little_endian() {
