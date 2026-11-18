@@ -1017,6 +1017,21 @@ impl Cycle {
                     (state.season.as_mut(), state.records.as_mut())
                 {
                     if !season.week_hold {
+                        // The week's end looks first at its last day's
+                        // matches (`FUN_006da3a9`'s case 2 polling
+                        // `FUN_0062a325` on the day six on): each league
+                        // playing then draws its pair for the doping
+                        // control, the list going on to `FUN_0078046d`
+                        // (unported). After a load the poll runs before
+                        // the turn's screen, its draws from the seed the
+                        // loader takes from `rand()`, so the replica's
+                        // fresh seed stands for them.
+                        crate::matches::list_day(
+                            records,
+                            &self.data.calendar,
+                            season.day + 6,
+                            &mut season.random,
+                        );
                         // The clubs' week on the transfer market comes
                         // first (`FUN_0042958d`): last years weighed,
                         // retirements announced.
@@ -2064,11 +2079,10 @@ impl Cycle {
     /// manager: save A's day 63 holds the open day, entry kind 8 with the
     /// open day's number 6 where a talk's would name the player. The
     /// dialog comes up in that day's walk, after the day's training and
-    /// before its games; its constructor draws nothing. Not ported, and
-    /// not shown to belong to the open day: the eight draws of 9 or 10
-    /// the traced original makes at the load, before the turn's screen —
-    /// `FUN_0062a325`, which dispatches the day-keyed table at `0x8914e0`
-    /// and walks the country's leagues into `FUN_00690a9e`'s squad spans.
+    /// before its games; its constructor draws nothing. The eight draws
+    /// of 9 or 10 the traced original makes at the load, before the turn's
+    /// screen, are not the open day's but the week end's look at its last
+    /// day's matches ([`crate::matches::list_day`]), left out after a load.
     /// The day's posted events, each in the window its text fits
     /// (`FUN_005f2234`); none in the first season's quiet days
     /// (`FUN_005ef56c`).

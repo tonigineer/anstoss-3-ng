@@ -87,6 +87,63 @@ pub fn play_day(
     MatchDay { leagues: played, reported, faced, controls }
 }
 
+/// A calendar entry's competition, its top bits (`& 0x7f000000`); none
+/// on row 0 lets the leagues list their matchdays.
+const LISTING_KIND: u32 = 0x7f00_0000;
+/// A league matchday's entry runs below this (`FUN_0062a325`'s `< 0x3c`).
+const LISTING_MATCHDAYS: u32 = 0x3c;
+/// The groups of a split league's second phase each list four pairs
+/// (`FUN_00690a9e`'s `FUN_0078a810(4)`).
+const SPLIT_PAIRS: u32 = 4;
+
+/// The draws of the day's match list (`FUN_0062a325` into the buffer at
+/// `0x1baf714`): with no international or European kind on row 0 of the
+/// calendar, the main country's leagues by level (`DAT_00b5cbb0`, its
+/// `0xae60c4` count), then each further country's first league
+/// (`DAT_00b5cbb4`, `DAT_00b5cbae` of them), each whose entry for the
+/// day is a league matchday (1 to 0x3b) lists its pairs and marks one of
+/// them for the doping control (`FUN_00692045` copying the league, no
+/// draw; `FUN_00690a9e`, [`listing_picks`]). The cups' kinds list their
+/// ties without these: the relegation's (0x10000000, `FUN_006d73a3`)
+/// and row 0's world matches (0x02000000, `FUN_00675698`'s shuffle) draw
+/// as well, not here yet. The picks, league by league.
+pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<((u16, u8), Vec<u32>)> {
+    let mut picks = Vec::new();
+    if calendar.entry(0, day) & LISTING_KIND != 0 {
+        return picks;
+    }
+    let globals = &records.globals;
+    let main = u16::try_from(globals.main_country()).unwrap_or(0);
+    let countries = globals.more_countries();
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(countries.len());
+    let mains = (0..records.countries.leagues(usize::from(main)).max(0)).map(|level| (main, level as u8));
+    let firsts = countries[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0));
+    for (country, level) in mains.chain(firsts) {
+        let Some(row) = calendar.row(country, usize::from(level)) else { continue };
+        let entry = calendar.entry(row, day);
+        if entry == 0 || entry >= LISTING_MATCHDAYS {
+            continue;
+        }
+        if let Some(league) = League::of(records, country, level) {
+            picks.push(((country, level), listing_picks(&league, entry as usize, random)));
+        }
+    }
+    picks
+}
+
+/// The pair of a league's matchday the doping control takes
+/// (`FUN_00690a9e`, the list's +0x460): one of its `teams / 2`; past the
+/// regular rounds of a league split in two (G+0x1c; `FUN_0068fd13`'s
+/// `teams * 2 - 2`, or `* 4 - 4` with four rounds at G+0x1a) one of four
+/// in each group.
+fn listing_picks(league: &League, matchday: usize, random: &mut Random) -> Vec<u32> {
+    if league.split() == 0 || matchday <= league.regular_matchdays() {
+        vec![random.below(u32::try_from(league.teams() / 2).unwrap_or(0))]
+    } else {
+        vec![random.below(SPLIT_PAIRS), random.below(SPLIT_PAIRS)]
+    }
+}
+
 /// What a day's matches leave for the dialogs behind them: the leagues
 /// that played, by country and level, and of each match a human's club
 /// played, that club (`FUN_00551818`: the home side where it is a
@@ -2121,5 +2178,39 @@ mod two_legs_tests {
         }
         let b = records.block(&name).unwrap();
         assert_eq!(b[0x28 - 0x20], 2, "the second round drawn");
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    /// The week's end on A looks at day 69, its last day: eight leagues
+    /// play then — the probe's eight draws of 9 or 10 that the traced
+    /// original made at the load, before the turn's screen — each drawing
+    /// its doping pair out of its teams' half, nothing else drawn; the
+    /// turn's own day 63 lists no league match.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_end_lists_its_last_days_matches() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut random = Random::from_state(12345, 67890);
+        assert!(list_day(&records, &data.calendar, 63, &mut random).is_empty());
+        let picks = list_day(&records, &data.calendar, 69, &mut random);
+        let ranges: Vec<u32> = picks
+            .iter()
+            .map(|&((country, level), _)| (League::of(&records, country, level).unwrap().teams() / 2) as u32)
+            .collect();
+        assert_eq!(ranges.len(), 8);
+        assert!(ranges.iter().all(|&n| n == 9 || n == 10), "{ranges:?}");
+        let mut replay = Random::from_state(12345, 67890);
+        for ((_, drawn), &n) in picks.iter().zip(&ranges) {
+            assert_eq!(drawn, &vec![replay.below(n)]);
+        }
+        assert_eq!(random, replay);
     }
 }

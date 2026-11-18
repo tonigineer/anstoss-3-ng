@@ -363,6 +363,19 @@ impl<'a> League<'a> {
         self.i16_at(0x1a) > 0
     }
 
+    /// Whether the league splits in two groups after its regular rounds
+    /// (G+0x1c, the object's +0x6c; `FUN_00690a9e`).
+    pub fn split(&self) -> i16 {
+        self.i16_at(0x1c)
+    }
+
+    /// Its regular rounds' matchdays (`FUN_0068fd13`): twice the teams
+    /// less two, or four times less four once G+0x1a is set at all.
+    pub fn regular_matchdays(&self) -> usize {
+        let teams = self.teams();
+        if self.i16_at(0x1a) == 0 { (teams * 2).saturating_sub(2) } else { (teams * 4).saturating_sub(4) }
+    }
+
     /// The team number at a place in the league.
     pub fn team(&self, place: usize) -> i16 {
         self.i16_at(0x22 + 2 * place)
