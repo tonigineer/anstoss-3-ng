@@ -470,11 +470,23 @@ pub fn play_matches(
     // assist and own-goal counters. They run on the walk's own matches,
     // the way the loop walks the row after `FUN_006f352e` ended it; the
     // national ties bulk-simulated at pre-match wait with their lists.
-    // Nothing here draws a number.
+    // Only the grades draw, one number a graded man.
     if let Some(records) = records.as_deref_mut() {
         for m in matches.iter() {
             if live || m.nat_bits == 0 {
+                // The men's form as the kick-off took it (runtime +0xb7).
+                let kickoff: Vec<Vec<(u16, i32)>> = (0..2)
+                    .map(|w| {
+                        saved_eleven(m, w, records)
+                            .into_iter()
+                            .filter_map(|id| records.player(id).map(|p| (id, statistics::form_today(p))))
+                            .collect()
+                    })
+                    .collect();
                 post_match_wear(m, records);
+                for (which, form) in kickoff.iter().enumerate() {
+                    post_match_grades(m, which, form, records, random);
+                }
                 post_match_books(m, records);
                 if let Some(tables) = lessons {
                     post_match_lessons(m, records, tables);
@@ -2190,6 +2202,81 @@ pub fn friendly_wear(records: &mut Records, (country, number): (u8, i16), extra:
     }
 }
 
+/// A man's grade for a club match, in half steps 2 (a one) to 12 (a
+/// six) — `FUN_006f7f6f` with the match's national marker +0x474 nought:
+/// six and a draw below four, twice what his form fell from the kick-off
+/// (the runtime +0xb7 that `FUN_006f7af1`'s reset took from
+/// `FUN_006ff037`) to now, one or two better for a win by one or two or
+/// by more than two — worse by as much for such a loss —, one better at
+/// the top form of twenty. The man's runtime mark at +0xc3 above two
+/// (grade one) and the high nibble of his +0xb8 (the grade held to three
+/// of it) have no writer in the replica's walk and stand nought.
+pub fn match_grade(kickoff_form: i32, form_now: i32, own: i16, against: i16, random: &mut Random) -> u8 {
+    let mut g = random.below(4) as i32 + 6 + (kickoff_form - form_now) * 2;
+    g += if own > against + 2 {
+        -2
+    } else if own > against {
+        -1
+    } else if own < against - 2 {
+        2
+    } else if own < against {
+        1
+    } else {
+        0
+    };
+    if form_now == 20 {
+        g -= 1;
+    }
+    g.clamp(2, 12) as u8
+}
+
+/// The grading over a side's squad (`FUN_006f86e1` in the graded pass,
+/// `FUN_006f8f44` with the fifth parameter one), in the club's squad
+/// order at +0xb50: a man of twenty minutes and more takes his grade
+/// ([`match_grade`], kept at the record's +0x273), one of fewer a
+/// nought; the side's mean in tenths goes to the match side's +0x3a, and
+/// the best grade among the men of more than forty-four minutes names
+/// the match's best men, all its ties. The replica's eleven stand the
+/// whole match. The best man's talks (`FUN_0069e008` and its kin) and the
+/// clubs' ledgers (`FUN_00714236`, `FUN_00744d02`) wait with the club
+/// objects. Returns the mean and the best men.
+pub fn post_match_grades(
+    m: &Match,
+    which: usize,
+    kickoff: &[(u16, i32)],
+    records: &mut Records,
+    random: &mut Random,
+) -> (u8, Vec<u16>) {
+    let at = which * 2;
+    let Some(team) = records.team(m.ids[at], m.ids[at + 1]) else { return (0, Vec::new()) };
+    let minutes = if m.flags & EXTRA != 0 { 120 } else { 90 };
+    let (own, against) = (m.goals[which], m.goals[1 - which]);
+    let (mut sum, mut count, mut best, mut men) = (0i32, 0i32, 0xffu8, Vec::new());
+    for id in team.players() {
+        let Some(&(_, form)) = kickoff.iter().find(|(man, _)| *man == id && id != 0) else { continue };
+        let Some(p) = records.player_mut(id) else { continue };
+        if minutes < 0x14 {
+            p.set_grade(0);
+            continue;
+        }
+        let g = match_grade(form, statistics::form_today(p), own, against, random);
+        p.set_grade(g);
+        sum += i32::from(g);
+        count += 1;
+        if minutes > 0x2c {
+            if g < best {
+                best = g;
+                men.clear();
+                men.push(id);
+            } else if g == best {
+                men.push(id);
+            }
+        }
+    }
+    let mean = if count < 1 { 0 } else { (sum * 10 / count) as u8 };
+    (mean, men)
+}
+
 /// The record bit of a smoker (player +0x1b4 bit 11): his condition
 /// counts five steps less (`FUN_006fffd9` in `FUN_00457e00`).
 const SMOKER: u32 = 0x800;
@@ -3362,6 +3449,41 @@ mod tests {
         p.set_condition(3000);
         wear_man(&mut p, 90, 8);
         assert_eq!(p.condition(), 3080);
+    }
+
+    #[test]
+    fn a_grade_follows_the_result_and_the_form_lost() {
+        // the draw below four, replayed from the same seed
+        let draw = Random::new(7).below(4) as u8;
+        // a level game at unchanged form: six and the draw
+        assert_eq!(match_grade(9, 9, 1, 1, &mut Random::new(7)), 6 + draw);
+        // a win by more than two, two half steps better
+        assert_eq!(match_grade(9, 9, 4, 0, &mut Random::new(7)), 4 + draw);
+        // a loss by one with two form points lost: one and four worse
+        assert_eq!(match_grade(9, 7, 0, 1, &mut Random::new(7)), (11 + draw).min(12));
+        // the top form of twenty and a big win cannot pass a one
+        assert_eq!(match_grade(0, 20, 9, 0, &mut Random::new(7)), 2);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_grades_its_eleven_on_the_save() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500];
+        m.goals = [2, 0];
+        let eleven = saved_eleven(&m, 0, &records);
+        let kickoff: Vec<(u16, i32)> =
+            eleven.iter().map(|&id| (id, statistics::form_today(records.player(id).unwrap()))).collect();
+        let (mean, best) = post_match_grades(&m, 0, &kickoff, &mut records, &mut Random::new(3));
+        let grades: Vec<u8> = eleven.iter().map(|&id| records.player(id).unwrap().grade()).collect();
+        assert!(grades.iter().all(|g| (2..=12).contains(g)), "{grades:?}");
+        let low = *grades.iter().min().unwrap();
+        assert!(!best.is_empty() && best.iter().all(|id| records.player(*id).unwrap().grade() == low));
+        let sum: i32 = grades.iter().map(|&g| i32::from(g)).sum();
+        assert_eq!(i32::from(mean), sum * 10 / 11);
     }
 
     #[test]
