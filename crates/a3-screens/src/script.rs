@@ -12435,4 +12435,48 @@ mod tests {
         let _ = runner.settle();
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// Past the season's statement each human club's manager has the
+    /// season start's event 0x82 — the negotiations he leads himself
+    /// (dialog 422), then the season's preparation (419) — and the
+    /// overviews of the season's start follow (event 0x130, dialog 420);
+    /// OK closes each, and the game walks on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_turn_brings_the_season_starts_screens() {
+        use crate::screens::season_start::{OVERVIEWS, PREPARATION, TALKS};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-start", |records| {
+            records.globals.set_day(320);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let to = |last: u16| {
+            format!(
+                "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\n\
+                 now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                 until dialog 417\nnow press 1\nuntil dialog {TALKS}{}",
+                match last {
+                    TALKS => String::new(),
+                    PREPARATION => format!("\nnow press 1\nuntil dialog {PREPARATION}"),
+                    _ => format!("\nnow press 1\nuntil dialog {PREPARATION}\nnow press 1\nuntil dialog {OVERVIEWS}"),
+                }
+            )
+        };
+        let Some(runner) = on_save(&game, "season-start", &to(TALKS)) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, TALKS, "{log}");
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 0, "the new season stands");
+        let dialog = &game.dialogs[&TALKS];
+        assert_eq!(dialog.controls[control(dialog, 6044).unwrap()].text, " Fernsehgelder (bei Teilnahme)");
+        drop(runner);
+        let Some(runner) = on_save(&game, "season-start", &to(PREPARATION)) else { return };
+        assert_eq!(runner.host.view().id, PREPARATION, "{}", runner.log.join("\n"));
+        let money = control(&game.dialogs[&PREPARATION], 5048).unwrap();
+        assert_eq!(runner.host.view().text(money), "", "no sample figure");
+        drop(runner);
+        let Some(mut runner) = on_save(&game, "season-start", &to(OVERVIEWS)) else { return };
+        assert_eq!(runner.host.view().id, OVERVIEWS, "{}", runner.log.join("\n"));
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

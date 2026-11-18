@@ -251,7 +251,18 @@ pub mod dialogs {
     /// The new contract terms after a promotion or relegation
     /// (`IDD_VERTRAGSKONDITIONEN_LIGAWECHSEL`, `FUN_005be00a`'s 0x13a).
     pub const NEW_TERMS: u16 = 314;
+    /// The season start's negotiations the manager leads himself
+    /// (`IDD_SAISONSTART_VERHANDLUNGEN`, `CSaisonstartVerhandlungen`).
+    pub const SEASON_START_TALKS: u16 = 422;
+    /// The season's preparation (`CVorbereitung`).
+    pub const SEASON_PREPARATION: u16 = 419;
+    /// The overviews of the season's start (`CSaisonstartAuslosungen`).
+    pub const SEASON_OVERVIEWS: u16 = 420;
 }
+
+/// The option at `DAT_00b5d19a` that leaves the first season's
+/// preparation and overviews to the computer.
+const QUICK_START_OPTION: usize = 0xb5d19a;
 
 use self::dialogs::*;
 
@@ -1750,6 +1761,38 @@ impl Cycle {
                 crate::career::SeasonTerms::Relegated => Request::with(NEW_TERMS, Args::NewTerms { promoted: false }),
             };
             self.ask(request)?;
+        }
+        // Each human club's manager then has the season start's event 0x82
+        // (`FUN_00671c60`, one entry per club of `FUN_006355f4` for the
+        // manager at club +0x8b, run in turn by `CMyStartDialog::
+        // FUN_00671d57`): the negotiations he leads himself (dialog 422)
+        // — the European TV talks behind them (`CDiVerhandlungenUefa`)
+        // only after a deal there, which is not built — and the season's
+        // preparation (dialog 419), unless it is the first season and the
+        // option at `DAT_00b5d19a` leaves it to the computer
+        // (`FUN_0042b589`, `FUN_00409d99`). Under the same condition the
+        // overviews of the season's start follow once (event 0x130,
+        // `FUN_0062def0` → `CMyStartDialog::FUN_0062de93`, dialog 420).
+        let (humans, quick) = {
+            let state = self.state();
+            let quick = state
+                .records
+                .as_ref()
+                .is_some_and(|r| r.globals.seasons() == 1 && r.globals.get::<i16>(QUICK_START_OPTION) != 0);
+            let humans = state.season.as_ref().map_or_else(Vec::new, |s| {
+                (0..s.managers.len()).filter(|&m| s.managers[m].club.is_some()).collect::<Vec<usize>>()
+            });
+            (humans, quick)
+        };
+        for manager in humans {
+            self.season(|s| s.current = manager);
+            self.ask(Request::new(SEASON_START_TALKS))?;
+            if !quick {
+                self.ask(Request::new(SEASON_PREPARATION))?;
+            }
+        }
+        if !quick {
+            self.ask(Request::new(SEASON_OVERVIEWS))?;
         }
         Ok(())
     }

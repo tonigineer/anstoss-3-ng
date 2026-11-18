@@ -56,6 +56,7 @@ pub mod fee;
 pub mod popups;
 pub mod save;
 pub mod search;
+pub mod season_start;
 pub mod season_terms;
 pub mod special;
 pub mod squad;
@@ -296,6 +297,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(doping_control::DopingControl),
         Box::new(court::Court),
         Box::new(season_terms::SeasonTerms::default()),
+        Box::new(season_start::SeasonStart),
         Box::new(cup_results::CupResults::default()),
         Box::new(event_text::EventText),
         Box::new(render::Render::default()),
@@ -383,6 +385,7 @@ pub fn compose(game: &mut Game) {
     doping_control::compose(&mut game.dialogs);
     court::compose(&mut game.dialogs);
     season_terms::compose(&mut game.dialogs);
+    season_start::compose(&mut game.dialogs);
     cup_results::compose(&mut game.dialogs);
     event_text::compose(&mut game.dialogs);
     render::compose(&mut game.dialogs);
