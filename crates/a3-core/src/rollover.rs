@@ -45,7 +45,7 @@
 //! The original draws with its own generator, so the men
 //! who grow are others than the original's.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 
 use crate::random::Random;
 use crate::records::{Player, Records};
@@ -899,9 +899,128 @@ pub(crate) fn note_strength(player: &mut Player, strength: u8) {
     player.put::<u8>(HISTORY + k, b);
 }
 
+/// The humans' appointment lists (`DAT_01b9ffc8`, one of 0x11a bytes per
+/// slot: a count, then 20 entries of 14 bytes — day, month, year, kind,
+/// a value, the player).
+const APPOINTMENTS: &str = "0x1b9ffc8";
+const APPOINTMENT_LIST: usize = 0x11a;
+const APPOINTMENT: usize = 14;
+const APPOINTMENTS_MOST: usize = 20;
+/// A child's birthday among the player's (record +0x174, four bytes each).
+const CHILDREN_BIRTHDAYS: usize = 0x174;
+
+/// An appointment into a human's list by its date (`FUN_006a6a37`): before
+/// the first not earlier (`FUN_004379d0`), the later ones moved up one —
+/// from the second last, so the last one is lost as in the original — and
+/// the count up to 20 at most; none with the list's first 20 earlier.
+fn add_appointment(list: &mut [u8], entry: [u8; APPOINTMENT]) {
+    let count = usize::from(u16::from_le_bytes([list[0], list[1]])).min(APPOINTMENTS_MOST);
+    let at = |i: usize| 2 + i * APPOINTMENT;
+    let key = |e: &[u8]| (u16::from_le_bytes([e[2], e[3]]), e[1], e[0]);
+    let mut i = 0;
+    while i < count && key(&entry) > key(&list[at(i)..at(i) + APPOINTMENT]) {
+        i += 1;
+    }
+    if i >= APPOINTMENTS_MOST {
+        return;
+    }
+    let mut j = count as isize - 2;
+    while j >= i as isize {
+        let j0 = j as usize;
+        list.copy_within(at(j0)..at(j0) + APPOINTMENT, at(j0 + 1));
+        j -= 1;
+    }
+    list[at(i)..at(i) + APPOINTMENT].copy_from_slice(&entry);
+    let count = (count + 1).min(APPOINTMENTS_MOST) as u16;
+    list[..2].copy_from_slice(&count.to_le_bytes());
+}
+
+fn appointment(day: u8, month: u8, year: u16, kind: u16, value: u16, id: u16) -> [u8; APPOINTMENT] {
+    let mut e = [0; APPOINTMENT];
+    e[0] = day;
+    e[1] = month;
+    e[2..4].copy_from_slice(&year.to_le_bytes());
+    e[4..6].copy_from_slice(&kind.to_le_bytes());
+    e[6..8].copy_from_slice(&value.to_le_bytes());
+    e[8..10].copy_from_slice(&id.to_le_bytes());
+    e
+}
+
+/// The players' appointments at the season's turn (`FUN_006a8371`, last
+/// in the new season's block): for each human with a club, every squad
+/// player (`FUN_006a810a`): a German 19-year-old at a German club is called
+/// up two times in three (kind 0x66 on 14.7., kind 0x67 of 0x50 on 1.5.
+/// next year); any other has his birthday one time in 40 (kind 100, not in
+/// July and August of the first pre-season with the option `DAT_00b5d19a`
+/// set), and a father one time in 100 a child's (kind 0x68, a child drawn,
+/// unless the first pre-season stands still, `FUN_005ef56c`) — each in
+/// this year still to come, else in the next.
+pub fn appointments(records: &mut Records, random: &mut Random) {
+    const GERMANY: u8 = 0xe;
+    let year = records.globals.start_year();
+    // The new season's first day (`FUN_00676992`); the year its
+    // `DAT_00b5cbde`, as NewSeason000 has both.
+    let today = crate::calendar::date(i32::from(year), 0);
+    let (day, month) = (today.day() as u8, today.month() as u8);
+    let option = records.globals.get::<i16>(0xb5d19a);
+    for (slot, held) in records.globals.slots().iter().copied().enumerate() {
+        if held == 0 || slot >= 4 {
+            continue;
+        }
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        if country == 0 {
+            continue;
+        }
+        let quiet = crate::event_text::quiet(records);
+        let mut entries = Vec::new();
+        for id in squad(records, country, number) {
+            let Some(p) = records.player(id).filter(|_| id < 0x4269) else { continue };
+            // `FUN_006a8410`: still to come this year (by day and month).
+            let when = |(d, m): (u8, u8)| if (m, d) >= (month, day) { year } else { year + 1 };
+            if country as u8 == GERMANY && p.nation() == GERMANY && crate::statistics::age_on(p, today) == 19 {
+                if random.below(3) < 2 {
+                    entries.push(appointment(14, 7, year, 0x66, 0, id));
+                    entries.push(appointment(1, 5, year + 1, 0x67, 0x50, id));
+                }
+                continue;
+            }
+            if random.below(0x28) == 0 {
+                let (d, m) = (p.birth_day(), p.birth_month());
+                if option != 1 || !(7..=8).contains(&m) {
+                    entries.push(appointment(d, m, when((d, m)), 100, 0, id));
+                }
+            }
+            let children = p.children();
+            if children > 0 && random.below(100) == 0 && !quiet {
+                let at = CHILDREN_BIRTHDAYS + 4 * random.below(children as u32) as usize;
+                let (d, m): (u8, u8) = (p.get(at), p.get(at + 1));
+                entries.push(appointment(d, m, when((d, m)), 0x68, 0, id));
+            }
+        }
+        if let Some(block) = records.block_mut(APPOINTMENTS) {
+            let list = &mut block[slot * APPOINTMENT_LIST..(slot + 1) * APPOINTMENT_LIST];
+            for e in entries {
+                add_appointment(list, e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_appointment_goes_in_by_its_date_and_drops_the_last() {
+        let mut list = [0u8; APPOINTMENT_LIST];
+        add_appointment(&mut list, appointment(1, 9, 2000, 100, 0, 1));
+        add_appointment(&mut list, appointment(1, 10, 2000, 100, 0, 2));
+        add_appointment(&mut list, appointment(1, 8, 2000, 100, 0, 3));
+        let ids: Vec<u16> = (0..3).map(|i| u16::from_le_bytes([list[2 + i * 14 + 8], list[2 + i * 14 + 9]])).collect();
+        // Before 1 and 2, 1 moved onto 2's place, 2 lost, the third stale.
+        assert_eq!(list[0], 3);
+        assert_eq!(ids, [3, 1, 0]);
+    }
 
     /// On the original's NewSeason000 every played club's overdraft is a
     /// tenth of its squad's worth in 100.000s, reckoned on the season's

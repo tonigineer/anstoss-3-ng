@@ -1726,6 +1726,9 @@ impl Cycle {
                         season.clubs.insert(key, club);
                     }
                 }
+                // The humans' players' appointments of the year
+                // (`FUN_006a8371`, last in the block).
+                crate::rollover::appointments(records, &mut season.random);
                 // The ticker of jobs drops its told entries
                 // (`FUN_00751180`, after `FUN_0062def0`).
                 crate::career::drop_told(&mut season.job_notes);
