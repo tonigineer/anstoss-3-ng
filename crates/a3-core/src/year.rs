@@ -799,6 +799,19 @@ const NEXT_EUROPE: u8 = 5;
 /// `0x100` bit — the champion's cup answers with the `0x400` one.
 const NEXT_UEFA: u8 = 7;
 const NEXT_INTERTOTO: u8 = 8;
+/// The world's days on the calendar's first row, both played as a final
+/// (round 7): the European supercup's (`FUN_00421b79`, kind 9) and the
+/// world cup's against South America's champion (`FUN_00421d07`, kind 10).
+const NEXT_EUROPEAN_SUPERCUP: u8 = 9;
+const NEXT_WORLD_CUP: u8 = 10;
+const WORLD_ROUND: u8 = 7;
+const EUROPEAN_SUPERCUP_DAY: u32 = 0x6000_0000;
+const WORLD_CUP_DAY: u32 = 0x7000_0000;
+/// Their ties in the European entrants' object, one each of
+/// [`INTERTOTO_TIE`]'s form: the European supercup's at `0x8e83a2`, the
+/// world cup's at `0x8e83b0`.
+const EUROPEAN_SUPERCUP_TIE: usize = 0x6fa;
+const WORLD_CUP_TIE: usize = 0x708;
 const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 
 /// A club's next match from the day after `today` on, within 63 days
@@ -810,7 +823,9 @@ const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 /// and European days stand for a club's league and cup rows; of their codes
 /// the Intertoto's and the European ones are built — the champion's cup
 /// first, and the UEFA cup's table where its finder has nothing for the
-/// id — the rest passed over, as the world's and the relegation's days are.
+/// id — and the world's two finals, the European supercup's and the world
+/// cup's, where the club is one of the tie's sides; the relegation's days
+/// are passed over.
 pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, today: usize) -> Option<NextMatch> {
     let country = team.country();
     for d in today + 1..=(today + LOOK_AHEAD).min(SEASON_DAYS - 1) {
@@ -833,6 +848,13 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
                 if matches!(first & 0xff, 2 | 3) {
                     if let Some((opponent, venue)) = uefa_tie(records, team) {
                         return Some(at(opponent, venue, NEXT_UEFA, 0));
+                    }
+                }
+            }
+            for (day, tie, kind) in [(EUROPEAN_SUPERCUP_DAY, EUROPEAN_SUPERCUP_TIE, NEXT_EUROPEAN_SUPERCUP), (WORLD_CUP_DAY, WORLD_CUP_TIE, NEXT_WORLD_CUP)] {
+                if first & COMPETITION == day {
+                    if let Some((opponent, venue)) = world_tie(records, team, tie) {
+                        return Some(at(opponent, venue, kind, WORLD_ROUND));
                     }
                 }
             }
@@ -1154,6 +1176,19 @@ fn uefa_tie(records: &Records, team: &crate::records::Team) -> Option<((u8, i16)
     None
 }
 
+/// The world's final a club plays (`FUN_00676aaf` on the tie at `at` of
+/// the European entrants' object): the first side at home, the second
+/// away. The finders write the ground the turn set by rule
+/// (`DAT_00b21ac8`, `DAT_00b21ac4`) as well, which opens no ticket office.
+fn world_tie(records: &Records, team: &crate::records::Team, at: usize) -> Option<((u8, i16), i16)> {
+    let t = records.block(crate::europe_entry::ENTRANTS)?.get(at..at + 8)?;
+    let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+    if supercup_side(&t[0..4], team) {
+        return Some((side(4), 0));
+    }
+    supercup_side(&t[4..8], team).then(|| (side(0), 1))
+}
+
 /// Whether a club plays a supercup round (`FUN_006ccf10`): in the one
 /// tie; in a tournament the round's tie, or — for the third and fourth
 /// round — the first or second of the six waiting there, or a tie of an
@@ -1366,7 +1401,7 @@ mod tests {
                     // in the days looked over.
                     let day = team.next_day();
                     let fresh = day > 0 && day as usize > today && day as usize <= (today + LOOK_AHEAD).min(SEASON_DAYS - 1);
-                    let built = matches!(team.next_kind(), NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO) && fresh;
+                    let built = matches!(team.next_kind(), NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO | NEXT_EUROPEAN_SUPERCUP | NEXT_WORLD_CUP) && fresh;
                     if team.next_country() == 0 && team.next_kind() == 0 || team.level() >= NO_LEAGUE
                         || (5..=10).contains(&team.next_kind()) && !built
                     {
@@ -1433,6 +1468,39 @@ mod tests {
         // The UEFA cup's are many: `A.an3` stands the day before a leg, so
         // its 41 ties note their two sides over the league's club slots.
         assert!(all > 400 && eight >= 5 && five >= 20 && seven >= 500 && misses.is_empty(), "{} misses of {all} ({eight} Intertoto, {five} European, {seven} UEFA):\n{}", misses.len(), misses.join("\n"));
+    }
+
+    /// The world's two finals on the calendar's first row: a club on
+    /// either side of the European supercup's or the world cup's tie notes
+    /// it from the day before as a final (round 7) of kind 9 or 10, at home
+    /// on the first side; a club in neither tie passes the day over. (No
+    /// kept save stands where a played country's club is in one, so the
+    /// tie is written into `A.an3`'s European object.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_worlds_finals_are_noted_as_a_clubs_next_match() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut n = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let country = crate::opponent::played_nations(&n)[0];
+        let (home, away, other) = (n.team(country, 0).unwrap().clone(), n.team(country, 1).unwrap().clone(), n.team(country, 2).unwrap().clone());
+        let side = |t: &crate::records::Team| [t.country(), 0, t.number(), 0];
+        let mut checked = 0;
+        for (code, tie, kind) in [(EUROPEAN_SUPERCUP_DAY, EUROPEAN_SUPERCUP_TIE, NEXT_EUROPEAN_SUPERCUP), (WORLD_CUP_DAY, WORLD_CUP_TIE, NEXT_WORLD_CUP)] {
+            let Some(d) = (1..SEASON_DAYS).find(|&d| data.calendar.entry(0, d) & COMPETITION == code) else { continue };
+            let b = n.block_mut(crate::europe_entry::ENTRANTS).unwrap();
+            b[tie..tie + 4].copy_from_slice(&side(&home));
+            b[tie + 4..tie + 8].copy_from_slice(&side(&away));
+            let as_side = |t: &crate::records::Team| (t.country(), t.number() as i16);
+            assert_eq!(next_match(&n, &data.calendar, &home, d - 1), Some(NextMatch { day: d as i16, opponent: as_side(&away), venue: 0, kind, round: WORLD_ROUND }), "day {d}");
+            assert_eq!(next_match(&n, &data.calendar, &away, d - 1), Some(NextMatch { day: d as i16, opponent: as_side(&home), venue: 1, kind, round: WORLD_ROUND }), "day {d}");
+            assert!(next_match(&n, &data.calendar, &other, d - 1).is_none_or(|m| m.day as usize != d), "day {d}");
+            n.block_mut(crate::europe_entry::ENTRANTS).unwrap()[tie..tie + 8].fill(0);
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "both finals stand on the calendar's first row");
     }
 
     /// England's league cup in an English club's calendar: on the kept
