@@ -1800,13 +1800,22 @@ const FIRST_TRAITS: [u16; 10] = [1, 1, 2, 4, 8, 0, 0, 0, 0, 1];
 const SECOND_TRAITS: [u16; 6] = [2, 4, 16, 32, 64, 512];
 
 /// One of the listed men, drawn (`FUN_005eb193`): none from an empty
-/// list, or when he is a playing manager (its +0x6a check is not here).
-fn draw_any(list: &[u16], random: &mut Random) -> Option<u16> {
+/// list, or when he is a playing manager or, under the flag every event
+/// hands it, stands away from the club ([`away`]).
+fn draw_any(records: &Records, list: &[u16], random: &mut Random) -> Option<u16> {
     if list.is_empty() {
         return None;
     }
     let id = list[random.below(list.len() as u32) as usize];
-    (id <= crate::mood::LAST_REAL_ID).then_some(id)
+    (id <= crate::mood::LAST_REAL_ID && !away(records, id)).then_some(id)
+}
+
+/// Whether a man stands away from the club: the handle's +0x6a, which
+/// the load copy builds from the record's `away_to`, and which the
+/// draws of a man check under their flag (`FUN_005eb193`, `FUN_005ead2f`,
+/// `FUN_005eaed7`, `FUN_005eb0ab`: `psVar[0x35] != 0`).
+fn away(records: &Records, id: u16) -> bool {
+    records.player(id).is_some_and(|p| p.away_to()[0] != 0)
 }
 
 /// Event 105 (`FUN_0060c1c0`'s case 5): a trained man with any first
@@ -1817,15 +1826,20 @@ fn draw_any(list: &[u16], random: &mut Random) -> Option<u16> {
 /// (`FUN_00747689`), one he has in neither moves into the second
 /// (`bad`, +0xe; `FUN_00747770`). Both log the loss into the human
 /// club's book of the week's abilities (`FUN_00643673`'s gate into
-/// `Records::ability_lost`); the manager's plan of the man (the block at
-/// `0xa50028`, behind the same gate) is not updated here.
+/// `Records::ability_lost`), and for a human slot of one to four his
+/// entry in the club's store of the men's own training (`0xa50028` +
+/// (slot − 1) × 0x7a0, `FUN_00746bde`, `FUN_00746997`) has what he got
+/// of that ability put to nought; a man without one there gets none.
+/// The day's run (`FUN_00749508`) puts its snapshot back over the store
+/// at its end (`FUN_00746d33`), so on a trained day the write stands only
+/// until then; the day of a manager away (`FUN_00748f55`) puts none back.
 fn ability_event(
     records: &mut Records,
     (country, number): (u16, u16),
     trainable: &[u16],
     random: &mut Random,
 ) -> bool {
-    let Some(id) = draw_any(trainable, random) else { return false };
+    let Some(id) = draw_any(records, trainable, random) else { return false };
     let Some(p) = records.player(id) else { return false };
     let keeper = p.get::<u8>(0x21d) == 1;
     let (good, bad) = (p.good(), p.bad());
@@ -1858,8 +1872,26 @@ fn ability_event(
     };
     if lost {
         records.ability_lost(slot, id, ABILITY_BITS[at]);
+        forget_progress(records, slot, id, usize::from(ABILITY_BITS[at]));
     }
     lost
+}
+
+/// What a man got of an ability, put to nought in his entry of the human
+/// club's store (`FUN_00747689` and `FUN_00747770` after their gate
+/// `FUN_00643673`: the slot byte +0x11de from one to four).
+fn forget_progress(records: &mut Records, slot: u8, id: u16, ability: usize) {
+    if !(1..=4).contains(&slot) {
+        return;
+    }
+    let Some(store) = records.individual.get_mut(usize::from(slot) - 1) else { return };
+    let mut entries = store.entries();
+    let Some(mut entry) = entries.iter().copied().find(|e| e.id == id) else { return };
+    if let Some(got) = entry.progress.get_mut(ability) {
+        *got = 0;
+    }
+    individual::keep(&mut entries, entry);
+    store.set_entries(&entries);
 }
 
 /// Events 106 and 107 (`FUN_0060c1c0`'s cases 6 and 7): a trained man,
@@ -1870,7 +1902,7 @@ fn ability_event(
 /// any of that word yet (`FUN_0074b4cf`'s sixteen, `FUN_0074b526`'s
 /// eight), 107 takes it from a man who has it.
 fn trait_event(records: &mut Records, (country, number): (u16, u16), trainable: &[u16], give: bool, random: &mut Random) -> bool {
-    let Some(id) = draw_any(trainable, random) else { return false };
+    let Some(id) = draw_any(records, trainable, random) else { return false };
     let Some(p) = records.player(id) else { return false };
     let keeper = p.get::<u8>(0x21d) == 1;
     let squad = records.team(country, number).map_or(0, |t| t.player_count());
@@ -2141,7 +2173,7 @@ fn run_player_event(
             false
         }
         13 => {
-            let Some(id) = draw_any(trainable, random) else { return false };
+            let Some(id) = draw_any(records, trainable, random) else { return false };
             let Some(p) = records.player_mut(id) else { return false };
             if p.morale() < 0x6a {
                 return false;
@@ -2408,7 +2440,7 @@ fn run_player_event(
                     crate::computer_training::fresh_percent(p) <= 0x13 && p.intensity() == 3
                 })
             };
-            let Some(id) = (0..3).map(|_| draw_any(trainable, random)).find(|&id| worn(records, id)).flatten() else {
+            let Some(id) = (0..3).map(|_| draw_any(records, trainable, random)).find(|&id| worn(records, id)).flatten() else {
                 return false;
             };
             if let Some(m) = records.managers.get_mut(usize::from(trainer) - 1) {
@@ -2489,8 +2521,8 @@ fn run_player_event(
 /// One of the listed keepers, or of those who keep no goal, drawn
 /// (`FUN_005ead2f`, `FUN_005eaed7`; the handle's position byte +0x3 is
 /// the record's +0x21d): none when the list has none such, or when the
-/// one drawn is a playing manager. Their last check, the handle's +0x6a
-/// under the flag the event hands it, is not here.
+/// one drawn is a playing manager or, under the flag every event hands
+/// them, stands away from the club ([`away`]).
 fn draw_listed(records: &Records, list: &[u16], keepers: bool, random: &mut Random) -> Option<u16> {
     let such: Vec<u16> = list
         .iter()
@@ -2501,7 +2533,7 @@ fn draw_listed(records: &Records, list: &[u16], keepers: bool, random: &mut Rand
         return None;
     }
     let id = such[random.below(such.len() as u32) as usize];
-    (id <= crate::mood::LAST_REAL_ID).then_some(id)
+    (id <= crate::mood::LAST_REAL_ID && !away(records, id)).then_some(id)
 }
 
 /// One of the trained who keep no goal and are of an age, drawn
@@ -2759,6 +2791,53 @@ fn add_mood(team: &mut Team, steps: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Event 105 on A's human squad, one man trained: away from the club
+    /// he is not drawn and keeps all; at home he loses an ability, and
+    /// his entry in the club's store has nothing left of it, the rest of
+    /// what he got standing.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn the_ability_event_skips_the_away_and_clears_the_plan() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let slot = records.team(club.0, club.1).unwrap().human();
+        assert!((1..=4).contains(&slot));
+        let id = records
+            .team(club.0, club.1)
+            .unwrap()
+            .players()
+            .into_iter()
+            .find(|&id| records.player(id).is_some_and(|p| p.get::<u8>(0x21d) != 1))
+            .unwrap();
+        let p = records.player_mut(id).unwrap();
+        p.set_good(0xffff);
+        p.set_bad(0);
+        p.set_away_to([1, 0]);
+        let mut entry = Entry::default();
+        entry.id = id;
+        entry.progress = [individual::LEARNT; FIELD_ABILITIES];
+        let store = &mut records.individual[usize::from(slot) - 1];
+        let mut entries = store.entries();
+        entries.iter_mut().filter(|e| e.id == id).for_each(|e| e.id = 0);
+        individual::keep(&mut entries, entry);
+        store.set_entries(&entries);
+        let own = |records: &Records| records.individual[usize::from(slot) - 1].entries().into_iter().find(|e| e.id == id).unwrap();
+        let mut random = Random::from_state(12345, 67890);
+        assert!(!ability_event(&mut records, club, &[id], &mut random));
+        assert_eq!(records.player(id).unwrap().good(), 0xffff);
+        assert_eq!(own(&records), entry);
+        records.player_mut(id).unwrap().set_away_to([0, 0]);
+        assert!(ability_event(&mut records, club, &[id], &mut random));
+        let lost = 0xffff & !records.player(id).unwrap().good();
+        assert_eq!(lost.count_ones(), 1);
+        let bit = lost.trailing_zeros() as usize;
+        entry.progress[bit] = 0;
+        assert_eq!(own(&records), entry);
+    }
 
     /// Event 102's table as the exe registers it: its weights fill the cap
     /// of 2011, and the roll the original drew on A's day 64, 1112, lands
