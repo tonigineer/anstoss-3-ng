@@ -1632,7 +1632,9 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     if let Some(rules) = rules {
         crate::season::open_goals(records, rules, random);
     }
-    // The pre-season's Turniere (`FUN_007719a6`), before the clubs' walk.
+    // The staff markets and the pre-season's Turniere (`FUN_007719a6`),
+    // before the clubs' walk.
+    crate::staff_market::open_season(records, random);
     crate::tournament::open_preseason(records, random);
     count_down_contracts(records);
     number_shirts(records, random);
@@ -1685,32 +1687,55 @@ const STANDING_MOST: i16 = 70;
 /// trainer and manager (team +0x9c, +0x9e, +0xa0), each with two
 /// contract years or more, a year less (the person's +0x2c), a season
 /// more at the club (+0x34) and his +0x36 halved — the new season then
-/// holds every person's +0x36 at nought, by a step not traced. (One with
-/// less: the original keeps him by chance — the new years it draws then
-/// go unsaved — or lets him go, the worse the club fell short of its
-/// goal, and the new season's staff market (`FUN_00409a3f`) fills the
-/// post; neither is built, he stays.)
+/// holds every person's +0x36 at nought, by a step not traced. One with
+/// less the club lets go by a draw of a hundred under 0, 30, 50 or 90
+/// as it fell short of its goal by no place, one, two, three and more
+/// (team +0x137, `DAT_00891240`), or at once while his +0x4e is set: his
+/// years nought, his post empty — the manager-trainer's taking the other
+/// two along — for the new season's staff market (`FUN_00409a3f`). Kept,
+/// the original draws him one to three more years that it never saves.
 const STAFF_YEARS: usize = 0x2c;
 const STAFF_SEASONS: usize = 0x34;
 const STAFF_HALVED: usize = 0x36;
+const STAFF_GOING: usize = 0x4e;
 const LAST_PERSON: u16 = 0x5db;
+const STAFF_VERDICT: usize = 0x137;
+const LET_GO: [u32; 4] = [0, 30, 50, 90];
+const LET_GO_DIE: u32 = 100;
+const KEPT_DIE: u32 = 3;
 
-fn close_staff(records: &mut Records) {
+fn close_staff(records: &mut Records, random: &mut Random) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team(country, number) else { continue };
-            for id in team.staff() {
+            let short = usize::try_from(-i32::from(team.get::<i8>(STAFF_VERDICT))).unwrap_or(0).min(3);
+            for post in 0..3 {
+                let Some(team) = records.team(country, number) else { break };
+                let id = team.staff()[post];
                 if id == 0 || id > LAST_PERSON {
                     continue;
                 }
                 let Some(p) = records.persons.get_mut(usize::from(id)) else { continue };
                 let years = p.get::<u8>(STAFF_YEARS);
-                if years < 2 {
+                if years >= 2 {
+                    p.put::<u8>(STAFF_YEARS, years - 1);
+                    p.put::<u8>(STAFF_SEASONS, p.get::<u8>(STAFF_SEASONS).wrapping_add(1));
+                    p.put::<i16>(STAFF_HALVED, p.get::<i16>(STAFF_HALVED) / 2);
+                } else if p.get::<u8>(STAFF_GOING) == 0 && random.below(LET_GO_DIE) >= LET_GO[short] {
+                    random.below(KEPT_DIE);
                     continue;
+                } else {
+                    p.put::<u8>(STAFF_YEARS, 0);
+                    if let Some(team) = records.team_mut(country, number) {
+                        let mut staff = team.staff();
+                        match post {
+                            0 => staff = [0; 3],
+                            _ => staff[post] = 0,
+                        }
+                        team.set_staff(staff);
+                    }
                 }
-                p.put::<u8>(STAFF_YEARS, years - 1);
-                p.put::<u8>(STAFF_SEASONS, p.get::<u8>(STAFF_SEASONS).wrapping_add(1));
-                p.put::<i16>(STAFF_HALVED, p.get::<i16>(STAFF_HALVED) / 2);
+                crate::staff_market::store_person(records, id);
             }
         }
     }
@@ -1722,10 +1747,9 @@ fn close_staff(records: &mut Records) {
 /// below 60, two below 70, one below 80, one even chance in two below 85,
 /// up one even chance in two from 98 while it stands below 70; the
 /// played clubs' staff first ([`close_staff`]). (The rest of
-/// `FUN_00624e4f` — the comparison's marks, the staff's endings — is not
-/// built.)
+/// `FUN_00624e4f` — the comparison's marks — is not built.)
 pub fn close_managers(records: &mut Records, random: &mut Random) {
-    close_staff(records);
+    close_staff(records, random);
     for n in 0..usize::from(records.globals.humans()) {
         let Some(m) = records.managers.get_mut(n) else { continue };
         m.set_trainer_years(m.trainer_years().wrapping_add(1));
@@ -3149,7 +3173,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs, before) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
-        close_staff(&mut ours);
+        close_staff(&mut ours, &mut Random::new(5));
         let mut moved = 0;
         for id in 1..usize::from(LAST_PERSON) {
             let (Some(x), Some(y), Some(z)) = (ours.persons.get(id), theirs.persons.get(id), before.persons.get(id)) else { continue };
@@ -3160,6 +3184,56 @@ mod tests {
             }
         }
         assert!(moved > 250, "{moved}");
+    }
+
+    /// A staff man at his contract's last year: kept while his club met
+    /// its goal, let go at once while his +0x4e is set — the
+    /// manager-trainer taking the club's other two posts along — and,
+    /// short of the goal by three places, nine times in ten.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_staffs_last_years_end_by_the_clubs_season() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = || Records::from_save(Save::read(&keeps.join("SeasonEnd364.an3")).unwrap()).unwrap();
+        let before = read();
+        let country = crate::opponent::played_nations(&before)[0];
+        let number = 0;
+        let staff = [1000, 1001, 1002];
+        let set = |r: &mut Records, verdict: i8, going: u8| {
+            let team = r.team_mut(country, number).unwrap();
+            team.put::<i8>(STAFF_VERDICT, verdict);
+            team.set_staff(staff);
+            for id in staff {
+                let p = &mut r.persons[usize::from(id)];
+                p.put::<u8>(STAFF_YEARS, 1);
+                p.put::<u8>(STAFF_GOING, going);
+            }
+        };
+        let mut kept = read();
+        set(&mut kept, 2, 0);
+        close_staff(&mut kept, &mut Random::new(1));
+        assert_eq!(kept.team(country, number).unwrap().staff(), staff, "met its goal");
+        let mut gone = read();
+        set(&mut gone, 0, 1);
+        close_staff(&mut gone, &mut Random::new(1));
+        assert_eq!(gone.team(country, number).unwrap().staff(), [0; 3], "the manager-trainer takes all");
+        assert_eq!(gone.persons[usize::from(staff[0])].get::<u8>(STAFF_YEARS), 0);
+        assert_eq!(gone.block(&format!("0xbe3920[{}]", staff[0])).unwrap()[STAFF_YEARS - 0x20], 0, "saved");
+        assert_eq!(gone.persons[usize::from(staff[1])].get::<u8>(STAFF_YEARS), 1, "the others' records stand");
+        let mut lost = 0;
+        for seed in 0..200 {
+            let mut r = read();
+            set(&mut r, -5, 0);
+            close_staff(&mut r, &mut Random::new(seed));
+            if r.team(country, number).unwrap().staff()[0] == 0 {
+                lost += 1;
+            }
+        }
+        assert!((165..=195).contains(&lost), "{lost} of 200");
     }
 
     /// The new season's managers' year leaves the humans' last-match

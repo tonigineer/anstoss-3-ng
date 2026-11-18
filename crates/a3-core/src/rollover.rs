@@ -1393,9 +1393,9 @@ mod tests {
     /// the bytes that pair does not show: of SeasonEnd364's played clubs
     /// only team 14 84 has staff, and both its men stood spent — the club
     /// lets the co-trainer and the second coach go, and the original's
-    /// staff market at the season's opening (`FUN_00409a3f`, not built)
-    /// draws 261 and 16 to stand in NewSeason000 where the replica's
-    /// slots stand empty. Set on the same save, a man with a liking to
+    /// staff market at the season's opening (`FUN_00409a3f`, built in
+    /// [`crate::staff_market`]) draws 261 and 16 to stand in NewSeason000
+    /// where these slots stand empty. Set on the same save, a man with a liking to
     /// spare keeps his id, one point shorter; one at his last point, and
     /// an id outside the tables, leave the club.
     #[test]

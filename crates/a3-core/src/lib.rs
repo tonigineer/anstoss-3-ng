@@ -81,6 +81,7 @@ pub mod settlement;
 pub mod sim;
 pub mod squadlist;
 pub mod stadium;
+pub mod staff_market;
 pub mod statistics;
 pub mod state;
 pub mod supercup;
