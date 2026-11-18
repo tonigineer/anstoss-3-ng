@@ -206,6 +206,34 @@ pub(crate) fn club_state(records: &Records, team: &Team, data: &Data) -> ClubSta
     club
 }
 
+/// A followed club as the day left its records. The original keeps no
+/// copy of its human clubs beside the records: the day's round
+/// (`FUN_006504b6` → `FUN_007845aa`) moves the players' freshness and
+/// condition there, the training and its events their condition, morale
+/// and injuries, the sales the season tickets (team +0x710), and every
+/// absence is a date the screens count the days to from the date the
+/// day just stepped. So each player the club follows by id stands again
+/// as a load reads him, and its tickets as the team has them; the
+/// line-up and the plans the screens set stay.
+pub fn follow(records: &Records, data: &Data, (slot, index): (usize, usize), club: &mut ClubState) {
+    let medical = &data.rules.medical;
+    for (p, kept) in club.status.iter_mut().enumerate() {
+        let Some(record) = records.player(kept.id).filter(|_| kept.id != 0) else { continue };
+        if let Some(f) = club.fitness.get_mut(p) {
+            *f = fitness(record);
+        }
+        *kept = status(records, medical, record);
+    }
+    let team = data
+        .world
+        .country(slot)
+        .zip(u16::try_from(index).ok())
+        .and_then(|(country, number)| records.team(country.nation, number));
+    if let Some(team) = team {
+        club.tickets = team.tickets().into();
+    }
+}
+
 /// The tactics' players, by their ids: the own two in the squad, the
 /// opponent's two in the next opponent's.
 fn picks(

@@ -1277,7 +1277,13 @@ impl Cycle {
                                 &mut season.random,
                             );
                         }
-                        season.pass_day();
+                        // The followed clubs stand as the day left their
+                        // records; only a new game, which keeps none yet,
+                        // passes its day on the replica's own model.
+                        match state.records.as_ref() {
+                            Some(records) => season.follow_records(records, &self.data),
+                            None => season.pass_day(),
+                        }
                         season.day += 1;
                         // The day's league games: where the original lets
                         // its clubs play them on the pitch, the replica

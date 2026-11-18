@@ -977,8 +977,20 @@ impl Season {
         self.clubs.insert((slot, index), state);
     }
 
-    /// A day passes for the followed clubs: season tickets sell before the
-    /// league starts, fitness recovers — there is no training to wear it.
+    /// A day of a game held in records passed for the followed clubs:
+    /// each stands as the day left its records ([`crate::load::follow`]),
+    /// and the week's record takes the team's condition and freshness.
+    /// Nothing is drawn here — the original's day drew all it draws.
+    pub fn follow_records(&mut self, records: &crate::records::Records, data: &crate::data::Data) {
+        for (&key, state) in &mut self.clubs {
+            crate::load::follow(records, data, key, state);
+            state.week.push(team_fitness(&state.lineup, &state.fitness));
+        }
+    }
+
+    /// A day passes for the followed clubs of a new game, which keeps no
+    /// records yet: season tickets sell before the league starts, fitness
+    /// recovers — there is no training to wear it.
     pub fn pass_day(&mut self) {
         let preseason = self.day < PRESEASON_DAYS;
         let difficulties: BTreeMap<(usize, usize), usize> =
@@ -1272,6 +1284,54 @@ mod form_tests {
             assert_eq!(i32::from(records.player(id).unwrap().last_form()), form, "player {id}");
             assert_eq!(clubs[&key].status[i].last_form, Some(form));
         }
+    }
+
+    /// A day of the kept saves' worlds: the round takes fifty of every
+    /// human player's condition in the records and the date steps. Each
+    /// club the season follows then stands as a load of the day reads it
+    /// — fitness, the injuries a day shorter, the season tickets — and
+    /// following it draws nothing, where the replica's own day drew for
+    /// the tickets.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_loaded_games_clubs_follow_the_days_records() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (mut healing, mut followed) = (0, 0);
+        for name in ["A", "A2", "Probe1", "S2", "S2c", "S2late", "S2late3"] {
+            let path = keeps.join(format!("{name}.an3"));
+            let mut records = crate::records::Records::from_save(Save::read(&path).unwrap()).unwrap();
+            let mut season = crate::load::season(&records, &data, Random::from_state(12345, 67890));
+            followed += season.clubs.len();
+            season.start_week();
+            let before: BTreeMap<(usize, usize), Vec<(i32, i32)>> = season
+                .clubs
+                .iter()
+                .map(|(&key, club)| (key, club.fitness.iter().zip(&club.status).map(|(f, s)| (f.condition, s.injured)).collect()))
+                .collect();
+            let mut dice = Random::from_state(1, 2);
+            let weekday = i32::from(records.globals.day()) % 7;
+            crate::world_day::day(&mut records, weekday, &mut dice);
+            let held = season.random.clone();
+            season.follow_records(&records, &data);
+            assert!(season.random == held, "{name}: following the records draws nothing");
+            for (&key, club) in &season.clubs {
+                let read = crate::load::club(&records, &data, key).unwrap();
+                assert_eq!(club.fitness, read.fitness, "{name}");
+                assert_eq!(club.status, read.status, "{name}");
+                assert_eq!(club.tickets, read.tickets, "{name}");
+                for (&(condition, injured), (f, s)) in before[&key].iter().zip(club.fitness.iter().zip(&club.status)) {
+                    assert_eq!(f.condition, (condition - 50).max(0), "{name}: player {}", s.id);
+                    assert_eq!(s.injured, (injured - 1).max(0), "{name}: player {}", s.id);
+                    healing += usize::from(injured > 0);
+                }
+                assert_eq!(club.week.len(), 2);
+                assert_eq!(club.week[1], team_fitness(&club.lineup, &club.fitness));
+            }
+        }
+        assert!(followed >= 3 && healing > 0, "{followed} clubs followed, {healing} injured");
     }
 }
 
