@@ -2172,11 +2172,32 @@ const MOVED_BYTES: [usize; 2] = [0x106, 0x107];
 /// The human clubs' shirt sales, by slot (`DAT_00a51ea8`).
 const SHIRT_SALES: &str = "0xa51ea8";
 
+/// The squad's will as the season opens (`FUN_0069eeeb`, team +0x958):
+/// ten times its players' mean morale (club +0xb50's players' +0xca, the
+/// record's +0x296) less 900, within nought and 200; a club without
+/// players keeps its own.
+const WILL_PER_MORALE: i32 = 10;
+const WILL_MORALE_OFFSET: i32 = 900;
+
+fn squad_will(records: &Records, country: u16, number: u16) -> Option<i16> {
+    let team = records.team(country, number)?;
+    let morale: Vec<i32> = team.players().iter().filter_map(|&id| records.player(id)).map(|p| i32::from(p.morale())).collect();
+    let count = morale.len() as i32;
+    (count > 0).then(|| {
+        let sum: i32 = morale.iter().sum();
+        ((sum * WILL_PER_MORALE - count * WILL_MORALE_OFFSET) / count).clamp(0, i32::from(WILL_MOST)) as i16
+    })
+}
+
 fn clear_club_seasons(records: &mut Records) {
     let second_season = records.globals.seasons() > 1;
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let will = squad_will(records, country, number);
             let Some(team) = records.team_mut(country, number) else { continue };
+            if let Some(will) = will {
+                team.set_will_base(will);
+            }
             // A club gone up or down starts afresh at +0xfe … +0x107
             // (`FUN_0069da17`).
             if team.get::<u16>(SEASON_FLAGS) & MOVED != 0 {
@@ -2485,6 +2506,24 @@ mod club_season_tests {
             }
         }
         assert!(clubs > 200);
+        // The squad's will (`FUN_0069eeeb`): ten times the mean morale
+        // less 900, truncated, within nought and 200. (The original's
+        // turn moves the morale after it, so the kept save cannot check
+        // the club's own.)
+        let (country, number) = (crate::opponent::played_nations(&ours)[0], 0);
+        let ids = ours.team(country, number).unwrap().players();
+        let n = ids.len() as i32;
+        assert!(n > 1);
+        for (k, &id) in ids.iter().enumerate() {
+            ours.player_mut(id).unwrap().set_morale(if k == 0 { 120 } else { 100 });
+        }
+        assert_eq!(squad_will(&ours, country, number), Some((100 + 200 / n) as i16));
+        clear_club_seasons(&mut ours);
+        assert_eq!(ours.team(country, number).unwrap().will_base(), (100 + 200 / n) as i16);
+        for &id in &ids {
+            ours.player_mut(id).unwrap().set_morale(80);
+        }
+        assert_eq!(squad_will(&ours, country, number), Some(0));
         let (x, y) = (&ours.extras[0], &theirs.extras[0]);
         for (at, len) in HUMAN_SEASON_CLEARED.into_iter().chain(HUMAN_CLUB_ZEROS).chain([(0xb90, 2), (0x2564, 2)]) {
             for k in at..at + len {
