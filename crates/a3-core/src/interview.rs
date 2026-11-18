@@ -15,11 +15,15 @@
 //! by his manner (`FUN_006607d0`), and his mood is kept for the next
 //! time (`FUN_0065fb29`).
 //!
-//! The replica's matches are scored, not played: of the facts only those
-//! of the score, the matchday, the table and the clubs hold here, the
-//! ones of the match's events, the squad and the manager's record stay
-//! off; no referee is drawn, and the match's best and worst men go
-//! unnamed. Only league matches are looked at.
+//! The match's record the facts read is the human's report of it, where
+//! `FUN_00550f29` copied it at the match's end: the half's score, extra
+//! time and penalties, the crowd and the tie hold here; the sides'
+//! chances, cards and marks, the score at the clock's marks and the
+//! weather only over a record the engine wrote, and the replica's matches
+//! are scored by a stand-in that leaves them at nought. The facts of the
+//! squad, the manager's record and the men the record names stay off; no
+//! referee is drawn, and the match's best and worst men go unnamed.
+//! League matches and the national cup's ties are looked at.
 
 use std::io;
 
@@ -138,6 +142,12 @@ pub struct Fixture {
     pub goals: [i16; 2],
     pub kind: u32,
     pub leg: [i16; 2],
+    /// Whether its record holds what the match engine writes into it:
+    /// the sides' counters, the score at the clock's marks and the
+    /// weather. The replica's stand-in scores its matches and leaves
+    /// them at nought, so its fixtures say false and the facts read from
+    /// them stay off.
+    pub engine: bool,
 }
 
 /// The league games just played, in the order their leagues played, each
@@ -155,6 +165,7 @@ pub fn fixtures(records: &Records, played: &[(u16, u8)]) -> Vec<Fixture> {
                 goals: [i16::from(result[0]), i16::from(result[1])],
                 kind: matchday as u32,
                 leg: [0; 2],
+                engine: false,
             });
         }
     }
@@ -253,12 +264,122 @@ fn cup_draws(f: &Fixture, home: bool, random: &mut Random) -> bool {
     if random.below(100) < 15 {
         return true;
     }
+    tie(f, home) < 0 && random.below(3) == 0
+}
+
+/// What the human side leads the tie by (`FUN_00414f22`): the match's
+/// goals, a second leg's with the first leg's (`FUN_00414e9f`).
+fn tie(f: &Fixture, home: bool) -> i16 {
     let mut diff = f.goals[0] - f.goals[1];
     if f.kind & SECOND_LEG != 0 {
         diff += f.leg[1] - f.leg[0];
     }
-    let own = if home { diff } else { -diff };
-    own < 0 && random.below(3) == 0
+    if home { diff } else { -diff }
+}
+
+/// The match's record (`param_2` of `FUN_0066177d`, 0x498 bytes) as the
+/// human's report keeps it: `FUN_00550f29` copies it over the report's
+/// head when the match is over. The sides' blocks stand at +0x5c (home)
+/// and +0x250 (away); the human's is his own.
+#[derive(Clone, Debug, Default)]
+struct Record {
+    bytes: Vec<u8>,
+    own: usize,
+    foe: usize,
+    home: bool,
+    /// The fixture's word for the engine's counters ([`Fixture::engine`]).
+    engine: bool,
+    /// The ground's seats (`FUN_00638335` on +0x28, +0x2a, the copy's
+    /// +0x3c), none for a ground the replica keeps no stadium for.
+    capacity: Option<i32>,
+}
+
+const RECORD: usize = 0x498;
+const HOME_SIDE: usize = 0x5c;
+const AWAY_SIDE: usize = 0x250;
+/// In a side's block: how often its trailing talk ran (+0x34), its plain
+/// chances (+0x39), its straight reds of the other table (+0x3d), its
+/// bookings for the foul kinds 4 and 12 (+0x43), its marks (+0x4e), the
+/// eleven's states (+0x78, a short each), its yellows (+0xd4), second
+/// yellows (+0xdc) and straight reds (+0xde), as `sim::Side` names them.
+const TALKS: usize = 0x34;
+const CHANCES: usize = 0x39;
+const OTHER_REDS: usize = 0x3d;
+const HARD_FOULS: usize = 0x43;
+const MARKS: usize = 0x4e;
+const STATES: usize = 0x78;
+const YELLOWS: usize = 0xd4;
+const SECOND_YELLOWS: usize = 0xdc;
+const STRAIGHT_REDS: usize = 0xde;
+/// The record's flag byte: extra time, penalties (+0x1d); the crowd
+/// (+0x34); the weather (+0x466); the score at the clock's marks, a byte
+/// each side, home first: at the half (+0x12), at 90 (+0x14), 10 (+0x16),
+/// 75 (+0x18) and 85 minutes (+0x1a).
+const FLAGS: usize = 0x1d;
+const EXTRA_TIME: u8 = 0x80;
+const PENALTIES: u8 = 0x40;
+const CROWD: usize = 0x34;
+const WEATHER: usize = 0x466;
+const AT_HALF: usize = 0x12;
+const AT_90: usize = 0x14;
+const AT_10: usize = 0x16;
+const AT_75: usize = 0x18;
+const AT_85: usize = 0x1a;
+
+impl Record {
+    /// The human's report of the fixture, where it is the fixture's.
+    fn of(records: &Records, team: &Team, f: &Fixture, home: bool) -> Option<Self> {
+        let slot = usize::from(team.human()).checked_sub(1)?;
+        let bytes = records.block(&format!("{REPORTS:#x}[{slot}]"))?.get(..RECORD)?.to_vec();
+        let word = |at: usize| i16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        if [(bytes[0], word(2)), (bytes[4], word(6))] != f.sides {
+            return None;
+        }
+        let capacity = crate::opponent::stadium(records, word(0x28) as u16, word(0x2a) as u16).map(|s| s.capacity);
+        let (own, foe) = if home { (HOME_SIDE, AWAY_SIDE) } else { (AWAY_SIDE, HOME_SIDE) };
+        Some(Self { bytes, own, foe, home, engine: f.engine, capacity })
+    }
+
+    fn byte(&self, at: usize) -> u8 {
+        self.bytes.get(at).copied().unwrap_or(0)
+    }
+
+    fn word(&self, at: usize) -> i16 {
+        i16::from_le_bytes([self.byte(at), self.byte(at + 1)])
+    }
+
+    fn long(&self, at: usize) -> i32 {
+        i32::from_le_bytes([self.byte(at), self.byte(at + 1), self.byte(at + 2), self.byte(at + 3)])
+    }
+
+    /// A pair of bytes kept home first, the human side's first.
+    fn pair(&self, at: usize) -> (i16, i16) {
+        let (home, away) = (i16::from(self.byte(at)), i16::from(self.byte(at + 1)));
+        if self.home { (home, away) } else { (away, home) }
+    }
+
+    /// A byte, a short of the human side's block and of the other's.
+    fn own(&self, at: usize) -> u8 {
+        self.byte(self.own + at)
+    }
+
+    fn foe(&self, at: usize) -> u8 {
+        self.byte(self.foe + at)
+    }
+
+    fn own_word(&self, at: usize) -> i16 {
+        self.word(self.own + at)
+    }
+
+    fn foe_word(&self, at: usize) -> i16 {
+        self.word(self.foe + at)
+    }
+
+    /// The human side's eleven whose state `pick` takes (+0x78 or +0x2c8
+    /// over its eleven places).
+    fn states(&self, pick: impl Fn(i16) -> bool) -> usize {
+        (0..11).filter(|&k| pick(self.own_word(STATES + k * 2))).count()
+    }
 }
 
 /// What the dialog shows.
@@ -274,6 +395,7 @@ pub enum Page {
 }
 
 /// What the facts are reckoned from (`FUN_0066177d`'s locals).
+#[derive(Default)]
 struct Match {
     /// The goals, the club's first, and their difference.
     own: i16,
@@ -298,14 +420,100 @@ struct Match {
     goal: i32,
     home: bool,
     rival: i8,
+    /// What the club leads the tie by (`local_10a`), and the other
+    /// club's level (+0x105).
+    tie: i16,
+    opp_level: u8,
+    /// The match's record, where the human's report keeps it.
+    rec: Option<Record>,
 }
 
 /// Whether a fact holds, by its case (the cases built; the rest wait for
-/// the match's events and the records behind them).
+/// the manager, the squad and the men the record names). The cases that
+/// read the engine's counters hold only over a record the engine wrote.
 fn holds(case: u8, m: &Match) -> bool {
     let md = i32::from(m.md);
     let league_day = md > 0 || m.kind & 0x8008_0000 != 0x8_0000;
+    let rec = m.rec.as_ref();
+    let ev = rec.filter(|r| r.engine);
+    let europe = m.kind & 0xff00_0000 == 0xd000_0000;
     match case {
+        // The tie (`local_10a`).
+        0x09 | 0x92 => europe && m.tie > 0,
+        0x9e => europe && m.tie < 0,
+        0xd9 => m.kind & 0x7f00_0000 == 0x5000_0000 && m.kind & 0x300 != 0x300 && m.kind & SECOND_LEG != 0 && m.tie < 0,
+        0x95 => m.kind & 0x7f08_0000 == 0x4008_0000 && m.level == 0 && m.opp_level > 1 && m.tie < 0,
+        // The record as the stand-in writes it too: the half's score,
+        // extra time and penalties, the crowd.
+        0x9b => rec.is_some_and(|r| r.pair(AT_HALF).0 - r.pair(AT_HALF).1 < -1),
+        0xa7 => rec.is_some_and(|r| r.pair(AT_HALF).1 < r.pair(AT_HALF).0),
+        0xe6 => rec.is_some_and(|r| r.pair(AT_HALF) == (0, 2)),
+        0xca => rec.is_some_and(|r| r.byte(FLAGS) & PENALTIES != 0) && m.tie > 0,
+        0xcd => rec.is_some_and(|r| r.byte(FLAGS) & EXTRA_TIME != 0),
+        0xd7 => rec.is_some_and(|r| r.byte(FLAGS) & PENALTIES == 0),
+        0xea => rec.is_some_and(|r| r.byte(FLAGS) & EXTRA_TIME == 0),
+        0x83 => rec.is_some_and(|r| r.capacity.is_some_and(|c| c <= r.long(CROWD))),
+        0xa0 => rec.is_some_and(|r| r.long(CROWD) < 15000),
+        // The engine's: the weather.
+        0x44 => ev.is_some_and(|r| matches!(r.byte(WEATHER), 3 | 11)),
+        0xbc => ev.is_some_and(|r| r.byte(WEATHER) == 4),
+        0xbd => ev.is_some_and(|r| matches!(r.byte(WEATHER), 3 | 8 | 9 | 11)),
+        // The score at the clock's marks.
+        0x8c => ev.is_some_and(|r| r.pair(AT_90).0 < m.own),
+        0x9f => ev.is_some_and(|r| r.pair(AT_10).1 != 0),
+        0xce => ev.is_some_and(|r| r.pair(AT_10).0 == 2),
+        0x7c => md > 0 && ev.is_some_and(|r| r.pair(AT_75).1 == m.opp - 2),
+        0x61 => md > 0 && ev.is_some_and(|r| r.pair(AT_85).0 < r.pair(AT_85).1 && m.own == m.opp && m.opp == r.pair(AT_85).1),
+        // The chances.
+        0x0f => ev.is_some_and(|r| r.own(CHANCES) < 3),
+        0x35 => ev.is_some_and(|r| r.foe(CHANCES) < r.own(CHANCES)),
+        0x40 => ev.is_some_and(|r| i32::from(r.own(CHANCES)) + i32::from(r.foe(CHANCES)) < 5),
+        0x41 => ev.is_some_and(|r| r.foe(CHANCES) > 7),
+        0x60 => ev.is_some_and(|r| r.own(CHANCES) == 1),
+        0x7e => ev.is_some_and(|r| r.own(CHANCES) > 7),
+        0x84 => m.own + m.opp > 3 && ev.is_some_and(|r| i32::from(r.own(CHANCES)) + i32::from(r.foe(CHANCES)) > 11),
+        0xad => ev.is_some_and(|r| r.own(CHANCES) == 0),
+        0xb4 => ev.is_some_and(|r| i32::from(r.foe(CHANCES)) * 3 <= i32::from(r.own(CHANCES)) && r.foe(CHANCES) > 0),
+        0xb5 => ev.is_some_and(|r| r.own(CHANCES) == r.foe(CHANCES)),
+        0xb6 => ev.is_some_and(|r| i32::from(r.own(CHANCES)) * 2 / 5 <= i32::from(m.own)),
+        // The cards.
+        0x10 => ev.is_some_and(|r| r.own_word(YELLOWS) < 3 && r.own_word(STRAIGHT_REDS) + r.foe_word(STRAIGHT_REDS) == 0),
+        0x22 => ev.is_some_and(|r| r.own_word(YELLOWS) > 3 && r.foe_word(YELLOWS) > 3),
+        0x46 => ev.is_some_and(|r| r.own_word(YELLOWS) > 5),
+        0x57 => ev.is_some_and(|r| r.foe_word(YELLOWS) > 4),
+        0xc9 => ev.is_some_and(|r| r.own_word(YELLOWS) == 0),
+        0x5f => ev.is_some_and(|r| r.foe_word(STRAIGHT_REDS) + r.foe_word(SECOND_YELLOWS) == 1),
+        0x7a => ev.is_some_and(|r| r.own_word(STRAIGHT_REDS) + r.own_word(SECOND_YELLOWS) == 2),
+        0x16 => ev.is_some_and(|r| r.own(OTHER_REDS) > 0),
+        0x17 => ev.is_some_and(|r| r.own(OTHER_REDS) > 1),
+        0xd5 => ev.is_some_and(|r| r.own(OTHER_REDS) == 0),
+        0x18 => ev.is_some_and(|r| r.foe(OTHER_REDS) == 0),
+        0xd4 => ev.is_some_and(|r| r.foe(OTHER_REDS) > 1),
+        0x75 => ev.is_some_and(|r| r.own(HARD_FOULS) > 1),
+        // The side's other bytes and marks, the eleven's states.
+        0x8e => ev.is_some_and(|r| r.own(TALKS) == 3),
+        0x98 => ev.is_some_and(|r| r.own(TALKS) == 0),
+        0xb1 => ev.is_some_and(|r| r.own(0x44) == 3),
+        0x8b => ev.is_some_and(|r| r.own(0x45) == 1),
+        0x9c => ev.is_some_and(|r| r.own(0x46) > 2),
+        0x9d | 0xe4 => ev.is_some_and(|r| r.own(0x47) == 3),
+        0xa3 => ev.is_some_and(|r| r.foe(0x48) != 0),
+        0xa4 => ev.is_some_and(|r| r.own(0x49) != 0),
+        0xae => ev.is_some_and(|r| r.own(0x4a) != 0),
+        0xc8 => ev.is_some_and(|r| r.own(0x4b) > 4),
+        0xc1 => ev.is_some_and(|r| r.foe(0x4b) > 4),
+        0x63 => ev.is_some_and(|r| r.own_word(MARKS) & 1 != 0),
+        0x48 => ev.is_some_and(|r| r.own_word(MARKS) & 4 != 0),
+        0x8d => ev.is_some_and(|r| r.own_word(MARKS) & 0x10 != 0),
+        0x67 => ev.is_some_and(|r| r.own_word(MARKS) & 0x20 != 0),
+        0x0b => ev.is_some_and(|r| r.own_word(MARKS) & 0x40 != 0),
+        0x99 => ev.is_some_and(|r| r.foe_word(MARKS) & 8 != 0),
+        0xaa => ev.is_some_and(|r| r.foe_word(MARKS) & 0x20 != 0),
+        0x70 => ev.is_some_and(|r| r.own_word(0x2e) & 4 != 0),
+        0x27 => ev.is_some_and(|r| r.states(|s| s == 2 || s == 13) != 0),
+        0x2a => ev.is_some_and(|r| r.states(|s| s == 10) > 1),
+        0x81 => ev.is_some_and(|r| r.states(|s| s == 10) == 1),
+        0xc6 => ev.is_some_and(|r| r.states(|s| (6..=9).contains(&s)) < 3),
         0x01 => m.diff < 0,
         0x05 => true,
         0x07 => m.diff < 1,
@@ -508,6 +716,9 @@ impl Interview {
             ),
             home,
             rival: own.get::<i8>(RIVAL_AT),
+            tie: tie(&fixture, home),
+            opp_level: other.level(),
+            rec: Record::of(records, own, &fixture, home),
         };
         let m = Match { top: m.md > 1 && u32::from(own.get::<u8>(PLACE_NEXT)) + u32::from(other.get::<u8>(PLACE_NEXT)) < 7, ..m };
         for (fact, &case) in rules.interview.cases.iter().enumerate() {
@@ -859,7 +1070,7 @@ mod tests {
         let rate = |f: Fixture, home: bool| {
             (0..3000u64).filter(|&seed| cup_draws(&f, home, &mut Random::new(seed))).count()
         };
-        let won = Fixture { sides: [(14, 22), (14, 84)], goals: [2, 0], kind: 0x4000_0003, leg: [0; 2] };
+        let won = Fixture { sides: [(14, 22), (14, 84)], goals: [2, 0], kind: 0x4000_0003, ..Fixture::default() };
         let (home_won, away_lost) = (rate(won, true), rate(won, false));
         assert!((300..600).contains(&home_won), "{home_won}");
         assert!((1100..1500).contains(&away_lost), "{away_lost}");
@@ -873,7 +1084,7 @@ mod tests {
     #[test]
     fn a_champions_league_match_draws_an_interview() {
         let rate = |kind: u32| {
-            let f = Fixture { sides: [(14, 22), (14, 84)], goals: [1, 1], kind, leg: [0; 2] };
+            let f = Fixture { sides: [(14, 22), (14, 84)], goals: [1, 1], kind, ..Fixture::default() };
             (0..3000u64).filter(|&seed| champions_draws(&f, &mut Random::new(seed))).count()
         };
         assert!((200..400).contains(&rate(0x5000_0002)), "{}", rate(0x5000_0002));
@@ -882,12 +1093,80 @@ mod tests {
         assert!((700..1000).contains(&second), "{second}");
     }
 
+    /// The record's facts, the human side away: its half's score, the
+    /// penalties and the crowd hold over the stand-in's record as well;
+    /// the chances, the cards and the weather only over the engine's.
+    #[test]
+    fn the_record_decides_the_facts_of_the_match() {
+        let mut bytes = vec![0u8; RECORD];
+        bytes[AT_HALF] = 2;
+        bytes[FLAGS] = PENALTIES;
+        bytes[CROWD..CROWD + 4].copy_from_slice(&12_000i32.to_le_bytes());
+        bytes[WEATHER] = 4;
+        bytes[AWAY_SIDE + CHANCES] = 2;
+        bytes[HOME_SIDE + CHANCES] = 9;
+        bytes[AWAY_SIDE + YELLOWS] = 6;
+        let rec = Record { bytes, own: AWAY_SIDE, foe: HOME_SIDE, home: false, engine: false, capacity: Some(12_000) };
+        let at = |rec: Option<Record>| Match { own: 2, opp: 2, md: -1, kind: 0xd000_0005, tie: -1, rec, ..Match::default() };
+        let stand_in = at(Some(rec.clone()));
+        for (case, holds_now) in [(0xe6, true), (0x9b, true), (0xa7, false), (0xd7, false), (0xca, false), (0x83, true), (0xa0, true), (0x9e, true), (0x09, false)] {
+            assert_eq!(holds(case, &stand_in), holds_now, "{case:#x}");
+        }
+        for case in [0x0f, 0xbc, 0x46, 0x41, 0x18] {
+            assert!(!holds(case, &stand_in), "{case:#x}");
+        }
+        let engine = at(Some(Record { engine: true, ..rec }));
+        for (case, holds_now) in [(0x0f, true), (0xbc, true), (0x46, true), (0x41, true), (0x35, false), (0xc9, false), (0x18, true), (0xb6, true)] {
+            assert_eq!(holds(case, &engine), holds_now, "{case:#x}");
+        }
+        assert!(!holds(0xa0, &at(None)) && !holds(0xd7, &at(None)));
+    }
+
+    /// A's report of Union's last match, as the original's engine wrote
+    /// it: the facts of its chances, yellows and crowd say what the
+    /// Spielbericht's figures say.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_reports_record_gives_the_facts_of_its_match() {
+        let Some((dir, records, rules)) = setup() else { return };
+        let union = records.team(14, 84).unwrap();
+        let report = crate::statistics::match_report(&records, union).expect("A keeps Union's report");
+        let home = report.sides()[0] == (14, 84);
+        let fixture = Fixture {
+            sides: report.sides(),
+            goals: report.goals(),
+            kind: report.competition(),
+            leg: report.first_leg().map_or([0; 2], |l| [i16::from(l[1]), i16::from(l[0])]),
+            engine: true,
+        };
+        let questions = a3_files::interview::load(&dir);
+        let interview = Interview::begin(&records, &rules, questions, (fixture, home), &mut Recent::default(), &mut Random::new(3)).unwrap();
+        let [_, yellows, _, chances] = report.comparison();
+        let (own, foe) = if home { (0, 1) } else { (1, 0) };
+        let mut seen = 0;
+        for (k, &case) in rules.interview.cases.iter().enumerate() {
+            let want = match case {
+                0x35 => chances[foe] < chances[own],
+                0x0f => chances[own] < 3,
+                0x40 => chances[own] + chances[foe] < 5,
+                0xc9 => yellows[own] == 0,
+                0x46 => yellows[own] > 5,
+                0xa0 => report.attendance() < 15000,
+                _ => continue,
+            };
+            assert_eq!(interview.fact(k as i16 + 1), want, "fact {} case {case:#x}", k + 1);
+            seen += 1;
+        }
+        assert!(seen >= 6, "{seen}");
+        assert!(chances[0] + chances[1] > 0, "{chances:?}");
+    }
+
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_big_win_draws_an_interview_now_and_then() {
         let Some((_, mut records, _)) = setup() else { return };
-        let union = Fixture { sides: [(14, 84), (14, 22)], goals: [4, 0], kind: 3, leg: [0; 2] };
-        let others = Fixture { sides: [(14, 22), (14, 20)], goals: [5, 0], kind: 3, leg: [0; 2] };
+        let union = Fixture { sides: [(14, 84), (14, 22)], goals: [4, 0], kind: 3, ..Fixture::default() };
+        let others = Fixture { sides: [(14, 22), (14, 20)], goals: [5, 0], kind: 3, ..Fixture::default() };
         let drawn = (0..200).filter(|&s| due(&records, &[others, union], &mut Random::new(s)).is_some()).count();
         assert!((10..80).contains(&drawn), "{drawn} of 200");
         assert!((0..200).all(|s| due(&records, &[others], &mut Random::new(s)).is_none()));
@@ -906,7 +1185,7 @@ mod tests {
     fn the_interview_asks_and_its_answers_count() {
         let Some((dir, mut records, rules)) = setup() else { return };
         let tables = MoodTables::load(&Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
-        let fixture = Fixture { sides: [(14, 22), (14, 84)], goals: [3, 0], kind: 3, leg: [0; 2] };
+        let fixture = Fixture { sides: [(14, 22), (14, 84)], goals: [3, 0], kind: 3, ..Fixture::default() };
         let mut recent = Recent::default();
         let mut random = Random::new(11);
         let questions = a3_files::interview::load(&dir);

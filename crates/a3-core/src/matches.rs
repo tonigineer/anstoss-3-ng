@@ -541,6 +541,7 @@ fn cup_day(
                 goals: played.goals.map(i16::from),
                 kind: played.kind,
                 leg: played.leg.map(i16::from),
+                engine: false,
             });
             report::write(records, &played, random);
             reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None, half: played.half });
