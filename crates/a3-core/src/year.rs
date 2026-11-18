@@ -418,6 +418,15 @@ const MATCH_VENUE: usize = 0x16;
 /// (`DAT_00b21aa6`, a u16 every four bytes, in the block from 0xb1f860).
 const FINALS_BLOCK: &str = "0xb1f860";
 const FINAL_GROUNDS: usize = 0xb21aa6 - 0xb1f860;
+/// The grounds the finders hand the ticket office, four bytes each — the
+/// country, a byte unused, the club's number — in the same block: the
+/// supercup's by the country's slot (`DAT_00b21a90`), the cup's final's by
+/// slot (`DAT_00b21aa4`), the champion's cup's final's (`DAT_00b21ab8`)
+/// and the German supercup's first four ties' (`DAT_00b21acc`).
+const SUPERCUP_GROUNDS: usize = 0xb21a90 - 0xb1f860;
+const CUP_FINAL_GROUNDS: usize = 0xb21aa4 - 0xb1f860;
+const CHAMPIONS_FINAL_GROUND: usize = 0xb21ab8 - 0xb1f860;
+const LEAGUE_CUP_GROUNDS: usize = 0xb21acc - 0xb1f860;
 
 /// The new season's calendars (`FUN_00775219`'s `FUN_0072dcbf`, then
 /// `FUN_0072f6f3` once the fixtures stand): every human's week planner and
@@ -771,40 +780,10 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             // the two clubs with the home one first, the day and the round.
             // Only a human club keeps a ticket office — the block holds its
             // own fixtures and no other club's, as the week's
-            // `FUN_0077ca2b` already shows. The final on a neutral ground
-            // is left out here as in the international path's own
-            // [`crate::presale::open_international`]; the cup's own final
-            // opens with the rest of its rounds, and the world's days are
-            // not built.
-            let tie = next.filter(|m| {
-                if !human {
-                    return false;
-                }
-                if matches!(m.kind, NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO) {
-                    // The champion's cup's final on neutral ground is the
-                    // only day of its first row noted with round 7; the
-                    // UEFA cup's and the Intertoto's ties are noted with
-                    // none.
-                    return !(m.kind == NEXT_EUROPE && m.round == 7);
-                }
-                if m.kind == NEXT_SUPERCUP {
-                    // The arm gate `FUN_0062bfc9` reads stands in the
-                    // found tie's code slot, where `FUN_0062cd4b`
-                    // stamps the day's family 0x30 — low half nought —
-                    // for every supercup tie; the gate then turns on
-                    // the club's own country. Both arms open a record.
-                    return true;
-                }
-                if m.kind != NEXT_CUP {
-                    return false;
-                }
-                // The final on a neutral ground opens too: `FUN_0062cd4b`
-                // counts its day — id 6 under the 0x80000 flag — with the
-                // count's upper half a nought, so the plain column arm of
-                // `FUN_0077d425` holds for it and the record carries the
-                // final's id at +0x10 like any other round.
-                true
-            });
+            // `FUN_0077ca2b` already shows. The world's days are not
+            // noted, and would open nothing ([`crate::presale::open_international`]).
+            let tie = next.filter(|m| human && matches!(m.kind, NEXT_CUP | NEXT_SUPERCUP | NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO));
+            let listed = tie.and_then(|m| listed_ground(records, &data.calendar, team, &m));
             let Some(team) = records.team_mut(country, number) else { continue };
             team.set_next_country(0);
             team.set_next_number(0);
@@ -823,22 +802,68 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
             if let Some(m) = tie {
                 let own = (team.country(), team.number() as i16);
                 let (home, away) = if m.venue == 0 { (own, m.opponent) } else { (m.opponent, own) };
-                if matches!(m.kind, NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO) {
+                if let Some(ground) = listed {
+                    // `FUN_0062bfc9` pushes 7 for a final and 1 for a
+                    // supercup tie; the stage at +0xb4d never reaches the
+                    // record.
+                    let mark = if m.kind == NEXT_SUPERCUP { crate::presale::LISTED_SUPERCUP } else { crate::presale::LISTED_FINAL };
+                    crate::presale::open_listed(records, i16::from(m.kind), home, away, ground, m.day, mark, today as i32, random, &data.presale);
+                } else if matches!(m.kind, NEXT_EUROPE | NEXT_UEFA | NEXT_INTERTOTO) {
                     crate::presale::open_international(records, i16::from(m.kind), home, away, m.day, m.round, today as i32, random, &data.presale);
                 } else if m.kind == NEXT_SUPERCUP {
-                    // The tie's code slot gate is nought for every kind-4
-                    // note, so the arm turns on the club's own country:
-                    // the German one sells the day's list at the moment's
-                    // constants, every other reads its cup column; the
-                    // stage at +0xb4d never reaches the record, whose
-                    // +0x10 holds the office's flag either way.
-                    let fixture = own.0 == 0x0e;
-                    crate::presale::open_supercup(records, fixture, home, away, m.day, today as i32, random, &data.presale);
+                    crate::presale::open_supercup(records, home, away, m.day, today as i32, random, &data.presale);
                 } else {
                     crate::presale::open_cup(records, home, away, m.day, m.round, today as i32, random, &data.presale);
                 }
             }
         }
+    }
+}
+
+/// The German league's country, whose supercup the finder grounds apart.
+const GERMANY: u8 = 0x0e;
+/// The champion's cup's days whose tie the list builder `FUN_0062cf7f`
+/// marks as a final: the first row's id, its low five bits, from 20 to 24.
+const EUROPEAN_FINALS: std::ops::RangeInclusive<u32> = 0x14..=0x18;
+
+/// Whether the ticket office opens a human club's noted tie over the day's
+/// fixture list, and the ground that list names (`FUN_0062bfc9`'s gate
+/// `local_1ec`, the +8 word of the list's first entry, with `local_1f8`
+/// the ground the finder wrote). The cup's list builder `FUN_0062cd4b`
+/// sets the word for the final on a neutral ground — id 6 under the
+/// 0x80000 flag — and for every supercup day under that flag, the
+/// European one `FUN_0062cf7f` for its days 20 to 24; a German supercup
+/// tie goes over the list whatever the word says. The grounds are the
+/// finders': the cup final's drawn for the country's slot
+/// (`FUN_006d1104`), the champion's cup's own (`FUN_0041e17c`), and the
+/// supercup's (`FUN_006cd7fb`) — the slot's for a neutral day, and for
+/// Germany the Ligapokal's ground of each of its first four ties, the
+/// slot's for its final. The UEFA cup's final, day 22, is not noted.
+pub(crate) fn listed_ground(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, m: &NextMatch) -> Option<(u8, i16)> {
+    let day = usize::try_from(m.day).ok()?;
+    let slot = usize::from(records.countries.slot(usize::from(team.country())));
+    let ground = |at: usize| {
+        records.block(FINALS_BLOCK).and_then(|b| b.get(at..at + 4)).map_or((0, 0), |g| (g[0], i16::from_le_bytes([g[2], g[3]])))
+    };
+    match m.kind {
+        NEXT_EUROPE | NEXT_UEFA => {
+            let listed = EUROPEAN_FINALS.contains(&(calendar.entry(0, day) & 0x1f));
+            (listed && m.kind == NEXT_EUROPE).then(|| ground(CHAMPIONS_FINAL_GROUND))
+        }
+        NEXT_CUP => {
+            let code = fixture(records, calendar, team, day);
+            (code & 0x1f == FINAL as u32 && code & NEUTRAL == NEUTRAL_FINAL).then(|| ground(CUP_FINAL_GROUNDS + slot * 4))
+        }
+        NEXT_SUPERCUP => {
+            let code = fixture(records, calendar, team, day);
+            let tie = (code & MATCHDAY) as usize;
+            if team.country() == GERMANY {
+                Some(ground(if tie < 4 { LEAGUE_CUP_GROUNDS + tie * 4 } else { SUPERCUP_GROUNDS + slot * 4 }))
+            } else {
+                (code & NEUTRAL == NEUTRAL_FINAL).then(|| ground(SUPERCUP_GROUNDS + slot * 4))
+            }
+        }
+        _ => None,
     }
 }
 

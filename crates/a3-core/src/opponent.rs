@@ -34,7 +34,7 @@ pub fn kind(records: &Records, country: u16, level: u8) -> Kind {
 
 /// The nations the game can be played in, whose stadiums it keeps even when
 /// they are not played (`DAT_0089ddd8`).
-const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
+pub(crate) const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
 
 /// A club's stadium (`FUN_00638335`, the two branches the dialogs reach).
 pub fn stadium(records: &Records, country: u16, number: u16) -> Option<&Stadium> {
