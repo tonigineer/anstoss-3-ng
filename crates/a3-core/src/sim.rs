@@ -201,6 +201,9 @@ pub struct Side {
     pub men: u8,
     /// +0x39 (+0x95/+0x289): the count of the side's plain chances.
     pub chances: u8,
+    /// +0x3d (+0x99/+0x28d): the straight reds whose kind came from the
+    /// other table (`FUN_006748ea`, see `straight_red`).
+    pub other_reds: u8,
     /// +0x43 (+0x9f/+0x293): the side's bookings of the foul kinds 4 and
     /// 12, a first card lifting it (`FUN_0065a6b0`, `FUN_0065ab3a`).
     pub hard_fouls: u8,
@@ -214,11 +217,15 @@ pub struct Side {
     pub caution_bits: u16,
     /// +0xdc (+0x138/+0x32c): the side's sendings-off.
     pub reds: i16,
+    /// +0xde (+0x13a/+0x32e): the side's straight reds, the chance
+    /// frame's roll 699 (`straight_red`); the second card counts at +0xdc.
+    pub straight_reds: i16,
     /// The side's cautioned men in order — the live player's +0x57 bit 8
     /// (record +0x25b) the booking raises at the moment; the replica
     /// keeps no live objects, so the names wait here.
     pub booked: [u16; LEDGER_SLOTS],
-    /// The side's men sent off in order — the live +0x57 bit 0x10, and
+    /// The side's men sent off in order — the live +0x57 bit 0x10 (0x20
+    /// for a straight red), and
     /// the man's place in the club's formation +0xa9a cleared; the
     /// eleven the events read (`pitch_eleven`) leaves these places
     /// empty.
@@ -961,6 +968,77 @@ fn booking(m: &mut Match, which: usize, records: &Records, random: &mut Random) 
     book_card(m, which, p.id(), &eleven, kind, booked);
 }
 
+/// The kinds a straight red is drawn from (`FUN_00674825`): the plain
+/// man's `DAT_008a0728` (width 0x66), a man of the places 9 and 10 (live
+/// +3) `DAT_008a0770` (0x52), the second trait bit 2 (live +0x12)
+/// `DAT_008a07b8` (0x79); and `FUN_006748ea`'s `DAT_008a0800` (width 7).
+/// A walk past 0x21 entries names 1.
+const REDS: [i16; 36] = [
+    0, 0, 2, 0, 4, 0, 0, 0, 20, 4, 6, 2, 1, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_FRONT: [i16; 36] = [
+    0, 0, 2, 0, 4, 0, 0, 0, 0, 4, 6, 2, 1, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_HARD: [i16; 36] = [
+    0, 0, 2, 0, 8, 0, 0, 0, 20, 10, 8, 6, 4, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_OTHER: [i16; 36] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+
+/// The chance frame's straight red, roll 699 (`FUN_0065b894`, side two's
+/// `FUN_0065bf36`): only a side with more than nine men; the foul's
+/// candidates (`FUN_00674c12`) and one throw name the man, an empty
+/// place nobody. He lifts the match's bookings, and under
+/// `100 - 6·added` of four hundred his kind comes from the other table
+/// (`FUN_006748ea`, counted at +0x3d), else from his own
+/// (`FUN_00674825`); his live +0x57 takes 0x20, his place empties, the
+/// side's men drop by one and its straight reds rise, a mood above
+/// nought takes 105 of a hundred, and before the 31st minute the foul
+/// mark 0x20 stands. The kind goes only to the news and the books
+/// (`FUN_00674e74`, `FUN_0073ebb6`); seams as at `book_card`'s
+/// sending-off (`FUN_0070497d`, `FUN_00414b25`, `FUN_004131b0`,
+/// `FUN_004fc3c8`, the strengths' `FUN_006f794a` pair, `FUN_006f6c20`,
+/// `FUN_006f6c35`) and the national tie's +0x474 block with its keeper's
+/// stand-in at +0x112.
+fn straight_red(m: &mut Match, which: usize, records: &Records, minute: i16, random: &mut Random) -> Option<i16> {
+    if m.sides[which].men <= 9 {
+        return None;
+    }
+    let eleven = pitch_eleven(m, which, records);
+    let list = foul_candidates(m, which, &eleven, records);
+    if list.is_empty() {
+        return None;
+    }
+    let slot = list[random.below(list.len() as u32) as usize] as usize;
+    let p = eleven.get(slot).filter(|&&id| id != 0).and_then(|&id| records.player(id))?;
+    m.bookings += 1;
+    let other = (random.below(400) as i32) < 100 - 6 * m.added_draw as i32;
+    let kind = if other {
+        foul_kind(&REDS_OTHER, random.below(7), 1)
+    } else if p.traits()[1] & 2 != 0 {
+        foul_kind(&REDS_HARD, random.below(0x79), 1)
+    } else if matches!(p.positions()[0], 9 | 10) {
+        foul_kind(&REDS_FRONT, random.below(0x52), 1)
+    } else {
+        foul_kind(&REDS, random.below(0x66), 1)
+    };
+    let side = &mut m.sides[which];
+    book_in(&mut side.sent_off, p.id());
+    side.men -= 1;
+    side.straight_reds += 1;
+    if 0 < side.morale {
+        side.morale = (side.morale as i32 * 0x69 / 100) as i16;
+    }
+    if other {
+        side.other_reds += 1;
+    }
+    if minute < 31 {
+        side.foul_marks |= 0x20;
+    }
+    Some(kind)
+}
+
 /// The card (`FUN_0065a6b0`, side two's `FUN_0065ab3a`, here with the
 /// sixth parameter nought and the seventh one): a man standing in the
 /// eleven lifts the match's bookings at +0x45a. His first card cautions
@@ -1041,8 +1119,8 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
         attack *= 1.08;
     }
     let defend = w[1][0] + w[1][1];
-    chance_for(m, 0, attack, records, random);
-    chance_for(m, 1, defend, records, random);
+    chance_for(m, 0, attack, clock.minute, records, random);
+    chance_for(m, 1, defend, clock.minute, records, random);
     // What the last minute's booking left (`FUN_00413115`): the match-day
     // state takes it (`FUN_00412cf2` per side, its bit +0x80 saying
     // red), then both marks clear; `FUN_0070c1a9` keeps the live clocks —
@@ -1053,7 +1131,8 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
 
 /// One side's half of the frame: a thousand-wide roll against its share;
 /// past it (or past fifteen goals for the side) no chance, though the
-/// roll's own marks 699 and 900..903 set events off (seams). Inside, the
+/// roll's own marks set events off: 699 the straight red (`straight_red`),
+/// 900..903 the injury (a seam). Inside, the
 /// minute kind under 90 is a plain chance — the quality-one shot runs the
 /// `FUN_00659d2b` event (side two's `FUN_0065a3e1`) and counts twice, once
 /// in the event and once in the frame; every other imperfect shot counts
@@ -1064,13 +1143,18 @@ fn chance_for(
     m: &mut Match,
     which: usize,
     weight: f32,
+    minute: i16,
     records: Option<&Records>,
     random: &mut Random,
 ) {
     let roll = random.below(1000);
     if weight <= roll as f32 || 15 < m.goals[which] {
-        // roll 699: FUN_0065b894; 899 < roll < 904: FUN_0065cd8a (side
-        // one) / FUN_0065bf36, FUN_0065ce98 (side two) — event seams.
+        // roll 699: FUN_0065b894 (side two's FUN_0065bf36), each through
+        // the club slot FUN_0063dd1c — without the save no club to book;
+        // 899 < roll < 904: FUN_0065cd8a / FUN_0065ce98 — the injury, a seam.
+        if let (699, Some(records)) = (roll, records) {
+            straight_red(m, which, records, minute, random);
+        }
         return;
     }
     let kind = random.below(100);
@@ -4404,5 +4488,64 @@ mod tests {
             0 < m.bookings
         });
         assert!(booked, "ninety minutes book a card now and then");
+    }
+
+    #[test]
+    fn roll_699_sends_a_man_straight_off() {
+        use a3_files::an3::Save;
+        // the tables' widths are their throws'; entries nought and one
+        // are empty, the other table names 26..32
+        for (table, width) in [(&REDS, 0x66), (&REDS_FRONT, 0x52), (&REDS_HARD, 0x79), (&REDS_OTHER, 7)] {
+            assert_eq!(table.iter().take(0x22).map(|&x| x as i32).sum::<i32>(), width);
+        }
+        assert_eq!(foul_kind(&REDS, 0, 1), 2);
+        assert_eq!(foul_kind(&REDS, 6, 1), 8);
+        assert_eq!(foul_kind(&REDS_FRONT, 6, 1), 9, "a forward's table has no kind 8");
+        assert_eq!(foul_kind(&REDS_OTHER, 0, 1), 26);
+        assert_eq!(foul_kind(&REDS_OTHER, 6, 1), 32);
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let side = |men| {
+            let mut m = fixture();
+            m.ids = [0, 0, 0, 1];
+            m.sides[0].men = men;
+            m.sides[0].morale = 100;
+            m
+        };
+        // a side of nine draws nothing
+        let mut nine = side(9);
+        let mut random = Random::new(5);
+        let before = random.clone();
+        assert_eq!(straight_red(&mut nine, 0, &records, 10, &mut random), None);
+        assert_eq!(random, before);
+        // a full side's man goes off, early in the match with the mark
+        let mut early = side(11);
+        let kind = straight_red(&mut early, 0, &records, 10, &mut Random::new(5));
+        assert!(matches!(kind, Some(1..=0x21)));
+        let s = &early.sides[0];
+        let man = s.sent_off[0];
+        assert!(man != 0 && saved_eleven(&early, 0, &records).contains(&man));
+        assert_eq!((early.bookings, s.men, s.straight_reds, s.reds), (1, 10, 1, 0));
+        assert_eq!(s.morale, 105);
+        assert_eq!(s.foul_marks, 0x20);
+        assert_eq!(s.booked, [0; LEDGER_SLOTS], "no caution");
+        assert_eq!(pitch_eleven(&early, 0, &records).iter().filter(|&&id| id == 0).count(), 1);
+        let mut late = side(11);
+        straight_red(&mut late, 0, &records, 31, &mut Random::new(5));
+        assert_eq!(late.sides[0].foul_marks, 0, "from the 31st minute no mark");
+        assert_eq!(late.sides[0].sent_off, early.sides[0].sent_off);
+        // the frame's no-chance roll 699 sends off until nine are left,
+        // and without the save nothing happens
+        let mut m = side(11);
+        let mut bare = side(11);
+        let mut random = Random::new(7);
+        let mut other = Random::new(7);
+        for _ in 0..20_000 {
+            chance_for(&mut m, 0, 0.0, 60, Some(&records), &mut random);
+            chance_for(&mut bare, 0, 0.0, 60, None, &mut other);
+        }
+        assert_eq!((m.sides[0].men, m.sides[0].straight_reds, m.bookings), (9, 2, 2));
+        assert_eq!((bare.sides[0].men, bare.bookings), (11, 0));
+        assert_eq!(m.sides[1], side(11).sides[1], "the other side stands untouched");
     }
 }
