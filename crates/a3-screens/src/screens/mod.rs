@@ -11,6 +11,7 @@ pub mod calendar;
 pub mod camp;
 pub mod comparison;
 pub mod contacts;
+pub mod cup_results;
 pub mod discipline;
 pub mod donations;
 pub mod doping;
@@ -289,6 +290,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(interview::InterviewScreen::default()),
         Box::new(match_report::MatchReport::default()),
         Box::new(doping_control::DopingControl),
+        Box::new(cup_results::CupResults::default()),
         Box::new(prematch::Prematch),
         Box::new(halftime::Halftime),
         Box::new(comparison::Comparison::default()),
@@ -371,6 +373,7 @@ pub fn compose(game: &mut Game) {
     doping::compose(&mut game.dialogs);
     doping_report::compose(&mut game.dialogs);
     doping_control::compose(&mut game.dialogs);
+    cup_results::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);

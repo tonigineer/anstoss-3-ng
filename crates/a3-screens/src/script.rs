@@ -3897,7 +3897,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -9903,7 +9903,7 @@ mod tests {
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9947,7 +9947,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -11524,7 +11524,7 @@ mod tests {
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 161 ok";
         let row = game.save_games().iter().position(|s| s.name == "A").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let play = |then: &str| Runner::play(&game, &Script::parse(&format!("{}\n{then}", load.trim_end())).unwrap());
@@ -11836,5 +11836,92 @@ mod tests {
         }
         let cases = records.team(14, 84).unwrap().get::<u8>(0x13e);
         assert_eq!(cases & 0x80 != 0, banned > 0, "{cases:#x}");
+    }
+
+    /// The cup results open after a cup day, behind the table after the
+    /// matchday: A set back before day 59, the first round of Germany's
+    /// cup and of France's, the first legs of Italy's and Spain's, all of
+    /// which the save holds played, Germany's and France's second rounds
+    /// drawn. The results page steps through the four cups on its bar,
+    /// "Nat. Pokal" with the country's letters beside it, the round in the
+    /// caption and its ties in the list: a blue line of the two sides'
+    /// leagues before each new pair of them, an empty one between, each
+    /// tie with both clubs, their leagues — "Amat." for the amateurs — the
+    /// score and how it was decided, Union's red, a first leg's second
+    /// empty. OK turns to the draw of the two second rounds, their legs
+    /// empty; OK again closes it and the day walks on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_cup_results_open_after_a_cup_day() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "cup-results", |records| {
+            records.globals.set_day(58);
+            if let Some(slot) = records.human_slot(0)
+                && let Some(planner) = records.planners.get_mut(slot)
+            {
+                for day in 58..=60 {
+                    if matches!(planner.entry(day)[0], 0x19 | 0x0b) {
+                        planner.set_entry(day, [0; a3_core::records::PLANNER_ENTRY]);
+                    }
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\n\
+                    on 41 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\n\
+                    until dialog 161";
+        let dialog = &game.dialogs[&161];
+        let list = control(dialog, 2763).unwrap();
+        let bar = control(dialog, 4778).unwrap();
+        type Row = (String, Option<[u8; 3]>, bool);
+        let shown = |more: &str| -> Option<(String, String, Vec<Row>, (i32, i32))> {
+            let runner = on_save(&game, "cup-results", &format!("{play}\n{more}"))?;
+            let view = runner.host.view();
+            let text = |id: u16| view.text(control(dialog, id).unwrap()).to_owned();
+            let l = view.list(list).unwrap();
+            let rows = (0..l.rows.len()).map(|i| (l.rows[i].clone(), l.inks[i], l.spans[i])).collect();
+            let range = view.value(bar).unwrap().range;
+            Some((text(9924), text(5656), rows, range))
+        };
+        let Some((caption, cup, rows, range)) = shown("") else { return };
+        let title = |page: u16, round: u16, country: u16| {
+            format!("{} {} {} {}", game.text(page), game.text(round), game.text(0xb52), game.world.nation(country))
+        };
+        let label = |letters: &str| format!("{} {letters}", game.text(0x616));
+        assert_eq!(caption, title(0xb4c, 0xb45, 14), "Ergebnisse Runde 1 Nationaler Pokal Deutschland");
+        assert_eq!((cup, range), (label("DEU"), (0, 3)), "four cups");
+        let blue = Some([0, 0, 255]);
+        assert_eq!(rows[0], ("1. Bundesliga gegen 1. Bundesliga".into(), blue, true));
+        let union = "1.FC Union Berlin (1. Liga)\t- 1.FC Köln (1. Liga)\t4\t:1\t\t\t";
+        assert!(rows.contains(&(union.into(), Some([255, 0, 0]), false)));
+        let at = rows.iter().position(|r| r.0 == "1. Bundesliga gegen 2. Bundesliga").unwrap();
+        assert_eq!(rows[at - 1], (String::new(), None, false), "an empty line between");
+        for tie in [
+            "Borussia Dortmund (1. Liga)\t- SV 07 Elversberg (2. Liga)\t0\t:1\t\t\tn.V.",
+            "Bonner SC (Amat.)\t- RB Leipzig (1. Liga)\t0\t:6\t\t\t",
+            "TSV 1860 München (3. Liga)\t- VfL Wolfsburg (1. Liga)\t3\t:5\t\t\tn.E.",
+        ] {
+            assert!(rows.iter().any(|r| r.0 == tie), "{tie:?}");
+        }
+        // The bar's next cup, and its last: a first leg.
+        let Some((caption, cup, ..)) = shown("now slide 4778 1") else { return };
+        assert_eq!((caption, cup), (title(0xb4c, 0xb45, 20), label("FRA")));
+        let Some((caption, _, rows, _)) = shown("now slide 4778 3") else { return };
+        assert_eq!(caption, title(0xb4c, 0xb45, 63));
+        assert!(rows.iter().any(|r| r.0 == "FC Barcelona (1. Liga)\t- CA Osasuna (1. Liga)\t0\t:1\t\t\t"));
+        // OK: the draw of the two second rounds.
+        let Some((caption, cup, rows, range)) = shown("now press 2762") else { return };
+        assert_eq!((caption, cup, range), (title(0xb43, 0xb46, 14), label("DEU"), (0, 1)));
+        let drawn = "FC Bayern München (1. Liga)\t- 1.FC Heidenheim (1. Liga)\t\t\t\t\t";
+        assert!(rows.contains(&(drawn.into(), None, false)));
+        let Some((caption, ..)) = shown("now press 2762\nnow slide 4778 1") else { return };
+        assert_eq!(caption, title(0xb43, 0xb46, 20));
+        let on = format!("{play}\nnow press 2762\nnow press 2762\nuntil day 60");
+        let Some(runner) = on_save(&game, "cup-results", &on) else { return };
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 60);
+        assert_eq!(runner.log.iter().filter(|l| *l == "screen 161").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

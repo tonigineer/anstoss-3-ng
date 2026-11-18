@@ -239,6 +239,9 @@ pub mod dialogs {
     /// The doping control after the match, `CDopingAusgabe`
     /// (`IDD_DOPING_AUSGABE`).
     pub const DOPING_CONTROL: u16 = 41;
+    /// The cup results after the matchday, `CPokalNachSpieltag`
+    /// (`IDD_POKAL_NACH_DEM_SPIEL`).
+    pub const CUP_RESULTS: u16 = 161;
 }
 
 use self::dialogs::*;
@@ -418,6 +421,9 @@ pub enum Args {
     /// The doping control of a human's club after the match
     /// (`DAT_00a2e0b8`).
     Doping(crate::doping_control::Control),
+    /// The day's national cups for the cup results (the block at
+    /// `0xa3b488`).
+    CupResults(crate::cup_results::CupDay),
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -1207,6 +1213,7 @@ impl Cycle {
                 let mut tables = Vec::new();
                 let mut reported = Vec::new();
                 let mut controls = Vec::new();
+                let mut cups = None;
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1305,6 +1312,9 @@ impl Cycle {
                             // The doping controls of the humans' clubs
                             // (event 0xcb each, `FUN_005dae5f`).
                             controls = played.controls.clone();
+                            // The day's cup rounds, their next drawn
+                            // (`FUN_0062eac3`, event 0xc9).
+                            cups = crate::cup_results::day(records, &self.data.calendar, season.day);
                             // The youth leagues play beside them
                             // (`FUN_0062a959`, after the day's matches).
                             crate::youth_league::play_day(
@@ -1397,6 +1407,10 @@ impl Cycle {
                     }
                     let count = tables.len() as u8;
                     self.ask(Request::with(TABLES_AFTER, Args::Tables { leagues, count }))?;
+                }
+                // The cup results behind it (event 0xc9, `FUN_0052b2bf`).
+                if let Some(cups) = cups {
+                    self.ask(Request::with(CUP_RESULTS, Args::CupResults(cups)))?;
                 }
                 // The interview behind it (event 0x126, dialog 383): the
                 // dialog plays it through; the reporter keeps his mood.

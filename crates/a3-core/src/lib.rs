@@ -13,6 +13,7 @@ pub mod computer_training;
 pub mod contract;
 pub mod crowd;
 pub mod cup_draw;
+pub mod cup_results;
 pub mod cycle;
 pub mod doping;
 pub mod doping_control;
