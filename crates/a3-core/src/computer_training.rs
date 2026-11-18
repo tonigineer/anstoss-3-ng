@@ -429,7 +429,7 @@ fn field(pieces: u16, shift: u16, mask: u16, step: i32) -> u16 {
 
 /// A training step on condition or freshness: a hundredth each, the
 /// word wraps, then sits within 0 and 10000 (`FUN_00411130`).
-fn train(value: i16, steps: i16) -> i16 {
+pub(crate) fn train(value: i16, steps: i16) -> i16 {
     let value = value.wrapping_add(steps.wrapping_mul(100));
     value.clamp(0, 10000)
 }

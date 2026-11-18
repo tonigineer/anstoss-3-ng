@@ -11775,13 +11775,12 @@ mod tests {
     /// the match report: the club in the caption, two of Union's men by
     /// name, their A samples negative — nobody in A took anything — and
     /// nothing behind. With every man of Union's given a dose that can be
-    /// traced, the same control finds them out: a positive A sample, the
-    /// B sample's verdict behind it, and a banned man's long absence a
-    /// doping ban, his club's case counted.
+    /// traced in the match's week, the same control finds them out: a
+    /// positive A sample, the B sample's verdict behind it, and a banned
+    /// man's long absence a doping ban, his club's case counted.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_doping_control_reports_after_the_match() {
-        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
         let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
@@ -11815,15 +11814,21 @@ mod tests {
         }
         let day = runner.host.state().season.as_ref().unwrap().day;
         drop(runner);
-        let root = patched(&dir, "A", "doped-union", |records| {
-            for id in records.team(14, 84).unwrap().players() {
-                let r = records.player_mut(id).unwrap();
-                r.set_doping(0x80 | 1 << 2 | 2);
+        // A dose wears off at the main country's club day, the second
+        // weekday's (`FUN_006ff7ef`): the men take theirs behind the last
+        // one before the match.
+        let dosed = day - (day - 2).rem_euclid(7);
+        let week = handlers.replace("until dialog 41", &format!("until day {dosed}"));
+        let Some(mut runner) = on_save(&game, "A", &week) else { return };
+        {
+            let mut state = runner.host.state();
+            let records = state.records.as_mut().unwrap();
+            for &id in &union {
+                records.player_mut(id).unwrap().set_doping(0x80 | 1 << 2 | 2);
             }
-        });
-        let mut game = Game::load(&root).unwrap();
-        compose(&mut game);
-        let Some(runner) = on_save(&game, "doped-union", handlers) else { return };
+        }
+        let result = runner.run(&Script::parse("until dialog 41").unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
         let state = runner.host.state();
         assert_eq!(state.season.as_ref().unwrap().day, day, "the same control");
         let records = state.records.as_ref().unwrap();
@@ -11928,7 +11933,7 @@ mod tests {
         // OK: the draw of the two second rounds.
         let Some((caption, cup, rows, range)) = shown("now press 2762") else { return };
         assert_eq!((caption, cup, range), (title(0xb43, 0xb46, 14), label("DEU"), (0, 1)));
-        let drawn = "Hamburger SV (1. Liga)\t- 1.FSV Mainz 05 (1. Liga)\t\t\t\t\t";
+        let drawn = "FC Augsburg (1. Liga)\t- FC Bayern München (1. Liga)\t\t\t\t\t";
         assert!(rows.contains(&(drawn.into(), None, false)));
         let Some((caption, ..)) = shown("now press 2762\nnow slide 4778 1") else { return };
         assert_eq!(caption, title(0xb43, 0xb46, 20));
@@ -11942,10 +11947,11 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player out of the day's news (text 861), which the replica does not
-    /// build — its draws part there. With the generator at 12359/67901
+    /// build — its draws part there. With the generator at 12349/67918
     /// (the court's draw of day 67, the men's own training rolls, the
-    /// week end's look at its last day's matches and each matchday's own
-    /// two lists move the replica's later ones) its first comes from a
+    /// week end's look at its last day's matches, each matchday's own
+    /// two lists and the resting world's rolls move the replica's later
+    /// ones) its first comes from a
     /// training: player event 4, the brawl of text 7, in the same window, its caption "Ereignis", Union's manager and the
     /// club as the original's (the caption bar matched pixel for pixel),
     /// the ball beside it; OK closes it and the day goes on.
@@ -11960,7 +11966,7 @@ mod tests {
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12359 67901\n{handlers}until dialog 51");
+        let then = format!("now random 12349 67918\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
@@ -12169,10 +12175,16 @@ mod tests {
     /// What the replica still reckons otherwise than the original over
     /// Probe1's week, each the matter of a part of its own: the computer
     /// clubs' injuries breaking out and healing (daily-reckoning-injuries)
-    /// and their condition and freshness
-    /// (daily-reckoning-computer-fitness). The human club's money agrees,
-    /// its season tickets selling day by day.
+    /// and the condition and freshness their men's matches, friendlies
+    /// and tournament games leave (daily-reckoning-match-wear). The human
+    /// club's money agrees, its season tickets selling day by day.
     const STILL_APART: [&str; 3] = ["injury", "condition", "freshness"];
+
+    /// What of [`STILL_APART`] parts only where a match did: the men of a
+    /// club that played one that day by the original's dumps, and the men
+    /// whose injury parts. Everywhere else the computer clubs' week, their
+    /// days off and the rest of the world's agree.
+    const MATCH_WEAR: [&str; 2] = ["condition", "freshness"];
 
     /// The oracle's week from Probe1 (`tools/oracle/check.sh` step 1,
     /// `tools/oracle/scripts/from-save.txt`, a dump after each day's close)
@@ -12183,9 +12195,11 @@ mod tests {
     /// after starts from the generator the original's dump of the day
     /// before closed with, so a day's draws are held against the
     /// original's even where an earlier day's unported ones would have
-    /// moved them. The load agrees in everything compared, and the human
-    /// club's squad and money keep agreeing day by day; what still parts
-    /// is [`STILL_APART`].
+    /// moved them, and from its men's condition, freshness and injuries.
+    /// The load agrees in everything compared, and the human club's squad
+    /// and money keep agreeing day by day; what still parts is
+    /// [`STILL_APART`], its fitness only at the clubs that played
+    /// ([`MATCH_WEAR`]).
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
     fn probe1s_week_against_the_oracles_dumps() {
@@ -12263,9 +12277,27 @@ mod tests {
             assert!(loaded.is_empty(), "the load parts from the original's: {loaded:?}");
         }
         let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+        let id_of = |entry: &String| entry.split(':').next().and_then(|id| id.parse::<u16>().ok()).unwrap();
         for day in 36..=42u16 {
             let before = dump(day - 1);
             let (s1, s2) = (word(&before, "0x89dcc0"), word(&before, "0x89dcc4"));
+            let before = Records::from_save(before).unwrap();
+            // The matters still apart start the day as the original's:
+            // the men's condition, freshness and injuries, so a day's
+            // draws behind a man who is out in one game and not in the
+            // other stay in line, and what parts is the day's own.
+            {
+                let mut state = runner.host.state();
+                let records = state.records.as_mut().unwrap();
+                for (r, o) in records.players.iter_mut().zip(&before.players) {
+                    r.set_condition(o.condition());
+                    r.set_freshness(o.freshness());
+                    r.set_injured_on(o.injured_on());
+                    r.set_injured_to(o.injured_to());
+                    r.set_injury_kind(o.injury_kind());
+                    r.set_knocked(o.knocked());
+                }
+            }
             let result = runner.run(&Script::parse(&format!("now random {s1} {s2}\nuntil day {day}")).unwrap());
             result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
             let oracle = Records::from_save(dump(day)).unwrap();
@@ -12273,8 +12305,48 @@ mod tests {
             let replica = state.records.as_ref().unwrap();
             assert_eq!(replica.globals.day(), oracle.globals.day());
             assert!(oracle.humans().any(|m| oracle.team(m.country(), m.team()).is_some_and(|t| t.humans() != [0, 0])));
-            for (what, list) in apart(replica, &oracle) {
+            // The clubs that played the day: under a match's wear
+            // (`FUN_006f8b3f`) a man's third freshness word moves to
+            // something not nought, which nothing else of a computer
+            // club's day does — the week's bulk sets it to nought, the
+            // days off move the first word only.
+            let mut played = std::collections::BTreeSet::<(u16, u16)>::new();
+            let mut club_of = std::collections::BTreeMap::<u16, (u16, u16)>::new();
+            for country in 1..0x75u16 {
+                for number in 0..oracle.countries.team_count(usize::from(country)).max(0) as u16 {
+                    let Some(team) = oracle.team(country, number) else { continue };
+                    let worn = |id: &u16| match (before.player(*id), oracle.player(*id)) {
+                        (Some(b), Some(a)) => a.freshness()[2] != 0 && a.freshness()[2] != b.freshness()[2],
+                        _ => false,
+                    };
+                    if team.players().iter().any(worn) {
+                        played.insert((country, number));
+                    }
+                    club_of.extend(team.players().into_iter().map(|id| (id, (country, number))));
+                }
+            }
+            // On the third weekday the clubs of the countries not played
+            // rest up to bounds that each club moves by a roll of ten and
+            // of five (`FUN_0078680a`); those rolls come behind the day's
+            // matches, whose engine draws are not the replica's yet, so
+            // where a man stands near his bound his rest may part.
+            if (day - 1) % 7 == 2 {
+                played.extend(club_of.values().filter(|(country, _)| !oracle.globals.played(*country as i16)));
+            }
+            let parted = apart(replica, &oracle);
+            let injured: std::collections::BTreeSet<u16> = parted.get("injury").into_iter().flatten().map(id_of).collect();
+            for (what, list) in parted {
                 assert!(STILL_APART.contains(&what), "day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
+                if MATCH_WEAR.contains(&what) {
+                    let unplayed: Vec<&String> = list
+                        .iter()
+                        .filter(|entry| {
+                            let id = id_of(entry);
+                            !injured.contains(&id) && !club_of.get(&id).is_some_and(|club| played.contains(club))
+                        })
+                        .collect();
+                    assert!(unplayed.is_empty(), "day {day}, {what}: {} apart whose club played nothing, {:?}", unplayed.len(), &unplayed[..unplayed.len().min(5)]);
+                }
                 eprintln!("day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(3)]);
                 *seen.entry(what).or_default() += 1;
             }
