@@ -39,10 +39,16 @@
 //! filled from below it. Country 0x3f as the main country
 //! (`FUN_006b122e`) sends three or four of its first league down, fills
 //! it with the second's top but its reserve teams, and fills the second
-//! with three drawn from outside the leagues.
+//! with three drawn from outside the leagues. Country 0x10 as the main
+//! country (`FUN_006af8fd`) moves four leagues in one: each lower
+//! league's top two (the fourth's top three) go up with the winner of its
+//! play-off final, the first's bottom three (four with a fourth sent
+//! down, the final's loser then up too) down, the second's and third's
+//! bottom three and four down, the fourth's last out and one drawn from
+//! outside the leagues.
 //!
-//! Left out: the other countries' own rules (`FUN_006af8fd`,
-//! `FUN_006b1c01`, `FUN_006b1920`), which the replica's own leagues fall back to the plain
+//! Left out: the other countries' own rules (`FUN_006b1c01`,
+//! `FUN_006b1920`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
 //! booked moves set off besides — the news (`FUN_006143d2`); the
 //! European places' flags. Each club's record of moves (`FUN_00726382`,
@@ -503,6 +509,162 @@ fn move_far(
     [next0, next1]
 }
 
+/// The play-offs (`0x1baa1e0`; the block holds the object from its
+/// +0x20): ten records of 0x1d0 — the country, the level it plays up into
+/// the next one above, whether it is a knock-out, its pairings of 0xe from
+/// +0x36, the final the third — and their count at the object's +0x1240.
+const PLAYOFFS: &str = "0x1baa1e0";
+const PLAYOFF: usize = 0x1d0;
+const PLAYOFF_COUNT: usize = 0x1240 - 0x20;
+const PLAYOFF_LEVEL: usize = 2;
+const PLAYOFF_KNOCKOUT: usize = 8;
+const PLAYOFF_PAIRINGS: usize = 0x36;
+const PLAYOFF_FINAL: usize = 2;
+const ENGLAND: u16 = 0x10;
+
+/// The winner and the loser of a country's play-off final for a level
+/// (`FUN_006d8d18`, `FUN_006d8d6e`: its record by `FUN_006d86ce`, the
+/// pairing's home side won when its +0xd is 0, `FUN_006d857c`,
+/// `FUN_006d85f7`). None without the record, or for a play-off played as
+/// a group (`FUN_006d75a9`, the table's first), which the country's rule
+/// does not meet.
+fn playoff_final(block: &[u8], country: u16, level: u8) -> Option<(i16, i16)> {
+    let word = |at: usize| block.get(at..at + 2).map(|w| i16::from_le_bytes([w[0], w[1]]));
+    let count = usize::try_from(word(PLAYOFF_COUNT)?).unwrap_or(0);
+    let rec = (0..count)
+        .map(|k| k * PLAYOFF)
+        .find(|&rec| word(rec) == Some(country as i16) && word(rec + PLAYOFF_LEVEL) == Some(i16::from(level)))?;
+    let knockout = block.get(rec + PLAYOFF_KNOCKOUT..rec + PLAYOFF_KNOCKOUT + 4)?;
+    if knockout.iter().all(|&b| b == 0) {
+        return None;
+    }
+    let tie = rec + PLAYOFF_PAIRINGS + PLAYOFF_FINAL * crate::opponent::PAIRING;
+    let (home, away) = (word(tie + 2)?, word(tie + 6)?);
+    // The original keeps the byte of each side.
+    let (home, away) = (home & 0xff, away & 0xff);
+    Some(if *block.get(tie + 0xd)? == 0 { (home, away) } else { (away, home) })
+}
+
+/// Country 0x10's four leagues as the main country (`FUN_006af8fd`). A
+/// season the replica played has no play-offs yet: their best placed then
+/// goes up as the winner, the next as the loser.
+fn england(records: &Records, moves: &mut Moves, order_of: &mut Orders) -> Option<[Vec<i16>; 4]> {
+    let mut leagues = Vec::new();
+    for level in 0..4 {
+        leagues.push(Standing::of(&closed(records, ENGLAND, level)?));
+    }
+    let leagues: [Standing; 4] = leagues.try_into().ok()?;
+    let finals = [1u8, 2, 3].map(|level| {
+        records.block(PLAYOFFS).and_then(|b| playoff_final(b, ENGLAND, level)).unwrap_or_else(|| {
+            let first = if level == 3 { 3 } else { 2 };
+            let club = |k: usize| leagues[usize::from(level)].clubs.get(k).map_or(0, |c| c.0);
+            (club(first), club(first + 1))
+        })
+    });
+    let pool: Vec<i16> = (0..records.countries.team_count(usize::from(ENGLAND)).max(0))
+        .filter(|&k| level(records, ENGLAND, k) == OUTSIDE)
+        .collect();
+    Some(move_england(&leagues, &finals, &pool, moves, order_of))
+}
+
+/// The rule itself over the four tables top down, each league's clubs
+/// after the one above's as the original lays them out: the first's last
+/// three go down and its fourth last when sent down; the second's top two
+/// and its play-off's winner fill its places, the loser too when four went
+/// down (the original books the slot after it, never written, as come up:
+/// 0x6afe02, left out). The second keeps the clubs from above, its
+/// play-off's clubs not gone up, then its own on till three short of its
+/// size or a club sent down, the rest down; the third's top two and its
+/// play-off's winner fill it, the loser while it is short. The third
+/// keeps the like and its own on but its last four, which go down; the
+/// fourth's top three and its play-off's winner fill it, the loser while
+/// it is short. The fourth keeps the four from above, its play-off's
+/// clubs not gone up and its own but the last, which goes out, and fills
+/// from outside the leagues in the drawn order, each booked as come up.
+fn move_england(
+    leagues: &[Standing; 4],
+    finals: &[(i16, i16); 3],
+    pool: &[i16],
+    moves: &mut Moves,
+    order_of: &mut Orders,
+) -> [Vec<i16>; 4] {
+    let n = leagues.each_ref().map(|l| l.clubs.len());
+    let rows: Vec<(i16, bool)> = leagues.iter().flat_map(|l| l.clubs.iter().copied()).collect();
+    let team = |p: usize| rows.get(p).map_or(0, |r| r.0);
+    let sent = |p: usize| rows.get(p).is_some_and(|r| r.1);
+    let (s1, s2, s3) = (n[0], n[0] + n[1], n[0] + n[1] + n[2]);
+    let end = s3 + n[3];
+    // The last two of a league's next clubs, those its play-off sent up.
+    let gone_up = |list: &[i16], size: usize| [size.wrapping_sub(2), size.wrapping_sub(1)].map(|k| list.get(k).copied());
+    let mut next: [Vec<i16>; 4] = Default::default();
+    let mut down = 0;
+    for place in (n[0].saturating_sub(4)..n[0]).rev() {
+        if sent(place) || place + 3 >= n[0] {
+            next[1].push(team(place));
+            down += 1;
+            moves.relegate(0, team(place));
+        }
+    }
+    next[0].extend((0..n[0].saturating_sub(if down == 4 { 4 } else { 3 })).map(team));
+    for p in [s1, s1 + 1] {
+        next[0].push(team(p));
+        moves.promote(0, team(p));
+    }
+    let (won, lost) = finals[0];
+    next[0].push(won);
+    moves.promote(0, won);
+    if down == 4 {
+        next[0].push(lost);
+    }
+    let up = gone_up(&next[0], n[0]);
+    next[1].extend((s1 + 2..s1 + 6).map(team).filter(|&t| !up.contains(&Some(t))));
+    let mut p = s1 + 6;
+    while (next[1].len() as isize) < n[1] as isize - 3 && !sent(p) {
+        next[1].push(team(p));
+        p += 1;
+    }
+    for p in p..s2 {
+        next[2].push(team(p));
+        moves.relegate(1, team(p));
+    }
+    for (level, top, from) in [(1, 2, s2), (2, 3, s3)] {
+        for p in from..from + top {
+            next[level].push(team(p));
+            moves.promote(level, team(p));
+        }
+        let (won, lost) = finals[level];
+        next[level].push(won);
+        moves.promote(level, won);
+        if next[level].len() != n[level] {
+            next[level].push(lost);
+            moves.promote(level, lost);
+        }
+        let up = gone_up(&next[level], n[level]);
+        let below: Vec<i16> = (from + top..from + top + 4).map(team).filter(|&t| !up.contains(&Some(t))).collect();
+        next[level + 1].extend(below);
+        if level == 1 {
+            next[2].extend((s2 + 6..s3.saturating_sub(4)).map(team));
+            for p in s3.saturating_sub(4).max(s2 + 6)..s3 {
+                next[3].push(team(p));
+                moves.relegate(2, team(p));
+            }
+        }
+    }
+    next[3].extend((s3 + 7..end.saturating_sub(1)).map(team));
+    for p in end.saturating_sub(1).max(s3 + 7)..end {
+        moves.relegate(3, team(p));
+    }
+    let order = order_of(pool.len(), None);
+    for &k in &order {
+        if next[3].len() >= n[3] {
+            break;
+        }
+        next[3].push(pool[k]);
+        moves.promote(3, pool[k]);
+    }
+    next
+}
+
 /// A club of the Regionalligen's pool (`FUN_0068fb1e`): its region and
 /// how far south it lies (team +0x924's bit, team +0x310).
 #[derive(Clone, Copy)]
@@ -801,6 +963,8 @@ pub fn draw_with(records: &mut Records, order_of: &mut Orders) -> Drawn {
             germany(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else if moves_two(country, main) {
             two_leagues(records, country, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
+        } else if country == ENGLAND && country == main {
+            england(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else if country == FAR && country == main {
             far_leagues(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else {
@@ -1300,6 +1464,90 @@ mod tests {
         assert_eq!(next1, [9, 10, 11, 102, 105, 106, 107, 108, 109, 300, 301, 303]);
     }
 
+    /// Country 0x10's four leagues as the main country (`FUN_006af8fd`):
+    /// the first's last three down, the second's top two and its
+    /// play-off's winner up; with a fourth sent down four down and the
+    /// loser up as well, unbooked; the third's bottom four and the
+    /// fourth's last out, one drawn from outside.
+    #[test]
+    fn country_0x10_moves_four_leagues_as_the_original() {
+        let standing = |base: i16, size: usize, sent: &[usize]| Standing {
+            first_down: size - 3,
+            clubs: (0..size).map(|k| (base + k as i16, sent.contains(&k))).collect(),
+        };
+        let leagues = [standing(0, 20, &[]), standing(100, 24, &[]), standing(200, 24, &[]), standing(300, 24, &[])];
+        let finals = [(104, 105), (203, 202), (305, 303)];
+        let pool = [400, 401, 402, 403, 404, 405];
+        let mut moves = Moves::default();
+        let mut draws = Vec::new();
+        let next = move_england(&leagues, &finals, &pool, &mut moves, &mut |n, k| {
+            draws.push((n, k));
+            (0..n).rev().collect()
+        });
+        let range = |r: std::ops::Range<i16>| r.collect::<Vec<i16>>();
+        let mut want0 = range(0..17);
+        want0.extend([100, 101, 104]);
+        assert_eq!(next[0], want0);
+        let mut want1 = vec![19, 18, 17, 102, 103, 105];
+        want1.extend(range(106..121));
+        want1.extend([200, 201, 203]);
+        assert_eq!(next[1], want1);
+        let mut want2 = vec![121, 122, 123, 202, 204, 205];
+        want2.extend(range(206..220));
+        want2.extend([300, 301, 302, 305]);
+        assert_eq!(next[2], want2);
+        let mut want3 = vec![220, 221, 222, 223, 303, 304, 306];
+        want3.extend(range(307..323));
+        want3.push(405);
+        assert_eq!(next[3], want3);
+        assert_eq!(moves.down, [vec![19, 18, 17], vec![121, 122, 123], vec![220, 221, 222, 223], vec![323]]);
+        assert_eq!(moves.up, [vec![100, 101, 104], vec![200, 201, 203], vec![300, 301, 302, 305], vec![405]]);
+        assert_eq!(draws, [(6, None)]);
+        assert!(moves.forced.iter().all(Vec::is_empty), "nothing booked as sent down");
+        // The fourth last sent down: four go down, the loser comes up too,
+        // booked as nothing; the second keeps neither play-off club.
+        let leagues = [standing(0, 20, &[16]), standing(100, 24, &[]), standing(200, 24, &[]), standing(300, 24, &[])];
+        let mut moves = Moves::default();
+        let next = move_england(&leagues, &finals, &pool, &mut moves, &mut |n, _| (0..n).collect());
+        let mut want0 = range(0..16);
+        want0.extend([100, 101, 104, 105]);
+        assert_eq!(next[0], want0);
+        assert_eq!(moves.down[0], [19, 18, 17, 16]);
+        assert_eq!(moves.up[0], [100, 101, 104]);
+        let mut want1 = vec![19, 18, 17, 16, 102, 103];
+        want1.extend(range(106..121));
+        want1.extend([200, 201, 203]);
+        assert_eq!(next[1], want1);
+        assert_eq!(next[3].last(), Some(&400));
+    }
+
+    /// The play-off final's winner and loser by its record (`FUN_006d86ce`,
+    /// `FUN_006d857c`, `FUN_006d85f7`): the away side when +0xd is set.
+    #[test]
+    fn a_playoff_final_names_its_winner() {
+        let mut block = vec![0u8; PLAYOFF_COUNT + 4];
+        let put = |b: &mut [u8], at: usize, v: i16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        for (k, level, won_away) in [(0, 2, false), (1, 1, true)] {
+            let rec = k * PLAYOFF;
+            put(&mut block, rec, 0x10);
+            put(&mut block, rec + PLAYOFF_LEVEL, level);
+            block[rec + PLAYOFF_KNOCKOUT] = 1;
+            let tie = rec + PLAYOFF_PAIRINGS + PLAYOFF_FINAL * crate::opponent::PAIRING;
+            put(&mut block, tie + 2, 10 + level);
+            put(&mut block, tie + 6, 20 + level);
+            block[tie + 0xd] = u8::from(won_away);
+        }
+        put(&mut block, PLAYOFF_COUNT, 2);
+        assert_eq!(playoff_final(&block, 0x10, 1), Some((21, 11)));
+        assert_eq!(playoff_final(&block, 0x10, 2), Some((12, 22)));
+        assert_eq!(playoff_final(&block, 0x10, 3), None, "no record");
+        assert_eq!(playoff_final(&block, 0x18, 1), None);
+        block[PLAYOFF + PLAYOFF_KNOCKOUT] = 0;
+        assert_eq!(playoff_final(&block, 0x10, 1), None, "a group's table is not built");
+        put(&mut block, PLAYOFF_COUNT, 1);
+        assert_eq!(playoff_final(&block, 0x10, 2), Some((12, 22)));
+    }
+
     /// Country 0x1c moves its two leagues as 0x14 does, but only as the
     /// main country (`FUN_006af7a5`); other countries never.
     #[test]
@@ -1307,7 +1555,7 @@ mod tests {
         assert!(moves_two(0x1c, 0x1c));
         assert!(moves_two(0x14, 0x14));
         assert!(!moves_two(0x1c, 0xe), "else the plain rule (`FUN_006b2212`)");
-        assert!(!moves_two(0x10, 0x10), "0x10's own rule is not built");
+        assert!(!moves_two(0x10, 0x10), "0x10 has a rule of its own");
         assert!(!moves_two(0xe, 0xe));
     }
 
