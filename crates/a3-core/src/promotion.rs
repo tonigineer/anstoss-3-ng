@@ -522,7 +522,7 @@ fn move_far(
 /// +0x20): ten records of 0x1d0 — the country, the level it plays up into
 /// the next one above, whether it is a knock-out, its pairings of 0xe from
 /// +0x36, the final the third — and their count at the object's +0x1240.
-const PLAYOFFS: &str = "0x1baa1e0";
+pub(crate) const PLAYOFFS: &str = "0x1baa1e0";
 const PLAYOFF: usize = 0x1d0;
 const PLAYOFF_COUNT: usize = 0x1240 - 0x20;
 const PLAYOFF_LEVEL: usize = 2;
@@ -530,6 +530,36 @@ const PLAYOFF_KNOCKOUT: usize = 8;
 const PLAYOFF_PAIRINGS: usize = 0x36;
 const PLAYOFF_FINAL: usize = 2;
 const ENGLAND: u16 = 0x10;
+
+/// A play-off record's clubs: their count at +4, their numbers from +0xc
+/// a word each.
+const PLAYOFF_TEAMS: usize = 4;
+const PLAYOFF_NUMBERS: usize = 0xc;
+
+/// The play-off record a club's relegation days ask (`FUN_006d8dc4` with
+/// `FUN_006d86ce`): of countries 0x18 and 0x3b the first of the
+/// country's records that lists the club's number (`FUN_006d706b`),
+/// England's the one of the club's level, any other country's its first
+/// whatever the level. The block and the record's offset in it.
+pub(crate) fn playoff_record<'a>(records: &'a Records, team: &crate::records::Team) -> Option<(&'a [u8], usize)> {
+    let block = records.block(PLAYOFFS)?;
+    let word = |at: usize| block.get(at..at + 2).map(|w| i16::from_le_bytes([w[0], w[1]]));
+    let country = u16::from(team.country());
+    let count = usize::try_from(word(PLAYOFF_COUNT)?).unwrap_or(0);
+    let lists = |rec: usize| {
+        let teams = usize::try_from(word(rec + PLAYOFF_TEAMS).unwrap_or(0)).unwrap_or(0);
+        (0..teams).any(|k| word(rec + PLAYOFF_NUMBERS + k * 2) == Some(i16::from(team.number())))
+    };
+    let rec = (0..count).map(|k| k * PLAYOFF).find(|&rec| {
+        word(rec) == Some(country as i16)
+            && match country {
+                ENGLAND => word(rec + PLAYOFF_LEVEL) == Some(i16::from(team.level())),
+                GROUPS | FINAL_ROUND => lists(rec),
+                _ => true,
+            }
+    })?;
+    Some((block, rec))
+}
 
 /// The winner and the loser of a country's play-off final for a level
 /// (`FUN_006d8d18`, `FUN_006d8d6e`: its record by `FUN_006d86ce`, the

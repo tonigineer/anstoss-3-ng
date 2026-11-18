@@ -805,6 +805,9 @@ const NEXT_INTERTOTO: u8 = 8;
 const NEXT_EUROPEAN_SUPERCUP: u8 = 9;
 const NEXT_WORLD_CUP: u8 = 10;
 const WORLD_ROUND: u8 = 7;
+/// The relegation's days in a club's league row (`FUN_0062bfc9`'s 0xb,
+/// round 0), the referee drawn as the league's.
+const NEXT_RELEGATION: u8 = 0xb;
 const EUROPEAN_SUPERCUP_DAY: u32 = 0x6000_0000;
 const WORLD_CUP_DAY: u32 = 0x7000_0000;
 /// Their ties in the European entrants' object, one each of
@@ -824,8 +827,9 @@ const SUPERCUP_STAGES: [u8; 5] = [5, 5, 6, 6, 7];
 /// the Intertoto's and the European ones are built — the champion's cup
 /// first, and the UEFA cup's table where its finder has nothing for the
 /// id — and the world's two finals, the European supercup's and the world
-/// cup's, where the club is one of the tie's sides; the relegation's days
-/// are passed over.
+/// cup's, where the club is one of the tie's sides. A relegation's day in
+/// the club's own league row names its match there ([`relegation_tie`]);
+/// one in its country's first row alone is not the club's.
 pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team: &crate::records::Team, today: usize) -> Option<NextMatch> {
     let country = team.country();
     for d in today + 1..=(today + LOOK_AHEAD).min(SEASON_DAYS - 1) {
@@ -899,6 +903,15 @@ pub fn next_match(records: &Records, calendar: &crate::calendar::Calendar, team:
                 let at_home = supercup_side(&p[0..4], team) != (code & TURNED != 0);
                 let o = if supercup_side(&p[0..4], team) { &p[4..8] } else { &p[0..4] };
                 return Some(at((o[0], i16::from_le_bytes([o[2], o[3]])), i16::from(!at_home), NEXT_CUP, round));
+            }
+            RELEGATION => {
+                let own = calendar.row(u16::from(country), usize::from(team.level())).map_or(0, |row| calendar.entry(row, d));
+                if own & COMPETITION != RELEGATION {
+                    continue;
+                }
+                if let Some((opponent, venue)) = relegation_tie(records, team, own) {
+                    return Some(at(opponent, venue, NEXT_RELEGATION, 0));
+                }
             }
             SUPERCUP => {
                 let slot = records.countries.slot(usize::from(country));
@@ -995,7 +1008,7 @@ pub fn note_next_matches(records: &mut Records, data: &crate::data::Data, today:
 
 /// A human club's referee for its next match (`FUN_0062bfc9`'s draws),
 /// none where the original's fixture list for the day comes out empty:
-/// the league's from the country's men (`FUN_006cdc0f`), the cup's and the
+/// the league's and the relegation's from the country's men (`FUN_006cdc0f`), the cup's and the
 /// supercup's too, holding either way on a listed — neutral — ground
 /// (`FUN_006cdbf1`, a German supercup tie always); the international ones
 /// from the foreign men (`FUN_00424407`) — a champion's or UEFA cup tie on
@@ -1014,7 +1027,7 @@ fn human_referee(records: &mut Records, calendar: &crate::calendar::Calendar, ow
         crate::referee_booking::international(records, home, away, m.day, today, both, random)
     };
     Some(match m.kind {
-        NEXT_LEAGUE => national(records, random, false),
+        NEXT_LEAGUE | NEXT_RELEGATION => national(records, random, false),
         NEXT_CUP | NEXT_SUPERCUP => national(records, random, listed),
         NEXT_EUROPE..=NEXT_UEFA if first & COMPETITION == EUROPEAN => {
             international(records, random, EUROPEAN_FINALS.contains(&(first & 0x1f)))
@@ -1223,6 +1236,44 @@ fn world_tie(records: &Records, team: &crate::records::Team, at: usize) -> Optio
         return Some((side(4), 0));
     }
     supercup_side(&t[4..8], team).then(|| (side(0), 1))
+}
+
+/// The relegation's match a club plays on a day of its league's row
+/// (`FUN_006d9105` → `FUN_006d83ac` on [`crate::promotion::playoff_record`]):
+/// a round-robin record (+8 nought) pairs its clubs by index for the
+/// code's matchday, a byte each from +0x60 at eight a matchday, the
+/// first at home and the opponent of the record's country; a knock-out
+/// one asks its tie at +0x36 of 0xe a matchday, the first side at home
+/// (`FUN_00676aaf`), the second where the code's high bit turns it
+/// (`FUN_00676b58`).
+fn relegation_tie(records: &Records, team: &crate::records::Team, code: u32) -> Option<((u8, i16), i16)> {
+    let (block, rec) = crate::promotion::playoff_record(records, team)?;
+    let word = |at: usize| block.get(at..at + 2).map(|w| u16::from_le_bytes([w[0], w[1]]));
+    let matchday = (code & MATCHDAY) as usize;
+    if block.get(rec + 8..rec + 0xc)?.iter().all(|&b| b == 0) {
+        let teams = usize::try_from(word(rec + 4)? as i16).unwrap_or(0);
+        let own = u16::from(team.number());
+        for k in (0..teams).step_by(2) {
+            let pair = rec + 0x60 + matchday * 8 + k;
+            let number = |at: usize| block.get(at).and_then(|&i| word(rec + 0xc + usize::from(i) * 2));
+            let (first, second) = (number(pair)?, number(pair + 1)?);
+            if first == own {
+                return Some(((block[rec], second as i16), 0));
+            }
+            if second == own {
+                return Some(((block[rec], first as i16), 1));
+            }
+        }
+        return None;
+    }
+    let at = rec + 0x36 + matchday * 0xe;
+    let t = block.get(at..at + 8)?;
+    let side = |x: usize| (t[x], i16::from_le_bytes([t[x + 2], t[x + 3]]));
+    let turned = u16::from(code & TURNED != 0);
+    if supercup_side(&t[0..4], team) {
+        return Some((side(4), turned as i16));
+    }
+    supercup_side(&t[4..8], team).then(|| (side(0), 1 - turned as i16))
 }
 
 /// Whether a club plays a supercup round (`FUN_006ccf10`): in the one
@@ -1577,6 +1628,74 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 2, "both finals stand on the calendar's first row");
+    }
+
+    /// A relegation's day in a club's league row: a round-robin play-off
+    /// record pairs its clubs by index for the code's matchday, the first
+    /// at home; a knock-out one names its tie, turned where the code says;
+    /// a club of the level the record does not list passes the day over.
+    /// Each notes it as kind 0xb, round 0. (Only countries 0x18 and 0x3b
+    /// hold relegation days, and no kept save plays either, so `A.an3`
+    /// takes the country as played and the record written in.)
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_relegation_day_is_noted_as_a_clubs_next_match() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let base = load();
+        let mut checked = 0;
+        for country in 0..=255u16 {
+            for level in 0..base.countries.leagues(usize::from(country)).max(0) as u8 {
+                let Some(row) = data.calendar.row(country, usize::from(level)) else { continue };
+                let Some(d) = (1..SEASON_DAYS).find(|&d| data.calendar.entry(row, d) & COMPETITION == RELEGATION && data.calendar.entry(0, d) == 0) else { continue };
+                let code = data.calendar.entry(row, d);
+                let clubs: Vec<_> = (0..base.countries.team_count(usize::from(country)).max(0) as u16)
+                    .filter_map(|t| base.team(country, t))
+                    .filter(|t| t.level() == level)
+                    .cloned()
+                    .take(5)
+                    .collect();
+                let side = |t: &crate::records::Team| (t.country(), t.number() as i16);
+                let note = |opponent: (u8, i16), venue: i16| Some(NextMatch { day: d as i16, opponent, venue, kind: NEXT_RELEGATION, round: 0 });
+                for knockout in [false, true] {
+                    let mut n = load();
+                    n.countries.put(0xae61ae + usize::from(country), 1u8);
+                    let b = n.block_mut(crate::promotion::PLAYOFFS).unwrap();
+                    b.fill(0);
+                    b[0x1240 - 0x20..0x1240 - 0x1e].copy_from_slice(&1i16.to_le_bytes());
+                    b[0..2].copy_from_slice(&(country as i16).to_le_bytes());
+                    b[2..4].copy_from_slice(&i16::from(level).to_le_bytes());
+                    b[4..6].copy_from_slice(&4i16.to_le_bytes());
+                    for (k, t) in clubs[..4].iter().enumerate() {
+                        b[0xc + k * 2..0xe + k * 2].copy_from_slice(&u16::from(t.number()).to_le_bytes());
+                    }
+                    let md = (code & MATCHDAY) as usize;
+                    let turned = i16::from(code & TURNED != 0);
+                    if knockout {
+                        b[8] = 1;
+                        let at = 0x36 + md * 0xe;
+                        b[at..at + 4].copy_from_slice(&[country as u8, 0, clubs[0].number(), 0]);
+                        b[at + 4..at + 8].copy_from_slice(&[country as u8, 0, clubs[1].number(), 0]);
+                        assert_eq!(next_match(&n, &data.calendar, &clubs[0], d - 1), note(side(&clubs[1]), turned), "{country}/{level} day {d}");
+                        assert_eq!(next_match(&n, &data.calendar, &clubs[1], d - 1), note(side(&clubs[0]), 1 - turned), "{country}/{level} day {d}");
+                        assert!(next_match(&n, &data.calendar, &clubs[2], d - 1).is_none_or(|m| m.day as usize != d));
+                    } else {
+                        b[0x60 + md * 8..0x64 + md * 8].copy_from_slice(&[3, 0, 1, 2]);
+                        assert_eq!(next_match(&n, &data.calendar, &clubs[3], d - 1), note(side(&clubs[0]), 0), "{country}/{level} day {d}");
+                        assert_eq!(next_match(&n, &data.calendar, &clubs[0], d - 1), note(side(&clubs[3]), 1), "{country}/{level} day {d}");
+                        assert_eq!(next_match(&n, &data.calendar, &clubs[2], d - 1), note(side(&clubs[1]), 1), "{country}/{level} day {d}");
+                        if let Some(other) = clubs.get(4) {
+                            assert!(next_match(&n, &data.calendar, other, d - 1).is_none_or(|m| m.day as usize != d));
+                        }
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2, "the first leagues of 0x18 and 0x3b hold relegation days");
     }
 
     /// England's league cup in an English club's calendar: on the kept
