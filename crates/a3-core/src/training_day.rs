@@ -323,14 +323,8 @@ pub fn day(
         // for each of the squad in its order (`FUN_00746c48`).
         let mut own = snapshot(records, slot, &ids);
         if weekday == 0 {
-            // The turn's start gave each man the intensity his entry
-            // holds (`FUN_00747144` → `FUN_00746f46`, first of all the
-            // day; a choice made during the week reaches him only here).
-            for entry in &own {
-                if let Some(player) = records.player_mut(entry.id) {
-                    player.set_intensity(entry.intensity as u8);
-                }
-            }
+            // Each man took the intensity his entry holds before the
+            // day's loop ([`week_start`]).
             fade(records, &mut own);
             // Whose condition the two rolls below train is lost in the
             // decompile; the replica trains the squad member whose turn
@@ -438,6 +432,149 @@ pub fn day(
                     }
                 }
             }
+        }
+    }
+}
+
+/// The reason a man takes against his trainer for an extra shift he
+/// did not deserve (`FUN_00770800`'s 0x1000).
+const SHIFT_GRUDGE: u32 = 0x1000;
+/// The reason a strong man takes against his trainer for being sent to
+/// the youth round (0x8000).
+const YOUTH_GRUDGE: u32 = 0x8000;
+/// The strength from which the youth round is beneath a man.
+const YOUTH_STRENGTH: u8 = 8;
+
+/// The week's start at the human clubs (`FUN_0064f981` with its first day
+/// the week's first: after the presale and the day's headline, before its
+/// loop over the day): `FUN_00747144` hands each club's squad to
+/// `FUN_00746f46`, then `FUN_00786285` settles the week's slips.
+///
+/// In `FUN_00746f46` each man takes the intensity his entry holds (a
+/// choice made during the week reaches him only here). With the extra
+/// shift ("Sonderschicht", the entry's +0x16) a man in condition (over
+/// 50) who did nothing wrong this week or last (`FUN_00702e05`) holds it
+/// against his trainer three times in ten (reason 0x1000); one in poor
+/// condition (50 or less) gains two points of it (`FUN_00411130`); and for
+/// one who slipped the team's mood (`FUN_007147ce`) and its will to win
+/// (`FUN_0069efe8`) rise by two, a slip of the first level counting as
+/// punished this week (+0xb4, the record's `fined`, bit 1). The youth
+/// round ("Nachwuchsrunde", +0x14) is beneath a man of strength 8 or
+/// more, one in ten of them taking it ill each week (0x8000), and leaves
+/// a weaker one at peace; under 60 in condition he gains a point. Without
+/// it the grievance goes. The entries are read as the training day reads
+/// them (`FUN_00746c48`) and not written back.
+///
+/// `FUN_00786285` then, over each club's squad in its order
+/// (`FUN_00786230`): a slip of this week or last left unpunished costs
+/// the team a point of its mood and the trainer a point with the fans and
+/// the media (`FUN_00418065`) — for a manager who plays, the mood ten up
+/// and a point with the public too — and every man's punishments of the
+/// week are forgotten.
+pub fn week_start(records: &mut Records, mood: &MoodTables, random: &mut Random) {
+    let clubs = statistics::human_clubs(records);
+    for &club in &clubs {
+        let Some(slot) = human_slot(records, club) else { continue };
+        let ids = records.team(club.0.into(), club.1 as u16).map(|t| t.players()).unwrap_or_default();
+        for entry in snapshot(records, slot, &ids) {
+            shift_and_youth(records, mood, club, &entry, random);
+        }
+    }
+    for &club in &clubs {
+        let ids = records.team(club.0.into(), club.1 as u16).map(|t| t.players()).unwrap_or_default();
+        for id in ids {
+            let Some(p) = records.player_mut(id) else { continue };
+            let level = crate::discipline::recent_offence(p);
+            let unpunished = level >= 1 && p.fined() & (1 << level) == 0;
+            p.set_fined(0);
+            if !unpunished {
+                continue;
+            }
+            let (by, likings) =
+                if id <= crate::mood::LAST_REAL_ID { (-1, [0, -1, -1]) } else { (10, [-1, -1, -1]) };
+            crate::interview::team_mood(records, mood, club, by);
+            crate::exhibition::move_standing(records, club, likings, 0);
+        }
+    }
+}
+
+/// The human slot (0 to 3) of a club a human runs (the club object's
+/// +0x11de less one).
+fn human_slot(records: &Records, (country, number): (u8, i16)) -> Option<usize> {
+    let team = records.team(country.into(), u16::try_from(number).ok()?)?;
+    let human = usize::from(team.human());
+    (1..=crate::human_day::HUMANS).contains(&human).then(|| human - 1)
+}
+
+/// One man's extra shift and youth round at the week's start
+/// ([`week_start`], `FUN_00746f46`'s loop).
+fn shift_and_youth(records: &mut Records, mood: &MoodTables, club: (u8, i16), entry: &Entry, random: &mut Random) {
+    let Some(p) = records.player_mut(entry.id) else { return };
+    p.set_intensity(entry.intensity as u8);
+    if entry.extra {
+        if cond_percent(p) > 50 && crate::discipline::recent_offence(p) == 0 && random.below(100) < 30 {
+            mood.set_reasons(p, SHIFT_GRUDGE);
+        }
+        if cond_percent(p) <= 50 {
+            train_condition(p, 2);
+        }
+        let slipped = crate::discipline::recent_offence(p);
+        if slipped > 0 {
+            crate::interview::team_mood(records, mood, club, 2);
+            if let Some(team) = records.team_mut(club.0.into(), club.1 as u16) {
+                team.set_will_to_win(team.will_to_win().saturating_add(2).clamp(-200, 200));
+            }
+            if slipped == 1
+                && let Some(p) = records.player_mut(entry.id)
+            {
+                p.set_fined(p.fined() | 2);
+            }
+        }
+    }
+    let Some(p) = records.player_mut(entry.id) else { return };
+    if !entry.youth {
+        crate::mood::clear_reasons(p, YOUTH_GRUDGE);
+        return;
+    }
+    if p.strength() < YOUTH_STRENGTH {
+        crate::mood::clear_reasons(p, YOUTH_GRUDGE);
+    } else if random.below(100) < 10 {
+        mood.set_reasons(p, YOUTH_GRUDGE);
+    }
+    if cond_percent(p) < 60 {
+        train_condition(p, 1);
+    }
+}
+
+/// A man of a human's club who played a match leaves the youth round
+/// (`FUN_007471bd`, from the day's graded pass over the played men
+/// `FUN_006f86e1`): his entry — or where the store holds none, a bare
+/// one of his id, working on the first ability at no intensity
+/// (`FUN_00746ddf`) — kept with the round's flag down (`FUN_00746e87`).
+pub fn leave_youth_round(records: &mut Records, (country, number): (u16, u16), id: u16) {
+    let Some(slot) = human_slot(records, (country as u8, number as i16)) else { return };
+    let Some(store) = records.individual.get_mut(slot) else { return };
+    let mut entries = store.entries();
+    let mut entry = entries.iter().find(|e| e.id == id).copied().unwrap_or_else(|| {
+        let mut bare = Entry::default();
+        bare.id = id;
+        bare.ability = 0;
+        bare.intensity = individual::OUT;
+        bare
+    });
+    entry.youth = false;
+    individual::keep(&mut entries, entry);
+    store.set_entries(&entries);
+}
+
+/// The human clubs' own copies of their individual training, as their
+/// stores hold them once the day's matches are played.
+pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize), ClubState>, world: &world::World) {
+    for (&(slot, place), state) in clubs.iter_mut() {
+        let Some(nation) = world.country(slot).map(|c| c.nation) else { continue };
+        let Some(human) = human_slot(records, (nation as u8, place as i16)) else { continue };
+        if let Some(store) = records.individual.get(human) {
+            state.individual = store.entries();
         }
     }
 }
@@ -2946,5 +3083,85 @@ mod tests {
         entry.ability = 9;
         learnt(&mut records, &mut entry, 9, 1, &tables);
         assert_eq!((entry.ability, entry.progress[9]), (NOTHING, LEARNT));
+    }
+
+    /// The week's start on A's squad (`FUN_00746f46`, `FUN_00786285`): a
+    /// tired man on the extra shift who slipped this week gains two points
+    /// of condition, lifts the mood and the will to win by two and has his
+    /// slip punished; a man who slipped last week unpunished costs a point
+    /// of mood and of the fans' and the media's liking. A weak man in the
+    /// youth round loses his grievance and gains a point; a strong one
+    /// rolls once. Every punishment of the week is forgotten. Playing a
+    /// match takes a man out of the youth round, a man without an entry
+    /// taking a bare one.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn the_week_starts_with_the_extra_shift_and_the_youth_round() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = MoodTables::load(&exe).unwrap();
+        let club = statistics::human_clubs(&records)[0];
+        let at = (u16::from(club.0), club.1 as u16);
+        let team = records.team(at.0, at.1).unwrap();
+        let (squad, slot, trainer) = (team.players(), usize::from(team.human()) - 1, team.humans()[0]);
+        let real: Vec<u16> = squad.iter().copied().filter(|&id| id <= crate::mood::LAST_REAL_ID).collect();
+        let strong = |records: &Records, id: u16| records.player(id).unwrap().strength() >= YOUTH_STRENGTH;
+        let rest: Vec<u16> = real[2..].to_vec();
+        let (tired, slipped) = (real[0], real[1]);
+        let fit = *rest.iter().find(|&&id| strong(&records, id)).expect("a strong man");
+        let weak = *rest.iter().find(|&&id| !strong(&records, id)).expect("a weak man");
+        for &id in &squad {
+            let p = records.player_mut(id).unwrap();
+            p.set_offences(0);
+            p.set_fined(0);
+        }
+        let mut entries = records.individual[slot].entries();
+        for e in entries.iter_mut() {
+            (e.youth, e.extra) = (false, false);
+        }
+        for (id, youth, extra) in [(tired, false, true), (fit, true, false), (weak, true, false)] {
+            let mut entry = entries.iter().find(|e| e.id == id).copied().unwrap_or_default();
+            (entry.id, entry.youth, entry.extra, entry.intensity) = (id, youth, extra, individual::HARD);
+            individual::keep(&mut entries, entry);
+        }
+        records.individual[slot].set_entries(&entries);
+        let p = records.player_mut(tired).unwrap();
+        p.set_condition(4000);
+        p.set_offences(0x10);
+        records.player_mut(slipped).unwrap().set_offences(0x01);
+        let p = records.player_mut(weak).unwrap();
+        p.set_condition(5000);
+        p.set_flags(p.flags() | YOUTH_GRUDGE);
+        let team = records.team(at.0, at.1).unwrap();
+        let (mood, will) = (i32::from(team.mood()), team.will_to_win());
+        let liked = records.managers[usize::from(trainer) - 1].popularity();
+        let mut random = Random::from_state(24681, 13579);
+        let mut expected = random.clone();
+        expected.below(100);
+        week_start(&mut records, &tables, &mut random);
+        assert_eq!(random, expected, "only the strong man in the youth round rolls");
+        let p = records.player(tired).unwrap();
+        assert_eq!((p.condition(), p.intensity()), (4200, individual::HARD as u8));
+        let team = records.team(at.0, at.1).unwrap();
+        assert_eq!(i32::from(team.mood()), (mood + 2).clamp(0, 200) - 1);
+        assert_eq!(team.will_to_win(), (will + 2).clamp(-200, 200));
+        let now = records.managers[usize::from(trainer) - 1].popularity();
+        assert_eq!(now, [liked[0], liked[1].saturating_sub(1), liked[2].saturating_sub(1)]);
+        let p = records.player(weak).unwrap();
+        assert_eq!((p.condition(), p.flags() & YOUTH_GRUDGE), (5100, 0));
+        assert!(squad.iter().all(|&id| records.player(id).unwrap().fined() == 0));
+
+        let gone = rest.iter().copied().find(|&id| id != fit && id != weak).unwrap();
+        let mut entries = records.individual[slot].entries();
+        individual::purge(&mut entries, &squad.iter().copied().filter(|&id| id != gone).collect::<Vec<_>>());
+        records.individual[slot].set_entries(&entries);
+        leave_youth_round(&mut records, at, fit);
+        leave_youth_round(&mut records, at, gone);
+        let entries = records.individual[slot].entries();
+        assert!(entries.iter().any(|e| e.id == fit && !e.youth && e.intensity == individual::HARD));
+        let bare = entries.iter().find(|e| e.id == gone).expect("a bare entry");
+        assert_eq!((bare.ability, bare.intensity, bare.youth), (0, individual::OUT, false));
     }
 }

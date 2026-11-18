@@ -80,6 +80,7 @@ pub fn play_day(
             }
         }
     }
+    crate::training_day::refresh_individual(records, &mut season.clubs, world);
     let reported = faced.iter().map(|f| f.club).collect();
     MatchDay { leagues: played, reported, faced, controls }
 }
@@ -1134,6 +1135,11 @@ fn mark_cup(
                 }
             }
         }
+        // The men who stood leave the youth round (`FUN_007471bd`),
+        // in the squad's order as the graded pass walks them.
+        for &id in squad.iter().filter(|id| eleven.contains(id)) {
+            crate::training_day::leave_youth_round(records, (nation, team), id);
+        }
         for id in squad {
             if carded.contains(&id) {
                 continue;
@@ -1657,6 +1663,11 @@ fn mark_match(
                     }
                 }
             }
+        }
+        // The men who stood leave the youth round (`FUN_007471bd`),
+        // in the squad's order as the graded pass walks them.
+        for &id in squad.iter().filter(|id| eleven.contains(id) || ins.contains(id)) {
+            crate::training_day::leave_youth_round(records, (nation, team), id);
         }
         for &id in squad
             .iter()

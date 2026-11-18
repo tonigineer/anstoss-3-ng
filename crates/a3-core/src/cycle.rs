@@ -1179,6 +1179,17 @@ impl Cycle {
                             // (`FUN_006da3a9`'s state 4).
                             crate::development::half_week(records, today, &mut season.random);
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
+                            // The week's first day starts with the men's
+                            // extra shifts and youth rounds and the
+                            // week's slips settled, before the day's loop
+                            // (`FUN_00747144`, `FUN_00786285`).
+                            if today % 7 == 0 {
+                                crate::training_day::week_start(
+                                    records,
+                                    &self.data.rules.discipline.mood,
+                                    &mut season.random,
+                                );
+                            }
                             // Over the first six weeks the season tickets
                             // sell and the perimeter boards are let
                             // (`FUN_006da3a9` hands `FUN_0064f981` the

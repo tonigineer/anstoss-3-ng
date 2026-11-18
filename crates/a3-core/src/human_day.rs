@@ -22,7 +22,7 @@ use crate::records::Records;
 
 /// No event slot for a human today.
 pub const NONE: i16 = -1;
-const HUMANS: usize = 4;
+pub(crate) const HUMANS: usize = 4;
 
 /// The event gates of the day (`FUN_0064f981` from its first draw): one
 /// chance in twenty that nobody gets an event, else one in a hundred for

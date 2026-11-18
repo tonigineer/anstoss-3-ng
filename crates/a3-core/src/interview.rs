@@ -769,7 +769,7 @@ fn matchdays(records: &Records, team: &Team) -> i32 {
 
 /// The team's mood moved, and what it does to the squad of a human's
 /// club (`FUN_007147ce`, `FUN_00771701`).
-fn team_mood(records: &mut Records, tables: &MoodTables, (country, number): (u8, i16), by: i32) {
+pub(crate) fn team_mood(records: &mut Records, tables: &MoodTables, (country, number): (u8, i16), by: i32) {
     let Some(team) = records.team_mut(country.into(), number as u16) else { return };
     let mood = (i32::from(team.mood()) + by).clamp(0, MOOD_MOST) as u8;
     team.set_mood(mood);

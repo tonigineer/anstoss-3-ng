@@ -245,6 +245,12 @@ pub fn offence(r: &Player) -> u8 {
     (1..=4).rev().find(|&k| r.offences() & (0x10 << (k - 1)) != 0).unwrap_or(0)
 }
 
+/// The worst he did this week or last, by level 1 to 4 (`FUN_00702e05`:
+/// both nibbles of his offences).
+pub fn recent_offence(r: &Player) -> u8 {
+    (1..=4).rev().find(|&k| r.offences() & (0x11 << (k - 1)) != 0).unwrap_or(0)
+}
+
 /// How often he did something of a level, at most three times.
 fn times(r: &Player, level: u8) -> u8 {
     (r.offence_counts() >> (2 * (level - 1))) & 3
