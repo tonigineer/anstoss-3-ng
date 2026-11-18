@@ -10401,8 +10401,8 @@ mod tests {
                 if grade == 0 { "-".to_owned() } else { format!("{:.1}", (5 * grade) as f32 / 10.0) }
             );
         }
-        // The position group stands chosen while the bests list — whose
-        // table the replica does not have — stays empty.
+        // The position group stands chosen while the bests list stays
+        // empty: the team block names no coach whose record it reads.
         let positions = crate::screens::control(dialog, 4775).unwrap();
         let bests = crate::screens::control(dialog, 4558).unwrap();
         let runner = on_save(&game, "nationalpick", &format!("{open}\nnow choose 4775 1")).unwrap();
@@ -12761,5 +12761,67 @@ mod tests {
             let _ = runner.settle();
         }
         assert_ne!(runner.host.view().id, 22, "the last page's OK closes it");
+    }
+
+    /// A's human made England's coach, his lists of the best by position
+    /// built from the squads as the week's market builds them: the
+    /// picker's bests list shows the first ten of the chosen position's,
+    /// the strongest today first, each with his full name and strength.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_picker_lists_the_coachs_best_by_position() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let source = game();
+        let pitch = &source.rules.pitch;
+        let root = patched(&dir, "A", "nationalbests", |records| {
+            let slot = records.human_slot(0).unwrap();
+            a3_core::national::take(records, slot, a3_core::national::Terms { nation: 14, salary: 0, bonus: 0 });
+            let mut bests = a3_core::national::Bests::new(records);
+            for country in (1..0x75u16).filter(|&c| records.countries.kind(usize::from(c)) != 0) {
+                for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                    bests.offer(records, pitch, (country, number));
+                }
+            }
+            bests.store(records);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 0\nuntil dialog 357";
+        let dialog = &game.dialogs[&357];
+        let bests = crate::screens::control(dialog, 4558).unwrap();
+        // On opening the first position's; the third's once its item
+        // is chosen.
+        for (group, script) in [(1, open.to_owned()), (3, format!("{open}\nnow choose 4775 2"))] {
+            let runner = on_save(&game, "nationalbests", &script).unwrap();
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let list = runner.host.view().list(bests).unwrap();
+            let mut want: Vec<(u16, i32)> = a3_core::national::bests(records, 14, group)
+                .iter()
+                .take(10)
+                .filter(|b| b.id != 0)
+                .map(|b| {
+                    let (p, f, _) = a3_core::load::any_player(records, &game.data, b.id).unwrap();
+                    (b.id, game.rules.pitch.strength_at(&p, f, p.positions[0]))
+                })
+                .collect();
+            for i in 0..want.len() {
+                for j in i + 1..want.len() {
+                    if want[i].1 < want[j].1 {
+                        want.swap(i, j);
+                    }
+                }
+            }
+            assert_eq!(want.len(), 10, "{}", runner.log.join("\n"));
+            assert_eq!(list.keys, want.iter().map(|w| usize::from(w.0)).collect::<Vec<_>>(), "position {group}");
+            for (row, &(id, strength)) in list.rows.iter().zip(&want) {
+                assert_eq!(*row, format!("{}\t{:.1}", records.known_as(id).unwrap(), strength as f32 / 10.0));
+            }
+            assert!(list.row_icons.iter().any(|icons| !icons.is_empty()));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

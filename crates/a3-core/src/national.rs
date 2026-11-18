@@ -605,6 +605,160 @@ pub fn friendly_dates(calendar: &Calendar) -> [usize; FRIENDLY_SLOTS] {
     days
 }
 
+/// The coach's lists of the best by position, `0xa55e76` in his record
+/// (`FUN_0069d3dd` writes them, `FUN_0069d359` reads them): ten
+/// positions of `0x78` bytes, fifteen entries of eight in each — the
+/// player's id, his club's country at +2 and number at +4, his strength
+/// on the position at +6 (`FUN_006a144e`).
+const BESTS: usize = 0xa55e76 - 0xa55998;
+const BESTS_GROUP: usize = 0x78;
+const BESTS_ENTRY: usize = 8;
+const BESTS_SLOTS: usize = 15;
+const BESTS_POSITIONS: usize = 10;
+/// A list counts its fourteen best; the fifteenth slot holds the last
+/// pushed out, and a newcomer must beat him (`FUN_00427494`).
+const BESTS_KEPT: usize = 14;
+/// The picker's bests list shows the first ten of the group
+/// (`FUN_0051c33f`).
+pub const BESTS_SHOWN: usize = 10;
+/// R+0x26f and R+0x271 bit 1 (L+0xb3, L+0xb6): what bars him from the
+/// national team's lists, its meaning not traced.
+const NO_NATIONAL: u8 = 2;
+
+/// One entry of a bests list.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Best {
+    pub id: u16,
+    pub country: u8,
+    pub number: u16,
+    pub strength: i16,
+}
+
+/// The four human coaches' lists the week's market fills
+/// (`FUN_0042958d`'s locals at -0x1410, -0x150 and -0x100): a nation
+/// their coach's number — the first of the 32 bytes from `DAT_00b5d17a`,
+/// the later coach of a nation winning —, each coach his ten positions'
+/// lists and counts, empty every week.
+pub struct Bests {
+    coach: [u8; NATIONS],
+    lists: [[[Best; BESTS_SLOTS]; BESTS_POSITIONS]; 4],
+    counts: [[usize; BESTS_POSITIONS]; 4],
+}
+
+impl Bests {
+    pub fn new(records: &Records) -> Self {
+        let mut coach = [0; NATIONS];
+        for k in 0..4 {
+            let nation = usize::from(records.globals.get::<u8>(KEY_NATION + (k + 1) * KEY));
+            if nation != 0 {
+                if let Some(c) = coach.get_mut(nation) {
+                    *c = k as u8 + 1;
+                }
+            }
+        }
+        Bests {
+            coach,
+            lists: [[[Best::default(); BESTS_SLOTS]; BESTS_POSITIONS]; 4],
+            counts: [[0; BESTS_POSITIONS]; 4],
+        }
+    }
+
+    /// A club's squad, last of its week's business (`FUN_00427494`):
+    /// each player of a coached nation not barred goes into his coach's
+    /// list of his main position while it counts under fourteen or he
+    /// beats the fifteenth slot, behind every one as strong as he is.
+    pub fn offer(&mut self, records: &Records, pitch: &crate::lineup::Tables, (country, number): (u16, u16)) {
+        let Some(team) = records.team(country, number) else { return };
+        for id in team.players() {
+            let Some(record) = records.player(id) else { continue };
+            if record.retiring() & NO_NATIONAL != 0 {
+                continue;
+            }
+            let Some(&coach) = self.coach.get(usize::from(record.nation())).filter(|&&c| c != 0) else {
+                continue;
+            };
+            let position = record.positions()[0];
+            if !(1..=BESTS_POSITIONS as u8).contains(&position) {
+                continue;
+            }
+            let player = load::player(records, record);
+            let strength = pitch.strength_at(&player, load::fitness(record), position) as i16;
+            let (k, p) = (usize::from(coach) - 1, usize::from(position) - 1);
+            let (list, count) = (&mut self.lists[k][p], &mut self.counts[k][p]);
+            if *count >= BESTS_KEPT && list[BESTS_KEPT].strength >= strength {
+                continue;
+            }
+            let mut at = *count;
+            while at > 0 && list[at - 1].strength < strength {
+                list[at] = list[at - 1];
+                at -= 1;
+            }
+            list[at] = Best { id, country: country as u8, number, strength };
+            if *count < BESTS_KEPT {
+                *count += 1;
+            }
+        }
+    }
+
+    /// The lists into the coaches' records (`FUN_0042958d`'s last loop,
+    /// `FUN_0069d3dd`): for each human with a nation, the list and the
+    /// record of the coach his nation's team names, none where it names
+    /// none.
+    pub fn store(&self, records: &mut Records) {
+        for k in 0..4 {
+            let nation = records.globals.get::<u8>(KEY_NATION + (k + 1) * KEY);
+            if nation == 0 {
+                continue;
+            }
+            let coach = usize::from(coach_number(records, i16::from(nation)));
+            if !(1..=4).contains(&coach) {
+                continue;
+            }
+            let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) else {
+                continue;
+            };
+            if b.len() < BESTS + BESTS_POSITIONS * BESTS_GROUP {
+                continue;
+            }
+            for (p, list) in self.lists[coach - 1].iter().enumerate() {
+                for (j, e) in list.iter().enumerate() {
+                    let at = BESTS + p * BESTS_GROUP + j * BESTS_ENTRY;
+                    b[at..at + 2].copy_from_slice(&e.id.to_le_bytes());
+                    b[at + 2] = e.country;
+                    b[at + 3] = 0;
+                    b[at + 4..at + 6].copy_from_slice(&e.number.to_le_bytes());
+                    b[at + 6..at + 8].copy_from_slice(&e.strength.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+/// A group's list as the coach's record keeps it, all fifteen slots;
+/// empty for a group outside 1 to 10 or a coach the team does not name
+/// (`FUN_0069d359` zeroing its copy).
+pub fn bests(records: &Records, nation: i16, group: i32) -> Vec<Best> {
+    let coach = usize::from(coach_number(records, nation));
+    let Some(b) = (1..=4).contains(&coach).then(|| records.block(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1))).flatten() else {
+        return Vec::new();
+    };
+    let Some(p) = usize::try_from(group).ok().filter(|g| (1..=BESTS_POSITIONS).contains(g)).map(|g| g - 1) else {
+        return Vec::new();
+    };
+    (0..BESTS_SLOTS)
+        .filter_map(|j| {
+            let at = BESTS + p * BESTS_GROUP + j * BESTS_ENTRY;
+            let e = b.get(at..at + BESTS_ENTRY)?;
+            Some(Best {
+                id: u16::from_le_bytes([e[0], e[1]]),
+                country: e[2],
+                number: u16::from_le_bytes([e[4], e[5]]),
+                strength: i16::from_le_bytes([e[6], e[7]]),
+            })
+        })
+        .collect()
+}
+
 /// The days still to come holding an international window
 /// (`FUN_0062abfe`): from the day after today to the year's end, those
 /// whose flag is one of the window flags — at most eight — kept as the
@@ -1148,6 +1302,52 @@ mod tests {
     use super::*;
     use a3_files::an3::Save;
     use std::path::PathBuf;
+
+    /// The bests lists the original kept in S2c and S2late, a coach of
+    /// nation 23: built again from their squads in the week's order —
+    /// the kept countries, then the played ones — the same men stand in
+    /// all fifteen slots of all ten positions, the last pushed out among
+    /// them; their strengths moved with the form of the days since the
+    /// week's start, a few tenths, and with them some neighbours' order.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_bests_lists_are_built_as_the_original() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let pitch = crate::data::Data::load(&dir).unwrap().rules.pitch;
+        for name in ["S2c.an3", "S2late.an3"] {
+            let path = dir.parent().unwrap().join("saves-kept").join(name);
+            let Ok(save) = Save::read(&path) else { continue };
+            let mut records = Records::from_save(save).unwrap();
+            let saved: Vec<Vec<Best>> = (1..=10).map(|g| bests(&records, 23, g)).collect();
+            assert!(saved[0].iter().any(|e| e.id != 0), "{name} keeps no list");
+            let mut built = Bests::new(&records);
+            let kept: Vec<u16> = (1..0x75).filter(|&c| records.countries.kind(c) == 2).map(|c| c as u16).collect();
+            for country in kept.into_iter().chain(crate::opponent::played_nations(&records)) {
+                for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                    built.offer(&records, &pitch, (country, number));
+                }
+            }
+            if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[0]")) {
+                b[BESTS..BESTS + BESTS_POSITIONS * BESTS_GROUP].fill(0);
+            }
+            built.store(&mut records);
+            for g in 1..=10 {
+                let (built, saved) = (bests(&records, 23, g), &saved[g as usize - 1]);
+                let set = |l: &[Best]| {
+                    let mut v: Vec<_> = l.iter().map(|e| (e.id, e.country, e.number)).collect();
+                    v.sort();
+                    v
+                };
+                assert_eq!(set(&built), set(saved), "{name}, position {g}");
+                assert!(built.windows(2).all(|w| w[0].id == 0 || w[1].id == 0 || w[0].strength >= w[1].strength));
+                for e in &built {
+                    let was = saved.iter().find(|s| s.id == e.id).unwrap();
+                    assert!((e.strength - was.strength).abs() <= 4, "{name}, position {g}: {e:?} against {was:?}");
+                }
+            }
+            assert!(bests(&records, 23, 0).is_empty() && bests(&records, 23, 11).is_empty());
+        }
+    }
 
     /// The talks' table and the search list over the original's save
     /// (`FUN_006b8f5f`, `FUN_00763518` and `FUN_007635f7`): the flags

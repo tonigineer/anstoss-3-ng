@@ -41,12 +41,14 @@
 //! the first of the two men its next manager wished for, and the second
 //! takes his place for the week after ([`crate::bids::wished`]).
 //!
+//! Last, every club's squad goes into the human national coaches' lists
+//! of the best by position (`FUN_00427494`, [`crate::national::Bests`]),
+//! which land in the coaches' records once all clubs are through.
+//!
 //! Left out so far: the rest of the computer clubs' business that follows
-//! in `FUN_004279f8` and `FUN_004297e1` — their other bids (`FUN_006c41b1`, `FUN_00427494`)
-//! — and
-//! the European clubs' (`FUN_0069d3dd`) and the closing passes
-//! (`FUN_004290b3`, `FUN_00428ea5`); the draws between clubs are not the
-//! original's while those are missing.
+//! in `FUN_004279f8` and `FUN_004297e1` — their other bids (`FUN_006c41b1`)
+//! — and the closing pass `FUN_004290b3`; the draws between clubs are
+//! not the original's while those are missing.
 
 use chrono::NaiveDate;
 
@@ -84,6 +86,7 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
     let played = crate::opponent::played_nations(records);
     let countries = kept.iter().map(|&c| (c, false)).chain(played.iter().map(|&c| (c, true)));
     let mut busy = crate::bids::Busy::default();
+    let mut bests = crate::national::Bests::new(records);
     for (country, played) in countries.collect::<Vec<_>>() {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             if played && today & 3 == i32::from(number & 3) {
@@ -105,8 +108,10 @@ pub fn week(records: &mut Records, rules: &crate::season::Rules, random: &mut Ra
             if played {
                 crate::bids::wished(records, (country, number), &mut busy, random);
             }
+            bests.offer(records, &rules.pitch, (country, number));
         }
     }
+    bests.store(records);
     stale_listings(records, false, random);
 }
 
