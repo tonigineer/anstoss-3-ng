@@ -31,14 +31,15 @@
 //! promotion or relegation more, the main country's players offered to
 //! the record lists of the most of them (`FUN_007104dc`).
 //!
-//! Country 0x14, played as the main country (`FUN_006b07f0`), moves its
+//! Countries 0x14 and 0x1c, played as the main country (`FUN_006b07f0`,
+//! `FUN_006b0d18`, the same routine but for the country), move their
 //! two leagues in one: the first league's bottom down, all but those sent
 //! down into the second, whose top fills the places; the second's bottom
 //! out, one fewer for each club the first sent down, and its places
 //! filled from below it.
 //!
 //! Left out: the other countries' own rules (`FUN_006af8fd`,
-//! `FUN_006b1c01`, `FUN_006b0d18`, `FUN_006b1920`,
+//! `FUN_006b1c01`, `FUN_006b1920`,
 //! `FUN_006b122e`), which the replica's own leagues fall back to the plain
 //! rule for, and Germany's rules before 2000 (`FUN_006915f1`); what the
 //! booked moves set off besides — the news (`FUN_006143d2`); the
@@ -54,9 +55,16 @@ use crate::statistics::{self, ALL, Row};
 use crate::tickets::{self, TicketTables};
 
 const GERMANY: u16 = 0xe;
-/// The country whose two leagues move in one when it is the main country
-/// (`FUN_006af7a5` → `FUN_006b07f0`).
-const TWO_LEAGUES: u16 = 0x14;
+/// The countries whose two leagues move in one when they are the main
+/// country (`FUN_006af7a5` → `FUN_006b07f0` for 0x14, `FUN_006b0d18` for
+/// 0x1c).
+const TWO_LEAGUES: [u16; 2] = [0x14, 0x1c];
+
+/// Whether a country moves its two leagues in one (`FUN_006af7a5`): only
+/// as the main country; else its first league goes by the plain rule.
+fn moves_two(country: u16, main: u16) -> bool {
+    TWO_LEAGUES.contains(&country) && country == main
+}
 /// The country whose single league skips reserve teams among its risers
 /// and books its relegated a level down (`FUN_006b1f12`).
 const FAR: u16 = 0x3f;
@@ -332,7 +340,8 @@ impl Standing {
     }
 }
 
-/// Country 0x14's two leagues as the main country (`FUN_006b07f0`).
+/// Country 0x14's or 0x1c's two leagues as the main country
+/// (`FUN_006b07f0`, `FUN_006b0d18`).
 fn two_leagues(records: &Records, country: u16, moves: &mut Moves, order_of: &mut Orders) -> Option<[Vec<i16>; 2]> {
     let first = Standing::of(&closed(records, country, 0)?);
     let second = Standing::of(&closed(records, country, 1)?);
@@ -695,7 +704,7 @@ pub fn draw_with(records: &mut Records, order_of: &mut Orders) -> Drawn {
         let mut moves = Moves::default();
         let lists: Vec<Vec<i16>> = if country == GERMANY && country == main {
             germany(records, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
-        } else if country == TWO_LEAGUES && country == main {
+        } else if moves_two(country, main) {
             two_leagues(records, country, &mut moves, order_of).map_or_else(Vec::new, |l| l.to_vec())
         } else {
             single(records, country, &mut moves, order_of).into_iter().collect()
@@ -1139,6 +1148,17 @@ mod tests {
         assert_eq!(moves.forced[0], [16], "the first league's club at the sent down's place");
         assert_eq!(moves.down[1], [117, 116, 115]);
         assert_eq!(next1, [17, 16, 15].into_iter().chain(103..115).chain(200..203).collect::<Vec<i16>>());
+    }
+
+    /// Country 0x1c moves its two leagues as 0x14 does, but only as the
+    /// main country (`FUN_006af7a5`); other countries never.
+    #[test]
+    fn country_0x1c_moves_two_leagues_as_the_main_country() {
+        assert!(moves_two(0x1c, 0x1c));
+        assert!(moves_two(0x14, 0x14));
+        assert!(!moves_two(0x1c, 0xe), "else the plain rule (`FUN_006b2212`)");
+        assert!(!moves_two(0x10, 0x10), "0x10's own rule is not built");
+        assert!(!moves_two(0xe, 0xe));
     }
 
     /// The season's end over the original's pair (SeasonEnd364 →
