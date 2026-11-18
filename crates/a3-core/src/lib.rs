@@ -15,6 +15,7 @@ pub mod crowd;
 pub mod cup_draw;
 pub mod cycle;
 pub mod doping;
+pub mod doping_control;
 pub mod data;
 pub mod deals;
 pub mod development;

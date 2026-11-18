@@ -236,6 +236,9 @@ pub mod dialogs {
     /// (`IDD_HALBZEIT_ANSPRACHE`).
     pub const HALFTIME: u16 = 93;
     pub const HALFTIME_TALK: u16 = 499;
+    /// The doping control after the match, `CDopingAusgabe`
+    /// (`IDD_DOPING_AUSGABE`).
+    pub const DOPING_CONTROL: u16 = 41;
 }
 
 use self::dialogs::*;
@@ -412,6 +415,9 @@ pub enum Args {
     /// match shows, the first opened, the others by their crests
     /// (`FUN_00551818`'s list, the dialog's +0x3328).
     Reports { clubs: [(u8, i16); 4], count: u8 },
+    /// The doping control of a human's club after the match
+    /// (`DAT_00a2e0b8`).
+    Doping(crate::doping_control::Control),
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -1200,6 +1206,7 @@ impl Cycle {
                 }
                 let mut tables = Vec::new();
                 let mut reported = Vec::new();
+                let mut controls = Vec::new();
                 let week_start = {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1295,6 +1302,9 @@ impl Cycle {
                             if reports_shown(records, season.day) {
                                 reported = played.reported.clone();
                             }
+                            // The doping controls of the humans' clubs
+                            // (event 0xcb each, `FUN_005dae5f`).
+                            controls = played.controls.clone();
                             // The youth leagues play beside them
                             // (`FUN_0062a959`, after the day's matches).
                             crate::youth_league::play_day(
@@ -1362,6 +1372,11 @@ impl Cycle {
                             }
                         });
                     }
+                }
+                // The doping control's results (event 0xcb, dialog 41),
+                // one for each human club tested.
+                for control in controls {
+                    self.ask(Request::with(DOPING_CONTROL, Args::Doping(control)))?;
                 }
                 // The match report first (event 0xce), its clubs' crests
                 // to step between them.

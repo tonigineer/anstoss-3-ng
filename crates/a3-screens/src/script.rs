@@ -9406,7 +9406,7 @@ mod tests {
                         on 364 ok\n\
                         on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
-                        on 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 383 click at 460 210\non 99 press 2\n\
+                        on 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\non 99 press 2\n\
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
@@ -11204,7 +11204,7 @@ mod tests {
         let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
-                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 383 click at 460 210\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\n\
                         on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
@@ -11753,5 +11753,88 @@ mod tests {
         assert_eq!(seen(&runner, 499), 1, "{}", runner.log.join("\n"));
         let state = runner.host.state();
         assert_eq!(state.season.as_ref().unwrap().halftime[0].talk, 3, "the third line, 'Konzentriert weiter so!'");
+    }
+
+
+    /// Walking on from A, a league matchday's doping control falls on
+    /// Union's match and dialog 41 opens behind the half-time talk, before
+    /// the match report: the club in the caption, two of Union's men by
+    /// name, their A samples negative — nobody in A took anything — and
+    /// nothing behind. With every man of Union's given a dose that can be
+    /// traced, the same control finds them out: a positive A sample, the
+    /// B sample's verdict behind it, and a banned man's long absence a
+    /// doping ban, his club's case counted.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_doping_control_reports_after_the_match() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 417 press 1\n\
+                        until dialog 41";
+        let game = game();
+        let Some(runner) = on_save(&game, "A", handlers) else { return };
+        let dialog = &game.dialogs[&41];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let union = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            records.team(14, 84).unwrap().players()
+        };
+        let last = |screen: &str| runner.log.iter().rposition(|l| l == screen);
+        assert!(last("screen 332") < last("screen 499"), "the control comes before the report");
+        let club = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        assert_eq!(text(&runner, 9924), dialog.title.replacen("%s", &club, 1));
+        let names: Vec<String> = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            union.iter().filter_map(|&id| records.known_as(id)).collect()
+        };
+        for (name, a, b, verdict) in [(1380, 1382, 1383, 1384), (1381, 1386, 1387, 1388)] {
+            assert!(names.contains(&text(&runner, name)), "{:?}", text(&runner, name));
+            assert_eq!(text(&runner, a), game.text(1946), "negativ");
+            assert_eq!((text(&runner, b), text(&runner, verdict)), (String::new(), String::new()));
+        }
+        let day = runner.host.state().season.as_ref().unwrap().day;
+        drop(runner);
+        let root = patched(&dir, "A", "doped-union", |records| {
+            for id in records.team(14, 84).unwrap().players() {
+                let r = records.player_mut(id).unwrap();
+                r.set_doping(0x80 | 1 << 2 | 2);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let Some(runner) = on_save(&game, "doped-union", handlers) else { return };
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().unwrap().day, day, "the same control");
+        let records = state.records.as_ref().unwrap();
+        let rows = [(1380, 1382, 1383, 1384), (1381, 1386, 1387, 1388)].map(|(n, a, b, v)| {
+            [n, a, b, v].map(|id| runner.host.view().text(control(dialog, id).unwrap()).to_owned())
+        });
+        assert!(rows.iter().any(|r| r[1] == game.text(1945)), "{rows:?}");
+        let mut banned = 0;
+        for [name, a, b, verdict] in &rows {
+            let id = union.iter().copied().find(|&id| records.known_as(id).as_ref() == Some(name)).unwrap();
+            let r = records.player(id).unwrap();
+            if *a == game.text(1946) {
+                assert_eq!((b.as_str(), verdict.as_str()), ("", ""));
+            } else if *verdict == game.text(1951) {
+                assert_eq!(*b, game.text(1945), "the B sample positive too");
+                assert_eq!(r.long_unknown(), 0x80, "a doping ban");
+                assert!(r.long_to()[0] >= records.globals.date()[2], "{:?}", r.long_to());
+                banned += 1;
+            } else {
+                assert_eq!(*verdict, game.text(1950));
+                assert!([1947, 1948, 1949].iter().any(|&t| *b == game.text(t)), "{b:?}");
+                assert_eq!(r.long_unknown() & 0x80, 0);
+            }
+        }
+        let cases = records.team(14, 84).unwrap().get::<u8>(0x13e);
+        assert_eq!(cases & 0x80 != 0, banned > 0, "{cases:#x}");
     }
 }

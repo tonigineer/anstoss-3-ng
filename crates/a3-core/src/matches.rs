@@ -52,6 +52,7 @@ pub fn play_day(
     let day = season.day;
     let mut played = Vec::new();
     let mut faced = Vec::new();
+    let mut controls = Vec::new();
     for slot in 0..world::SLOTS {
         let Some(nation) = world.country(slot).map(|country| country.nation) else {
             continue;
@@ -74,25 +75,27 @@ pub fn play_day(
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                faced.extend(settle(records, nation, level, day, &mut season.random));
+                faced.extend(settle(records, nation, level, day, &mut season.random, &mut controls));
                 played.push((nation, level));
             }
         }
     }
     let reported = faced.iter().map(|f| f.club).collect();
-    MatchDay { leagues: played, reported, faced }
+    MatchDay { leagues: played, reported, faced, controls }
 }
 
 /// What a day's matches leave for the dialogs behind them: the leagues
 /// that played, by country and level, and of each match a human's club
 /// played, that club (`FUN_00551818`: the home side where it is a
 /// human's, else the away side), in the order of the day's matches, and
-/// the match itself.
+/// the match itself; and the doping controls of the human clubs, for
+/// dialog 41 each.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MatchDay {
     pub leagues: Vec<(u16, u8)>,
     pub reported: Vec<(u8, i16)>,
     pub faced: Vec<Faced>,
+    pub controls: Vec<crate::doping_control::Control>,
 }
 
 /// A match a human's club played: the club its report is shown for, both
@@ -1156,7 +1159,14 @@ fn mark_cup(
 /// the visiting fans, the away club the travelling gate of the game. The
 /// human's year calendar fills the day's fixture with the new score, its
 /// flag saying the result stands.
-fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mut Random) -> Vec<Faced> {
+fn settle(
+    records: &mut Records,
+    nation: u16,
+    level: u8,
+    day: usize,
+    random: &mut Random,
+    controls: &mut Vec<crate::doping_control::Control>,
+) -> Vec<Faced> {
     let Some(league) = League::of(records, nation, level) else {
         return Vec::new();
     };
@@ -1164,6 +1174,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         return Vec::new();
     };
     let games = league.open_games();
+    let teams = league.teams();
     // The byte where each place writes its place after this matchday, and
     // where the count and the crowd stand — all taken before the count is
     // raised, since they lie on the matchday as it was played.
@@ -1358,6 +1369,16 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
             };
             report::write(records, &played, random);
             reported.push(Faced { club, sides, attendance, fans: Some(fans), half: [result[2], result[3]] });
+        }
+    }
+    // The matchday's doping control: one of its pairs (`FUN_00690a9e`),
+    // both sides' men picked (`FUN_005dad80`, home first) and those of a
+    // human's club tested (`FUN_00741aef` → `FUN_005dae5f`).
+    let at = crate::doping_control::controlled(teams, random);
+    if let (Some(&home), Some(&away)) = (homes.get(at), aways.get(at)) {
+        let picked = [home, away].map(|n| (n, crate::doping_control::pick(records, nation, n, random)));
+        for (n, men) in picked {
+            controls.extend(crate::doping_control::test(records, nation, n, &men, random));
         }
     }
     // Every offered Toto match keeps its result, wherever it stands in
@@ -1985,7 +2006,7 @@ mod crowd_tests {
         let weakest = before.iter().rev().find(|c| c.attendance != 0).map_or(0, |c| c.attendance);
         let mut random = Random::new(7);
         let day = usize::from(records.globals.day());
-        settle(&mut records, 14, 0, day, &mut random);
+        settle(&mut records, 14, 0, day, &mut random, &mut Vec::new());
         let gates: Vec<i32> = held
             .iter()
             .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
