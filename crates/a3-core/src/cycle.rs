@@ -1690,6 +1690,10 @@ impl Cycle {
                 // more after the grounds' draw (`FUN_0072f568`, the same
                 // `FUN_0072e5d0` fixtures, his week planner emptied), which
                 // the one build here already stands for.
+                // The humans due their contract's word (`FUN_0066a946`,
+                // message 0x10b) have the sums moved with the league;
+                // the dialogs that tell them are not built yet.
+                let _told = crate::career::season_terms(records);
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
                 crate::year::note_next_matches(records, &self.data, 0, &mut season.random);

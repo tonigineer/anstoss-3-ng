@@ -430,6 +430,66 @@ pub fn promotions(records: &mut Records) {
     }
 }
 
+/// What the season's turn tells a human of his contract (message 0x10b,
+/// `CMyStartDialog::FUN_0066aa06`): his club stayed in its league and he
+/// hears of the season's new goal (`CVertragskonditionenSaisonwechsel`),
+/// or it went up or down and his contract's sums moved with it
+/// (`CVertragskonditionenNeu`, its flag 1 on a promotion, 0 on a
+/// relegation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeasonTerms {
+    Goal,
+    Promoted,
+    Relegated,
+}
+
+/// The sums a contract's fixed pay and pay per point move to
+/// (`FUN_0066aa06`): a relegation (`FUN_0069a221`, team +0x110's bit 8)
+/// weighs before a promotion (`FUN_0069a1e1`, bit 4) — four fifths of
+/// either sum, else six fifths —, each down to tens (`FUN_0067575a` by
+/// `DAT_00a3b420`); neither leaves them standing.
+pub fn season_sums(flags: u16, fixed: i32, point: i32) -> (SeasonTerms, i32, i32) {
+    const TENS: i32 = 10;
+    let (terms, fifths) = if flags & crate::promotion::RELEGATED != 0 {
+        (SeasonTerms::Relegated, 4)
+    } else if flags & crate::promotion::PROMOTED != 0 {
+        (SeasonTerms::Promoted, 6)
+    } else {
+        return (SeasonTerms::Goal, fixed, point);
+    };
+    let moved = |v: i32| v.wrapping_mul(fifths) / 5 / TENS * TENS;
+    (terms, moved(fixed), moved(point))
+}
+
+/// The humans the season's turn tells of their contract (`FUN_0066a946`
+/// in the new-season block, posting message 0x10b for each): every one
+/// with a club whose count at record +0x180 (the manager object's +0x94)
+/// stands above one, in the order of the slots. Each one's contract sums
+/// move as [`season_sums`] has them, which the original does as his
+/// dialog opens; the dialog itself is not built.
+pub fn season_terms(records: &mut Records) -> Vec<(usize, SeasonTerms)> {
+    let mut told = Vec::new();
+    for (slot, held) in records.globals.slots().iter().copied().enumerate() {
+        if held == 0 {
+            continue;
+        }
+        let (country, number, count) = {
+            let m = &records.managers[slot];
+            (m.country(), m.team(), m.unrest_count())
+        };
+        if country == 0 || count <= 1 {
+            continue;
+        }
+        let flags = records.team(country, number).map_or(0, |t| t.get::<u16>(0x110));
+        let m = &mut records.managers[slot];
+        let (terms, fixed, point) = season_sums(flags, m.pay_fixed(), m.pay_point());
+        m.set_pay_fixed(fixed);
+        m.set_pay_point(point);
+        told.push((slot, terms));
+    }
+    told
+}
+
 /// One more on the station the manager stands at — its last row, since
 /// the original writes through `(byte)(count - 1)` unchecked: with no row
 /// of his yet there is nothing to mark.
@@ -465,6 +525,16 @@ fn bump(car: &mut [u8], at: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relegation takes four fifths of the sums, a promotion gives six,
+    /// each down to tens; relegated and promoted at once counts as down.
+    #[test]
+    fn the_turn_moves_the_contract_sums_with_the_league() {
+        assert_eq!(season_sums(0x1, 12_345, 678), (SeasonTerms::Goal, 12_345, 678));
+        assert_eq!(season_sums(0x4, 12_345, 678), (SeasonTerms::Promoted, 14_810, 810));
+        assert_eq!(season_sums(0x8, 12_345, 678), (SeasonTerms::Relegated, 9_870, 540));
+        assert_eq!(season_sums(0xc, 100_000, 5), (SeasonTerms::Relegated, 80_000, 0));
+    }
 
     /// The turn drops the told entries and keeps the rest in their order.
     #[test]
