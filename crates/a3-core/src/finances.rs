@@ -623,6 +623,37 @@ pub fn keep_last_season(records: &mut Records) {
     }
 }
 
+/// The season start's talks a human manager may lead himself (dialog 422,
+/// `CSaisonstartVerhandlungen`, controls 0x889-0x88c, 0x179b, 0x179c): the
+/// main sponsor, the boards, the kit, the player bonuses, the souvenirs
+/// and the European television. Each box starts ticked when the
+/// preparation is normal (`DAT_00b5d152` 5, `FUN_0053ae10`); a contract
+/// with years left (club +0x509, +0x5a1, +0x5b1, +0x5a9) turns its box off
+/// and unticked, and so does a club out of Europe (team +0x110 0x4000,
+/// `FUN_0069a2e5`) the television's (`FUN_0053b05b`). The bonuses' box is
+/// always open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeasonTalk {
+    pub ticked: bool,
+    pub open: bool,
+}
+
+const SEASON_TALK_CONTRACTS: [Option<usize>; 6] = [Some(0x509), Some(0x5a1), Some(0x5b1), None, Some(0x5a9), None];
+const NORMAL_PREPARATION: u8 = 5;
+const IN_EUROPE: u16 = 0x4000;
+
+pub fn season_talks(team: &Team, preparation: u8) -> [SeasonTalk; 6] {
+    let ticked = preparation == NORMAL_PREPARATION;
+    std::array::from_fn(|k| {
+        let open = match SEASON_TALK_CONTRACTS[k] {
+            Some(at) => team.get::<u8>(at + CLUB_TO_TEAM) == 0,
+            None if k == 5 => team.get::<u16>(0x110) & IN_EUROPE != 0,
+            None => true,
+        };
+        SeasonTalk { ticked: ticked && open, open }
+    })
+}
+
 /// The slots of last season's figures (the screen's "Vergleich mit
 /// Vorjahr"), the departments at their levels now; the first part of the
 /// other income is the one already in `slots`, which the game leaves

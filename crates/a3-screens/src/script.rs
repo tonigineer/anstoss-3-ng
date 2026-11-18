@@ -12476,7 +12476,7 @@ mod tests {
         assert_eq!(runner.host.view().id, TALKS, "{log}");
         assert_eq!(runner.host.state().season.as_ref().unwrap().day, 0, "the new season stands");
         let dialog = &game.dialogs[&TALKS];
-        assert_eq!(dialog.controls[control(dialog, 6044).unwrap()].text, " Fernsehgelder (bei Teilnahme)");
+        assert_eq!(dialog.controls[control(dialog, 6044).unwrap()].text, " Fernsehgelder  (bei Teilnahme)");
         drop(runner);
         let Some(runner) = on_save(&game, "season-start", &to(PREPARATION)) else { return };
         assert_eq!(runner.host.view().id, PREPARATION, "{}", runner.log.join("\n"));
@@ -12823,5 +12823,42 @@ mod tests {
             assert!(list.row_icons.iter().any(|icons| !icons.is_empty()));
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364's turn reaches the season start's negotiations (dialog
+    /// 422): each box ticked or off as the club's contracts and its place
+    /// in Europe leave it (`CSaisonstartVerhandlungen::FUN_0053b05b`), the
+    /// bonuses' always open, the television's label without its "%s".
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_start_talks_tick_the_open_negotiations() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace(
+            "until dialog 147",
+            "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422",
+        );
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, 422, "{}", runner.log.join("\n"));
+        let dialog = &game.dialogs[&422];
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+        let nation = game.world.country(slot).unwrap().nation;
+        let team = records.team(nation, number as u16).unwrap();
+        let talks = a3_core::finances::season_talks(team, records.globals.preparation());
+        assert!(talks[3].open, "the bonuses' box is always open");
+        for (id, talk) in [0x889u16, 0x88a, 0x88b, 0x88c, 0x179b, 0x179c].into_iter().zip(talks) {
+            let c = control(dialog, id).unwrap();
+            let crate::controls::ControlState::Check(check) = &runner.host.view().controls[c].state else { panic!("{id}") };
+            assert_eq!((check.checked, check.disabled), (talk.ticked, !talk.open), "box {id:#x}");
+        }
+        let c = control(dialog, 0x179c).unwrap();
+        let crate::controls::ControlState::Check(check) = &runner.host.view().controls[c].state else { panic!() };
+        assert_eq!(check.text, " Fernsehgelder  (bei Teilnahme)");
     }
 }
