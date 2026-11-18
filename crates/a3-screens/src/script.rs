@@ -12095,4 +12095,119 @@ mod tests {
         let records = state.records.as_ref().unwrap();
         assert_eq!(records.managers[records.human_slot(0).unwrap()].render_events(), 0);
     }
+
+    /// Where a day of the replica's records parts from the original's
+    /// dump of the same day, by what: every player's condition, freshness
+    /// and injury (the game's day it came, the date it lasts to, its kind,
+    /// the knock), the human clubs' squads apart from the others, and the
+    /// human clubs' money as the cash box tells it.
+    fn apart(
+        replica: &a3_core::records::Records,
+        oracle: &a3_core::records::Records,
+    ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+        let mut apart = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+        let human: Vec<_> = oracle
+            .humans()
+            .filter_map(|m| Some((m.country(), m.team(), oracle.team(m.country(), m.team())?)))
+            .filter(|(.., team)| team.humans() != [0, 0])
+            .collect();
+        let squads: std::collections::BTreeSet<u16> = human.iter().flat_map(|(.., team)| team.players()).collect();
+        for (id, (r, o)) in replica.players.iter().zip(&oracle.players).enumerate().skip(1) {
+            let id = id as u16;
+            let human = squads.contains(&id);
+            let mut differ = |what: [&'static str; 2], a: String, b: String| {
+                if a != b {
+                    apart.entry(what[usize::from(human)]).or_default().push(format!("{id}: {a}, not {b}"));
+                }
+            };
+            differ(["condition", "human condition"], r.condition().to_string(), o.condition().to_string());
+            differ(["freshness", "human freshness"], format!("{:?}", r.freshness()), format!("{:?}", o.freshness()));
+            let injury = |p: &a3_core::records::Player| {
+                format!("{} {:?} {} {}", p.injured_on(), p.injured_to(), p.injury_kind(), p.knocked())
+            };
+            differ(["injury", "human injury"], injury(r), injury(o));
+        }
+        for (country, number, team) in human {
+            let money = a3_core::finances::cash_and_result(team);
+            let ours = replica.team(country, number).map(a3_core::finances::cash_and_result);
+            if ours != Some(money) {
+                apart.entry("money").or_default().push(format!("{country}/{number}: {ours:?}, not {money}"));
+            }
+        }
+        apart
+    }
+
+    /// What the replica still reckons otherwise than the original over
+    /// Probe1's week, each the matter of a part of its own: the human
+    /// club's money (daily-reckoning-finances), the computer clubs'
+    /// injuries breaking out and healing (daily-reckoning-injuries) and
+    /// their condition and freshness (daily-reckoning-computer-fitness).
+    const STILL_APART: [&str; 4] = ["money", "injury", "condition", "freshness"];
+
+    /// The oracle's week from Probe1 (`tools/oracle/check.sh` step 1,
+    /// `tools/oracle/scripts/from-save.txt`, a dump after each day's close)
+    /// against the replica's days from the same save, its random numbers
+    /// set at the line-up to where the original's stood: the loader
+    /// overwrites the state's first half with `rand()` (SAVEGAME.md), and
+    /// the dump of day 35, taken as the turn opens, holds it. The load
+    /// agrees in everything compared, and the human club's squad keeps
+    /// agreeing day by day; what still parts is [`STILL_APART`].
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn probe1s_week_against_the_oracles_dumps() {
+        use a3_core::records::Records;
+        use a3_files::an3::Save;
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dumps of Probe1's week among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let dumps = PathBuf::from(oracle).join("runs/check/save-a");
+        if !dumps.join("day-042.an3").exists() {
+            eprintln!("no oracle dumps of Probe1's week among the saves; tools/oracle/check.sh writes them");
+            return;
+        }
+        let dump = |day: u16| Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap();
+        let word = |save: &Save, name: &str| {
+            i64::from(i32::from_le_bytes(save.block(name).unwrap().data[..4].try_into().unwrap()))
+        };
+        let first = dump(35);
+        let (s1, s2) = (word(&first, "0x89dcc0"), word(&first, "0x89dcc4"));
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "Probe1") else {
+            eprintln!("no Probe1 among the saves; the oracle's copy has it");
+            return;
+        };
+        let script: String = include_str!("../../../tools/oracle/scripts/from-save.txt")
+            .lines()
+            .filter(|line| !line.starts_with("until"))
+            .map(|line| line.replace("row 5144 0", &format!("row 5144 {row}")) + "\n")
+            .collect();
+        let script = format!("{script}until dialog 147\nnow random {s1} {s2}");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&script).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        {
+            let state = runner.host.state();
+            let loaded = apart(state.records.as_ref().unwrap(), &Records::from_save(first).unwrap());
+            assert!(loaded.is_empty(), "the load parts from the original's: {loaded:?}");
+        }
+        let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+        for day in 36..=42u16 {
+            let result = runner.run(&Script::parse(&format!("until day {day}")).unwrap());
+            result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            let oracle = Records::from_save(dump(day)).unwrap();
+            let state = runner.host.state();
+            let replica = state.records.as_ref().unwrap();
+            assert_eq!(replica.globals.day(), oracle.globals.day());
+            assert!(oracle.humans().any(|m| oracle.team(m.country(), m.team()).is_some_and(|t| t.humans() != [0, 0])));
+            for (what, list) in apart(replica, &oracle) {
+                assert!(STILL_APART.contains(&what), "day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
+                eprintln!("day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(3)]);
+                *seen.entry(what).or_default() += 1;
+            }
+        }
+        // A part that brings its matter into line takes it off the list.
+        for what in STILL_APART {
+            assert!(seen.contains_key(what), "{what} agrees all week now: take it off STILL_APART");
+        }
+    }
 }
