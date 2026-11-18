@@ -98,7 +98,7 @@ pub(crate) const LAND_FILES: [&str; SLOTS] = [
     "LandTuer.sav",
     "Bonus1.sav",
 ];
-const LEAGUE_FILES: [&[&str]; SLOTS] = [
+pub(crate) const LEAGUE_FILES: [&[&str]; SLOTS] = [
     &[
         "Liga1Deu.sav",
         "Liga2Deu.sav",

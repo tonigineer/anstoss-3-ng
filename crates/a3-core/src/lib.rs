@@ -60,6 +60,7 @@ pub mod mood;
 pub mod national;
 pub mod newplayer;
 pub mod newgame;
+pub mod land_clubs;
 pub mod land_players;
 pub mod news;
 pub mod noracsa;
