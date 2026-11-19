@@ -274,6 +274,67 @@ fn rating(records: &Records, team: &crate::records::Team) -> f32 {
     r.clamp(0.0, 9.0)
 }
 
+/// A club's search planned as its season opens (`FUN_00772bee`'s
+/// `FUN_006a03fb(club, 0)` on the plan `FUN_006a01b8` budgeted).
+pub(crate) fn plan_season(records: &mut Records, random: &mut Random, club: (u8, i16)) {
+    let mut plan = read(records, club);
+    if let Some(team) = team_of(records, club) {
+        season_budget(records, team, &mut plan);
+    }
+    plan_anew(records, random, club, &mut plan, false);
+    write(records, club, &plan);
+}
+
+/// What a season's budget adds by the club's rating (`FUN_006a01b8`):
+/// below 0.3 a million less, then above each mark twice its sum
+/// (`DAT_00a3b2a4` … `DAT_00a3b348`), up to 0.8 nothing.
+const SEASON_POOR: i32 = -1_000_000;
+const SEASON_REFILLS: [(f64, i32); 9] = [
+    (8.8, 240_000_000),
+    (7.8, 120_000_000),
+    (6.8, 60_000_000),
+    (5.8, 30_000_000),
+    (4.8, 16_000_000),
+    (3.8, 8_000_000),
+    (2.8, 4_000_000),
+    (1.8, 2_000_000),
+    (0.8, 1_000_000),
+];
+/// The plan's spent budget (+4), its season's budget (+8) and the mark
+/// the season sets (+0x10).
+const SPENT: usize = 4;
+const SEASON_BUDGET: usize = 8;
+const SEASON_MARK: i16 = 7;
+
+/// The season's budget (`FUN_006a01b8`): two thirds of what is left
+/// when above nought, kept as the base (+0xc), nothing spent; below
+/// 200 Mio the sum by the club's rating ([`SEASON_REFILLS`]), cut to the
+/// licence's transfer sum where the association set one; the season's
+/// budget the same, the mark at 7.
+fn season_budget(records: &Records, team: &crate::records::Team, plan: &mut [u8; PLAN_SIZE]) {
+    let mut budget = long(plan, 0);
+    if budget > 0 {
+        budget = budget / 3 * 2;
+    }
+    plan[BASE..BASE + 4].copy_from_slice(&budget.to_le_bytes());
+    plan[SPENT..SPENT + 4].copy_from_slice(&0i32.to_le_bytes());
+    if budget < REFILL_BELOW {
+        let r = f64::from(rating(records, team));
+        let add = if r < POOR_RATING {
+            SEASON_POOR
+        } else {
+            SEASON_REFILLS.iter().find(|&&(above, _)| r > above).map_or(0, |&(_, add)| add)
+        };
+        budget = budget.wrapping_add(add);
+    }
+    if crate::licence::conditions(team) & crate::licence::TRANSFER_BUDGET != 0 {
+        budget = budget.min(i32::from(team.get::<i16>(TRANSFER_SUM)).wrapping_mul(SUM_UNIT));
+    }
+    plan[0..4].copy_from_slice(&budget.to_le_bytes());
+    plan[SEASON_BUDGET..SEASON_BUDGET + 4].copy_from_slice(&budget.to_le_bytes());
+    plan[NOVEMBER_MARK..NOVEMBER_MARK + 2].copy_from_slice(&SEASON_MARK.to_le_bytes());
+}
+
 fn read(records: &Records, club: (u8, i16)) -> [u8; PLAN_SIZE] {
     team_of(records, club).map_or([0; PLAN_SIZE], |t| t.get(PLAN))
 }

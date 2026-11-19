@@ -29,7 +29,7 @@ use crate::value::ValueTables;
 /// The regeneration table (`DAT_00b68ea8`): 9000 entries of the id, the
 /// class and the main position; each class's range (`DAT_00b5cc08`,
 /// `DAT_00b5cc44`).
-const REGENERATION: &str = "0xb68ea8";
+pub(crate) const REGENERATION: &str = "0xb68ea8";
 const ENTRIES: usize = 9000;
 const CLASS_FROM: usize = 0xb5cc08;
 const CLASS_TO: usize = 0xb5cc44;
@@ -89,6 +89,13 @@ const CLUB_CLASS: usize = 0x875;
 /// The seasons count the rollover keeps (R+0x161), the retiring byte and
 /// the picks.
 const SEASONS: usize = 0x161;
+
+/// A class's range of the regeneration table (`DAT_00b5cc08`,
+/// `DAT_00b5cc44`).
+pub(crate) fn class_range(records: &Records, class: usize) -> (i16, i16) {
+    let g = &records.globals;
+    (g.get::<i16>(CLASS_FROM + 2 * class), g.get::<i16>(CLASS_TO + 2 * class))
+}
 
 fn entry(table: &[u8], k: usize) -> (i16, u8) {
     let at = 4 * k;
@@ -306,7 +313,7 @@ fn abilities(p: &mut Player, plain: bool, random: &mut Random) {
 
 /// A language more (`FUN_00705d4c`): the country's bit in R+0x216, his
 /// language problems gone.
-fn speaks(p: &mut Player, country: u8) {
+pub(crate) fn speaks(p: &mut Player, country: u8) {
     let bit = LANGUAGE.get(usize::from(country)).copied().unwrap_or(0);
     p.put::<u16>(0x216, p.get::<u16>(0x216) | (1 << (bit & 0x1f)));
     p.set_problems(p.problems() & 0xf3);
@@ -385,7 +392,7 @@ fn born(records: &Records, p: &mut Player, age: i32, random: &mut Random) {
 }
 
 /// The day, month and year of such a birthday.
-fn birth_date(records: &Records, age: i32, random: &mut Random) -> (u8, u8, u16) {
+pub(crate) fn birth_date(records: &Records, age: i32, random: &mut Random) -> (u8, u8, u16) {
     let [day, month, year] = records.globals.date();
     let m = random.below(12) + 1;
     let d = random.below(MONTH_DAYS[m as usize]) + 1;

@@ -133,6 +133,8 @@ pub struct Rules {
     pub forecast: crate::forecast::ForecastTables,
     /// What players ask and make of their contracts.
     pub contract: crate::contract::ContractTables,
+    /// What a new game's first season opens its played clubs' men with.
+    pub first_season: crate::first_season::Tables,
     /// Alerts the game writes itself, not from its texts: by where they
     /// are in the program.
     pub messages: std::collections::HashMap<u32, String>,
@@ -182,6 +184,7 @@ impl Rules {
                 .map(|off| off != 0)
                 .collect(),
             value: crate::value::ValueTables::load(exe)?,
+            first_season: crate::first_season::Tables::load(exe)?,
             words: crate::words::Words::load(exe)?,
             discipline: crate::discipline::DisciplineTables::load(exe)?,
             market: crate::market::MarketTables::load(exe)?,

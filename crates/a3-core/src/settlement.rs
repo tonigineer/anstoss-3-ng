@@ -1861,7 +1861,9 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
 /// tables), every club marking the men it counts on
 /// ([`crate::squad_rank::mark_counted_on`]) and the boards setting every club's goals before the walk plans
 /// the clubs by them ([`crate::season::open_goals`], `FUN_00772bee` in
-/// `FUN_0065e659`, which comes before `FUN_0042b2fc`).
+/// `FUN_0065e659`, which comes before `FUN_0042b2fc`). In a new game's
+/// first season the played clubs open by
+/// [`crate::first_season::open_country`] instead, goals and all.
 pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Option<&crate::season::Rules>) {
     let tables = rules.map(|r| (&r.contract, &r.value));
     roll_globals(&mut records.globals, random);
@@ -1881,6 +1883,14 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     crate::squad_rank::keep_scores(records);
     if let Some((_, values)) = tables {
         crate::squad_rank::mark_counted_on(records, values);
+    }
+    // The first season's played clubs open with their men's private lives,
+    // presidents, goals and search plans (`FUN_00774088`).
+    let first = records.globals.seasons() == 1;
+    if first && let Some(rules) = rules {
+        for country in crate::opponent::played_nations(records) {
+            crate::first_season::open_country(records, rules, country, random);
+        }
     }
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
@@ -1907,7 +1917,9 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     open_managers(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
-    if let Some(rules) = rules {
+    if let Some(rules) = rules
+        && !first
+    {
         crate::season::open_goals(records, rules, random);
     }
     // The staff markets and the pre-season's Turniere (`FUN_007719a6`),

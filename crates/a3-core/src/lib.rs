@@ -30,6 +30,7 @@ pub mod event_text;
 pub mod exhibition;
 pub mod fee_talk;
 pub mod finances;
+pub mod first_season;
 pub mod free_agents;
 pub mod friendly;
 pub mod forecast;

@@ -1,0 +1,652 @@
+//! A new game's played country opens its clubs' first season
+//! (`FUN_00774088` for a country played, in `FUN_0065e659` while the season
+//! count stands at one): every club of its leagues in the leagues' order,
+//! then every club in none (its level 10), runs the club's season opening
+//! (`FUN_00772bee`). In the first season that draws the club's will to win
+//! (41, less 20, `FUN_0069efe8`), opens the men of its squad
+//! (`FUN_00772799`: their private lives, hobbies, first stations,
+//! release fees, characters and languages), names its president
+//! (`FUN_0066d30f`, `FUN_0069b9a2`), sets a league club's goals by its
+//! squad's rank (`FUN_00775cb7`, a draw in 102), the mood (80 and a draw
+//! of 41), a draw in 100 at club +0xdf0 and plans its search
+//! (`FUN_006a03fb`).
+//!
+//! The club's other first-season fields (its class, tactics, respect,
+//! the reserves and youth leagues of `FUN_00774088`'s middle) draw nothing
+//! and stand in [`crate::settlement`].
+
+use crate::random::Random;
+use crate::records::{Player, Records};
+
+/// The hobbies a man is drawn (`DAT_00a325c8`, `FUN_005fd496`: 39 of a
+/// weight and the hobby at `0x88e828`); four in five draw one
+/// (`FUN_005fed6b`).
+const HOBBIES_AT: u32 = 0x88e828;
+const HOBBIES: usize = 39;
+const HOBBY_ODDS: u32 = 80;
+/// By his strength, the chance in 100 of the bit at L+0x1c (R+0x1d4,
+/// `FUN_006fe877`) and of a release fee at a top league's club, in 200 at
+/// the second's (`DAT_008acab0`, `DAT_008acae8`); of a language problem
+/// of the first and of the second kind (`DAT_008acb20`, `DAT_008acb58`).
+const FRESH_BIT_AT: u32 = 0x8acab0;
+const FEE_AT: u32 = 0x8acae8;
+const PROBLEM_AT: [u32; 2] = [0x8acb20, 0x8acb58];
+const STRENGTHS: usize = 14;
+/// The row of first names a nation's men's partners and children take
+/// (`DAT_008a7470`), and whether the nation has its own
+/// (`DAT_008a74e8`); else his club's country's row.
+const NAME_ROWS_AT: u32 = 0x8a7470;
+const OWN_NAMES_AT: u32 = 0x8a74e8;
+const NATIONS: usize = 0x78;
+/// The days of the months a partner's birthday is drawn in
+/// (`DAT_008a3088`, `FUN_006759f0`).
+const MONTH_DAYS_AT: u32 = 0x8a3088;
+
+/// The tables the opening reads from the program.
+pub struct Tables {
+    hobbies: Vec<(i16, i16)>,
+    hobby_total: u32,
+    fresh_bit: Vec<u32>,
+    fee: Vec<u32>,
+    problems: [Vec<u32>; 2],
+    name_rows: Vec<u8>,
+    own_names: Vec<u8>,
+    month_days: Vec<u16>,
+}
+
+impl Tables {
+    pub fn load(exe: &a3_files::exe::Exe) -> std::io::Result<Self> {
+        let pairs = exe.u16s(HOBBIES_AT, 2 * HOBBIES)?;
+        let hobbies: Vec<(i16, i16)> = pairs.chunks(2).map(|c| (c[0] as i16, c[1] as i16)).collect();
+        // The total is the weights' sum (`FUN_0060bdb7`, its least -1).
+        let hobby_total = hobbies.iter().map(|h| i32::from(h.0)).sum::<i32>().max(0) as u32;
+        Ok(Self {
+            hobbies,
+            hobby_total,
+            fresh_bit: exe.u32s(FRESH_BIT_AT, STRENGTHS)?,
+            fee: exe.u32s(FEE_AT, STRENGTHS)?,
+            problems: [exe.u32s(PROBLEM_AT[0], STRENGTHS)?, exe.u32s(PROBLEM_AT[1], STRENGTHS)?],
+            name_rows: exe.bytes(NAME_ROWS_AT, NATIONS)?.to_vec(),
+            own_names: exe.bytes(OWN_NAMES_AT, 0x80)?.to_vec(),
+            month_days: exe.u16s(MONTH_DAYS_AT, 13)?,
+        })
+    }
+
+    /// A weighted hobby (`FUN_0060be4d` on `DAT_00a325c8`): a draw below
+    /// the total walks the weights; past them none.
+    fn hobby(&self, random: &mut Random) -> u8 {
+        let mut r = random.below(self.hobby_total) as i32;
+        for &(weight, hobby) in &self.hobbies {
+            if i32::from(weight) > r {
+                return hobby as u8;
+            }
+            r -= i32::from(weight);
+        }
+        0
+    }
+
+    fn by_strength(table: &[u32], p: &Player) -> u32 {
+        table.get(usize::from(p.strength())).copied().unwrap_or(0)
+    }
+}
+
+/// The partner's kind (R+0x27e's low two bits): a girlfriend, a wife; the
+/// state of the two (bits 2 to 4) and the bit a married man's draw of 30
+/// in 100 sets (`FUN_006ffd23`).
+const PARTNER: usize = 0x27e;
+const GIRLFRIEND: u8 = 1;
+const WIFE: u8 = 3;
+const PARTNER_BIT: u8 = 0x80;
+/// The partner's first name (from the row's women, 50 on), her row, her
+/// birthday (day and month), the day they came together or married
+/// (R+0x16c), the dates the stations of private life pass through
+/// (R+0x170), and the children's: four bytes each from R+0x174, their
+/// names from R+0x288.
+const PARTNER_NAME: usize = 0x283;
+const NAMES_ROW: usize = 0x286;
+const PARTNER_BIRTHDAY: usize = 0x188;
+const TOGETHER_SINCE: usize = 0x16c;
+const PASSING: usize = 0x170;
+const CHILD_DATES: usize = 0x174;
+const CHILD_NAMES: usize = 0x288;
+const CHILDREN_MOST: i16 = 5;
+/// The bits a man's children leave (`FUN_00701ae6`) and the two that name
+/// a German's first son or daughter (Germany's real players).
+const CHILD_CLEARS: u32 = 0x0100_0001;
+const CHILD_SETS: u32 = 0x0080_0000;
+const NAMED_CHILDREN: u32 = 0x1800_0000;
+const GERMANY: u8 = 0x0e;
+const REAL_PLAYERS: u16 = 0x4269;
+/// R+0x1b4's bits the opening may set: overweight, a smoker, a bit with
+/// age (0x400), and one with the trait 0x200.
+const OVERWEIGHT: u32 = 0x20;
+const SMOKES: u32 = 0x800;
+const AGE_BIT: u32 = 0x400;
+const TRAIT_BIT: u32 = 0x0080_0200;
+/// The release fee's unit (`DAT_00a3b3bc`), and the word it stands in
+/// (R+0x156, L+0x8e).
+const FEE_UNIT: i64 = 10_000;
+/// The seasons count (R+0x161, L+0x98), one to three.
+const SEASONS: usize = 0x161;
+/// The word L+0x1c stands in (R+0x1d4).
+const FRESH_WORD: usize = 0x1d4;
+/// The languages a man speaks besides, each by its draw in 100: English,
+/// French, and two more.
+const MORE_LANGUAGES: [(u8, u32); 4] = [(0x10, 95), (0x14, 20), (0x3f, 10), (0x1c, 10)];
+/// The global lists of a man by position and by quality (`DAT_00b5dfd0`,
+/// `DAT_00b5dff8` for keepers, `DAT_00b5dfe6`).
+const HOME_GROWN: usize = 0xb5dfd0;
+const KEEPER_QUALITIES: usize = 0xb5dff8;
+const QUALITIES: usize = 0xb5dfe6;
+
+/// The club's level a man's release fee is drawn at (club +0x105).
+const TOP: u8 = 0;
+const SECOND: u8 = 1;
+/// A club in no league (`FUN_00774088`'s last loop).
+const NO_LEAGUE: u8 = 10;
+
+/// The team fields: the will to win, the board's goals, the mood, the
+/// draw at club +0xdf0, the president's names and birthday.
+const WILL: usize = 0x95a;
+const WILL_DRAW: u32 = 41;
+const WILL_LESS: i16 = 20;
+const WILL_MOST: i16 = 200;
+const GOALS_AT: [usize; 2] = [0x135, 0x136];
+const RANK_AT: usize = 0x130;
+const FLAGS_AT: usize = 0x110;
+const PROMOTED_FLAG: u16 = 4;
+const MOOD_BASE: u8 = 80;
+const MOOD_DRAW: u32 = 41;
+const SEASON_DRAW: usize = 0x302;
+const PRESIDENT: usize = 0x8f8;
+const PRESIDENT_TRIES: usize = 5;
+const PRESIDENT_FROM: u32 = 35;
+const PRESIDENT_AGES: u32 = 20;
+/// The season's marks the mood takes (`FUN_0069a161` … `FUN_0069a261`):
+/// the champion, the runner-up, a UEFA cup entrant, the promoted, the
+/// relegated, the first that holds; the cup winner besides.
+const STANDINGS: [(u16, i8); 5] = [(1, 30), (2, 20), (0x10, 10), (4, 20), (8, -30)];
+const CUP_WON: u16 = 0x1000;
+
+/// The played `country`'s clubs open their first season (`FUN_00774088`).
+pub fn open_country(records: &mut Records, rules: &crate::season::Rules, country: u16, random: &mut Random) {
+    let tables = &rules.first_season;
+    let leagues = records.countries.leagues(usize::from(country)).max(0) as u8;
+    let mut in_league = Vec::new();
+    for level in 0..leagues {
+        let Some(league) = crate::opponent::League::of(records, country, level) else { continue };
+        let (size, clubs): (usize, Vec<i16>) = (league.teams(), (0..league.teams()).map(|k| league.team(k)).collect());
+        for number in clubs {
+            let Ok(number) = u16::try_from(number) else { continue };
+            in_league.push(number);
+            open_club(records, rules, tables, (country, number), level, Some(size), random);
+        }
+    }
+    for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+        if !in_league.contains(&number) {
+            open_club(records, rules, tables, (country, number), NO_LEAGUE, None, random);
+        }
+    }
+}
+
+/// A club's first season opened (`FUN_00772bee`'s draws and their fields).
+fn open_club(
+    records: &mut Records,
+    rules: &crate::season::Rules,
+    tables: &Tables,
+    (country, number): (u16, u16),
+    level: u8,
+    size: Option<usize>,
+    random: &mut Random,
+) {
+    let will = random.below(WILL_DRAW) as i16 - WILL_LESS;
+    let Some(team) = records.team_mut(country, number) else { return };
+    let w = team.get::<i16>(WILL).saturating_add(will).clamp(-WILL_MOST, WILL_MOST);
+    team.put::<i16>(WILL, w);
+    let squad = team.players();
+    for id in squad {
+        open_man(records, rules, tables, (country as u8, number), level, id, random);
+    }
+    if records.globals.played(country as i16) {
+        let names = president_names(records, country, random);
+        let date = date_years_ago(records, (random.below(PRESIDENT_AGES) + PRESIDENT_FROM) as i32, random);
+        if let Some(team) = records.team_mut(country, number) {
+            team.put::<i16>(PRESIDENT, names.0);
+            team.put::<i16>(PRESIDENT + 2, names.1);
+            for (k, b) in date.iter().enumerate() {
+                team.put::<u8>(PRESIDENT + 4 + k, *b);
+            }
+        }
+    }
+    let Some(team) = records.team(country, number) else { return };
+    let goals = match size {
+        Some(size) => rules.season_goals(
+            size,
+            usize::from(team.get::<u8>(RANK_AT)),
+            team.get::<u16>(FLAGS_AT) & PROMOTED_FLAG != 0,
+            i32::from(team.board()),
+            level == 0,
+            team.linked()[0] >= 0,
+            random,
+        ),
+        None => (1, 1),
+    };
+    let human = team.humans()[0];
+    let flags = team.get::<u16>(FLAGS_AT);
+    let mut mood = (random.below(MOOD_DRAW) as u8).wrapping_add(MOOD_BASE);
+    if let Some(&(_, m)) = STANDINGS.iter().find(|s| flags & s.0 != 0) {
+        mood = mood.wrapping_add(m as u8);
+    }
+    if flags & CUP_WON != 0 {
+        mood = mood.wrapping_add(20);
+    }
+    let draw = random.below(100) as u8;
+    let Some(team) = records.team_mut(country, number) else { return };
+    team.put::<u8>(GOALS_AT[0], goals.0);
+    team.put::<u8>(GOALS_AT[1], goals.1);
+    team.set_mood(mood);
+    team.put::<u8>(SEASON_DRAW, draw);
+    if let Some(m) = usize::from(human).checked_sub(1).and_then(|k| records.managers.get_mut(k)) {
+        m.set_goal_class(i16::from(goals.1 as i8));
+    }
+    // The search planned anew (`FUN_006a01b8`'s budget, then
+    // `FUN_006a03fb(club, 0)`).
+    crate::search_plan::plan_season(records, random, (country as u8, number as i16));
+}
+
+/// The president's first and last name (`FUN_0066d30f`): of two men of
+/// the regeneration table's range of the country's class, five tries at
+/// most while the first name stays 1 or 2.
+fn president_names(records: &Records, country: u16, random: &mut Random) -> (i16, i16) {
+    let class = crate::newplayer::COUNTRY_CLASS.get(usize::from(country)).copied().unwrap_or(0) as usize;
+    let (from, to) = crate::newplayer::class_range(records, class);
+    let table = records.block(crate::newplayer::REGENERATION);
+    let id_at = |k: i32| -> i16 {
+        table.and_then(|t| t.get(4 * k as usize..4 * k as usize + 2)).map_or(0, |e| i16::from_le_bytes([e[0], e[1]]))
+    };
+    let (mut first, mut last) = (1, 2);
+    for _ in 0..PRESIDENT_TRIES {
+        let k = random.below((to - from) as u32) as i32 + i32::from(from);
+        let id = id_at(k);
+        if id > 0 && let Some(p) = records.player(id as u16) {
+            first = p.first_name() as i16;
+        }
+        let k = random.below((to - from) as u32) as i32 + i32::from(from);
+        let id = id_at(k);
+        if id > 0 && let Some(p) = records.player(id as u16) {
+            last = p.last_name() as i16;
+        }
+        if first != 1 && first != 2 {
+            break;
+        }
+    }
+    (first, last)
+}
+
+/// A date `years` ago from today (`FUN_00675923`): day, month, year.
+fn date_years_ago(records: &Records, years: i32, random: &mut Random) -> [u8; 4] {
+    let (d, m, y) = crate::newplayer::birth_date(records, years, random);
+    let y = y.to_le_bytes();
+    [d, m, y[0], y[1]]
+}
+
+fn put_date(p: &mut Player, at: usize, date: [u8; 4]) {
+    for (k, b) in date.iter().enumerate() {
+        p.put::<u8>(at + k, *b);
+    }
+}
+
+fn today(records: &Records) -> [u8; 4] {
+    let [day, month, year] = records.globals.date();
+    let y = year.to_le_bytes();
+    [day as u8, month as u8, y[0], y[1]]
+}
+
+/// A squad man opened (`FUN_00772799`'s body).
+fn open_man(
+    records: &mut Records,
+    rules: &crate::season::Rules,
+    tables: &Tables,
+    club: (u8, u16),
+    level: u8,
+    id: u16,
+    random: &mut Random,
+) {
+    let Some(p) = records.player(id) else { return };
+    let age = crate::free_agents::age(records, p);
+    private_life(records, tables, club.0, id, age, random);
+    let hobby = if random.below(100) < HOBBY_ODDS { tables.hobby(random) } else { 0 };
+    let Some(p) = records.player_mut(id) else { return };
+    p.set_hobby(hobby);
+    crate::deals::open_station(records, id, (club.0, club.1 as i16), 0);
+    let Some(p) = records.player(id) else { return };
+    let (position, qualities) = (p.positions()[0], p.qualities());
+    if p.manner() & 0x20 != 0 {
+        records.globals.put::<u16>(HOME_GROWN + 2 * usize::from(position), id);
+    }
+    let (list, count) = if position == 1 { (KEEPER_QUALITIES, 9) } else { (QUALITIES, 16) };
+    for k in 0..count {
+        if qualities & 1 << k != 0 {
+            records.globals.put::<u16>(list + 2 * k, id);
+        }
+    }
+    let Some(p) = records.player(id) else { return };
+    let fee_chance = Tables::by_strength(&tables.fee, p);
+    let fee = match level {
+        TOP => {
+            let fresh = random.below(100) < Tables::by_strength(&tables.fresh_bit, p);
+            let value = market_value(records, rules, id);
+            if fresh && let Some(p) = records.player_mut(id) {
+                p.put::<u16>(FRESH_WORD, p.get::<u16>(FRESH_WORD) & !3 | 1);
+            }
+            (random.below(100) < fee_chance).then_some(value)
+        }
+        SECOND => {
+            let value = market_value(records, rules, id);
+            (random.below(200) < fee_chance).then_some(value)
+        }
+        _ => None,
+    };
+    if let Some(value) = fee {
+        let units = value / FEE_UNIT;
+        let fee = (i64::from(random.below(21) + 90) * units / 100) as u16;
+        if let Some(p) = records.player_mut(id) {
+            p.set_fixed_fee(fee);
+        }
+    }
+    let seasons = random.below(3) as u8 + 1;
+    let Some(p) = records.player(id) else { return };
+    let problem = if random.below(100) < Tables::by_strength(&tables.problems[0], p) {
+        Some(1)
+    } else if random.below(100) < Tables::by_strength(&tables.problems[1], p) {
+        Some(2)
+    } else {
+        None
+    };
+    let trait_word = p.traits()[1];
+    let mut bits = 0u32;
+    if random.below(100) < 2 {
+        bits |= OVERWEIGHT;
+    }
+    // Two draws whose calls only read (`FUN_00701696`, `FUN_0070005e`).
+    let _ = random.below(100);
+    let _ = random.below(100);
+    let smoke_odds = if trait_word & 0x100 != 0 { 15 } else { 3 };
+    if random.below(100) < smoke_odds {
+        bits |= SMOKES;
+    }
+    if trait_word & 0x200 != 0 && random.below(100) < 3 {
+        bits |= TRAIT_BIT;
+    }
+    if (random.below(100) as i32) < age / 2 + 10 {
+        bits |= AGE_BIT;
+    }
+    let nation = p.nation();
+    let mut languages = vec![club.0, nation];
+    for (language, odds) in MORE_LANGUAGES {
+        if random.below(100) < odds {
+            languages.push(language);
+        }
+    }
+    let mood = random.below(11) as i8 + 5;
+    let Some(p) = records.player_mut(id) else { return };
+    p.put::<u8>(SEASONS, seasons);
+    if let Some(problem) = problem {
+        p.set_problems(p.problems() & 0xcf | problem << 4);
+    }
+    p.set_shown(p.shown() | bits);
+    for language in languages {
+        crate::newplayer::speaks(p, language);
+    }
+    p.set_mood(mood);
+}
+
+/// His market value (`FUN_00708836`) by his contract's years left.
+fn market_value(records: &Records, rules: &crate::season::Rules, id: u16) -> i64 {
+    let Some(p) = records.player(id) else { return 0 };
+    let years = (i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year())).max(0);
+    let position = p.positions()[0];
+    let worth = crate::value::Worth {
+        strength: p.strength(),
+        position,
+        talent: p.talent(),
+        age: crate::free_agents::age(records, p),
+        good: p.good(),
+        character: p.traits(),
+        qualities: p.qualities(),
+        star: records.globals.stars().get(usize::from(position)) == Some(&p.id()),
+        kind_12_matches: p.kind_12_matches(),
+    };
+    rules.value.market_value(&worth, years, u32::from(records.globals.date()[1]))
+}
+
+/// A man's private life (`FUN_007078c5`): one over 20 marries on a draw
+/// below six in 100 for each year past it — some years ago, with children
+/// by his age, a draw of 30 in 100 for the partner's bit —; one unmarried
+/// over 16 has a girlfriend one time in two, since some years.
+fn private_life(records: &mut Records, tables: &Tables, club_country: u8, id: u16, age: i32, random: &mut Random) {
+    if age > 20 && (random.below(100) as i32) < (age - 20) * 6 {
+        new_partner(records, tables, club_country, id, random);
+        marry(records, id);
+        let date = date_years_ago(records, random.below((age - 20) as u32) as i32 + 1, random);
+        let year = records.globals.start_year() as i16;
+        let (count, mut born) = if age < 22 {
+            (random.below(2), year - 2)
+        } else if age < 25 {
+            let n = random.below(3);
+            (n, year - random.below((age - 22) as u32) as i16 - 3)
+        } else {
+            let n = random.below(4);
+            (n, year - random.below((age - 25) as u32) as i16 - 6)
+        };
+        if let Some(p) = records.player_mut(id) {
+            put_date(p, TOGETHER_SINCE, date);
+        }
+        for _ in 0..count {
+            let sex = random.below(2) as u8;
+            child(records, id, sex, random);
+            let date = date_years_ago(records, 2, random);
+            let Some(p) = records.player_mut(id) else { return };
+            let at = CHILD_DATES + 4 * (p.children() - 1).clamp(0, CHILDREN_MOST - 1) as usize;
+            put_date(p, at, date);
+            p.put::<i16>(at + 2, born);
+            born += 2;
+        }
+        if random.below(100) < 30
+            && let Some(p) = records.player_mut(id)
+        {
+            p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) | PARTNER_BIT);
+        }
+    }
+    let Some(p) = records.player(id) else { return };
+    if p.get::<u8>(PARTNER) & 3 != WIFE && age > 16 && random.below(100) < 50 {
+        new_partner(records, tables, club_country, id, random);
+        let date = date_years_ago(records, random.below((age - 16) as u32) as i32 + 1, random);
+        if let Some(p) = records.player_mut(id) {
+            put_date(p, TOGETHER_SINCE, date);
+        }
+    }
+}
+
+/// A new girlfriend (`FUN_00702571`): the one before, if any, kept as his
+/// ex (`FUN_00702467`) and the children gone; her first name drawn from
+/// the women of his names' row, her birthday's day and month drawn.
+fn new_partner(records: &mut Records, tables: &Tables, club_country: u8, id: u16, random: &mut Random) {
+    let Some(p) = records.player_mut(id) else { return };
+    if p.get::<u8>(PARTNER) & 3 != 0 {
+        p.put::<u8>(0x285, p.get::<u8>(PARTNER_NAME));
+        p.put::<u8>(0x287, p.get::<u8>(NAMES_ROW));
+        p.put::<u32>(0x18c, p.get::<u32>(PARTNER_BIRTHDAY));
+        p.set_shown(p.shown() & 0xfcff_fff3);
+    }
+    p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) & 0xfc);
+    p.set_children(0);
+    p.put::<u8>(PASSING, 0);
+    let name = random.below(50) as u8 + 50;
+    let nation = usize::from(p.nation() & 0x7f);
+    let row_of = if tables.own_names.get(nation).copied().unwrap_or(0) == 0 { usize::from(club_country) } else { nation };
+    let row = tables.name_rows.get(row_of).copied().unwrap_or(0);
+    let month = random.below(12) as u8 + 1;
+    let days = tables.month_days.get(usize::from(month)).copied().unwrap_or(30);
+    let day = random.below(u32::from(days)) as u8 + 1;
+    p.put::<u8>(PARTNER_NAME, name);
+    p.put::<u8>(NAMES_ROW, row);
+    p.put::<u8>(PARTNER_BIRTHDAY, day);
+    p.put::<u8>(PARTNER_BIRTHDAY + 1, month);
+    p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) & 0xe0 | GIRLFRIEND);
+    p.put::<u8>(PASSING, 0);
+}
+
+/// She becomes his wife (`FUN_00702b15`): the passing date kept as the
+/// day they married.
+fn marry(records: &mut Records, id: u16) {
+    let Some(p) = records.player_mut(id) else { return };
+    p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) & 0xe0 | WIFE);
+    let passing = p.get::<u32>(PASSING);
+    p.put::<u32>(TOGETHER_SINCE, passing);
+    p.put::<u8>(PASSING, 0);
+}
+
+/// A child more (`FUN_00701ae6`, `sex` 0 a son): a German real player's
+/// first son or daughter takes the name his bits hold, any other a first
+/// name of the row's men or women no brother or sister has; born today
+/// for now.
+fn child(records: &mut Records, id: u16, sex: u8, random: &mut Random) {
+    let today = today(records);
+    let Some(p) = records.player_mut(id) else { return };
+    let count = p.children().clamp(0, CHILDREN_MOST - 1) as usize;
+    let names: Vec<u8> = (0..count).map(|k| p.get::<u8>(CHILD_NAMES + k)).collect();
+    let mut name = None;
+    if p.nation() == GERMANY {
+        if id < REAL_PLAYERS {
+            let shown = p.shown();
+            if shown & 0x0800_0000 != 0 && sex == 0 {
+                name = Some(0x29);
+            } else if shown & 0x1000_0000 != 0 && sex == 1 {
+                name = Some(0x4f);
+            }
+        }
+        if name.is_some_and(|n| names.contains(&n)) {
+            name = None;
+        }
+        p.set_shown(p.shown() & !NAMED_CHILDREN);
+    }
+    let name = name.unwrap_or_else(|| loop {
+        let n = random.below(50) as u8 + sex * 50;
+        if !names.contains(&n) {
+            break n;
+        }
+    });
+    p.put::<u8>(CHILD_NAMES + count, name);
+    put_date(p, CHILD_DATES + 4 * count, today);
+    p.set_children(count as i16 + 1);
+    p.set_shown(p.shown() & !CHILD_CLEARS | CHILD_SETS);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The played country's clubs open their first season as the
+    /// original's (the oracle's new game, its first-turn dump): from the
+    /// generator as it stood before `FUN_00774088` there (trace index
+    /// 52703), its 108 clubs' 67,522 draws (67,278 that move the generator)
+    /// lead to the state before `FUN_00774963`, and every man and club
+    /// holds the dump's fields — his seasons count one less, which a later
+    /// walk raises.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_opens_the_played_clubs_as_the_original() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        let played = crate::opponent::played_nations(&ours);
+        assert_eq!(played, vec![14]);
+        // The men stand as the country files gave them: no partner, no
+        // children, the station at their club not opened yet.
+        let men: Vec<u16> = (0..ours.countries.team_count(14).max(0) as u16)
+            .flat_map(|n| ours.team(14, n).map(|t| t.players()).unwrap_or_default())
+            .collect();
+        for &id in &men {
+            let p = ours.player_mut(id).unwrap();
+            p.put::<u8>(PARTNER, 0);
+            p.set_children(0);
+            p.set_career_count(p.career_count() - 1);
+        }
+        // The regeneration table's entries of the country's class (id
+        // k + 1 at k) the later walks took for new amateurs and youths
+        // stand free again; a man of a squad was never in it.
+        let in_squads: std::collections::HashSet<u16> = (1..0x75usize)
+            .flat_map(|c| (0..ours.countries.team_count(c).max(0) as u16).map(move |n| (c as u16, n)))
+            .flat_map(|(c, n)| ours.team(c, n).map(|t| t.players()).unwrap_or_default())
+            .collect();
+        let (from, to) = crate::newplayer::class_range(&ours, usize::from(crate::newplayer::COUNTRY_CLASS[14]));
+        let table = ours.block_mut(crate::newplayer::REGENERATION).unwrap();
+        for k in from as usize..to as usize {
+            let id = (k + 1) as u16;
+            if i16::from_le_bytes([table[4 * k], table[4 * k + 1]]) <= 0 && !in_squads.contains(&id) {
+                table[4 * k..4 * k + 2].copy_from_slice(&id.to_le_bytes());
+            }
+        }
+        // The search plans' budgets stand at their base again (the week's
+        // refill after set them anew from it), and the UEFA cup's entrants
+        // are not marked yet (the European cups' entry does it later).
+        for n in 0..ours.countries.team_count(14).max(0) as u16 {
+            let t = ours.team_mut(14, n).unwrap();
+            let base = t.get::<i32>(0x34c + 0xc);
+            t.put::<i32>(0x34c, base);
+            t.put::<u16>(FLAGS_AT, t.get::<u16>(FLAGS_AT) & !0x10);
+        }
+        crate::random::record(true);
+        let mut random = Random::from_state(13_345_274, 1_134_676_826);
+        open_country(&mut ours, &rules, 14, &mut random);
+        let draws = crate::random::recorded();
+        crate::random::record(false);
+        if let Some(out) = std::env::var_os("A3_DRAWS_OUT") {
+            std::fs::write(out, crate::random::draws_text(&draws)).unwrap();
+        }
+        assert_eq!(random, Random::from_state(1_382_845_047, 1_020_738_033), "{} draws", draws.len());
+        let mut off = Vec::new();
+        for &id in &men {
+            let (a, b) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+            let fields = |p: &Player, later: u8| {
+                (
+                    p.hobby(),
+                    p.get::<u8>(PARTNER),
+                    p.get::<u8>(PARTNER_NAME),
+                    p.get::<u8>(NAMES_ROW),
+                    p.children(),
+                    p.children_names(),
+                    p.get::<u32>(TOGETHER_SINCE),
+                    p.get::<u8>(SEASONS) + later,
+                    p.mood(),
+                    p.fixed_fee(),
+                    p.career_count(),
+                )
+            };
+            if fields(a, 1) != fields(b, 0) {
+                off.push(format!("{id}: {:?} {:?}", fields(a, 1), fields(b, 0)));
+            }
+        }
+        for number in 0..ours.countries.team_count(14).max(0) as u16 {
+            let (a, b) = (ours.team(14, number).unwrap(), theirs.team(14, number).unwrap());
+            let fields = |t: &crate::records::Team| {
+                (t.get::<u8>(GOALS_AT[0]), t.get::<u8>(GOALS_AT[1]), t.mood(), t.get::<u8>(SEASON_DRAW), t.get::<[u8; 8]>(PRESIDENT))
+            };
+            if fields(a) != fields(b) {
+                off.push(format!("club {number}: {:?} {:?}", fields(a), fields(b)));
+            }
+        }
+        assert!(off.is_empty(), "{} off:\n{}", off.len(), off[..off.len().min(30)].join("\n"));
+    }
+}
