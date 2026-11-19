@@ -64,6 +64,7 @@ pub mod land_clubs;
 pub mod land_players;
 pub mod land_managers;
 pub mod land_pool;
+pub mod land_start;
 pub mod news;
 pub mod noracsa;
 pub mod opponent;
