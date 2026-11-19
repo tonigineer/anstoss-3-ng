@@ -155,6 +155,7 @@ const GOALS_AT: [usize; 2] = [0x135, 0x136];
 const RANK_AT: usize = 0x130;
 const FLAGS_AT: usize = 0x110;
 const PROMOTED_FLAG: u16 = 4;
+const RELEGATED_FLAG: u16 = 8;
 const MOOD_BASE: u8 = 80;
 const MOOD_DRAW: u32 = 41;
 const SEASON_DRAW: usize = 0x302;
@@ -185,6 +186,34 @@ pub fn open_country(records: &mut Records, rules: &crate::season::Rules, country
     for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
         if !in_league.contains(&number) {
             open_club(records, rules, tables, (country, number), NO_LEAGUE, None, random);
+        }
+    }
+}
+
+/// The countries not played (1 to 0x74, `FUN_00676c03` false) open their
+/// clubs' first season (`FUN_00774963`): each club, at the first level
+/// (club +0x105 nought), by the same opening with no league
+/// (`FUN_00772bee(club, 0, 0)`: goals one and one, no president), then
+/// its ticket prices' five rows at the start's (`DAT_00a3b41c` 15,
+/// `DAT_00a3b414` 25, `DAT_00a3b408` 50, `DAT_00a3b3fc` 100).
+const KEPT_COUNTRIES: u16 = 0x75;
+const KEPT_PRICES: [(usize, i16); 4] = [(0x49c, 15), (0x4a6, 25), (0x4b0, 50), (0x4ba, 100)];
+
+pub fn open_kept(records: &mut Records, rules: &crate::season::Rules, random: &mut Random) {
+    for country in 1..KEPT_COUNTRIES {
+        if records.globals.played(country as i16) {
+            continue;
+        }
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            team.set_level(TOP);
+            open_club(records, rules, &rules.first_season, (country, number), TOP, None, random);
+            let Some(team) = records.team_mut(country, number) else { continue };
+            for (at, price) in KEPT_PRICES {
+                for k in 0..5 {
+                    team.put::<i16>(at + crate::finances::CLUB_TO_TEAM + 2 * k, price);
+                }
+            }
         }
     }
 }
@@ -234,8 +263,16 @@ fn open_club(
     let human = team.humans()[0];
     let flags = team.get::<u16>(FLAGS_AT);
     let mut mood = (random.below(MOOD_DRAW) as u8).wrapping_add(MOOD_BASE);
-    if let Some(&(_, m)) = STANDINGS.iter().find(|s| flags & s.0 != 0) {
+    let mut will = 0;
+    if let Some(&(bit, m)) = STANDINGS.iter().find(|s| flags & s.0 != 0) {
         mood = mood.wrapping_add(m as u8);
+        // The promoted take ten of will more, the relegated ten less
+        // (`FUN_0069efe8(10)`, `FUN_0069efe8(-10)`).
+        will = match bit {
+            PROMOTED_FLAG => 10,
+            RELEGATED_FLAG => -10,
+            _ => 0,
+        };
     }
     if flags & CUP_WON != 0 {
         mood = mood.wrapping_add(20);
@@ -245,6 +282,7 @@ fn open_club(
     team.put::<u8>(GOALS_AT[0], goals.0);
     team.put::<u8>(GOALS_AT[1], goals.1);
     team.set_mood(mood);
+    team.put::<i16>(WILL, team.get::<i16>(WILL).saturating_add(will).clamp(-WILL_MOST, WILL_MOST));
     team.put::<u8>(SEASON_DRAW, draw);
     if let Some(m) = usize::from(human).checked_sub(1).and_then(|k| records.managers.get_mut(k)) {
         m.set_goal_class(i16::from(goals.1 as i8));
@@ -645,6 +683,88 @@ mod tests {
             };
             if fields(a) != fields(b) {
                 off.push(format!("club {number}: {:?} {:?}", fields(a), fields(b)));
+            }
+        }
+        assert!(off.is_empty(), "{} off:\n{}", off.len(), off[..off.len().min(30)].join("\n"));
+    }
+
+    /// The countries not played open their clubs' first season as the
+    /// original's: from the generator as it stood before `FUN_00774963`
+    /// (trace index 120225), their clubs' 169,849 draws lead to the state
+    /// before `FUN_0077650c`, and every man and club holds the dump's
+    /// fields.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_opens_the_kept_clubs_as_the_original() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        let clubs: Vec<(u16, u16)> = (1..KEPT_COUNTRIES)
+            .filter(|&c| !ours.globals.played(c as i16))
+            .flat_map(|c| (0..ours.countries.team_count(usize::from(c)).max(0) as u16).map(move |n| (c, n)))
+            .collect();
+        let men: Vec<u16> = clubs.iter().flat_map(|&(c, n)| ours.team(c, n).map(|t| t.players()).unwrap_or_default()).collect();
+        for &id in &men {
+            let p = ours.player_mut(id).unwrap();
+            p.put::<u8>(PARTNER, 0);
+            p.set_children(0);
+            p.set_career_count(p.career_count() - 1);
+        }
+        for &(c, n) in &clubs {
+            let t = ours.team_mut(c, n).unwrap();
+            let base = t.get::<i32>(0x34c + 0xc);
+            t.put::<i32>(0x34c, base);
+            // The will to win stood at nought before its draw.
+            t.put::<i16>(WILL, 0);
+        }
+        crate::random::record(true);
+        let mut random = Random::from_state(1_382_845_047, 1_020_738_033);
+        open_kept(&mut ours, &rules, &mut random);
+        let draws = crate::random::recorded();
+        crate::random::record(false);
+        if let Some(out) = std::env::var_os("A3_DRAWS_OUT") {
+            std::fs::write(out, crate::random::draws_text(&draws)).unwrap();
+        }
+        assert_eq!(random, Random::from_state(1_455_217_461, 1_094_981_282), "{} clubs, {} men, {} draws", clubs.len(), men.len(), draws.len());
+        let mut off = Vec::new();
+        for &id in &men {
+            let (a, b) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+            let fields = |p: &Player| {
+                (
+                    p.hobby(),
+                    p.get::<u8>(PARTNER),
+                    p.get::<u8>(PARTNER_NAME),
+                    p.get::<u8>(NAMES_ROW),
+                    p.children(),
+                    p.children_names(),
+                    p.get::<u32>(TOGETHER_SINCE),
+                    p.get::<u8>(SEASONS),
+                    p.mood(),
+                    p.fixed_fee(),
+                    p.career_count(),
+                )
+            };
+            if fields(a) != fields(b) {
+                off.push(format!("{id}: {:?} {:?}", fields(a), fields(b)));
+            }
+        }
+        for &(c, n) in &clubs {
+            let (a, b) = (ours.team(c, n).unwrap(), theirs.team(c, n).unwrap());
+            let fields = |t: &crate::records::Team| {
+                (t.level(), t.get::<u8>(GOALS_AT[0]), t.get::<u8>(GOALS_AT[1]), t.mood(), t.get::<u8>(SEASON_DRAW), t.get::<i16>(WILL))
+            };
+            if fields(a) != fields(b) {
+                off.push(format!("club {c}/{n}: {:?} {:?}", fields(a), fields(b)));
             }
         }
         assert!(off.is_empty(), "{} off:\n{}", off.len(), off[..off.len().min(30)].join("\n"));

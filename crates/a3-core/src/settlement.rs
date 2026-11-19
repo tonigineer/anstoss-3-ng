@@ -1891,6 +1891,8 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
         for country in crate::opponent::played_nations(records) {
             crate::first_season::open_country(records, rules, country, random);
         }
+        // Then the clubs of the countries not played (`FUN_00774963`).
+        crate::first_season::open_kept(records, rules, random);
     }
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
