@@ -904,6 +904,66 @@ pub fn open_kept(
     }
 }
 
+/// A new game's first contracts (`FUN_0065e429`, `FUN_0065e659` in the
+/// first season only): every club of every country, its players in their
+/// squad's order, takes the salary its man would ask (`FUN_00708012`, in
+/// thousands of `DAT_00a3b3e4`) and 10 to 49 hundredths of it more by a
+/// draw in 40; an eighth of it for playing, a tenth for a striker's goal
+/// and a twentieth for a midfielder's (others keep theirs), no fixed fee,
+/// no terms. A draw in 100 sets the years: below 20 one for a man of
+/// strength below 10, else two; below 40 two, below 80 three, else four —
+/// a country not played (`FUN_00676c03`) never below 20.
+pub fn first_contracts(
+    records: &mut Records,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    random: &mut Random,
+) {
+    let year = records.globals.start_year();
+    let today = {
+        let [day, month, y] = records.globals.date();
+        NaiveDate::from_ymd_opt(i32::from(y), u32::from(month), u32::from(day))
+    };
+    let played = crate::opponent::played_nations(records);
+    for country in 1..COUNTRIES {
+        let kept = !played.contains(&(country as u16));
+        for number in 0..records.countries.team_count(country).max(0) {
+            for id in squad(records, country as u16, number as u16) {
+                let Some(p) = records.player(id) else { continue };
+                let age = today.map_or(0, |t| crate::statistics::age_on(p, t));
+                let form = crate::statistics::form_today(p);
+                let signee = crate::contract::Signee::of(p, age, form, tables.1, false, year);
+                let asked = (tables.0.demand(&signee) as u32 / SALARY_UNIT) as u16;
+                let more = (random.below(40) + 10) * u32::from(asked) / 100;
+                let salary = asked.wrapping_add(more as u16);
+                let mut draw = random.below(100);
+                if kept && draw < 20 {
+                    draw = 20;
+                }
+                let Some(p) = records.player_mut(id) else { continue };
+                let years = match draw {
+                    ..20 if p.strength() < 10 => 1,
+                    ..40 => 2,
+                    ..80 => 3,
+                    _ => 4,
+                };
+                p.set_salary(salary);
+                p.set_appearance_bonus(salary >> 3);
+                match p.positions()[0] {
+                    10 => p.set_goal_bonus(salary / 10),
+                    9 => p.set_goal_bonus(salary / 20),
+                    _ => {}
+                }
+                p.set_fixed_fee(0);
+                p.set_terms(0);
+                p.set_contract(year + years);
+            }
+        }
+    }
+}
+
+/// The unit the salaries are kept in (`DAT_00a3b3e4`).
+const SALARY_UNIT: u32 = 1000;
+
 /// A kept club this thin takes two keepers when it has fewer than two, this
 /// short one man for each position under its least (`DAT_008773e0`).
 const KEPT_THIN: usize = 28;
@@ -1689,5 +1749,51 @@ mod tests {
         let block = ours.block(POOL).unwrap();
         let pooled = |id: u16| (0..POOL_SIZE).any(|k| u16::from_le_bytes([block[POOL_ENTRIES + 4 * k], block[POOL_ENTRIES + 4 * k + 1]]) == id);
         assert!(pooled(a) && !pooled(b));
+    }
+
+    /// A new game's first contracts as the original's (the oracle's new
+    /// game, its first-turn dump): from the generator as it stood before
+    /// `FUN_0065e429` there (trace index 33565), its 9,569 players take
+    /// their 19,138 draws in order and every kept country's man the
+    /// dump's salary, bonuses and contract; of the country played all but
+    /// the 23 whose contract the later walks renewed (a later year).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_signs_its_first_contracts_as_the_original() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        assert_eq!(ours.globals.seasons(), 1);
+        let mut random = Random::from_state(239_039_057, 876_019_106);
+        first_contracts(&mut ours, (&rules.contract, &rules.value), &mut random);
+        assert_eq!(random, Random::from_state(13_345_274, 1_134_676_826));
+        let played = crate::opponent::played_nations(&ours);
+        let (mut players, mut renewed) = (0, 0);
+        for country in 1..COUNTRIES {
+            for number in 0..ours.countries.team_count(country).max(0) {
+                for id in squad(&ours, country as u16, number as u16) {
+                    players += 1;
+                    let (a, b) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    let terms = |p: &Player| (p.salary(), p.appearance_bonus(), p.goal_bonus(), p.contract());
+                    if terms(a) == terms(b) {
+                        continue;
+                    }
+                    assert!(played.contains(&(country as u16)), "{id} of {country}: {:?} {:?}", terms(a), terms(b));
+                    assert!(b.contract() > a.contract(), "{id}: {:?} {:?}", terms(a), terms(b));
+                    renewed += 1;
+                }
+            }
+        }
+        assert_eq!((players, renewed), (9569, 23));
     }
 }

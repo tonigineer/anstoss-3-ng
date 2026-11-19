@@ -1872,6 +1872,10 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     records.globals.put::<u16>(0xb5cca0, year);
     records.globals.put::<u16>(0xb5cca2, of_year);
     clear_objects(records);
+    // The first season's contracts (`FUN_0065e429`, while 0xb5cbc8 is 1).
+    if records.globals.seasons() == 1 && let Some(tables) = tables {
+        crate::rollover::first_contracts(records, tables, random);
+    }
     // The ranked leagues' clubs by their squads (`FUN_00778394`).
     crate::squad_rank::rank(records);
     crate::squad_rank::keep_scores(records);
