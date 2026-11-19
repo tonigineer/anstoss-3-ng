@@ -9,7 +9,9 @@
 # (A3PROBE_SRAND): the setup and the job offers up to the first turn (the
 # line-up, dialog 147), where it dumps runs/new-game/first-turn.an3, then on
 # to day 2 with a dump of every new day (day-NNN.an3) and one at the end
-# (final.an3). The saves the oracle's copy had are put back at the end.
+# (final.an3), the run's trace of random draws kept beside them
+# (draws.bin, tools/probe/draws.py). The saves the oracle's copy had are
+# put back at the end.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")/../.." && pwd)
@@ -55,4 +57,5 @@ done
 rm -f "$saves"/*.an3
 mv -f "$aside"/*.an3 "$saves/" 2> /dev/null
 [ $status = 0 ] && [ -f "$out/first-turn.an3" ] || { echo "see $oracle/runs/new-game.log" >&2; exit 1; }
+cp -f "$oracle/runs/draws.bin" "$out/draws.bin"
 echo "$out/first-turn.an3"
