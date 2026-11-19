@@ -4099,3 +4099,101 @@ mod tests {
         assert!(classed > 200 && reserves == 9, "{loans} loans, {classed} clubs, {reserves} reserves");
     }
 }
+
+#[cfg(test)]
+mod new_game {
+    use super::*;
+
+    /// The oracle's new game at its first turn (`runs/new-game/first-turn.an3`).
+    fn first_turn() -> Option<Records> {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return None;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return None;
+        }
+        Some(Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap())
+    }
+
+    /// The draws from `from` to `to`, none past `most`.
+    fn draws(from: &Random, to: &Random, most: usize) -> Option<usize> {
+        let mut count = from.clone();
+        (0..most).position(|_| {
+            if &count == to {
+                return true;
+            }
+            count.below(2);
+            false
+        })
+    }
+
+    /// A new game's staff markets and pre-season Turniere as the
+    /// original's (`FUN_007719a6` in the calculation, the oracle's new
+    /// game, its first-turn dump). The dump stands after it, so the test
+    /// first takes back what it wrote: the human club's co-trainer and
+    /// goalkeeper trainer (+0xa2, +0xa4) unhired, their contracts at
+    /// none; the goalkeeper trainers' asked years at none, as no walk
+    /// asked them before (the co-trainers' `FUN_00409a3f` had, in
+    /// `FUN_0065e659`); no club hosting a Turnier. From the generator as
+    /// the original's stood (trace index 775751), the co-trainers' market
+    /// made anew takes 31 newcomers by draws of 60, every goalkeeper
+    /// trainer of the band a salary and years, the human club one of each
+    /// (the keepers' of a market of one, a draw that moves nothing), and
+    /// Germany's clubs their 72 picks of the Turniere: markets, pool,
+    /// list and clubs come out as the original's, the generator where the
+    /// original's stood after (775896).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_opens_its_staff_markets_and_turniere_as_the_original() {
+        let (Some(theirs), Some(mut ours)) = (first_turn(), first_turn()) else { return };
+        for t in ours.teams.iter_mut() {
+            t.put::<u8>(0x125, t.get::<u8>(0x125) & !1);
+        }
+        for k in 1..101 {
+            if let Some(b) = ours.block_mut(&format!("0xbe17f8[{k}]")) {
+                b[0x15] = 0;
+            }
+        }
+        let humans = crate::statistics::human_clubs(&ours);
+        assert!(!humans.is_empty());
+        for c in humans {
+            let t = ours.team_mut(u16::from(c.0), c.1 as u16).unwrap();
+            let (co, keeper) = (t.co_trainer(), t.second_coach());
+            assert!(co > 0 && keeper > 0, "the human club's posts filled");
+            t.set_co_trainer(0);
+            t.set_second_coach(0);
+            for (pool, id) in [("0xbe3920", co), ("0xbe17f8", keeper)] {
+                let b = ours.block_mut(&format!("{pool}[{id}]")).unwrap();
+                assert_eq!(b[0x0c], 1, "{pool}[{id}]'s year");
+                b[0x0c] = 0;
+            }
+            let p = ours.persons.get_mut(co as usize).unwrap();
+            let mut bytes = p.bytes().to_vec();
+            bytes[0x0c] = 0;
+            *p = crate::records::Person::new(&bytes).unwrap();
+        }
+        let mut random = Random::from_state(1_739_958_953, 1_508_417_667);
+        let start = random.clone();
+        crate::staff_market::open_season(&mut ours, &mut random);
+        assert_eq!(draws(&start, &random, 1000), Some(72), "the markets' draws");
+        crate::tournament::open_preseason(&mut ours, &mut random);
+        assert_eq!(random, Random::from_state(1_390_654_199, 816_249_522));
+        assert_eq!(draws(&start, &random, 1000), Some(144));
+        let mut names: Vec<String> = vec!["0x1c4be78".into()];
+        names.extend((0..5).flat_map(|k| [format!("0x8e27a0[{k}]"), format!("0x8e2490[{k}]")]));
+        names.extend((1..1500).map(|k| format!("0xbe3920[{k}]")));
+        names.extend((1..101).map(|k| format!("0xbe17f8[{k}]")));
+        for name in &names {
+            assert_eq!(ours.block(name), theirs.block(name), "{name}");
+        }
+        for (i, (a, b)) in ours.teams.iter().zip(&theirs.teams).enumerate() {
+            assert_eq!(a.bytes(), b.bytes(), "team {i}");
+        }
+        for (k, (a, b)) in ours.extras.iter().zip(&theirs.extras).enumerate() {
+            assert_eq!(a.bytes(), b.bytes(), "extra {k}");
+        }
+    }
+}
