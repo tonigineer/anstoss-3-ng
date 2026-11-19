@@ -6,7 +6,7 @@
 use crate::calendar::Calendar;
 use crate::load;
 use crate::records::Records;
-use crate::season_odds::{NATIONAL_COUNT, NATIONAL_SQUAD, NATIONAL_TEAMS, NATIONS};
+use crate::season_odds::{NATIONAL_COUNT, NATIONAL_SQUAD, NATIONAL_TEAMS, NATIONS, NATION_STRENGTH};
 
 /// A national team's record (`0xa9d660[nation]`, its data 0x20 in): the
 /// coach's number, twice (club +0x8a and +0x8b when it is loaded), and the
@@ -839,6 +839,26 @@ const SEASON_AT: usize = 0xb5cbc8;
 const GROUP_RESULTS: usize = 0xe;
 const GROUP_RESULTS_LEN: usize = 0x90;
 const GROUP_SIZE: usize = 6;
+const GROUP_RESULT_ROW: usize = 0x18;
+const GROUP_MATCHDAY: usize = 6;
+/// The first season's qualifiers played at once (`FUN_0067c02f`'s odd
+/// year): five matchdays, by the goals of `DAT_008a3338` — a row by the
+/// home nation's strength byte halved, up to 6, a cell by the away
+/// nation's: the home goals' range and the away goals', then the home
+/// goals' least and the away goals'; past seven goals in all the fewer
+/// are taken off the more.
+const FIRST_MATCHDAYS: usize = 5;
+const FIRST_LEVELS: usize = 7;
+const FIRST_GOALS_MOST: i16 = 7;
+const FIRST_GOALS: [[[i16; 4]; FIRST_LEVELS]; FIRST_LEVELS] = [
+    [[3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 0], [2, 4, 0, 0], [2, 2, 0, 1], [2, 3, 0, 2], [2, 3, 0, 3]],
+    [[4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 0], [3, 3, 0, 1], [3, 3, 0, 2], [2, 3, 0, 3]],
+    [[5, 3, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 4, 0, 0], [3, 4, 0, 1], [2, 3, 0, 2]],
+    [[5, 2, 1, 0], [5, 2, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 1], [3, 3, 0, 2]],
+    [[5, 2, 2, 0], [5, 2, 1, 0], [5, 3, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 2, 0, 1], [3, 3, 0, 1]],
+    [[5, 2, 2, 0], [5, 2, 2, 0], [5, 2, 1, 0], [5, 3, 1, 0], [4, 2, 0, 0], [4, 2, 0, 0], [3, 3, 0, 0]],
+    [[4, 1, 3, 0], [4, 2, 3, 0], [5, 2, 2, 0], [5, 3, 2, 0], [5, 3, 1, 0], [4, 2, 0, 0], [4, 2, 0, 0]],
+];
 
 /// The qualifying groups drawn at the turn of an even year
 /// (`FUN_0067c02f`, the new season's block of `FUN_006da3a9`): from the
@@ -851,16 +871,24 @@ const GROUP_SIZE: usize = 6;
 /// last thirteen, each drawn at random and the drawn one's place taken by
 /// the pot's last (`FUN_0067bf0f`). Each group then closes up its empty
 /// places and counts the rest (`FUN_006b82f7`), and the knockout round
-/// stands at none. (The first season, started in an odd year, draws the
-/// qualifiers for the coming year's tournament and plays their first five
-/// matchdays at once by the nations' strength — unported, as the replica
-/// opens no first season here.)
+/// stands at none. The first season (`DAT_00b5cbc8` up to 1, a new
+/// game's calculation) draws even in an odd year: the qualifiers of the
+/// coming year's tournament, its host the one left out, and every group
+/// plays its first five matchdays at once by the nations' strength
+/// (`FIRST_GOALS`): each pair of the calendar whose slots both hold a
+/// nation, the home goals drawn before the away goals, and past seven
+/// goals in all the fewer taken off the more and set to none; the result
+/// goes to the cell of the two nations' places (`FUN_006b81fd`).
 pub fn draw_qualifiers(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
     let year = i32::from(records.globals.start_year());
-    if records.globals.get::<i16>(SEASON_AT) <= 1 || year % 2 != 0 {
+    let odd = year % 2 != 0;
+    if records.globals.get::<i16>(SEASON_AT) > 1 && odd {
         return;
     }
-    let host = i16::from(records.countries.get::<u8>(HOSTS_AT + usize::try_from((year + 2) % 100 / 2).unwrap_or(0)));
+    let ahead = if odd { 1 } else { 2 };
+    let host = i16::from(records.countries.get::<u8>(HOSTS_AT + usize::try_from((year + ahead) % 100 / 2).unwrap_or(0)));
+    let strength: Vec<u8> = (0..NATIONS).map(|n| records.countries.get::<u8>(NATION_STRENGTH + n)).collect();
+    let level = |n: i16| usize::from(usize::try_from(n).ok().and_then(|n| strength.get(n)).copied().unwrap_or(0) >> 1).min(FIRST_LEVELS - 1);
     records.globals.put::<u16>(KNOCKOUT_ROUND, 0xffff);
     let mut humans: Vec<i16> = records
         .managers
@@ -913,6 +941,30 @@ pub fn draw_qualifiers(records: &mut Records, european: &[bool], random: &mut cr
         put16(e, 0, kept.len() as i16);
         for k in kept.len()..GROUP_SIZE {
             put16(e, DATE_NATIONS + 2 * k, 0);
+        }
+        if !odd {
+            continue;
+        }
+        let place = |e: &[u8], n: i16| (0..kept.len()).find(|&k| word(e, DATE_NATIONS + 2 * k) == n).unwrap_or(0);
+        for pair in QUALIFIER_SCHEDULE[..FIRST_MATCHDAYS * GROUP_MATCHDAY].chunks(2) {
+            let (home, away) = (word(e, DATE_NATIONS + 2 * usize::from(pair[0])), word(e, DATE_NATIONS + 2 * usize::from(pair[1])));
+            if home == 0 || away == 0 {
+                continue;
+            }
+            let [home_range, away_range, home_least, away_least] = FIRST_GOALS[level(home)][level(away)];
+            let mut goals = random.below(home_range as u32) as i16 + home_least;
+            let mut against = random.below(away_range as u32) as i16 + away_least;
+            if goals + against > FIRST_GOALS_MOST {
+                if against < goals {
+                    goals -= against;
+                    against = 0;
+                } else {
+                    against -= goals;
+                    goals = 0;
+                }
+            }
+            let at = GROUP_RESULTS + place(e, home) * GROUP_RESULT_ROW + place(e, away) * 4;
+            e[at..at + 4].copy_from_slice(&[goals as u8, against as u8, 0, 0]);
         }
     }
 }
@@ -1729,6 +1781,55 @@ mod tests {
         let before = odd.block(&name).unwrap().to_vec();
         draw_qualifiers(&mut odd, &data.rules.pitch.european, &mut crate::random::Random::new(3));
         assert_eq!(odd.block(&name).unwrap(), &before[..]);
+    }
+
+    /// A new game's first qualifiers as the original's (the oracle's new
+    /// game, its first-turn dump): from the generator as it stood before
+    /// `FUN_0067c02f` there (trace index 775,209), the six groups are drawn
+    /// for the coming year's tournament and their first five matchdays
+    /// played, every group's block as the original's, in the trace's 216
+    /// calls of the draw.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_draws_and_plays_its_first_qualifiers_as_the_original() {
+        use crate::random::Random;
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        assert!(ours.globals.get::<i16>(SEASON_AT) <= 1);
+        let data = crate::data::Data::load(std::path::Path::new(&dir)).unwrap();
+        let name = format!("{DATE_ENTRIES:#x}");
+        ours.block_mut(&name).unwrap()[..QUALIFYING_GROUPS * DATE_ENTRY].fill(0x55);
+        ours.globals.put::<u16>(KNOCKOUT_ROUND, 7);
+        let start = Random::from_state(114_273_025, 1_000_248_502);
+        let mut random = start.clone();
+        draw_qualifiers(&mut ours, &data.rules.pitch.european, &mut random);
+        let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+        for g in 0..QUALIFYING_GROUPS {
+            let at = g * DATE_ENTRY;
+            assert_eq!(a[at..at + DATE_ENTRY], b[at..at + DATE_ENTRY], "qualifying group {g}");
+        }
+        assert_eq!(ours.globals.get::<u16>(KNOCKOUT_ROUND), theirs.globals.get::<u16>(KNOCKOUT_ROUND));
+        let mut count = start.clone();
+        let drawn = (0..1000).position(|_| {
+            if count == random {
+                return true;
+            }
+            count.below(2);
+            false
+        });
+        // The trace's 216 calls less the three pots' last nations, taken
+        // with a range of one, which leaves the generator as it stands.
+        assert_eq!(drawn, Some(213));
+        assert_eq!(random, Random::from_state(1_176_319_081, 871_609_509));
     }
 
     #[test]
