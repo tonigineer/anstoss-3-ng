@@ -13031,13 +13031,12 @@ mod tests {
     /// (new-game-exact-records, -rebase). The original's start settings
     /// draw the order the managers take their turns in (`FUN_006a4fc5`):
     /// Bert goes first there, signs with the first club that offers (SSV
-    /// Ulm) and has its squad, confidence and the condition and freshness
-    /// of its training weeks; Anna stays without a club, her training
-    /// camps' rules nought. Every manager starts with the game's eighteen
-    /// week templates, which the replica gives only a loaded game
-    /// (new-game-exact-managers).
-    const NEW_GAME_APART: [&str; 8] =
-        ["clubs", "confidence", "order", "records", "squads", "templates", "training weeks", "views"];
+    /// Ulm) and has its squad, confidence, training camps' rules and the
+    /// condition and freshness of its training weeks; Anna stays without a
+    /// club, her camps' rules nought (`a3_core::land_managers` has the
+    /// managers' records as the original's).
+    const NEW_GAME_APART: [&str; 7] =
+        ["clubs", "confidence", "order", "records", "squads", "training weeks", "views"];
 
     /// Where the replica's game at a new game's first turn parts from the
     /// original's dump of the same turn, by what: the date, the managers

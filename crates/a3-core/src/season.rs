@@ -63,8 +63,9 @@ const BAR_SYMBOLS_AT: u32 = 0x8a364c;
 const BAR_TIPS_AT: u32 = 0x8a3560;
 const BAR_WITHOUT_CLUB_AT: u32 = 0x8a3600;
 pub const BAR_SYMBOLS: usize = 19;
-/// A training camp's conditions as a manager starts: in the middle
-/// (`FUN_0074d622`).
+/// A training camp's conditions as a manager takes a club: in the middle
+/// (`FUN_0074d622`, the plan's reset `FUN_006fd390` calls); nought
+/// before (`FUN_006a3b61`).
 const CAMP_RULE: u8 = 2;
 /// Season goals by number: 0 the championship … 10 staying up.
 const PROMOTED_GOAL: usize = 10;
@@ -822,10 +823,11 @@ fn new_manager(m: NewManager, confidence: i32, rules: &Rules) -> Manager {
         menu: 0,
         list_view: false,
         formations: rules.pitch.new_formations(),
-        templates: Vec::new(),
+        // The game's own eighteen (`FUN_0074bfa8`).
+        templates: rules.training.originals.clone(),
         weeks: vec![Default::default(); crate::records::WEEKS],
         individual_rule: 0,
-        camp_rules: [CAMP_RULE; 3],
+        camp_rules: if m.club.is_some() { [CAMP_RULE; 3] } else { [0; 3] },
         training_pictures: false,
     }
 }
@@ -1070,6 +1072,7 @@ impl Season {
         m.club = Some(club);
         m.confidence = season_start_confidence(world, club, confidence);
         m.offers.clear();
+        m.camp_rules = [CAMP_RULE; 3];
         self.follow(world, rules, manager, club);
     }
 

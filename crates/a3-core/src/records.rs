@@ -123,6 +123,15 @@ pub(crate) fn text(bytes: &[u8], len: usize) -> String {
     cp1252(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
 }
 
+/// Writes text into a record's field as Windows-1252, NUL-padded, the
+/// last byte kept for the NUL.
+fn put_text(field: &mut [u8], name: &str) {
+    let bytes: Vec<u8> = name.chars().map(|c| a3_files::bitmap_font::to_cp1252(c).unwrap_or(b'?')).collect();
+    let n = bytes.len().min(field.len().saturating_sub(1));
+    field[..n].copy_from_slice(&bytes[..n]);
+    field[n..].fill(0);
+}
+
 /// Players: ids 0 to 17005, 0 none; a thousand to a block of the save.
 pub const PLAYERS: usize = 17006;
 const PLAYERS_PER_BLOCK: usize = 1000;
@@ -1160,6 +1169,22 @@ impl Manager {
                 (name, spots.map(|[x, y]| (x, y)))
             })
             .collect()
+    }
+
+    /// Writes one of his formations whole, its name and spots, as a new
+    /// manager gets the game's own (`FUN_00696d87`).
+    pub fn set_formation(&mut self, formation: usize, name: &str, spots: [(i16, i16); 11]) {
+        let at = FORMATIONS_AT + formation * FORMATION_SIZE;
+        put_text(&mut self.0[at..at + FORMATION_NAME], name);
+        self.set_formation_spots(formation, spots);
+    }
+
+    /// Writes one of his week templates, its name and sessions, as a new
+    /// manager gets the game's own (`FUN_0074bfa8`).
+    pub fn set_template(&mut self, template: usize, name: &str, week: [u8; 21]) {
+        let at = TEMPLATES_AT + template * TEMPLATE_SIZE;
+        put_text(&mut self.0[at..at + TEMPLATE_NAME], name);
+        self.put(at + TEMPLATE_NAME, week);
     }
 
     /// Keeps where the eleven stand in one of his formations.
