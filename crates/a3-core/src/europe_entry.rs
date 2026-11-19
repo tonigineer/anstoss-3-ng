@@ -809,4 +809,58 @@ mod tests {
         };
         assert_eq!(homes(x), homes(y), "the qualifiers' hosts");
     }
+
+    /// A new game's European cups and the season's grounds as the
+    /// original's (the oracle's new game, its first-turn dump): the
+    /// generator as the original's stood before `FUN_0078fc80` in the
+    /// calculation (`FUN_006da3a9` case 0, trace index 775427), the
+    /// grounds taken back to none, the season's grounds are drawn in 7
+    /// draws and the European cups opened (`FUN_0041bb6c`) in 34 more,
+    /// both as the original's, the generator then where it stood before
+    /// the cups' draw (`FUN_006cc3ff`).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_opens_its_european_cups_and_grounds_as_the_original() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        // The grounds of `DAT_00b21a90`..`DAT_00b21adc` taken back to none.
+        let grounds = 0xb21a90 - 0xb1f860..0xb21adc - 0xb1f860;
+        assert!(theirs.block("0xb1f860").unwrap()[grounds.clone()].iter().any(|&b| b != 0));
+        ours.block_mut("0xb1f860").unwrap()[grounds.clone()].fill(0);
+        let count = |from: &Random, to: &Random| {
+            let mut c = from.clone();
+            (0..1000).position(|_| {
+                if &c == to {
+                    return true;
+                }
+                c.below(2);
+                false
+            })
+        };
+        let start = Random::from_state(760_019_800, 1_295_414_131);
+        let mut random = start.clone();
+        crate::year::draw_grounds(&mut ours, &mut random);
+        assert_eq!(random, Random::from_state(318_451_302, 723_977_052));
+        assert_eq!(count(&start, &random), Some(7));
+        assert_eq!(ours.block("0xb1f860").unwrap()[grounds.clone()], theirs.block("0xb1f860").unwrap()[grounds], "the season's grounds");
+        let between = random.clone();
+        open_season(&mut ours, &mut random);
+        assert_eq!(count(&between, &random), Some(34));
+        assert_eq!(random, Random::from_state(1_916_268_493, 272_537_466));
+        for name in [CHAMPIONS, UEFA_CUP, ENTRANTS] {
+            assert_eq!(ours.block(name), theirs.block(name), "{name}");
+        }
+        for k in 0..PLACE_COUNTRIES {
+            assert_eq!(ours.globals.get::<u8>(COUNTRY_ENTRIES + k), theirs.globals.get::<u8>(COUNTRY_ENTRIES + k), "country {k}'s entries");
+        }
+    }
 }
