@@ -19,6 +19,12 @@
 //! not entered it (team +0x13d). The world cup's opponent is drawn among
 //! South America's clubs (`FUN_0063f804`). Each played country's books
 //! keep its clubs by cup (`FUN_006b3b92`).
+//!
+//! A new game enters its first season's cups the same way
+//! (`FUN_0041ac69(1)`) but from what its files say of last season: a kept
+//! country's champion and cup winner from `Internat.sav`'s `EUROSIEGER`,
+//! a played country's places by its clubs' honours, the countries in the
+//! ranking's order as it stands, and no Intertoto lists.
 
 use crate::random::Random;
 use crate::records::Records;
@@ -76,8 +82,12 @@ const ABROAD: usize = 0x28;
 const ABROAD_COUNTRY: usize = 0x14;
 const SOUTH_AMERICA: [u8; 5] = [4, 7, 8, 0x21, 0x46];
 const WORLD_DEFAULT: u8 = 8;
-/// The title flag of a club's season (team +0x110 bit 1).
+/// The title flag of a club's season (team +0x110 bit 1), and the
+/// honours a new game's files give the runner-up and the UEFA cup's
+/// clubs.
 const TITLE: u16 = 1;
+const RUNNER_UP: u16 = 2;
+const FOR_UEFA: u16 = 0x10;
 /// The country block's European books (from the object's +0x20): the
 /// counts of the Champions League's, a fourth unused, the UEFA cup's and the
 /// Intertoto's clubs, then their lists.
@@ -214,8 +224,47 @@ fn ranked(records: &Records) -> Vec<u8> {
     countries
 }
 
+/// The champion and cup winner of every kept country as a new game's
+/// files have them (`Internat.sav`'s `EUROSIEGER`, `FUN_0068a5c1` into the
+/// program's table `DAT_008ea150`, two bytes a country, not saved): none
+/// is club 0 and 0.
+pub type Winners = [[u8; 2]; PLACE_COUNTRIES];
+
+/// Reads `EUROSIEGER` from `Internat.sav` in `dir`: a count, then a country
+/// word and its champion's and cup winner's bytes each; the entry of the
+/// world cup's country (`DAT_00ae62f4`) is skipped.
+pub fn read_winners(dir: &std::path::Path, records: &Records) -> std::io::Result<Winners> {
+    let file = a3_files::sav::Section::read(&crate::world::find(dir, "Internat.sav")?)?;
+    let mut winners = [[0; 2]; PLACE_COUNTRIES];
+    let Some(section) = file.child("EUROSIEGER") else { return Ok(winners) };
+    let skipped = records.countries.get::<i16>(WORLD_COUNTRY);
+    let value = |k: usize| section.number(k).unwrap_or(0);
+    for n in 0..value(0).max(0) as usize {
+        let country = value(1 + 3 * n) as i16;
+        if country == skipped {
+            continue;
+        }
+        if let Some(w) = usize::try_from(country).ok().and_then(|c| winners.get_mut(c)) {
+            *w = [value(2 + 3 * n) as u8, value(3 + 3 * n) as u8];
+        }
+    }
+    Ok(winners)
+}
+
 /// The season's end enters next season's European cups (`FUN_0041ac69(0)`).
 pub fn qualify(records: &mut Records, random: &mut Random) {
+    enter(records, random, None);
+}
+
+/// A new game enters its first season's European cups (`FUN_0041ac69(1)`,
+/// in the calculation's case 0): the kept countries' places from their
+/// winners, the played ones' by their clubs' honours, the lists by the
+/// ranking as it stands, no Intertoto.
+pub fn qualify_new_game(records: &mut Records, winners: &Winners, random: &mut Random) {
+    enter(records, random, Some(winners));
+}
+
+fn enter(records: &mut Records, random: &mut Random, winners: Option<&Winners>) {
     let Some(block) = records.block(ENTRANTS).map(<[u8]>::to_vec) else { return };
     let mut e = Entrants { block, records };
     // The lists start empty, the holders' and the opponent's fields, the
@@ -233,8 +282,8 @@ pub fn qualify(records: &mut Records, random: &mut Random) {
     if let Some(b) = e.block.get_mut(PLACES..PLACES + PLACE_COUNTRIES * PLACE_ROW) {
         b.fill(0xff);
     }
-    places(&mut e, random);
-    fill_lists(&mut e);
+    places(&mut e, random, winners);
+    fill_lists(&mut e, winners.is_some());
     let block = e.block;
     if let Some(b) = records.block_mut(ENTRANTS) {
         b.copy_from_slice(&block);
@@ -243,24 +292,35 @@ pub fn qualify(records: &mut Records, random: &mut Random) {
 }
 
 /// The lists filled from the countries' places by the ranking, with the
-/// holders kept beside them.
-fn fill_lists(e: &mut Entrants) {
+/// holders kept beside them. A new game's (`new_game`) take the ranking's
+/// rows as they stand, unsorted, its year 1999 also the second holder
+/// (`DAT_00ae6dd8`), and leave the Intertoto empty.
+fn fill_lists(e: &mut Entrants, new_game: bool) {
     let holders = e.records.block(HOLDERS).map(<[u8]>::to_vec).unwrap_or_else(|| vec![0; 12]);
     let main = e.records.globals.main_country() as u8;
+    let year = e.records.globals.start_year();
     // The holders kept beside the lists: a missing one's country stands
     // in as the main country's (the Champions League's) or 6 (the UEFA
-    // cup's), its club 0.
-    let mut kept = [holders[0], holders[1], holders[2], holders[3], holders[8], holders[9], holders[10], holders[11]];
+    // cup's), its club 0. A new game of 1999 keeps the second holder as
+    // the UEFA cup's.
+    let uefa_kept = if new_game && year == 1999 { 4 } else { 8 };
+    let mut kept = [holders[0], holders[1], holders[2], holders[3], 0, 0, 0, 0];
+    kept[4..].copy_from_slice(&holders[uefa_kept..uefa_kept + 4]);
     if kept[0] == 0 {
         kept[..4].copy_from_slice(&[main, holders[1], 0, 0]);
     }
     if kept[4] == 0 {
-        kept[4..].copy_from_slice(&[UEFA_DEFAULT, holders[9], 0, 0]);
+        kept[4..].copy_from_slice(&[UEFA_DEFAULT, holders[uefa_kept + 1], 0, 0]);
     }
     if let Some(b) = e.block.get_mut(HOLDERS_KEPT..HOLDERS_KEPT + 8) {
         b.copy_from_slice(&kept);
     }
-    let rank = ranked(e.records);
+    let rank = if new_game {
+        let g = &e.records.globals;
+        (0..RANKED).map(|k| g.get::<i16>(RANKING_AT + k * RANKING_ROW) as u8).collect()
+    } else {
+        ranked(e.records)
+    };
     let c = |k: usize| rank.get(k).copied().unwrap_or(0);
     let holder = (holders[0], i16::from_le_bytes([holders[2], holders[3]]));
     if holder.0 != 0 {
@@ -295,6 +355,11 @@ fn fill_lists(e: &mut Entrants) {
     }
     let limit = if e.records.globals.seasons() == 1 { UEFA_DIRECT_FIRST } else { UEFA_DIRECT };
     put_word(&mut e.block, UEFA_LIMIT, limit);
+    // A new game up to 1999 enters both holders it knows, the second one
+    // first.
+    if new_game && year <= 1999 {
+        e.add(UEFA, holders[4], i16::from_le_bytes([holders[6], holders[7]]));
+    }
     e.add(UEFA, holders[8], i16::from_le_bytes([holders[10], holders[11]]));
     let mut sixths = 0;
     while sixths < 3 {
@@ -340,6 +405,9 @@ fn fill_lists(e: &mut Entrants) {
     }
     while fourths < RANKED && e.add(UEFA_QUALIFIERS, c(fourths), e.place(c(fourths), 3)) != 1 {
         fourths += 1;
+    }
+    if new_game {
+        return;
     }
     // The Intertoto takes the places left, country by country, each list
     // from the highest place it has not reached there.
@@ -442,11 +510,16 @@ fn world_opponent(e: &mut Entrants, random: &mut Random) {
     }
 }
 
-/// Every country's places (`FUN_00422b88(0)`).
-fn places(e: &mut Entrants, random: &mut Random) {
+/// Every country's places (`FUN_00422b88`; a new game's with its
+/// `winners`).
+fn places(e: &mut Entrants, random: &mut Random, winners: Option<&Winners>) {
     for country in 1..PLACE_COUNTRIES {
         let records = e.records;
         if records.countries.kind(country) != 2 || !records.countries.has_teams(country) {
+            continue;
+        }
+        if let Some(winners) = winners {
+            new_kept_places(e, country, winners[country]);
             continue;
         }
         let table = crate::statistics::other_table(records, country as u16);
@@ -461,23 +534,74 @@ fn places(e: &mut Entrants, random: &mut Random) {
         e.set_place(country, FINALIST, table[6].0);
     }
     for country in crate::opponent::played_nations(e.records) {
-        played_places(e, country);
+        played_places(e, country, winners.is_some());
     }
 }
 
-/// A played country's places (`FUN_00423559(country, 0)`): its closed first
-/// league's eight from its archive, its cup's winner and finalist by their
-/// flags, the gaps from its first league's list.
-fn played_places(e: &mut Entrants, country: u16) {
+/// A kept country's places in a new game (`FUN_00422b88(1)`, no draw): its
+/// champion first and its cup winner, its table's clubs that are neither
+/// for the next five and the finalist; then a cup winner who is the
+/// champion gives way to club 1 (or 0 when the champion is club 0), and
+/// the five after the champion are its first clubs that are neither.
+fn new_kept_places(e: &mut Entrants, country: usize, [champion, cup]: [u8; 2]) {
+    let count = e.records.countries.team_count(country);
+    e.set_place(country, 0, i16::from(champion));
+    e.set_place(country, WINNER, i16::from(cup));
+    // `FUN_0068161f` holds for every kept country; `FUN_00681520` its
+    // table of eight.
+    let table = crate::statistics::other_table(e.records, country as u16);
+    let mut row = 0;
+    for slot in [1, 2, 3, 4, 5, FINALIST] {
+        while row < 8 {
+            let club = table.get(row).map_or(-1, |r| r.0);
+            row += 1;
+            if club != i16::from(champion) && club != i16::from(cup) {
+                e.set_place(country, slot, club);
+                break;
+            }
+        }
+    }
+    // LAB_00422fc1: the five over again, by number.
+    let place = |e: &Entrants, slot: usize| e.place(country as u8, slot);
+    if place(e, 0) == place(e, WINNER) {
+        e.set_place(country, WINNER, if place(e, 0) == 0 { 1 } else { 0 });
+    }
+    let mut club = 0;
+    for slot in 1..6 {
+        // The first two searches start from club 0, the others go on from
+        // where the last one stopped.
+        if slot <= 2 {
+            club = 0;
+        }
+        let taken: Vec<usize> = [0, WINNER].into_iter().chain(1..slot).collect();
+        while club < count {
+            if taken.iter().all(|&s| place(e, s) != club) {
+                e.set_place(country, slot, club);
+                break;
+            }
+            club += 1;
+        }
+    }
+}
+
+/// A played country's places (`FUN_00423559(country, new_game)`): at the
+/// season's end its closed first league's eight from its archive, in a new
+/// game its champion (honours bit 1), runner-up (bit 2) and its first four
+/// for the UEFA cup (bit 0x10) in its clubs' order; its cup's winner and
+/// finalist by their flags, the gaps from its first league's list.
+fn played_places(e: &mut Entrants, country: u16, new_game: bool) {
     let records = e.records;
     let c = usize::from(country);
     let slot = records.countries.slot(c);
     let Some(block) = records.block(&format!("0x19f7fd0[{slot}]")) else { return };
-    let archived: Vec<u8> = block.get(COUNTRY_PLACES..COUNTRY_PLACES + 8).map_or_else(|| vec![0xff; 8], <[u8]>::to_vec);
     let clubs = word(block, COUNTRY_CLUBS).max(0) as u16;
-    for (k, &t) in archived.iter().enumerate() {
-        e.set_place(c, k, i16::from(t as i8));
+    if !new_game {
+        let archived: Vec<u8> = block.get(COUNTRY_PLACES..COUNTRY_PLACES + 8).map_or_else(|| vec![0xff; 8], <[u8]>::to_vec);
+        for (k, &t) in archived.iter().enumerate() {
+            e.set_place(c, k, i16::from(t as i8));
+        }
     }
+    let mut for_uefa = 0;
     for t in 0..clubs {
         let flags = records.team(country, t).map_or(0, |t| t.get::<u16>(0x110));
         if flags & CUP_WINNER != 0 {
@@ -485,6 +609,19 @@ fn played_places(e: &mut Entrants, country: u16) {
         }
         if flags & CUP_FINALIST != 0 {
             e.set_place(c, FINALIST, t as i16);
+        }
+        if !new_game {
+            continue;
+        }
+        if flags & TITLE != 0 {
+            e.set_place(c, 0, t as i16);
+        } else if flags & RUNNER_UP != 0 {
+            e.set_place(c, 1, t as i16);
+        } else if flags & FOR_UEFA != 0 {
+            if for_uefa < 4 {
+                e.set_place(c, 2 + for_uefa, t as i16);
+            }
+            for_uefa += 1;
         }
     }
     let list = crate::opponent::League::of(records, country, 0)
@@ -739,7 +876,7 @@ mod tests {
             put_word(&mut block, at, 0);
         }
         let mut e = Entrants { block, records: &ours };
-        fill_lists(&mut e);
+        fill_lists(&mut e, false);
         for list in LISTS {
             let (mine, theirs_list): (Vec<_>, Vec<_>) = (e.entries(list).collect(), {
                 let t = Entrants { block: y.to_vec(), records: &theirs };
@@ -861,6 +998,95 @@ mod tests {
         }
         for k in 0..PLACE_COUNTRIES {
             assert_eq!(ours.globals.get::<u8>(COUNTRY_ENTRIES + k), theirs.globals.get::<u8>(COUNTRY_ENTRIES + k), "country {k}'s entries");
+        }
+    }
+
+    /// A new game's European entry and its managers' year as the
+    /// original's (the oracle's new game, its first-turn dump): the
+    /// season's European flags taken off the played clubs again and the
+    /// entrants' block emptied, the generator as the original's stood
+    /// before `FUN_0041ac69(1)` (trace index 775208), the entry draws its
+    /// one draw and writes the block — places, lists, holders, the world
+    /// cup's opponent — and the played country's books as the original's;
+    /// then, from where the original's stood before `FUN_00775219` (775425),
+    /// the managers' year draws the two humans' nerves as it did.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_enters_the_european_cups_as_the_original() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR")).join("Data.a3");
+        let winners = read_winners(&dir, &ours).unwrap();
+        assert_eq!((winners[6], winners[13]), ([3, 0], [1, 1]));
+        let europe = IN_EUROPE | SEEDED | IN_UEFA | IN_INTERTOTO;
+        let played = crate::opponent::played_nations(&ours);
+        for &c in &played {
+            for t in 0..ours.countries.team_count(usize::from(c)).max(0) as u16 {
+                let team = ours.team_mut(c, t).unwrap();
+                team.put::<u16>(0x110, team.get::<u16>(0x110) & !europe);
+            }
+            let slot = ours.countries.slot(usize::from(c));
+            let block = ours.block_mut(&format!("0x19f7fd0[{slot}]")).unwrap();
+            block[BOOK_COUNTS[0]..BOOK_INTERTOTO + 2 * 10].fill(0);
+        }
+        ours.block_mut(ENTRANTS).unwrap().fill(0);
+        let count = |from: &Random, to: &Random| {
+            let mut c = from.clone();
+            (0..1000).position(|_| {
+                if &c == to {
+                    return true;
+                }
+                c.below(2);
+                false
+            })
+        };
+        let start = Random::from_state(2_847_276, 1_767_428_961);
+        let mut random = start.clone();
+        qualify_new_game(&mut ours, &winners, &mut random);
+        assert_eq!(count(&start, &random), Some(1));
+        assert_eq!(random, Random::from_state(114_273_025, 1_000_248_502));
+        let (x, y) = (ours.block(ENTRANTS).unwrap(), theirs.block(ENTRANTS).unwrap());
+        for country in 0..PLACE_COUNTRIES {
+            let at = PLACES + country * PLACE_ROW;
+            assert_eq!(x[at..at + PLACE_ROW], y[at..at + PLACE_ROW], "country {country}'s places");
+        }
+        for list in LISTS {
+            let entries = |r: &Records, b: &[u8]| Entrants { block: b.to_vec(), records: r }.entries(list).collect::<Vec<_>>();
+            assert_eq!(entries(&ours, x), entries(&theirs, y), "the list at {:#x}", list.at);
+        }
+        assert_eq!(x, y, "the entrants' block");
+        for &c in &played {
+            let slot = ours.countries.slot(usize::from(c));
+            let name = format!("0x19f7fd0[{slot}]");
+            let (b, t) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+            for (count, list) in [(0, BOOK_CHAMPIONS), (2, BOOK_UEFA), (3, BOOK_INTERTOTO)] {
+                let n = word(t, BOOK_COUNTS[count]);
+                assert_eq!(word(b, BOOK_COUNTS[count]), n, "country {c}'s book {count}");
+                for k in 0..n.max(0) as usize {
+                    assert_eq!(word(b, list + 2 * k), word(t, list + 2 * k), "country {c}'s book {count}");
+                }
+            }
+        }
+        // The managers' year: a new game's managers start at nerves 100.
+        for n in 0..usize::from(ours.globals.humans()) {
+            ours.managers[n].put::<i16>(0x11e, 100);
+        }
+        let start = Random::from_state(1_176_319_081, 871_609_509);
+        let mut random = start.clone();
+        crate::settlement::open_managers(&mut ours, &mut random);
+        assert_eq!(count(&start, &random), Some(2));
+        assert_eq!(random, Random::from_state(760_019_800, 1_295_414_131));
+        for n in 0..usize::from(ours.globals.humans()) {
+            assert_eq!(ours.managers[n].get::<i16>(0x11e), theirs.managers[n].get::<i16>(0x11e), "manager {n}'s nerves");
         }
     }
 }
