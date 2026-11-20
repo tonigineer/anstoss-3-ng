@@ -886,6 +886,12 @@ mod tests {
         for &n in &clubs {
             crate::youth::store_pool(&mut ours, 14, n, &[Vec::new(), Vec::new()]);
         }
+        // The contracts stood as the first contracts wrote them: the walks
+        // before this one carry 23 men's word past the first year, and the
+        // worth below is weighed off the first year the club walks left on
+        // the man (`FUN_00708836` reads his object, not the renewed word).
+        let mut contracts = Random::from_state(239_039_057, 876_019_106);
+        crate::rollover::first_contracts(&mut ours, (&rules.contract, &rules.value), &mut contracts);
         crate::random::record(true);
         let mut random = Random::from_state(1_455_217_461, 1_094_981_282);
         crate::rollover::open_played(&mut ours, Some((&rules.contract, &rules.value)), &mut random);
