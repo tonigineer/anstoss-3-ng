@@ -67,6 +67,27 @@ const QUALITY_BLOCK: &str = "0xb1f860";
 const QUALITY_AT: usize = 0xb217b4 - 0xb1f860;
 const LAWYERS: usize = 5;
 
+/// The lawyers' ranks at a new game (`FUN_0065e659`'s first-season
+/// branch at 0x65ea7a): 0 to 4 laid down in order, then one draw below 4
+/// swapping it with the rank behind it.
+pub(crate) fn open_ranks(records: &mut Records, random: &mut Random) {
+    let swap = random.below(LAWYERS as u32 - 1) as usize;
+    if let Some(b) = records.block_mut(QUALITY_BLOCK)
+        && let Some(rows) = b.get_mut(QUALITY_AT..QUALITY_AT + LAWYERS * 2)
+    {
+        for (k, row) in rows.chunks_exact_mut(2).enumerate() {
+            let rank = if k == swap {
+                swap + 1
+            } else if k == swap + 1 {
+                swap
+            } else {
+                k
+            };
+            row.copy_from_slice(&(rank as i16).to_le_bytes());
+        }
+    }
+}
+
 /// The verdict texts, by `DAT_00a3b454` (0x8818cc): 0 "wird neu auf %d
 /// Jahre festgelegt." … 9 "ist aufgehoben. Er ist ab sofort wieder
 /// spielberechtigt.", 10 to 12 the one-match forms of 2, 5 and 8.

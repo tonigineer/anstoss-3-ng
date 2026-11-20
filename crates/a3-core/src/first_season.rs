@@ -948,4 +948,89 @@ mod tests {
         assert!(off.is_empty(), "{} off:\n{}", off.len(), off.join("\n"));
     }
 
+    /// The rest of `FUN_0065e659` in the first season: from the generator
+    /// as it stood when the staff markets had their companies (trace index
+    /// 746028), the two company builds (694), the national odds (323), the
+    /// luck draws (30), the merchandises' weeks (62), the lawyers' swapped
+    /// rank (1), the national teams (1,392) and the market's opening with
+    /// its 196 rows and fifty-two weekly prices (21,694) lead to the state
+    /// at 770224 — 24,196 draws — and the market's rows stand as the
+    /// dump's (`FUN_00409a3f`, `FUN_0077713a`, `FUN_00613f70`,
+    /// `FUN_006b93f2`, `FUN_00405f2f` with `FUN_00404dcd`, `FUN_00404ed8`
+    /// and `FUN_00405024`).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_opens_the_market_and_the_season_as_the_originals() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        // The dump keeps what the opening already did: at 746028 no
+        // co-trainer had asked years (byte 0x15) or named a salary (0x10),
+        // and at 746722 no national squad had been picked yet (the count
+        // at 0x112). Stand those empty again before replaying — the man's
+        // own years (0x0c) stood as the dump keeps them already.
+        for id in 1..1500 {
+            if let Some(b) = ours.block_mut(&format!("0xbe3920[{id}]")) {
+                b[0x10..0x14].fill(0);
+                b[0x15] = 0;
+            }
+        }
+        for nation in 1..crate::season_odds::NATIONS {
+            let at = crate::season_odds::NATIONAL_COUNT;
+            if let Some(b) = ours.block_mut(&format!("{:#x}[{nation}]", crate::season_odds::NATIONAL_TEAMS)) {
+                b[at..at + 2].fill(0);
+            }
+        }
+        crate::random::record(true);
+        let mut random = Random::from_state(1_168_654_908, 1_284_470_449);
+        for _ in 0..2 {
+            crate::staff_market::build_co_markets(&mut ours, &mut random);
+        }
+        crate::season_odds::nation_odds(&mut ours, &rules.pitch.european, &mut random);
+        crate::statistics::draw_luck(&mut ours, &mut random);
+        crate::merchandise::open_weeks(&mut ours, &rules.merchandise, &mut random);
+        crate::court::open_ranks(&mut ours, &mut random);
+        crate::season_odds::open_national_teams(&mut ours, &mut random);
+        crate::stock::open(&mut ours, &mut random);
+        let draws = crate::random::recorded();
+        crate::random::record(false);
+        if let Some(out) = std::env::var_os("A3_DRAWS_OUT") {
+            std::fs::write(out, crate::random::draws_text(&draws)).unwrap();
+        }
+        assert_eq!(random, Random::from_state(2_063_601_799, 1_799_675_265), "{} draws", draws.len());
+        let rows = |b: &[u8]| -> Vec<(i16, i16, Vec<u8>)> {
+            let count = i32::from_le_bytes(b[0..4].try_into().unwrap()).max(0) as usize;
+            (0..count)
+                .map(|k| {
+                    let e = 0x14 + k * 0x108;
+                    (
+                        i16::from_le_bytes([b[e + 0x1c], b[e + 0x1d]]),
+                        i16::from_le_bytes([b[e + 0x1e], b[e + 0x1f]]),
+                        b[e..e + 0x16].iter().copied().take_while(|&c| c != 0).collect(),
+                    )
+                })
+                .collect()
+        };
+        let (a, b) = (ours.block("0x8be408").unwrap(), theirs.block("0x8be408").unwrap());
+        let (a, b) = (rows(a), rows(b));
+        assert_eq!(a.len(), b.len(), "the market's row count");
+        // In order: the clubs first, then the index names by table place,
+        // the dump's rows stand in the very order the opening put them in.
+        let off: Vec<String> = (0..a.len().max(b.len()))
+            .filter(|&k| a.get(k) != b.get(k))
+            .map(|k| format!("{k}: {:?} vs {:?}", a.get(k), b.get(k)))
+            .collect();
+        assert!(off.is_empty(), "{} rows off:\n{}", off.len(), off.join("\n"));
+    }
+
 }

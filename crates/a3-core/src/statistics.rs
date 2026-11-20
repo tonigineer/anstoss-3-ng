@@ -2890,6 +2890,12 @@ pub fn open_lists(records: &mut Records, random: &mut Random) {
             }
         }
     }
+    draw_luck(records, random);
+}
+
+/// The season's thirty luck numbers (`FUN_0065e659`'s loop at 0x65e835,
+/// just before the lists are cleared): each drawn below 30.
+pub(crate) fn draw_luck(records: &mut Records, random: &mut Random) {
     let values = std::array::from_fn(|_| random.below(LUCK_BELOW) as i16);
     records.luck.set_values(values);
 }

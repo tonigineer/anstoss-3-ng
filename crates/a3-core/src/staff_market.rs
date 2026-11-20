@@ -169,7 +169,7 @@ fn ask_terms(b: &mut [u8], random: &mut Random) {
 /// a competence over his second rating and four, or a second rating
 /// below two (`FUN_00408d19`); every man of the band asks years (one to
 /// three) and a salary if he asks none.
-fn build_co_markets(records: &mut Records, random: &mut Random) {
+pub(crate) fn build_co_markets(records: &mut Records, random: &mut Random) {
     for (_, country) in slots(records) {
         let band = usize::from(records.countries.cup_system(usize::from(country)));
         let first = records.countries.get::<i16>(CO_FIRST + 2 * band);

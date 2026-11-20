@@ -1928,6 +1928,36 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     // before the clubs' walk.
     crate::staff_market::open_season(records, random);
     crate::tournament::open_preseason(records, random);
+    // The first season's half of `FUN_0065e659` (`DAT_00b5cbc8` at one):
+    // the merchandises' weeks of delivery (`FUN_00613f70`; `FUN_00614477`,
+    // `FUN_006753f4` and `FUN_006815cf` draw nothing), the five lawyers'
+    // ranks with two swapped by a draw, the counters and player lists
+    // cleared, the national teams rebuilt (`FUN_006b93f2`) and the market
+    // opened (`FUN_00405f2f`); `FUN_006bc35f` and `FUN_00408fbd` between
+    // them draw nothing.
+    if first {
+        if let Some(rules) = rules {
+            crate::merchandise::open_weeks(records, &rules.merchandise, random);
+        }
+        crate::court::open_ranks(records, random);
+        // Sixty bytes at 0xb5df6c to nought, the season's player lists
+        // (`0xb0b6b8`) to 0xff, the word at 0xb5dfc0 to 0xffff, the least
+        // strength to one; 0xb5dfac would take 0xa3b35c, which the replica
+        // keeps where the save has it. The table at 0x89fe44, walked into
+        // 0xb5df6c and 0xb0b6b8, stands empty at a new game.
+        for at in (0xb5df6c..0xb5df6c + 0x3c).step_by(2) {
+            records.globals.put::<u16>(at, 0);
+        }
+        if let Some(rows) = records.block_mut(crate::statistics::LISTS)
+            && let Some(head) = rows.get_mut(..0x3c)
+        {
+            head.fill(0xff);
+        }
+        records.globals.put::<u16>(0xb5dfc0, 0xffff);
+        records.globals.set_least_strength(1);
+        crate::season_odds::open_national_teams(records, random);
+        crate::stock::open(records, random);
+    }
     count_down_contracts(records);
     number_shirts(records, random);
     crate::finances::keep_last_season(records);
