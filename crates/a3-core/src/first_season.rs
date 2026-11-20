@@ -769,4 +769,183 @@ mod tests {
         }
         assert!(off.is_empty(), "{} off:\n{}", off.len(), off[..off.len().min(30)].join("\n"));
     }
+
+    /// The kept clubs of the played country renew their squads and fill
+    /// them as the original's: from the generator as it stood before
+    /// `FUN_0077650c` (trace index 290074), its 455,954 draws — every
+    /// club's two new youths (`FUN_0066bb26`) and its spare amateur —
+    /// lead to the state at trace index 746028, and the new men hold the
+    /// dump's fields. The pools stood empty and the taken regeneration
+    /// table entries stood free; an entry held its player's id — the
+    /// country's own numbered, the foreign ones the file's — and a
+    /// position byte, the drawn one where the pick's probes matched.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_renews_the_played_clubs_squads_as_the_original() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(&oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        let early_path = std::path::PathBuf::from(&oracle).join("runs/new-game/day-000.an3");
+        let early = early_path.exists().then(|| Records::from_save(a3_files::an3::Save::read(&early_path).unwrap()).unwrap());
+        let days: Vec<Records> = (0..8)
+            .map(|d| {
+                let p = std::path::PathBuf::from(&oracle)
+                    .join(format!("runs/new-game/day-{d:03}.an3"));
+                if !p.exists() {
+                    return None;
+                }
+                Records::from_save(a3_files::an3::Save::read(&p).unwrap()).ok()
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+        assert_eq!(crate::opponent::played_nations(&ours), vec![14]);
+        let clubs: Vec<u16> = (0..ours.countries.team_count(14).max(0) as u16).collect();
+        let (from, to) = crate::newplayer::class_range(&ours, usize::from(crate::newplayer::COUNTRY_CLASS[14]));
+        let (from, to) = (from.max(0) as usize, to.max(0) as usize);
+        let table = ours.block(crate::newplayer::REGENERATION).unwrap().to_vec();
+        let entry = |k: usize| i16::from_le_bytes([table[4 * k], table[4 * k + 1]]);
+        // The new men: the country's class entries the pick took, and the
+        // amateurs the pools hold — the renewing made all of them.
+        let pool: Vec<u16> = clubs
+            .iter()
+            .flat_map(|&n| {
+                let [up, amateurs] = crate::youth::pool(&ours, 14, n);
+                up.into_iter().chain(amateurs)
+            })
+            .collect();
+        let mut new: Vec<u16> = (from..to).filter(|&k| entry(k) <= 0).map(|k| (k + 1) as u16).collect();
+        for &id in &pool {
+            if !new.contains(&id) {
+                new.push(id);
+            }
+        }
+        // The taken entries stand free again, id and position byte as the
+        // pick found them. Where the probes matched, the entry's position
+        // is the drawn one the new man's record carries first; the places
+        // the pick reached without any probe matching — after probing the
+        // whole class twice, taking the first free entry in its range —
+        // held a position none of its probes ever drew, so the replay of
+        // the log keeps those bytes. The foreign entries hold the file's
+        // own ids, not the place's number.
+        const TAKEN_BLIND: [(usize, u8); 72] = [
+            (0, 1), (1, 2), (2, 2), (3, 2), (4, 2), (5, 2), (6, 2), (7, 2), (8, 2), (9, 2), (10, 2), (11, 2),
+            (12, 2), (13, 2), (14, 2), (15, 2), (16, 2), (17, 2), (18, 2), (19, 2), (20, 2), (21, 2), (22, 2),
+            (23, 2), (24, 2), (25, 2), (26, 2), (27, 2), (28, 2), (29, 2), (30, 2), (31, 2), (32, 2), (33, 2),
+            (34, 2), (35, 2), (36, 2), (37, 2), (38, 2), (39, 2), (40, 2), (41, 2), (42, 2), (43, 2), (44, 2),
+            (45, 2), (46, 2), (47, 2), (48, 2), (49, 2), (50, 2), (51, 2), (52, 2), (53, 2), (54, 2), (55, 2),
+            (56, 2), (57, 2), (58, 2), (59, 2), (60, 2), (61, 2), (62, 2), (63, 2), (64, 2), (65, 2), (66, 4),
+            (67, 2), (68, 2), (69, 2), (70, 2), (1814, 1),
+        ];
+        const TAKEN_ABROAD: [(usize, u16); 23] = [
+            (1023, 3904), (1099, 3980), (1164, 4045), (1814, 4902), (1891, 4979), (1971, 5257), (2417, 5911),
+            (2437, 5931), (2704, 6401), (3250, 7377), (3447, 7574), (3493, 7844), (4397, 13967), (4398, 13968),
+            (4418, 13988), (4432, 14002), (4455, 14025), (4460, 14030), (4484, 14054), (4791, 14361),
+            (4810, 14380), (5214, 14784), (5267, 14837),
+        ];
+        let blind = |k: usize| TAKEN_BLIND.iter().find(|&&(place, _)| place == k).map(|&(_, p)| p);
+        let free: Vec<(usize, u8)> = (from..to)
+            .filter(|&k| entry(k) <= 0)
+            .map(|k| {
+                let p = blind(k).or_else(|| ours.player((k + 1) as u16).map(|p| p.positions()[0]));
+                (k, p.expect("a new man or a kept position byte"))
+            })
+            .collect();
+        let abroad: Vec<(usize, u8, u16, u8)> = TAKEN_ABROAD
+            .iter()
+            .map(|&(k, id)| {
+                let p = ours.player(id).expect("the pool amateur");
+                let class = usize::from(crate::newplayer::COUNTRY_CLASS[usize::from(p.nation())]);
+                (k, class as u8, id, blind(k).unwrap_or(p.positions()[0]))
+            })
+            .collect();
+        assert_eq!(free.len() + abroad.len(), new.len(), "every new man is a taken entry");
+        let table = ours.block_mut(crate::newplayer::REGENERATION).unwrap();
+        for &(k, position) in &free {
+            let id = (k + 1) as u16;
+            table[4 * k..4 * k + 2].copy_from_slice(&id.to_le_bytes());
+            table[4 * k + 2] = 0;
+            table[4 * k + 3] = position;
+        }
+        for &(k, class, id, position) in &abroad {
+            assert!(entry(k) <= 0, "the entry at {k} stood taken");
+            table[4 * k..4 * k + 2].copy_from_slice(&id.to_le_bytes());
+            table[4 * k + 2] = class;
+            table[4 * k + 3] = position;
+        }
+        // The pools stood empty before the renewing filled them.
+        for &n in &clubs {
+            crate::youth::store_pool(&mut ours, 14, n, &[Vec::new(), Vec::new()]);
+        }
+        crate::random::record(true);
+        let mut random = Random::from_state(1_455_217_461, 1_094_981_282);
+        crate::rollover::open_played(&mut ours, Some((&rules.contract, &rules.value)), &mut random);
+        crate::season_odds::open_lists(&mut ours, &mut random);
+        crate::rollover::open_kept(&mut ours, Some((&rules.contract, &rules.value)), &mut random);
+        let draws = crate::random::recorded();
+        crate::random::record(false);
+        if let Some(out) = std::env::var_os("A3_DRAWS_OUT") {
+            std::fs::write(out, crate::random::draws_text(&draws)).unwrap();
+        }
+        assert_eq!(random, Random::from_state(1_168_654_908, 1_284_470_449), "{} new men, {} draws", new.len(), draws.len());
+        let mut off = Vec::new();
+        for &id in &new {
+            let (a, b) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+            let made = |p: &Player| {
+                (
+                    p.nation(),
+                    p.birth_day(),
+                    p.birth_month(),
+                    p.birth_year(),
+                    p.strength(),
+                    p.talent(),
+                    p.positions(),
+                    p.retiring(),
+                    p.picks(),
+                )
+            };
+            let spare = |p: &Player| {
+                (
+                    p.club(),
+                    p.get::<u16>(0x216),
+                    p.get::<u8>(0x353),
+                    p.manner(),
+                    p.shown(),
+                    p.condition(),
+                    p.freshness(),
+                    p.contentment(),
+                )
+            };
+            if (made(a), spare(a)) != (made(b), spare(b)) {
+                off.push(format!("{id}: {:?} {:?} vs {:?} {:?}", made(a), spare(a), made(b), spare(b)));
+            }
+        }
+        for &n in &clubs {
+            let (a, b) = (ours.team(14, n).unwrap(), theirs.team(14, n).unwrap());
+            if a.players() != b.players() {
+                let (a, b) = (a.players(), b.players());
+                let gone: Vec<u16> = b.iter().filter(|p| !a.contains(p)).copied().collect();
+                let put: Vec<u16> = a.iter().filter(|p| !b.contains(p)).copied().collect();
+                off.push(format!("club {n}: squad {a:?} vs {b:?} (missing {gone:?}, extra {put:?})"));
+            }
+            if a.overdraft() != b.overdraft() {
+                off.push(format!("club {n}: overdraft {} vs {}", a.overdraft(), b.overdraft()));
+            }
+            let (a, b) = (crate::youth::pool(&ours, 14, n), crate::youth::pool(&theirs, 14, n));
+            if a != b {
+                off.push(format!("club {n}: pool {a:?} vs {b:?}"));
+            }
+        }
+        assert!(off.is_empty(), "{} off:\n{}", off.len(), off.join("\n"));
+    }
+
 }

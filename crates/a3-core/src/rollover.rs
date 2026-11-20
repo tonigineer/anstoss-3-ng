@@ -431,10 +431,12 @@ pub fn open_player(player: &mut Player, year: i32) {
 /// when the tables are at hand ([`crate::newplayer::fill_played_club`]), a
 /// weak one lifted ([`crate::development::lift_weak`]), then each player
 /// opened, his last form and his form of the season — one week of it —
-/// his form today; and with the tables at hand the overdraft the bank
-/// allows by the squad's worth (club +0x4f0, `FUN_00622e08`). (The
-/// computer clubs' line-ups and the rest of `FUN_0077655c` are not
-/// built.)
+/// his form today; in the first season only the club's renewal with new
+/// youths and a spare amateur
+/// ([`crate::newplayer::renew_club`]); and with the tables at hand the
+/// overdraft the bank allows by the squad's worth (club +0x4f0,
+/// `FUN_00622e08`). (The computer clubs' line-ups and the rest of
+/// `FUN_0077655c` are not built.)
 pub fn open_played(
     records: &mut Records,
     tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
@@ -457,13 +459,19 @@ pub fn open_played(
                 player.set_season_form(i16::from(form as u8));
                 player.set_season_form_weeks(1);
             }
+            // The new game's first day gives the club two new youths and a
+            // spare amateur (`FUN_0066bb26`, only while the season is the
+            // first — `DAT_00b5cbc8`).
+            if records.globals.seasons() == 1 {
+                crate::newplayer::renew_club(records, (country as u8, number), random);
+            }
             // The overdraft the bank allows by the squad's worth, a tenth
-            // of it in 100.000s — the stars of last season gone by then
-            // (`FUN_0065e659` clears them first; their new ones are not
-            // drawn here).
+            // of it in 100.000s — with the stars standing in the records:
+            // a rollover has cleared them (`FUN_0065e659`) before it gets
+            // here, while the new game's pick stands and weighs a fifth.
             if let (Some((_, values)), Some(today)) = (tables, today) {
                 let Some(team) = records.team(country, number) else { continue };
-                let worth = crate::value::squad_worth(records, team, values, today, [0; 11]);
+                let worth = crate::value::squad_worth(records, team, values, today, records.globals.stars());
                 if let Some(team) = records.team_mut(country, number) {
                     team.set_overdraft((worth / 10 / OVERDRAFT_UNIT) as i16);
                 }
