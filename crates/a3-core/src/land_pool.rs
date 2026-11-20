@@ -46,6 +46,68 @@ const FILES: u16 = 17;
 const MANY: usize = 100;
 const FEW: usize = 60;
 
+/// The `AJUGEND` youths each country file's reading takes before its
+/// clubs (`FUN_0068db23`, and `FUN_0068e7c2` for the bonus file): by the
+/// slot of [`crate::world::LAND_FILES`], the class and how many the
+/// table at `DAT_008a3a84` gives (0x44 a country: `+4` the count, its
+/// high word the class; read as is, never written). Their class arms the
+/// faces: the Dutch (slot 6) draw by the rarest rule, the rest by the
+/// common one. The files hold four values a youth — the two names and
+/// two numbers nothing reads — and the table often asks for more than
+/// the file holds (Germany's 1014 of a thousand rows): the names beyond
+/// it fall to none, as they do in the original.
+pub const YOUNG: [(u16, usize); 12] = [
+    (0, 1014), (0, 800), (0, 150), (0, 0), (0, 0), (0, 0), (6, 300), (0, 300), (0, 300), (0, 300), (0, 0), (0, 0),
+];
+
+/// The `AJUGEND` youths of `land` for slot `slot` (`FUN_0068b266` with
+/// no contract), players from `next` and free-table entries from
+/// `entry` on: each takes the next id and a face of the country's
+/// class, no drawn position (the class never is above 10).
+pub fn read_young(records: &mut Records, land: &Section, slot: usize, nation: u8, next: &mut usize, entry: &mut u16, random: &mut Random) {
+    let (class, count) = YOUNG[slot];
+    // `AJUGEND` sits within the file's `LAND` (or `BONUSLAND`) section,
+    // where the save's own head is.
+    let head = land.child("LAND").or_else(|| land.child("BONUSLAND")).unwrap_or(land);
+    let Some(rows) = head.child("AJUGEND") else { return };
+    records.globals.put::<u16>(CLASS_FIRST + usize::from(class) * 2, *entry);
+    let mut names = std::mem::take(&mut records.names);
+    let mut pool = Pool::new(&mut names);
+    let mut values = rows.values.iter().map(String::as_str);
+    for _ in 0..count {
+        let first = pool.index(values.next().unwrap_or(""));
+        let last = pool.index(values.next().unwrap_or(""));
+        // The row's two numbers stand for nothing here.
+        let _ = values.next();
+        let _ = values.next();
+        let id = *next;
+        if let Some(table) = records.block_mut(FREE_AT) {
+            let at = usize::from(*entry) * 4;
+            if at + 4 <= table.len() {
+                table[at..at + 2].copy_from_slice(&(id as u16).to_le_bytes());
+                table[at + 3] = 1;
+            }
+        }
+        let player = &mut records.players[id];
+        player.set_first_name(first);
+        player.set_last_name(last);
+        player.set_nation(nation);
+        player.put::<u8>(0x164, nation);
+        // The country's own file reads its youths without a contract
+        // year, the foreign ones with the open 0xffff.
+        player.put::<u16>(0x166, if slot == 0 { 0 } else { 0xffff });
+        player.set_id(id as u16);
+        player.put::<u8>(0x227, class as u8);
+        let (kind, colour, hair) = face(class, random);
+        player.set_face([kind, colour.wrapping_add(hair << 4)]);
+        *next += 1;
+        *entry += 1;
+    }
+    drop(pool);
+    records.names = names;
+    records.globals.put::<u16>(CLASS_END + usize::from(class) * 2, *entry);
+}
+
 /// `FUN_0068be0f` for the forty referees of `ISCHIRI`.
 pub fn read_referees(records: &mut Records, ischiri: &Section) {
     let mut names = std::mem::take(&mut records.names);

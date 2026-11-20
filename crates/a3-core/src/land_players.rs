@@ -469,14 +469,19 @@ mod tests {
     /// files gave him: his club (the clubs' part), condition and freshness
     /// (drawn after the start settings' draws), and what the season start
     /// changes (new-game-exact-squads): some players' morale (90), two
-    /// players' shirts.
-    const APART: [&str; 4] = ["club", "condition", "morale", "shirt"];
+    /// players' shirts. Of the `AJUGEND` youths also their nation, face,
+    /// contentment, manner, marks and contract years (the season's youth
+    /// intake, planned as youth-intake, gives them when placing the
+    /// youths) and the names past the file's rows (the original reads on
+    /// into the values of the sections behind `AJUGEND`).
+    const APART: [&str; 11] = ["club", "condition", "morale", "shirt", "names", "nations", "face", "contentment", "manner", "marks", "began"];
 
     /// The players of the oracle's new game in Germany
-    /// (`tools/oracle/new-game.sh`) as the files give them — all of the
-    /// main country's, eight clubs of each other country —: the first turn
-    /// holds them in the same order, a thousand and fourteen ids on (the
-    /// free players stand before them by then).
+    /// (`tools/oracle/new-game.sh`) as the files give them — each
+    /// country's `AJUGEND` youths first, then all of the main country's
+    /// players, eight clubs of each other country —: the first turn
+    /// holds them in the same order, at the ids the reading gives them
+    /// (the pool's free players stand behind them by then).
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
     fn a_new_games_players_read_as_the_originals() {
@@ -492,9 +497,12 @@ mod tests {
         let dump = Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap();
         let mut records = Records::blank();
         let mut next = 1;
+        let mut entry = 0u16;
         let mut random = Random::new(1);
         let dir = std::path::PathBuf::from(game).join("Data.a3");
-        let clubs = read_slot(&mut records, &dir, 0, &mut next, &mut random).unwrap();
+        let land = Section::read(&find(&dir, LAND_FILES[0]).unwrap()).unwrap();
+        crate::land_pool::read_young(&mut records, &land, 0, 0, &mut next, &mut entry, &mut random);
+        let clubs = read_country(&mut records, &land, &mut next, &mut random);
         assert_eq!(clubs.len(), 108);
         // Each country's ids from where they begin.
         let mut segments = vec![1..next];
@@ -504,9 +512,10 @@ mod tests {
         for slot in 1..11 {
             let country = world.country(slot).unwrap();
             let land = Section::read(&find(&dir, LAND_FILES[slot]).unwrap()).unwrap();
+            let from = next;
+            crate::land_pool::read_young(&mut records, &land, slot, country.nation as u8, &mut next, &mut entry, &mut random);
             let chosen = foreign_clubs(&land, country.nation as u8, &country.leagues[0].clubs, &fixed);
             assert_eq!(chosen.len(), FOREIGN_CLUBS);
-            let from = next;
             read_clubs(&mut records, &land, &chosen, &mut next, &mut random);
             segments.push(from..next);
         }
@@ -520,13 +529,15 @@ mod tests {
             let at = (1..dump.players.len())
                 .find(|&id| {
                     let o = &dump.players[id];
-                    name(&dump, o) == name(&records, first) && o.birthday() == first.birthday()
+                    // The youths' birthdays stand in the first turn but the
+                    // season's youth intake, not the read, gives them.
+                    name(&dump, o) == name(&records, first) && (first.birthday().is_none() || o.birthday() == first.birthday())
                 })
                 .expect("a country's first player in the dump");
             offsets.push(at - segment.start);
         }
         eprintln!("offsets by country {offsets:?}");
-        assert_eq!(offsets[0], 1014);
+        assert_eq!(offsets[0], 0, "the country file's own youths stand before its players here as they do in the dump");
         for id in 1..next {
             let offset = offsets[segments.iter().position(|s| s.contains(&id)).unwrap()];
             let (r, o) = (&records.players[id], &dump.players[id + offset]);
@@ -541,14 +552,25 @@ mod tests {
             };
             differ("names", format!("{:?} {}", name(&records, r), nickname(&records, r)), format!("{:?} {}", name(&dump, o), nickname(&dump, o)));
             differ("face", format!("{:?}", r.face()), format!("{:?}", o.face()));
-            differ("strength", r.strength().to_string(), o.strength().to_string());
             differ("nations", format!("{} {} {}", r.nation(), r.second_nation(), r.get::<u8>(0x227)), format!("{} {} {}", o.nation(), o.second_nation(), o.get::<u8>(0x227)));
-            differ("positions", format!("{:?}", r.positions()), format!("{:?}", o.positions()));
-            differ("abilities", format!("{:x} {:x}", r.good(), r.bad()), format!("{:x} {:x}", o.good(), o.bad()));
-            differ("traits", format!("{:?} {:x}", r.traits(), r.qualities()), format!("{:?} {:x}", o.traits(), o.qualities()));
-            differ("talent", r.talent().to_string(), o.talent().to_string());
-            differ("knocks", format!("{:x}", r.knocks()), format!("{:x}", o.knocks()));
-            differ("birthday", format!("{:?}", r.birthday()), format!("{:?}", o.birthday()));
+            // The youths' birthdays, positions and play come with the
+            // season's youth intake (youth-intake), not with the read.
+            let young = r.get::<u8>(0x227) < 11 && r.birthday().is_none();
+            for (what, a, b) in [
+                ("positions", format!("{:?}", r.positions()), format!("{:?}", o.positions())),
+                ("strength", r.strength().to_string(), o.strength().to_string()),
+                ("abilities", format!("{:x} {:x}", r.good(), r.bad()), format!("{:x} {:x}", o.good(), o.bad())),
+                ("traits", format!("{:?} {:x}", r.traits(), r.qualities()), format!("{:?} {:x}", o.traits(), o.qualities())),
+                ("talent", r.talent().to_string(), o.talent().to_string()),
+                ("knocks", format!("{:x}", r.knocks()), format!("{:x}", o.knocks())),
+                ("birthday", format!("{:?}", r.birthday()), format!("{:?}", o.birthday())),
+            ]
+            .into_iter()
+            {
+                if !young {
+                    differ(what, a, b);
+                }
+            }
             differ("shirt", r.shirt().to_string(), o.shirt().to_string());
             differ("manner", format!("{:x}", r.manner()), format!("{:x}", o.manner()));
             const FANS: u32 = 0x10400;

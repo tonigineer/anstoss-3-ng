@@ -68,6 +68,7 @@ pub fn create(records: &mut Records, rules: &Rules, trainer: &Trainer, random: &
     let (mode, seasons, day) = (records.globals.mode(), records.globals.seasons(), records.globals.day());
     let manager = &mut records.managers[slot - 1];
     fill(manager, rules, trainer, random);
+    quirks(random);
     manager.set_level(START_LEVEL);
     manager.set_mode(mode);
     manager.put(0x12c, seasons);
@@ -80,6 +81,36 @@ pub fn create(records: &mut Records, rules: &Rules, trainer: &Trainer, random: &
     let player = &mut records.players[MANAGER_PLAYER + slot];
     player.set_manner(player.manner() & !FOOT_BITS | foot << 2);
     Some(slot)
+}
+
+/// What `FUN_00630e6c` and `FUN_0070745a` draw for the player standing
+/// for the manager, between the popularity and his strong foot. The
+/// values they pick (+0x32, +0x14, +0x12 and the foot's +0x28) the fresh
+/// record leaves: the first turn's does not hold them, so only the draws
+/// are ported. `FUN_00630e6c`: a stand below five wants a position —
+/// two when the draw was nought, else one (`0x630eaf`); of the record's
+/// ten chances `0x630f0a` a fresh one takes at once, each drawn by the
+/// setup's ten. Then two rows below four draw another value
+/// (`0x630f89`/`0x630f98`, `0x630fb2`/`0x630fc1`) and two talents below
+/// forty (`0x630fdb`, `0x630ff4`); `FUN_0070745a` two more below twenty
+/// (`0x7074b6`, `0x7074cf`).
+fn quirks(random: &mut Random) {
+    let stand = random.below(10);
+    if stand < 5 {
+        for _ in 0..if stand == 0 { 2 } else { 1 } {
+            random.below(10);
+        }
+    }
+    if random.below(10) < 4 {
+        random.below(16);
+    }
+    if random.below(10) < 4 {
+        random.below(8);
+    }
+    random.below(40);
+    random.below(40);
+    random.below(20);
+    random.below(20);
 }
 
 /// The record's part of `FUN_006a3b61` but the level, the mode, the

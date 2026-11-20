@@ -308,11 +308,13 @@ impl Club {
     }
 }
 
-/// The persons of a new game, counted from 1 (`DAT_00bde198`), and its
-/// players, from `players` on (`DAT_00bde19c`).
+/// The persons of a new game, counted from 1 (`DAT_00bde198`), its
+/// players, from `players` on (`DAT_00bde19c`), and the next entry of
+/// the free players' table (`DAT_00ba0b20`).
 pub struct Counters {
     pub persons: usize,
     pub players: usize,
+    pub free: u16,
 }
 
 /// What a trainer's or manager's person draws besides the file's: 1 to 3
@@ -582,11 +584,14 @@ fn relegated(nation: u8, level: i16) -> i16 {
 /// `FUN_00687e7c` for the main country, from team `first` on: every club
 /// of its file in its order, then the country's free trainers and
 /// managers and its national trainer as persons. How many teams.
+/// The country file's `AJUGEND` first ([`crate::land_pool::read_young`],
+/// `FUN_0068db23` before the clubs), its slot `slot`.
 pub fn read_main(
     records: &mut Records,
     land: &Section,
     nation: u8,
     row: usize,
+    slot: usize,
     first: usize,
     counters: &mut Counters,
     random: &mut Random,
@@ -599,11 +604,12 @@ pub fn read_main(
     }
     records.countries.put(PERSONS_FROM + 2 * row, counters.persons as i16);
     records.countries.put(PERSONS_TO + 2 * row, counters.persons as i16);
-    let slot = usize::from(records.countries.slot(usize::from(nation)));
+    let crest_slot = usize::from(records.countries.slot(usize::from(nation)));
+    crate::land_pool::read_young(records, land, slot, nation, &mut counters.players, &mut counters.free, random);
     let clubs = vereine(land);
     for (i, verein) in clubs.iter().enumerate() {
         fill_team(records, first + i, verein, nation, i as u8, counters, random);
-        records.countries.put(CREST + slot * CREST_ROW + i, i as u8);
+        records.countries.put(CREST + crest_slot * CREST_ROW + i, i as u8);
     }
     let count = clubs.len();
     take_teams(records, nation, count, KIND_PLAYED);
@@ -649,10 +655,13 @@ fn take_teams(records: &mut Records, nation: u8, count: usize, kind: u8) {
 /// `chosen` clubs of its file ([`foreign_clubs`]), numbered from 0; the
 /// table of crests keeps their places in the file, but of a club `fixed`
 /// names its new number. Eight teams, one league.
+/// The country file's slot `slot`; its `AJUGEND` youths come first, as
+/// in the main country.
 pub fn read_foreign(
     records: &mut Records,
     land: &Section,
     nation: u8,
+    slot: usize,
     chosen: &[usize],
     fixed: &[(u8, usize)],
     first: usize,
@@ -662,6 +671,7 @@ pub fn read_foreign(
     let head = land_section(land);
     let nation_at = 2 * usize::from(nation);
     records.countries.put(LEAGUES + nation_at, head.number(1).unwrap_or(0) as i16);
+    crate::land_pool::read_young(records, land, slot, nation, &mut counters.players, &mut counters.free, random);
     let clubs = vereine(land);
     for (k, &club) in chosen.iter().enumerate().take(FOREIGN_TEAMS) {
         fill_team(records, first + k, clubs[club], nation, k as u8, counters, random);
@@ -690,7 +700,7 @@ pub fn read_countries(records: &mut Records, dir: &Path, main: usize, counters: 
     let mut leagues = 0;
     take_leagues(records, dir, nation, main, true, &mut leagues)?;
     let land = Section::read(&find(dir, LAND_FILES[main])?)?;
-    let mut next = read_main(records, &land, nation, main, 0, counters, random);
+    let mut next = read_main(records, &land, nation, main, main, 0, counters, random);
     let world = crate::world::World::load(dir)?;
     let fixed = uefa_fixed(&Section::read(&find(dir, "Kleinig.sav")?)?);
     for (slot, &other) in NATIONS.iter().enumerate() {
@@ -702,7 +712,7 @@ pub fn read_countries(records: &mut Records, dir: &Path, main: usize, counters: 
         let first_league = country.leagues.first().map_or(&[][..], |l| &l.clubs[..]);
         let chosen = foreign_clubs(&land, other, first_league, &fixed);
         records.countries.put(FIRST_TEAM + 2 * usize::from(other), next as i16);
-        next += read_foreign(records, &land, other, &chosen, &fixed, next, counters, random);
+        next += read_foreign(records, &land, other, slot, &chosen, &fixed, next, counters, random);
     }
     read_world(records, dir, &world, nation, &fixed, next, counters, random)
 }
@@ -751,6 +761,11 @@ fn read_world(
     records.countries.put(FOREIGN_START, first as i16);
     let bonus = world.country(crate::world::BONUS_SLOT).map_or(0, |c| c.nation as u8);
     records.countries.put(BONUS_NATION, i16::from(bonus));
+    // The bonus file's youths before any club of these (`FUN_0068e7c2`).
+    if bonus != 0 {
+        let file = Section::read(&find(dir, LAND_FILES[crate::world::BONUS_SLOT])?)?;
+        crate::land_pool::read_young(records, &file, crate::world::BONUS_SLOT, bonus, &mut counters.players, &mut counters.free, random);
+    }
     // `FUN_00676c03`: the main country and the more ones played; a game of
     // one country plays the main one alone.
     let played = |nation: u8| nation == main;
@@ -771,7 +786,7 @@ fn read_world(
                 let first_league = world.country(row).and_then(|c| c.leagues.first()).map_or(&[][..], |l| &l.clubs[..]);
                 let chosen = foreign_clubs(&file, bonus, first_league, fixed);
                 records.countries.put(FIRST_TEAM + 2 * usize::from(bonus), next as i16);
-                next += read_foreign(records, &file, bonus, &chosen, fixed, next, counters, random);
+                next += read_foreign(records, &file, bonus, crate::world::BONUS_SLOT, &chosen, fixed, next, counters, random);
                 break;
             }
             let count: i16 = records.countries.get(TEAM_COUNT + 2 * usize::from(nation));
@@ -996,7 +1011,7 @@ mod tests {
         records.globals.set_main_country(dump.globals.main_country());
         records.globals.set_start_year(dump.globals.start_year());
         let dir = std::path::PathBuf::from(game).join("Data.a3");
-        let mut counters = Counters { persons: 1, players: 1 };
+        let mut counters = Counters { persons: 1, players: 1, free: 0 };
         let teams = read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
         // The main country's, eight of each other of the eleven, and eight
         // of each `LAND` of `Internat.sav` (the bonus country's from its file).
@@ -1173,7 +1188,7 @@ mod tests {
         records.globals.set_main_country(dump.globals.main_country());
         records.globals.set_start_year(dump.globals.start_year());
         let dir = std::path::PathBuf::from(game).join("Data.a3");
-        let mut counters = Counters { persons: 1, players: 1 };
+        let mut counters = Counters { persons: 1, players: 1, free: 0 };
         read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
         let mut apart = Vec::new();
         for (what, at, width) in [
@@ -1253,7 +1268,7 @@ mod league_tests {
         records.globals.set_main_country(dump.globals.main_country());
         records.globals.set_start_year(dump.globals.start_year());
         let dir = std::path::PathBuf::from(game).join("Data.a3");
-        let mut counters = Counters { persons: 1, players: 1 };
+        let mut counters = Counters { persons: 1, players: 1, free: 0 };
         read_countries(&mut records, &dir, 0, &mut counters, &mut Random::new(1)).unwrap();
         let leagues = records.countries.leagues(usize::from(GERMANY));
         assert_eq!(leagues, dump.countries.leagues(usize::from(GERMANY)));
@@ -1293,5 +1308,41 @@ mod league_tests {
             eprintln!("league {li}: bytes the files do not give: {:x?}", &other[..other.len().min(40)]);
         }
         assert!(apart.is_empty(), "{apart:#?}");
+    }
+
+    /// The whole of the original's setup between the loader's seeding
+    /// and its calculation: the two managers, the countries with their
+    /// youths, the world and the bonus file, the pool and the turn
+    /// order — 33,530 draws, the records 32 to 33561 of the new game's
+    /// trace, and the state its calculation meets them at.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's trace from $ANSTOSS3_ORACLE"]
+    fn a_new_games_setup_draws_the_originals_to_the_calculation() {
+        let (Some(game), Some(oracle)) = (std::env::var_os("ANSTOSS3_DIR"), std::env::var_os("ANSTOSS3_ORACLE")) else {
+            eprintln!("no oracle trace of a new game among the saves: ANSTOSS3_DIR or ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        if !std::path::PathBuf::from(&oracle).join("runs/new-game/draws.bin").exists() {
+            eprintln!("no oracle trace of a new game among the saves");
+            return;
+        }
+        let dir = std::path::PathBuf::from(&game).join("Data.a3");
+        let exe = a3_files::exe::Exe::open(&std::path::Path::new(&game).join("anstoss3.exe")).unwrap();
+        let mut rules = crate::season::Rules::load(&exe).unwrap();
+        let texts = a3_files::rch::load_texts(&std::path::Path::new(&game).join("deb/ListeDerTexte.rh")).unwrap();
+        rules.training.name_originals(&texts);
+        let mut records = Records::blank();
+        records.globals.set_order([-1; crate::records::MANAGERS]);
+        let mut random = Random::from_state(41, 815_730_420);
+        for (first, last) in [("Anna", "Alpha"), ("Bert", "Beta")] {
+            let trainer = crate::newgame::Trainer { first_name: first.into(), last_name: last.into(), ..crate::newgame::Trainer::default() };
+            crate::land_managers::create(&mut records, &rules, &trainer, &mut random).unwrap();
+        }
+        let mut counters = Counters { persons: 1, players: 1, free: 0 };
+        read_countries(&mut records, &dir, 0, &mut counters, &mut random).unwrap();
+        let (mut next, mut entry) = (counters.players, counters.free);
+        crate::land_pool::read_pool(&mut records, &dir, &mut next, &mut entry, &mut random).unwrap();
+        crate::land_managers::draw_order(records.globals.humans() as usize, &mut random);
+        assert_eq!(random, Random::from_state(1_513_196_775, 1_935_620_346));
     }
 }
