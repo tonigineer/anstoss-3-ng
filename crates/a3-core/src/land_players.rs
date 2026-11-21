@@ -320,11 +320,96 @@ pub fn squad(verein: &Section) -> Vec<Scratch> {
         .collect()
 }
 
+/// The morale the season start finds for a squad man, written over the
+/// middling 100 (`FUN_0070147e`, the object's byte 0xca saved at record
+/// 0x296): the seven facet bytes 0x28f..0x295 weighed by his character
+/// flags (record 0x1b0, the object's byte 0x20 which its getters read as
+/// short-pointer 0x10), then the sum less 600. The first facet
+/// (`FUN_007008b9`) loses ten for each of bits 1, 2, 8, 0x10, 0x100,
+/// 0x1000, 0x2000, 0x4000 and 0x8000 and wins ten (up to 100) for bit
+/// 0x80000 or when the man's own id behind 17000 stands at record 0x204
+/// (`FUN_0070162e`); the second (`FUN_00700c42`) loses ten for each of
+/// bits 0x40, 0x80 and 0x800 and wins ten (up to 100) for bit 0x40000;
+/// the third (`FUN_00700e3f`) wins five for that id, loses ten for each
+/// of bits 4, 0x20 and 0x400 — the fan club bit the files set — and
+/// wins ten (up to 100) for each of bits 0x10000, 0x20000 and 0x100000.
+/// The rest stand as the bytes. A mood byte 0x26d of a mate leaving and
+/// staying (`FUN_006ff9e2`: bits 1 or 2 set, bits 2 or 3 one) takes off
+/// 590 (a son, `FUN_006ff99a`) or 595 instead of 600. The turn's dump
+/// knows none of that, the files no id behind 17000: what is left is the
+/// fan club man at 90 and every other squad man at 100. The season start
+/// recounts only the own country's squads: the foreign clubs' men, fan
+/// bit and all, and the pool's free men keep the reading's 100.
+fn recount_morale(player: &mut Player) {
+    let flags = player.flags();
+    let own_id = player.get::<u16>(0x204);
+    let mut facets = [0i32; 7];
+    facets[0] = i32::from(player.get::<u8>(0x28f));
+    for bit in [1u32, 2, 8, 0x10, 0x100, 0x1000, 0x2000, 0x4000, 0x8000] {
+        if flags & bit != 0 {
+            facets[0] -= 10;
+        }
+    }
+    for bonus in [0x80000u32] {
+        if flags & bonus != 0 && facets[0] < 100 {
+            facets[0] = (facets[0] + 10).min(100);
+        }
+    }
+    if own_id > 17000 && facets[0] < 100 {
+        facets[0] = (facets[0] + 10).min(100);
+    }
+    facets[0] = facets[0].min(120);
+    facets[1] = i32::from(player.get::<u8>(0x290));
+    for bit in [0x40u32, 0x80, 0x800] {
+        if flags & bit != 0 {
+            facets[1] -= 10;
+        }
+    }
+    if flags & 0x40000 != 0 && facets[1] < 100 {
+        facets[1] = (facets[1] + 10).min(100);
+    }
+    facets[1] = facets[1].clamp(0, 120);
+    facets[2] = i32::from(player.get::<u8>(0x291));
+    if own_id > 17000 {
+        facets[2] += 5;
+    }
+    for bit in [4u32, 0x20, 0x400] {
+        if flags & bit != 0 {
+            facets[2] -= 10;
+        }
+    }
+    for bit in [0x10000u32, 0x20000, 0x100000] {
+        if flags & bit != 0 && facets[2] < 100 {
+            facets[2] = (facets[2] + 10).min(100);
+        }
+    }
+    facets[2] = facets[2].clamp(0, 120);
+    for (at, facet) in (0x292u16..0x296).zip(&mut facets[3..]) {
+        *facet = i32::from(player.get::<u8>(usize::from(at)));
+    }
+    let sum: i32 = facets.iter().sum();
+    let mood = player.get::<u8>(0x26d);
+    let mut morale = sum - 600;
+    if mood & 3 != 0 && (mood >> 2) & 3 == 1 {
+        morale = sum - if mood & 2 != 0 { 590 } else { 595 };
+    }
+    player.set_morale(morale.clamp(0, 120) as u8);
+}
+
 /// Every club's players of a country's file into the records from `next`
 /// on (`DAT_00bde19c`), in the file's order of the clubs: each club's ids.
 pub fn read_country(records: &mut Records, land: &Section, next: &mut usize, random: &mut Random) -> Vec<Vec<u16>> {
     let all: Vec<usize> = (0..clubs(land).len()).collect();
-    read_clubs(records, land, &all, next, random)
+    let squads = read_clubs(records, land, &all, next, random);
+    // The season start of the country played recounts its own clubs'
+    // squads' morale; the other countries' men, read for the cups only,
+    // keep the middling 100 the reading gave them.
+    for ids in &squads {
+        for &id in ids {
+            recount_morale(&mut records.players[usize::from(id)]);
+        }
+    }
+    squads
 }
 
 /// The clubs `Kleinig.sav` names for the European cups of a country not
@@ -467,14 +552,17 @@ mod tests {
 
     /// What of a player the original's first turn holds otherwise than the
     /// files gave him: his club (the clubs' part), condition and freshness
-    /// (drawn after the start settings' draws), and what the season start
-    /// changes (new-game-exact-squads): some players' morale (90), two
-    /// players' shirts. Of the `AJUGEND` youths also their nation, face,
-    /// contentment, manner, marks and contract years (the season's youth
-    /// intake, planned as youth-intake, gives them when placing the
-    /// youths) and the names past the file's rows (the original reads on
-    /// into the values of the sections behind `AJUGEND`).
-    const APART: [&str; 11] = ["club", "condition", "morale", "shirt", "names", "nations", "face", "contentment", "manner", "marks", "began"];
+    /// (drawn after the start settings' draws), and the shirts three men
+    /// got from the season start's number dialogs (9, 1 and 4, each
+    /// already a mate's; the dialog is the human clicking through the
+    /// start, not a rule to port). Of the placed `AJUGEND` youths also
+    /// their nation, face, contentment, morale, manner, marks and
+    /// contract years (the season's youth intake, planned as
+    /// youth-intake, gives them when placing the youths; the candidates
+    /// it leaves alone stand at the read's zeroes) and the names past the
+    /// file's rows (the original reads on into the values of the sections
+    /// behind `AJUGEND`).
+    const APART: [&str; 11] = ["club", "condition", "shirt", "names", "nations", "face", "contentment", "morale", "manner", "marks", "began"];
 
     /// The players of the oracle's new game in Germany
     /// (`tools/oracle/new-game.sh`) as the files give them — each
