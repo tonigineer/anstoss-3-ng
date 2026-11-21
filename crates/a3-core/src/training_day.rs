@@ -603,8 +603,8 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// loop over the human clubs, after the training, the day's booked events
 /// and the friendlies (`FUN_007615bb`)): a club meets it when the day's
 /// gates drew today for its slot, and none in the first season's quiet
-/// days (`FUN_005ef56c`). The category pick, and category 19's pick of
-/// one of the club's own players over its squad, stand in `crate::news`.
+/// days (`FUN_005ef56c`). The category pick and its handlers stand in
+/// `crate::news`.
 /// `slots` are the day's event gates of
 /// [`crate::human_day::event_slots`], one per human club in the order of
 /// [`crate::statistics::human_clubs`]. What the clubs are told comes back.
@@ -621,9 +621,11 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::news::low_spirits`]), 11 ([`crate::news::at_odds`]) and 12
 /// ([`crate::news::new_affair`]), 50 ([`crate::news::bootlicker`]), 51
 /// ([`crate::news::informer`]), 52 ([`crate::news::moles`]) and 55
-/// ([`crate::news::habits`]) do here. The others are not built, and the probe's trace of save
-/// A's day 63 ends that day's news at category 19's pick of the player,
-/// so another picked category stands for the day's whole news here.
+/// ([`crate::news::habits`]) do here, and so does 19 for a man without a
+/// hobby ([`crate::news::about_a_player`]); 18 ([`crate::news::new_hobby`])
+/// always ends the news. The others (20 to 25, and 19's hobby news) are
+/// not built, so another picked category stands for the day's whole news
+/// here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
@@ -685,10 +687,11 @@ pub fn news(
             51 => crate::news::informer(records, club, &mut posted, random),
             52 => crate::news::moles(records, club, random),
             55 => crate::news::habits(records, club, league, &mut posted, random),
-            19 => {
-                crate::news::about_a_player(squad, random);
+            18 => {
+                crate::news::new_hobby(records, club, tables, &mut posted, random);
                 true
             }
+            19 => crate::news::about_a_player(records, club, random),
             _ => true,
         };
         if told {

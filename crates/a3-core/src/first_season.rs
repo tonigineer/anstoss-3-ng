@@ -23,6 +23,10 @@ use crate::records::{Player, Records};
 /// (`FUN_005fed6b`).
 const HOBBIES_AT: u32 = 0x88e828;
 const HOBBIES: usize = 39;
+/// The game text of each hobby (`FUN_007335e0` over `0x8a8c7e`, by the
+/// hobby's number; 0 none).
+const HOBBY_TEXTS_AT: u32 = 0x8a8c7e;
+const HOBBY_TEXTS: usize = 40;
 const HOBBY_ODDS: u32 = 80;
 /// By his strength, the chance in 100 of the bit at L+0x1c (R+0x1d4,
 /// `FUN_006fe877`) and of a release fee at a top league's club, in 200 at
@@ -46,6 +50,7 @@ const MONTH_DAYS_AT: u32 = 0x8a3088;
 pub struct Tables {
     hobbies: Vec<(i16, i16)>,
     hobby_total: u32,
+    hobby_texts: Vec<u16>,
     fresh_bit: Vec<u32>,
     fee: Vec<u32>,
     problems: [Vec<u32>; 2],
@@ -63,6 +68,7 @@ impl Tables {
         Ok(Self {
             hobbies,
             hobby_total,
+            hobby_texts: exe.u16s(HOBBY_TEXTS_AT, HOBBY_TEXTS)?,
             fresh_bit: exe.u32s(FRESH_BIT_AT, STRENGTHS)?,
             fee: exe.u32s(FEE_AT, STRENGTHS)?,
             problems: [exe.u32s(PROBLEM_AT[0], STRENGTHS)?, exe.u32s(PROBLEM_AT[1], STRENGTHS)?],
@@ -74,7 +80,7 @@ impl Tables {
 
     /// A weighted hobby (`FUN_0060be4d` on `DAT_00a325c8`): a draw below
     /// the total walks the weights; past them none.
-    fn hobby(&self, random: &mut Random) -> u8 {
+    pub(crate) fn hobby(&self, random: &mut Random) -> u8 {
         let mut r = random.below(self.hobby_total) as i32;
         for &(weight, hobby) in &self.hobbies {
             if i32::from(weight) > r {
@@ -83,6 +89,11 @@ impl Tables {
             r -= i32::from(weight);
         }
         0
+    }
+
+    /// A hobby's game text (`FUN_007335e0`): 0, none, for hobby 0.
+    pub(crate) fn hobby_text(&self, hobby: u8) -> u16 {
+        if hobby == 0 { 0 } else { self.hobby_texts.get(usize::from(hobby)).copied().unwrap_or(0) }
     }
 
     fn by_strength(table: &[u32], p: &Player) -> u32 {

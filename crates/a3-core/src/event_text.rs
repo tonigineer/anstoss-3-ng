@@ -91,6 +91,10 @@ pub enum Fill {
     /// (`FUN_006a537d`), the second an amount of money (`FUN_004daf8f`),
     /// written where the window shows it.
     FalseReport(u16, i32),
+    /// Its first `%s` a man's name, the second one of the game's texts by
+    /// its id, 0 none (`sprintf` with `FUN_006feb4d` and `FUN_007335e0`,
+    /// as `FUN_005fd4ae` tells a man's new hobby).
+    NamedGame(u16, u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +184,10 @@ pub fn make(
             body.replacen("%s", &who, 1)
         }
         Fill::Named(id) => body.replacen("%s", &name(id), 1),
+        Fill::NamedGame(id, what) => {
+            let what = if what == 0 { String::new() } else { game(what) };
+            body.replacen("%s", &name(id), 1).replacen("%s", &what, 1)
+        }
         Fill::NamedNumber(id, n) => body.replacen("%s", &name(id), 1).replacen("%d", &n.to_string(), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),
         Fill::Partnered(id) => numbered(body, &[name(id), partner(id)]),

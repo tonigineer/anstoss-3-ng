@@ -12,10 +12,8 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and the handlers of the later categories —
-//! nearest category 18 (`FUN_005fd4ae`), which rolls over the
-//! club's squad as 19 does and then picks one more weighted table when
-//! the talked-about player has no news flag yet.
+//! +0x8a and +0x8b; and the handlers of categories 20 to 25 and the
+//! posting of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
 //! player's military or civil service ([`service`]), and categories 3 to
@@ -28,7 +26,8 @@
 //! a man's new affair ([`new_affair`]), and the squad's own, 50, a
 //! bootlicker ([`bootlicker`]), 51, an informer ([`informer`]), 52, the
 //! mole who talks to the press ([`moles`]), and 55, a man's habits
-//! ([`habits`]).
+//! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), and 19's gate
+//! ([`about_a_player`]).
 
 use std::ops::RangeInclusive;
 
@@ -328,6 +327,12 @@ const NEWS: [(u32, u16); 24] = [
     (20, 55),
 ];
 
+/// Category 18's text of a man's new hobby, and the hobby only a
+/// midfielder takes up (`FUN_005fd4ae`).
+const NEW_HOBBY_TEXT: u16 = 0x4d1;
+const MIDFIELD_HOBBY: u8 = 0x25;
+const MIDFIELD: u8 = 3;
+
 /// The club's doping cases (club +0x115, team +0x13e): their count in the
 /// low three bits, the top three kept when the association acts.
 const DOPING_CASES: usize = 0x13e;
@@ -477,19 +482,53 @@ pub fn pick(random: &mut Random) -> u16 {
     0
 }
 
-/// The picked category 19 (`case 0x13` with `FUN_005fed08`): one of the
-/// club's own players is talked about, drawn over the club's squad —
-/// the club's +0xe2, the team record's `player_count` at +0x112, over
-/// its squad list (the club's +0xb50, built from the record at +0x1f2).
-///
-/// Whether the news is then posted rests on two run-time parts the
-/// replica holds no part of: the player must not be a player-manager
-/// (its id below 17 001), and the posting `FUN_005fd59d` runs only for
-/// a player whose news flag (its +0x28d) an earlier news already set —
-/// no save keeps that flag, so out of a loaded save the pick of the
-/// player stands as the day's whole draw here.
-pub fn about_a_player(squad: u16, random: &mut Random) {
-    random.below(u32::from(squad));
+/// The picked category 18 (`case 0x12` with `FUN_005fd4ae`): one man is
+/// drawn over the club's squad (+0xe2, the team record's `player_count`,
+/// over its list); a player-manager (his id above 17 000) or a man with
+/// a hobby (+0x28d, `FUN_00702c9e`) has nothing. Else he is drawn one of
+/// the weighted hobbies (`FUN_0060be4d` on `DAT_00a325c8`) — hobby 0x25
+/// only for a midfielder (the squad entry's +3, his main position at
+/// +0x21d, 3) — takes it (`FUN_00702cbd`) and the club is told (0x4d1,
+/// `sprintf` with his name and the hobby's game text, `FUN_007335e0`;
+/// code 0x60 through `FUN_005f1eaf`). The news ends all the same.
+pub fn new_hobby(
+    records: &mut Records,
+    club: (u16, u16),
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    let Some(id) = drawn_man(records, club, random) else { return };
+    let Some(p) = records.player_mut(id) else { return };
+    if id > LAST_REAL_ID || p.hobby() != 0 {
+        return;
+    }
+    let hobby = tables.hobby(random);
+    if hobby == MIDFIELD_HOBBY && p.positions()[0] != MIDFIELD {
+        return;
+    }
+    p.set_hobby(hobby);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: NEW_HOBBY_TEXT, fill: Fill::NamedGame(id, tables.hobby_text(hobby)) });
+}
+
+/// The picked category 19 (`case 0x13` with `FUN_005fed08`): one man is
+/// drawn over the club's squad, as for category 18; a player-manager or
+/// a man without a hobby has nothing (the low half of its return 0), and
+/// the day's news goes on to its later rolls. A man's hobby's news
+/// (`FUN_005fd59d`, "EreignisHobby") is not built: a man with one stands
+/// for the day's whole news. Whether the news took place.
+pub fn about_a_player(records: &Records, club: (u16, u16), random: &mut Random) -> bool {
+    drawn_man(records, club, random)
+        .and_then(|id| records.player(id).map(|p| id <= LAST_REAL_ID && p.hobby() != 0))
+        .unwrap_or(false)
+}
+
+/// One man drawn over the club's squad (`FUN_0078a810(+0xe2)` into its
+/// list at +0xb50).
+fn drawn_man(records: &Records, club: (u16, u16), random: &mut Random) -> Option<u16> {
+    let team = records.team(club.0, club.1)?;
+    let at = random.below(u32::from(team.player_count())) as usize;
+    team.players().get(at).copied()
 }
 
 /// The picked category 1 (`case 1` with `FUN_005f8ca8`): each man of
@@ -1860,9 +1899,13 @@ pub fn habits(
     true
 }
 
-/// Whether a text is one of categories 50, 51 and 55's.
+/// Whether a text is one of categories 18, 50, 51 and 55's.
 pub fn squad_text(text: u16) -> bool {
-    (0x3b8..=0x3cb).contains(&text) || text == 0x3d6 || text == 0x3d7 || (0x54c..=0x54f).contains(&text)
+    (0x3b8..=0x3cb).contains(&text)
+        || text == 0x3d6
+        || text == 0x3d7
+        || (0x54c..=0x54f).contains(&text)
+        || text == NEW_HOBBY_TEXT
 }
 
 /// Which of his children [`child`] draws among (`FUN_007021cb`'s first
@@ -2104,24 +2147,73 @@ mod tests {
         assert_eq!(code, expected);
     }
 
-    /// Category 19 takes one draw over the club's squad and no more:
-    /// the posting behind it needs the player's run-time news flag,
-    /// which stands open out of every save.
+    /// Categories 18 and 19 on A's human squad, one man drawn: without a
+    /// hobby he takes up one of the weighted table and is told by his name
+    /// and the hobby's text — the midfielder's hobby drawn for a defender
+    /// leaves him without; with one, 18 has nothing more to say. Category
+    /// 19 goes on to the later rolls for a man without a hobby, one draw
+    /// taken, and stands for the day's news for a man with one.
     #[test]
-    fn category_19_rolls_the_squad_once() {
-        let mut seed = 7i64;
-        let mut random = Random::from_state(seed, 3);
-        while pick(&mut random.clone()) != 19 {
-            seed += 1;
-            random = Random::from_state(seed, 3);
-        }
-        let mut copy = random.clone();
-        copy.below(10_000);
-        let code = pick(&mut random);
-        assert_eq!(code, 19);
-        about_a_player(26, &mut random);
-        let _next = copy.below(26);
-        assert!(random == copy, "the pick of the player, one draw");
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_18_and_19_turn_on_a_mans_hobby() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let count = r.team(club.0, club.1).unwrap().player_count() as u32;
+        let man = squad[3];
+        assert!(man <= LAST_REAL_ID);
+        let p = r.player_mut(man).unwrap();
+        p.set_hobby(0);
+        let mut at = p.positions();
+        at[0] = 2;
+        p.set_positions(at);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let drawn = |pick: &dyn Fn(u8) -> bool| seed(&|r| r.below(count) == 3 && pick(tables.hobby(r)));
+
+        // The midfielder's hobby for a defender: nothing.
+        let mut posted = Vec::new();
+        new_hobby(&mut r, club, &tables, &mut posted, &mut Random::new(drawn(&|h| h == MIDFIELD_HOBBY)));
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().hobby(), 0);
+        // Without a hobby category 19 goes on, one draw taken.
+        let s = seed(&|r| r.below(count) == 3);
+        let mut random = Random::new(s);
+        assert!(!about_a_player(&r, club, &mut random));
+        let mut expected = Random::new(s);
+        expected.below(count);
+        assert!(random == expected);
+
+        // Another: taken and told.
+        let s = drawn(&|h| h != MIDFIELD_HOBBY && h != 0);
+        let mut expected = Random::new(s);
+        expected.below(count);
+        let hobby = tables.hobby(&mut expected);
+        let mut random = Random::new(s);
+        new_hobby(&mut r, club, &tables, &mut posted, &mut random);
+        assert!(random == expected, "the man and his hobby drawn");
+        assert_eq!(r.player(man).unwrap().hobby(), hobby);
+        let what = tables.hobby_text(hobby);
+        assert_ne!(what, 0);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: NEW_HOBBY_TEXT, fill: Fill::NamedGame(man, what) }]);
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let told = crate::event_text::make(&r, &texts, &|id| format!("<{id}>"), &[], &posted[0]).text;
+        assert!(told.contains(&r.known_as(man).unwrap()) && told.contains(&format!("<{what}>")), "{told}");
+
+        // With his hobby 18 tells nothing more, one draw taken; 19 stands.
+        let s = seed(&|r| r.below(count) == 3);
+        let mut random = Random::new(s);
+        new_hobby(&mut r, club, &tables, &mut posted, &mut random);
+        assert_eq!(posted.len(), 1);
+        let mut expected = Random::new(s);
+        expected.below(count);
+        assert!(random == expected);
+        assert!(about_a_player(&r, club, &mut Random::new(s)));
     }
 
     /// Category 1 on A's human squad, one married man its only partner:
