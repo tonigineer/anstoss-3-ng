@@ -10,8 +10,8 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and the handlers of the other categories but the
-//! first six — nearest category 18 (`FUN_005fd4ae`), which rolls over the
+//! +0x8a and +0x8b; and the handlers of categories 8 to 11 and of the
+//! later ones — nearest category 18 (`FUN_005fd4ae`), which rolls over the
 //! club's squad as 19 does and then picks one more weighted table when
 //! the talked-about player has no news flag yet.
 //!
@@ -19,7 +19,9 @@
 //! player's military or civil service ([`service`]), and categories 3 to
 //! 6, a single man's days ([`single`]), a girlfriend's
 //! ([`with_girlfriend`]), a married man's ([`married`]) and his wife's
-//! suspicion ([`suspicion`]), are here.
+//! suspicion ([`suspicion`]), are here, and categories 7, a wife who
+//! knows of the affair ([`affair_known`]), and 12, a man's new affair
+//! ([`new_affair`]).
 
 use std::ops::RangeInclusive;
 
@@ -156,6 +158,21 @@ const AFFAIR: u32 = 4;
 const SUSPECTED: u32 = 8;
 /// The date (`DAT_00b5cbda`, day and month) of no present.
 const CHRISTMAS_EVE: (u16, u16) = (24, 12);
+/// The happenings of a wife who knows of the affair, two weighed 3
+/// (`FUN_0060be4d` over `DAT_00a32604`, registered by `FUN_005fba02`
+/// from `DAT_0088e788`).
+const KNOWN_HAPPENINGS: [(u32, u16); 2] = [(3, 1), (3, 2)];
+/// How the two stand (bits 2 to 4 of +0x27e) once she files for divorce.
+const DIVORCE: u8 = 4;
+/// The second trait word's bit (the handle's +0x12, the record's +0x1ca)
+/// that has a man in firm hands take up with a nude model.
+const MODEL_TRAIT: u16 = 0x200;
+/// A man so pleased with his private life (+0x293, `FUN_007011f1`, the
+/// raw byte) takes up no new affair.
+const NO_AFFAIR_FROM: u8 = 100;
+/// A new affair's first name (`FUN_007029a7`): one of the fifty past the
+/// first fifty of his nation's row, not his partner's.
+const AFFAIR_NAMES: (u32, u8) = (50, 50);
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -975,9 +992,92 @@ fn suspicion_day(records: &mut Records, club: (u16, u16), id: u16, posted: &mut 
     posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Partnered(id) });
 }
 
-/// Whether a text is one of categories 3 to 6's.
+/// The picked category 7 (`case 7` with `FUN_005fbaf9`): one of the
+/// club's own real players married and suspected of his affair (+0x1b4
+/// bit 8, `FUN_00702a7b`) is drawn (0x23 at most in the list) and his
+/// wife acts on it ([`affair_known_day`]); with none the news did not
+/// take place.
+pub fn affair_known(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    let men = drawn_from(records, club, |p| p.partner() & 3 == WIFE && p.shown() & SUSPECTED != 0);
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    affair_known_day(records, club, id, posted, random);
+    true
+}
+
+/// His wife knows (`FUN_005fba1a`, "EreignisFrauWeissAffaere"): one of
+/// two happenings weighed alike, none while the two do not stand calm.
+/// She makes him jealous until he ends the affair (+0x284 cleared, bits
+/// 4 and 8 off, `FUN_00702962`; 0x469), or she files for divorce (their
+/// state 4, `FUN_00702c39`; 0x46a).
+fn affair_known_day(records: &mut Records, club: (u16, u16), id: u16, posted: &mut Vec<Posted>, random: &mut Random) {
+    let happening = weighed(&KNOWN_HAPPENINGS, random);
+    let Some(p) = records.player_mut(id) else { return };
+    if state(p) != 0 {
+        return;
+    }
+    let text = if happening == 1 {
+        p.set_affair_name(0);
+        p.set_shown(p.shown() & !(AFFAIR | SUSPECTED));
+        0x469
+    } else {
+        p.set_partner(p.partner() & 0xe3 | DIVORCE << 2);
+        0x46a
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::WifeByName(id) });
+}
+
+/// The picked category 12 (`case 0xc` with `FUN_005fd1d1`): one of the
+/// club's own real players married (`FUN_006ffb14`) and less than 100
+/// pleased with his private life is drawn (0x23 at most in the list) and
+/// takes up a new affair, its first name drawn (`FUN_007029a7`) — the
+/// bits of an affair at +0x1b4 stay as they are. With the trait of a
+/// nude model's man he is told of as in firm hands (0x4e3), else as
+/// married (0x4e4); the girlfriend's text (0x4e5) the list's wives never
+/// reach. With none the news did not take place.
+pub fn new_affair(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    let men = drawn_from(records, club, |p| p.partner() & 3 == WIFE && p.contentment()[PRIVATE] < NO_AFFAIR_FROM);
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    let Some(p) = records.player_mut(id) else { return true };
+    let model = p.contentment()[PRIVATE] < NO_AFFAIR_FROM && p.traits()[1] & MODEL_TRAIT != 0;
+    let (text, fill) = match p.partner() & 3 {
+        _ if model => (0x4e3, Fill::Affair(id)),
+        WIFE => (0x4e4, Fill::PartnerAndAffair(id)),
+        GIRLFRIEND => (0x4e5, Fill::PartnerAndAffair(id)),
+        _ => return true,
+    };
+    let (spread, first) = AFFAIR_NAMES;
+    loop {
+        let name = random.below(spread) as u8 + first;
+        p.set_affair_name(name);
+        if name != p.partner_name() {
+            break;
+        }
+    }
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill });
+    true
+}
+
+/// The club's own real players who meet `keep`, in the squad's order,
+/// 0x23 at most — the list categories 7 and 12 draw one man from.
+fn drawn_from(records: &Records, club: (u16, u16), keep: impl Fn(&crate::records::Player) -> bool) -> Vec<u16> {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    squad
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID)
+        .filter(|&id| records.player(id).is_some_and(&keep))
+        .take(PICKS_MOST)
+        .collect()
+}
+
+/// Whether a text is one of categories 3 to 7's and 12's.
 pub fn partner_text(text: u16) -> bool {
-    (0x44b..=0x468).contains(&text) || text == 0x4d4 || text == 0x7be
+    (0x44b..=0x46a).contains(&text) || (0x4e3..=0x4e5).contains(&text) || text == 0x4d4 || text == 0x7be
 }
 
 /// One draw over a weighed table (`FUN_0060be4d` registered with no cap
@@ -1526,5 +1626,121 @@ mod tests {
         // No longer calm: nothing more.
         assert!(suspicion(&mut r, club, &mut posted, &mut Random::new(seed(&SUSPICION_HAPPENINGS, 3))));
         assert_eq!(posted.len(), 1);
+    }
+
+    /// Categories 7 and 12 on A's human squad, one man fitting each: a
+    /// wife who knows ends his affair (0x469) with her full name, or files
+    /// for divorce (0x46a), not again once the two no longer stand calm;
+    /// an unhappy married man takes up a new affair (0x4e4), its name
+    /// not his wife's, or with the trait 0x200 a nude model (0x4e3). A
+    /// list of none draws nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_7_and_12_tell_of_affairs() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let words = crate::words::Words::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        // Every man of the squad with a girlfriend and pleased, the man
+        // `partner` and `shown` bits, calm.
+        let load = |partner: u8, shown: u32| {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            let man = squad[3];
+            for &id in &squad {
+                let p = a.player_mut(id).unwrap();
+                p.set_partner(GIRLFRIEND);
+                p.set_shown(p.shown() & !(AFFAIR | SUSPECTED));
+                p.set_affair_name(0);
+                let mut c = p.contentment();
+                c[PRIVATE] = 100;
+                p.set_contentment(c);
+            }
+            let p = a.player_mut(man).unwrap();
+            p.set_partner(partner);
+            p.set_shown(p.shown() | shown);
+            p.set_affair_name(66);
+            (a, club, man)
+        };
+        let seed = |n: u16| {
+            (0..10_000)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(1);
+                    weighed(&KNOWN_HAPPENINGS, &mut r) == n
+                })
+                .unwrap()
+        };
+        let told = |r: &Records, posted: &Posted, man: u16| {
+            let event = crate::event_text::make(r, &texts, &|_| String::new(), &words.first_names, posted);
+            assert!(!event.text.contains('%') && event.text.contains(&r.known_as(man).unwrap()), "{}", event.text);
+            event.text
+        };
+        let first = |r: &Records, man: u16, name: u8| {
+            words.first_names[usize::from(r.player(man).unwrap().names_nation()) * 100 + usize::from(name)].clone()
+        };
+
+        // She makes him end it.
+        let (mut r, club, man) = load(WIFE, AFFAIR | SUSPECTED);
+        let mut posted = Vec::new();
+        assert!(affair_known(&mut r, club, &mut posted, &mut Random::new(seed(1))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x469, fill: Fill::WifeByName(man) }]);
+        let p = r.player(man).unwrap();
+        assert_eq!((p.affair_name(), p.shown() & (AFFAIR | SUSPECTED)), (0, 0));
+        let wife = first(&r, man, p.partner_name());
+        let full = format!("{wife} {}", r.name(p.last_name()));
+        assert!(told(&r, &posted[0], man).starts_with(&full));
+        // She files for divorce, and then stands so.
+        let (mut r, club, man) = load(WIFE, SUSPECTED);
+        let mut posted = Vec::new();
+        assert!(affair_known(&mut r, club, &mut posted, &mut Random::new(seed(2))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x46a, fill: Fill::WifeByName(man) }]);
+        assert_eq!(state(r.player(man).unwrap()), DIVORCE);
+        told(&r, &posted[0], man);
+        assert!(affair_known(&mut r, club, &mut posted, &mut Random::new(seed(1))));
+        assert_eq!(posted.len(), 1);
+        // Not suspected: no one, no draw.
+        let (mut r, club, _) = load(WIFE, AFFAIR);
+        let mut random = Random::new(3);
+        assert!(!affair_known(&mut r, club, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+
+        // A new affair of an unhappy married man.
+        let (mut r, club, man) = load(WIFE, 0);
+        let p = r.player_mut(man).unwrap();
+        let mut c = p.contentment();
+        c[PRIVATE] = 99;
+        p.set_contentment(c);
+        let mut traits = p.traits();
+        traits[1] &= !MODEL_TRAIT;
+        p.set_traits(traits);
+        let shown = p.shown();
+        for s in 0..20 {
+            let mut posted = Vec::new();
+            assert!(new_affair(&mut r, club, &mut posted, &mut Random::new(s)));
+            assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x4e4, fill: Fill::PartnerAndAffair(man) }]);
+            let p = r.player(man).unwrap();
+            assert!((50..100).contains(&p.affair_name()) && p.affair_name() != p.partner_name());
+            assert_eq!(p.shown(), shown);
+            let text = told(&r, &posted[0], man);
+            assert!(text.contains(&first(&r, man, p.affair_name())), "{text}");
+        }
+        // The nude model.
+        let p = r.player_mut(man).unwrap();
+        let mut traits = p.traits();
+        traits[1] |= MODEL_TRAIT;
+        p.set_traits(traits);
+        let mut posted = Vec::new();
+        assert!(new_affair(&mut r, club, &mut posted, &mut Random::new(5)));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x4e3, fill: Fill::Affair(man) }]);
+        told(&r, &posted[0], man);
+        // Pleased enough: no one, no draw.
+        let (mut r, club, _) = load(WIFE, 0);
+        let mut random = Random::new(3);
+        assert!(!new_affair(&mut r, club, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
     }
 }

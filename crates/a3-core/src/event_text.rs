@@ -62,6 +62,18 @@ pub enum Fill {
     /// `%1` a man's name, `%2` his affair's first name and `%3` his
     /// wife's (`FUN_00601166` with `FUN_007017db` and `FUN_0070173f`).
     AffairAndWife(u16),
+    /// `%1` a man's name, `%2` his wife's first name and his last name
+    /// (`FUN_0070177c`, "%s %s"), `%3` her first name and `%4` nothing
+    /// (`FUN_00601166` with `FUN_0070177c` and `FUN_0070173f`, or
+    /// `FUN_00600f2f` with the first alone).
+    WifeByName(u16),
+    /// `%1` a man's name and `%2` his affair's first name
+    /// (`FUN_00600f2f` with `FUN_007017db`).
+    Affair(u16),
+    /// `%1` a man's name, `%2` his partner's first name, `%3` his
+    /// affair's and `%4` nothing (`FUN_00601166` with `FUN_0070173f` and
+    /// `FUN_007017db`).
+    PartnerAndAffair(u16),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -157,6 +169,13 @@ pub fn make(
         Fill::NumberedOne(id) => numbered(body, &[name(id), String::new()]),
         Fill::PartnerAndEx(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x285), String::new()]),
         Fill::AffairAndWife(id) => numbered(body, &[name(id), first_name(id, 0x284), partner(id), String::new()]),
+        Fill::WifeByName(id) => {
+            // His last name (`FUN_006fea7c`, the names at +0x1c0).
+            let last = records.player(id).map(|p| records.name(p.last_name())).unwrap_or_default();
+            numbered(body, &[name(id), format!("{} {last}", partner(id)), partner(id), String::new()])
+        }
+        Fill::Affair(id) => numbered(body, &[name(id), first_name(id, 0x284)]),
+        Fill::PartnerAndAffair(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x284), String::new()]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),
