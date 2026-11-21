@@ -1860,8 +1860,6 @@ pub(crate) fn tenths(value: i32) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use a3_core::random::Random;
-    use a3_core::season::NewManager;
     use a3_core::state::GameState;
 
     use super::*;
@@ -1878,17 +1876,29 @@ mod tests {
         compose(&mut game);
         let germany = game.world.country(0).unwrap();
         let bayern = germany.clubs.iter().position(|c| c.name == "FC Bayern München").unwrap();
-        let manager = NewManager {
-            first_name: "Anna".into(),
-            last_name: "Test".into(),
-            club: Some((0, bayern)),
-            national_team: None,
-            level: 9,
-            difficulty: 2,
-            negotiating: 3,
+        // A new game as the cycle makes it, and Anna signed to Bayern as
+        // the cycle's signing writes it into the records; the season then
+        // stands as a loaded game reads it.
+        let setup = a3_core::newgame::Setup {
+            trainers: vec![a3_core::newgame::Trainer {
+                first_name: "Anna".into(),
+                last_name: "Test".into(),
+                ..a3_core::newgame::Trainer::default()
+            }],
+            ..a3_core::newgame::Setup::default()
         };
-        let season =
-            Season::first(&game.world, &game.rules, vec![0], 0, vec![manager], Random::new(7));
+        let (mut records, random) = a3_core::newgame::start(&game.data, &setup, 7).unwrap();
+        let nation = germany.nation;
+        let slot = records.human_slot(0).unwrap();
+        let manager = &mut records.managers[slot];
+        manager.set_status(3); // under contract, `load::HIRED`
+        manager.set_country(nation);
+        manager.set_team(bayern as u16);
+        if let Some(team) = records.team_mut(nation, bayern as u16) {
+            let [_, second] = team.humans();
+            team.set_humans([slot as u8 + 1, second]);
+        }
+        let season = a3_core::load::season(&records, &game.data, random);
         let mut state = GameState { season: Some(season), ..GameState::default() };
         let dialog = &game.dialogs[&LINEUP];
         let mut view = View::new(LINEUP, dialog);

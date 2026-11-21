@@ -514,22 +514,25 @@ mod tests {
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn clubless_managers_get_offers_from_the_lower_leagues() {
-        use crate::season::NewManager;
         let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let world = World::load(&dir.join("Data.a3")).unwrap();
-        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
-        let rules = Rules::load(&exe).unwrap();
-        let manager = |name: &str, difficulty| NewManager {
+        let data = crate::data::Data::load(&dir).unwrap();
+        let world = &data.world;
+        let trainer = |name: &str, difficulty| crate::newgame::Trainer {
             first_name: name.into(),
             last_name: "Test".into(),
-            club: None,
-            national_team: None,
-            level: 2,
             difficulty,
-            negotiating: 2,
+            ..crate::newgame::Trainer::default()
         };
-        let managers = vec![manager("A", 0), manager("B", 2)];
-        let season = Season::first(&world, &rules, vec![0], 0, managers, Random::new(7));
+        // Two managers as a new game writes them, one the easy way.
+        let mut records = crate::records::Records::blank();
+        let mut random = Random::new(7);
+        for (name, difficulty) in [("A", 0), ("B", 2)] {
+            let trainer = trainer(name, difficulty);
+            crate::land_managers::create(&mut records, &data.rules, &trainer, &mut random).unwrap();
+        }
+        let mut season = crate::load::season(&records, &data, random);
+        season.managers.iter_mut().zip([0, 2]).for_each(|(m, d)| m.difficulty = d);
+        offer_jobs(&mut season, world, &data.rules);
         for m in &season.managers {
             assert!(!m.offers.is_empty() && m.offers.len() <= MAX_OFFERS);
             for o in &m.offers {

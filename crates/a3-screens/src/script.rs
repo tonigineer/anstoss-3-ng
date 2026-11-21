@@ -13027,16 +13027,18 @@ mod tests {
 
     /// What the replica's new game still sets up otherwise than the
     /// original's, each the matter of a part of new-game-exact. The
-    /// replica keeps no records of a new game, only its own season
-    /// (new-game-exact-records, -rebase). The original's start settings
-    /// draw the order the managers take their turns in (`FUN_006a4fc5`):
-    /// Bert goes first there, signs with the first club that offers (SSV
-    /// Ulm) and has its squad, confidence, training camps' rules and the
-    /// condition and freshness of its training weeks; Anna stays without a
-    /// club, her camps' rules nought (`a3_core::land_managers` has the
-    /// managers' records as the original's).
-    const NEW_GAME_APART: [&str; 7] =
-        ["clubs", "confidence", "order", "records", "squads", "training weeks", "views"];
+    /// original's calculation builds the first season's job offers its
+    /// own way; the replica's job market stands in, so Bert signs with
+    /// another club than SSV Ulm and has its squad, its board's
+    /// confidence and its training weeks in place of the original's
+    /// (`new-game-exact-start-calc-offers`, parked on the grounds map's
+    /// generator); in the records, the fields the calculation fills and
+    /// the generator words it leaves behind part as far as
+    /// `new-game-exact-start-calc-preseason-bookings-fields` is parked.
+    /// The managers, their order, views and records stand as the
+    /// original's (`a3_core::land_managers`, `a3_core::land_start`).
+    const NEW_GAME_APART: [&str; 5] =
+        ["blocks", "clubs", "confidence", "squads", "training weeks"];
 
     /// Where the replica's game at a new game's first turn parts from the
     /// original's dump of the same turn, by what: the date, the managers

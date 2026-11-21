@@ -798,11 +798,31 @@ impl Cycle {
             return Ok(());
         }
         let seed = (self.seed)();
+        let started = {
+            let state = self.state();
+            newgame::log(&self.data.world, &state.setup);
+            newgame::start(&self.data, &state.setup, seed)
+        };
+        let (records, random) = match started {
+            Ok((records, random)) => (records, random),
+            Err(err) => {
+                warn!("new game: {err}");
+                return Ok(());
+            }
+        };
+        let mut season = load::season(&records, &self.data, random);
+        // The hold on the market's roll is the load's (`DAT_00b5cc04`,
+        // `CDiLoad`); a game calculated from its files has none.
+        season.week_hold = false;
+        // The first season's offers, which the original's calculation
+        // builds along with the season (`new-game-exact-start-calc-offers`
+        // has its taking); the replica's stand-in until then.
+        crate::jobs::offer_jobs(&mut season, &self.data.world, &self.data.rules);
         {
             let mut state = self.state();
-            newgame::log(&self.data.world, &state.setup);
-            state.season = Some(newgame::calculate(&self.data, &state.setup, seed));
+            state.season = Some(season);
             state.play.game_loaded(0);
+            state.records = Some(records);
         }
         self.job_offers()?;
         self.weeks(true)
