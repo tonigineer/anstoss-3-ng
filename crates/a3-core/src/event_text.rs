@@ -49,6 +49,9 @@ pub enum Fill {
     /// `%1` and `%2` two men's names (`FUN_005ee619` through
     /// `FUN_005eee7f`).
     Numbered(u16, u16),
+    /// `%1` a man's name and `%2` his partner's first name, from the
+    /// first names of his nation (`FUN_00600f2f` with `FUN_0070173f`).
+    Partnered(u16),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -112,10 +115,25 @@ pub fn quiet(records: &Records) -> bool {
 }
 
 /// The event of a post, its text filled in; `game` gives the game's own
-/// texts by id.
-pub fn make(records: &Records, texts: &EventTexts, game: &dyn Fn(u16) -> String, posted: &Posted) -> Event {
+/// texts by id, `first_names` the nations' first names a hundred each
+/// ([`crate::words::Words::first_names`]).
+pub fn make(
+    records: &Records,
+    texts: &EventTexts,
+    game: &dyn Fn(u16) -> String,
+    first_names: &[String],
+    posted: &Posted,
+) -> Event {
     let text = |id: u16| texts.get(usize::from(id)).unwrap_or_default();
     let name = |id: u16| records.known_as(id).unwrap_or_default();
+    // `FUN_0067503a(nation, number)` over the table `DAT_00b9f048`.
+    let partner = |id: u16| {
+        records
+            .player(id)
+            .and_then(|p| first_names.get(usize::from(p.names_nation()) * 100 + usize::from(p.partner_name())))
+            .cloned()
+            .unwrap_or_default()
+    };
     let body = text(posted.text);
     let text = match posted.fill {
         Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
@@ -123,6 +141,7 @@ pub fn make(records: &Records, texts: &EventTexts, game: &dyn Fn(u16) -> String,
         Fill::Named(id) => body.replacen("%s", &name(id), 1),
         Fill::NamedNumber(id, n) => body.replacen("%s", &name(id), 1).replacen("%d", &n.to_string(), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),
+        Fill::Partnered(id) => numbered(body, &[name(id), partner(id)]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),

@@ -615,12 +615,20 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// (`FUN_005e2bb9`), neither built; else on every third half week by the
 /// club's number the club's youth walks its week, the human told
 /// ([`crate::youth_week::walk`]). A picked category's handler that
-/// posts nothing goes on so too; the replica builds none of them, and
-/// the probe's trace of save A's day 63 ends that day's news at category
-/// 19's pick of the player, so a picked category stands for the day's
-/// whole news here. (The town's share in the stadium's building after a
-/// youth's quiet week is not built either.)
-pub fn news(records: &mut Records, today: i32, slots: &[i16], random: &mut Random) -> Vec<Posted> {
+/// posts nothing goes on so too: category 1 ([`crate::news::children`])
+/// does here. The others are not built, and the probe's trace of save
+/// A's day 63 ends that day's news at category 19's pick of the player,
+/// so another picked category stands for the day's whole news here.
+/// `recent` are the events lately met
+/// ([`crate::season::Season::recent_events`]). (The town's share in the
+/// stadium's building after a youth's quiet week is not built either.)
+pub fn news(
+    records: &mut Records,
+    today: i32,
+    slots: &[i16],
+    recent: &mut Vec<i32>,
+    random: &mut Random,
+) -> Vec<Posted> {
     let mut posted = Vec::new();
     if crate::event_text::quiet(records) {
         return posted;
@@ -630,11 +638,18 @@ pub fn news(records: &mut Records, today: i32, slots: &[i16], random: &mut Rando
             continue;
         }
         let code = crate::news::pick(random);
-        let squad = records.team(u16::from(country), number as u16).map_or(0, |team| team.player_count());
-        if code == 19 {
-            crate::news::about_a_player(squad, random);
-        }
-        if code != 0 {
+        let club = (u16::from(country), number as u16);
+        let squad = records.team(club.0, club.1).map_or(0, |team| team.player_count());
+        let told = match code {
+            0 => false,
+            1 => crate::news::children(records, club, recent, &mut posted, random),
+            19 => {
+                crate::news::about_a_player(squad, random);
+                true
+            }
+            _ => true,
+        };
+        if told {
             continue;
         }
         if random.below(PLAYER_NEWS) < u32::from(squad) || random.below(OTHER_NEWS) < u32::from(squad) {

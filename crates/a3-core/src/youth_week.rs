@@ -654,7 +654,7 @@ mod tests {
         assert_eq!((p.salary(), p.contract()), (salary as u16, r.globals.start_year() + 10));
         assert_eq!(posted, [Posted { club: (u16::from(hc), hn as u16), code: 0x60, text: 0x360, fill: Fill::Named(id) }]);
         let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
-        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &posted[0]);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &[], &posted[0]);
         assert!(told.text.contains(&r.known_as(id).unwrap()), "{}", told.text);
 
         // Every youth of the club out hurt: the one drawn slips a point,
@@ -805,7 +805,7 @@ mod tests {
         assert_eq!((hurt.club, hurt.code, hurt.text), ((u16::from(hc), hn as u16), 0x60, 0x361));
         let Fill::Named(id) = hurt.fill else { panic!() };
         assert!(crate::load::days_to(&r.globals, r.player(id).unwrap().injured_to()) >= 90);
-        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &hurt);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &[], &hurt);
         assert!(told.text.contains(&r.known_as(id).unwrap()), "{}", told.text);
 
         let mut r = load();
@@ -842,7 +842,7 @@ mod tests {
         let Fill::NamedNumber(id, strength) = grew.fill else { panic!("{grew:?}") };
         assert_eq!((grew.text, strength), (0x35d, 3));
         assert_eq!(r.player(id).unwrap().strength(), 3);
-        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &grew);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &[], &grew);
         assert!(told.text.contains(&r.known_as(id).unwrap()) && told.text.contains("Stärke 3"), "{}", told.text);
         assert_eq!(liking(&r), up(liking(&a), 1));
 
@@ -860,14 +860,16 @@ mod tests {
         assert_eq!(liking(&r), up(liking(&a), 2));
 
         // The day's news: on the club's third half week some seed walks
-        // the youth, on the others none.
+        // the youth, on the others none (a player's children aside).
         let day = i32::from(a.globals.day());
         let slots = [day.rem_euclid(7) as i16];
         let mut r = load();
         let mut walked = |half: u16| {
             (0..400).any(|s| {
                 r.globals.set_half_weeks(half);
-                !crate::training_day::news(&mut r, day, &slots, &mut Random::new(s)).is_empty()
+                crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &mut Random::new(s))
+                    .iter()
+                    .any(|p| !crate::news::CHILDREN_TEXTS.contains(&p.text))
             })
         };
         let at = hn as u16 % 3;

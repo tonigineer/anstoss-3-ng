@@ -1401,7 +1401,7 @@ impl Cycle {
                         // What it tells comes up before the day's
                         // matches (`FUN_005f1eaf`, the window waiting).
                         if let Some(gates) = &slots {
-                            news = crate::training_day::news(records, today, gates, &mut season.random);
+                            news = crate::training_day::news(records, today, gates, &mut season.recent_events, &mut season.random);
                         }
                         // The day's league games, behind its routine and
                         // on its own day: where the original lets its
@@ -2392,7 +2392,7 @@ impl Cycle {
                 if crate::event_text::quiet(records) {
                     return Ok(());
                 }
-                crate::event_text::make(records, &texts, &game, &p).dialog()
+                crate::event_text::make(records, &texts, &game, &self.data.rules.words.first_names, &p).dialog()
             };
             self.ask(Request::with(dialog, Args::Event(p)))?;
         }
