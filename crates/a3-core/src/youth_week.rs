@@ -866,16 +866,18 @@ mod tests {
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let tables = crate::first_season::Tables::load(&exe).unwrap();
         let league = crate::league::LeagueTables::load(&exe).unwrap();
+        let mood = crate::mood::MoodTables::load(&exe).unwrap();
         let mut r = load();
         let mut walked = |half: u16| {
             (0..400).any(|s| {
                 r.globals.set_half_weeks(half);
-                crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &tables, &league, &|_| false, &mut Random::new(s))
+                crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &tables, &league, &mood, &|_| false, &mut Random::new(s))
                     .iter()
                     .any(|p| {
                         !crate::news::CHILDREN_TEXTS.contains(&p.text)
                             && !crate::news::SERVICE_TEXTS.contains(&p.text)
                             && !crate::news::partner_text(p.text)
+                            && !crate::news::squad_text(p.text)
                     })
             })
         };

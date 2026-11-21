@@ -619,14 +619,17 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// to 6 ([`crate::news::suspicion`]), 7 ([`crate::news::affair_known`]),
 /// 8 ([`crate::news::family`]), 9 ([`crate::news::engaged`]), 10
 /// ([`crate::news::low_spirits`]), 11 ([`crate::news::at_odds`]) and 12
-/// ([`crate::news::new_affair`]) do here. The others are not built, and the probe's trace of save
+/// ([`crate::news::new_affair`]), 50 ([`crate::news::bootlicker`]), 51
+/// ([`crate::news::informer`]), 52 ([`crate::news::moles`]) and 55
+/// ([`crate::news::habits`]) do here. The others are not built, and the probe's trace of save
 /// A's day 63 ends that day's news at category 19's pick of the player,
 /// so another picked category stands for the day's whole news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
 /// classes a father's club is weighed by, `planned` whether a club's
-/// plan holds anything but free today ([`planned_today`]). (The town's share in the
+/// plan holds anything but free today ([`planned_today`]), `mood` what
+/// the team's mood does to its squad. (The town's share in the
 /// stadium's building after a youth's quiet week is not built either.)
 pub fn news(
     records: &mut Records,
@@ -635,6 +638,7 @@ pub fn news(
     recent: &mut Vec<i32>,
     tables: &crate::first_season::Tables,
     league: &LeagueTables,
+    mood: &MoodTables,
     planned: &dyn Fn((u16, u16)) -> bool,
     random: &mut Random,
 ) -> Vec<Posted> {
@@ -663,6 +667,10 @@ pub fn news(
             10 => crate::news::low_spirits(records, club, planned(club), &mut posted, random),
             11 => crate::news::at_odds(records, club, today, &mut posted, random),
             12 => crate::news::new_affair(records, club, &mut posted, random),
+            50 => crate::news::bootlicker(records, club, today, planned(club), (league, mood), recent, &mut posted, random),
+            51 => crate::news::informer(records, club, &mut posted, random),
+            52 => crate::news::moles(records, club, random),
+            55 => crate::news::habits(records, club, league, &mut posted, random),
             19 => {
                 crate::news::about_a_player(squad, random);
                 true

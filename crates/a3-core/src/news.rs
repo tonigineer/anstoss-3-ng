@@ -22,8 +22,11 @@
 //! suspicion ([`suspicion`]), are here, and categories 7, a wife who
 //! knows of the affair ([`affair_known`]), 8, a father's day with his
 //! family ([`family`]), 9, a wedding near ([`engaged`]), 10, a man in
-//! low spirits ([`low_spirits`]), 11, two at odds ([`at_odds`]), and 12,
-//! a man's new affair ([`new_affair`]).
+//! low spirits ([`low_spirits`]), 11, two at odds ([`at_odds`]), 12,
+//! a man's new affair ([`new_affair`]), and the squad's own, 50, a
+//! bootlicker ([`bootlicker`]), 51, an informer ([`informer`]), 52, the
+//! mole who talks to the press ([`moles`]), and 55, a man's habits
+//! ([`habits`]).
 
 use std::ops::RangeInclusive;
 
@@ -238,6 +241,60 @@ const MAKE_UP_IN: u32 = 100;
 const MAKE_UP_UNDER: u32 = 0x46;
 const MADE_UP: i32 = 100;
 const ROW_HAPPENINGS: [(u32, u16); 7] = [(30, 1), (3, 2), (3, 3), (3, 4), (3, 5), (30, 6), (30, 7)];
+
+/// Category 50: a bootlicker (+0x1b4 bit 0x4000, `FUN_00700168`), the
+/// twenty happenings of his day (`DAT_00a2eb80`, registered by
+/// `FUN_005e4a26` from `DAT_0088d898`), standing among the recent events
+/// as their number plus 26000, and the team's mood his first takes.
+const BOOTLICKER: u32 = 0x4000;
+const BOOTLICKER_HAPPENINGS: [(u32, u16); 20] = [
+    (3, 1), (200, 2), (200, 3), (200, 4), (200, 5), (200, 6), (200, 7), (200, 8), (200, 9), (200, 10),
+    (200, 11), (200, 12), (200, 13), (200, 14), (200, 15), (200, 16), (200, 17), (200, 18), (200, 19), (200, 20),
+];
+const BOOTLICKER_KEY: i32 = 26_000;
+const BOOTLICKED_MOOD: i32 = -10;
+/// The day counter under which happening 20 is told.
+const FIRST_DAYS: i32 = 7;
+/// Category 51: an informer's two happenings (`DAT_00a2eb74`, registered
+/// by `FUN_005e4eaa` from `DAT_0088d8e8`), what the squad's trust in the
+/// trainer loses once he is found out, and the bits of the man shut out
+/// (`FUN_0070031f`) and of the mole (`FUN_00700272`).
+const INFORMER_HAPPENINGS: [(u32, u16); 2] = [(10, 1), (50, 2)];
+const FOUND_OUT: i32 = -10;
+const SHUT_OUT: u32 = 0x20000;
+const MOLE: u32 = 0x10000;
+const TEAM: usize = 1;
+/// Category 52 (`FUN_005e50ba`): a man pleased with the trainer less
+/// than 0x5a counts low; one not a mole of morale under 0x46, none of
+/// the trait bits 0x120, with two of trainer, team and club under 0x58
+/// may turn mole; a mole of morale 0x56 or more stops.
+const LOW_TRAINER: i32 = 0x5a;
+const MOLE_MORALE: u8 = 0x46;
+const MOLE_TRAITS: u16 = 0x120;
+const MOLE_PARTS: i32 = 0x58;
+const MOLE_STOPS: u8 = 0x56;
+/// How many men low with the trainer, and how many wanting to leave
+/// (`FUN_00770877` at 3), the press hears of.
+const LOW_MANY: usize = 7;
+const LEAVING_MANY: usize = 5;
+const LEAVING: usize = 3;
+/// The club object's flags at +0xdf8: the press told of the low men, of
+/// those wanting to leave, of the trainer this round, and the round's
+/// three bits at 0x12 (`FUN_0069fe57`, stepped by `FUN_0069fe73` up to
+/// 15, the bit past them cleared).
+const TOLD_LOW: u32 = 0x10000;
+const TOLD_LEAVING: u32 = 0x20000;
+const TOLD_TRAINER: u32 = 0x20_0000;
+const PRESS_ROUND: u32 = 0x1c_0000;
+const PRESS_SHIFT: u32 = 0x12;
+const PRESS_MOST: u32 = 0xf;
+/// Category 55 (`FUN_005fff0f`): four habits over one man drawn of the
+/// whole squad, a smoker's (+0x1b4 bit 0x800, `FUN_006fffd9`, a
+/// handicap of 5 in condition) and a private fitness trainer's (bit
+/// 0x2000, `FUN_007000e3`, a bonus of 5).
+const HABITS: u32 = 4;
+const SMOKES: u32 = 0x800;
+const OWN_TRAINER: u32 = 0x2000;
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -1455,6 +1512,223 @@ fn in_camp(records: &Records, club: (u16, u16), today: i32) -> bool {
         .is_some_and(|(calendar, d)| d < crate::year::CAMP_DAYS && crate::year::in_camp(calendar, d))
 }
 
+/// The picked category 50 (`case 0x32` with `FUN_005e4dde`): one of the
+/// club's own real bootlickers (+0x1b4 bit 0x4000, 0x23 at most) is
+/// drawn and has his day ([`bootlicker_day`]); with none the news did
+/// not take place.
+pub fn bootlicker(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    planned: bool,
+    (league, mood): (&crate::league::LeagueTables, &crate::mood::MoodTables),
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let men = drawn_from(records, club, |p| p.shown() & BOOTLICKER != 0);
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    bootlicker_day(records, club, id, today, planned, (league, mood), recent, posted, random);
+    true
+}
+
+/// A bootlicker's day (`FUN_005e4a3e`, "EreignisSchleimer"): one of
+/// twenty happenings weighed 3 and 200 each, one met lately not met
+/// again (26000 and its number), each text's `%1` him and `%2` empty
+/// (0x3ba asks for a `%s` the filling leaves, 0x3c9 for his wife's
+/// name, both as the original shows them). The team's mood ten down
+/// (`FUN_007147ce`, `FUN_00771701`; 0x3b8); the club short of its
+/// season's goal (`FUN_00775f0a`, 0x3b9) or not (0x3c1); 3, 4, 8 and 9
+/// on a day the plan holds training (`FUN_005ea8cc`; 0x3ba, 0x3bb,
+/// 0x3bf, 0x3c0); 5, 7 and 19 always (0x3bc, 0x3be, 0x3ca); a married
+/// man (`FUN_006ffb14`) in December before the 24th (0x3c8) or any day
+/// (0x3c9); the first seven days of the counter (0x3cb). The rest are
+/// nothing; the news took place all the same.
+fn bootlicker_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    today: i32,
+    planned: bool,
+    (league, mood): (&crate::league::LeagueTables, &crate::mood::MoodTables),
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    let happening = weighed(&BOOTLICKER_HAPPENINGS, random);
+    if !meet(recent, BOOTLICKER_KEY + i32::from(happening)) {
+        return;
+    }
+    let missing = records.team(club.0, club.1).map_or(0, |team| crate::league::goal_missing(records, league, team));
+    let married = records.player(id).is_some_and(|p| p.partner() & 3 == WIFE);
+    let [day, month, _] = records.globals.date().map(|w| i32::from(w as i16));
+    let text = match happening {
+        1 => {
+            crate::interview::team_mood(records, mood, (club.0 as u8, club.1 as i16), BOOTLICKED_MOOD);
+            0x3b8
+        }
+        2 if missing > 0 => 0x3b9,
+        3 if planned => 0x3ba,
+        4 if planned => 0x3bb,
+        5 => 0x3bc,
+        7 => 0x3be,
+        8 if planned => 0x3bf,
+        9 if planned => 0x3c0,
+        10 if missing == 0 => 0x3c1,
+        17 if married && month == i32::from(CHRISTMAS_EVE.1) && day < i32::from(CHRISTMAS_EVE.0) => 0x3c8,
+        18 if married => 0x3c9,
+        19 => 0x3ca,
+        20 if today < FIRST_DAYS => 0x3cb,
+        _ => return,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+}
+
+/// The picked category 51 (`case 0x33` with `FUN_005e4fd6`): one of the
+/// club's own real informers (+0x1b4 bit 0x8000, 0x23 at most) is drawn
+/// ("EreignisSpitzel", `FUN_005e4ec2`), one of two happenings weighed 10
+/// and 50. Found out: every man of the squad ten less pleased with the
+/// trainer (`FUN_007007a1`), the informer shut out (`FUN_0070031f`) and
+/// not pleased with the team at all (`FUN_00700bcf(0)`), told (0x3d7).
+/// Else a mole of the squad's real men (+0x1b4 bit 0x10000, 0x23 at
+/// most, `FUN_005edd19`) is drawn and, one of the informer's three
+/// friends (+0x1f8) not shut out (`FUN_0070346f`), told by name (0x3d6)
+/// — and then, as with none, the news did not take place.
+pub fn informer(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    let men = drawn_from(records, club, |p| p.shown() & SPY != 0);
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    if weighed(&INFORMER_HAPPENINGS, random) == 1 {
+        for man in records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default() {
+            change(records, man, 0, FOUND_OUT);
+        }
+        let Some(p) = records.player_mut(id) else { return true };
+        p.set_shown(p.shown() | SHUT_OUT);
+        crate::mood::change(p, TEAM, -crate::mood::MOST);
+        posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3d7, fill: Fill::NumberedOne(id) });
+        return true;
+    }
+    let moles = drawn_from(records, club, |p| p.shown() & MOLE != 0);
+    if moles.is_empty() {
+        return false;
+    }
+    let mole = moles[random.below(moles.len() as u32) as usize];
+    let shut_out = records.player(mole).is_some_and(|p| p.shown() & SHUT_OUT != 0);
+    if !shut_out && records.player(id).is_some_and(|p| p.friends().contains(&mole)) {
+        posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3d6, fill: Fill::Numbered(id, mole) });
+    }
+    false
+}
+
+/// The picked category 52 (`case 0x34` with `FUN_005e50ba`): over the
+/// club's own real men, those pleased with the trainer less than 0x5a
+/// and those wanting to leave (`FUN_00770877`) are counted; a mole of
+/// morale 0x56 or more stops (`FUN_00700294(0)`), one under it is listed;
+/// a man not a mole of morale under 0x46, none of the trait bits 0x120
+/// (the handle's +0x12), with two of trainer, team and club under 0x58
+/// is listed to turn one (0x23 at most in each list). With no mole one
+/// of the second list is drawn and turns mole, nothing told; with
+/// neither the news did not take place. With moles the press hears of
+/// the club (the club object's flags +0xdf8): of seven men low with the
+/// trainer (0x6a5) or of five wanting to leave (0x6a6), each once, the
+/// round stepped (`FUN_0069fe73(1)`); else, once a round, of the human
+/// trainer by the round's state (0x6a7 to 0x6aa — 0x6ab and 0x6ac ask
+/// for states three bits never hold). Those headlines (`FUN_00789c32`)
+/// are not posted here; the flags are kept.
+pub fn moles(records: &mut Records, club: (u16, u16), random: &mut Random) -> bool {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let (mut low, mut leaving, mut moles, mut turning) = (0, 0, Vec::new(), Vec::new());
+    for id in squad.into_iter().filter(|&id| id <= LAST_REAL_ID) {
+        let Some(p) = records.player_mut(id) else { continue };
+        let parts = crate::mood::parts(p);
+        low += usize::from(parts[0] < LOW_TRAINER);
+        leaving += usize::from(crate::mood::content_level(parts) == LEAVING);
+        if p.shown() & MOLE == 0 {
+            let unhappy = parts[..3].iter().filter(|&&part| part < MOLE_PARTS).count();
+            if p.morale() < MOLE_MORALE && p.traits()[1] & MOLE_TRAITS == 0 && unhappy > 1 && turning.len() < PICKS_MOST {
+                turning.push(id);
+            }
+        } else if p.morale() < MOLE_STOPS {
+            if moles.len() < PICKS_MOST {
+                moles.push(id);
+            }
+        } else {
+            p.set_shown(p.shown() & !MOLE);
+        }
+    }
+    if moles.is_empty() {
+        if turning.is_empty() {
+            return false;
+        }
+        let id = turning[random.below(turning.len() as u32) as usize];
+        if let Some(p) = records.player_mut(id) {
+            p.set_shown(p.shown() | MOLE);
+        }
+        return true;
+    }
+    let Some(team) = records.team_mut(club.0, club.1) else { return true };
+    let flags = team.training_flags();
+    let step = |flags: u32| {
+        let round = ((flags & PRESS_ROUND) >> PRESS_SHIFT) + 1;
+        (flags & !PRESS_ROUND | round.min(PRESS_MOST) << PRESS_SHIFT) & !TOLD_TRAINER
+    };
+    if low >= LOW_MANY && flags & TOLD_LOW == 0 {
+        team.set_training_flags(step(flags | TOLD_LOW));
+    } else if leaving >= LEAVING_MANY && flags & TOLD_LEAVING == 0 {
+        team.set_training_flags(step(flags | TOLD_LEAVING));
+    } else if flags & TOLD_TRAINER == 0 && team.humans()[0] != 0 {
+        team.set_training_flags(flags | TOLD_TRAINER);
+    }
+    true
+}
+
+/// The picked category 55 (`case 0x37` with `FUN_005fff0f`): one man is
+/// drawn over the club's whole squad (+0xe2); a player-manager has
+/// nothing. Of four habits one: he takes up smoking while the club is
+/// short of its season's goal (`FUN_00775fa0` below nought; 0x54c) or
+/// gives it up while it is not (0x54d), takes on a private fitness
+/// trainer (0x54e) or parts from him (0x54f) — each only when he has it
+/// not, or has it. The news took place all the same.
+pub fn habits(
+    records: &mut Records,
+    club: (u16, u16),
+    league: &crate::league::LeagueTables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(team) = records.team(club.0, club.1) else { return true };
+    let squad = team.players();
+    let at = random.below(u32::from(team.player_count())) as usize;
+    let Some(&id) = squad.get(at) else { return true };
+    if id > LAST_REAL_ID {
+        return true;
+    }
+    let reached = crate::league::goal_reached(records, league, team);
+    let short = reached < 1 && crate::league::goal_missing(records, league, team) > 0;
+    let Some(p) = records.player_mut(id) else { return true };
+    let shown = p.shown();
+    let (text, bits) = match random.below(HABITS) {
+        0 if shown & SMOKES == 0 && short => (0x54c, shown | SMOKES),
+        1 if shown & SMOKES != 0 && !short => (0x54d, shown & !SMOKES),
+        2 if shown & OWN_TRAINER == 0 => (0x54e, shown | OWN_TRAINER),
+        3 if shown & OWN_TRAINER != 0 => (0x54f, shown & !OWN_TRAINER),
+        _ => return true,
+    };
+    p.set_shown(bits);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+    true
+}
+
+/// Whether a text is one of categories 50, 51 and 55's.
+pub fn squad_text(text: u16) -> bool {
+    (0x3b8..=0x3cb).contains(&text) || text == 0x3d6 || text == 0x3d7 || (0x54c..=0x54f).contains(&text)
+}
+
 /// Which of his children [`child`] draws among (`FUN_007021cb`'s first
 /// argument: 0, 1, any other).
 #[derive(Clone, Copy)]
@@ -2447,5 +2721,178 @@ mod tests {
         let mut random = Random::new(3);
         assert!(!at_odds(&mut r, club, today, &mut Vec::new(), &mut random));
         assert!(random == Random::new(3));
+    }
+
+    /// Categories 50 to 52 and 55 on A's human squad: a bootlicker's
+    /// happening told once (0x3bc), the team's mood ten down (0x3b8), a
+    /// training's only on a planned day (0x3ba); an informer found out
+    /// (0x3d7) shut out, the squad less pleased with the trainer, or
+    /// telling of a mole friend (0x3d6) with the news not taken place; an
+    /// unhappy man turned mole, then the press's flags stepped and a
+    /// pleased mole stopped; a habit taken up and given up. Lists of none
+    /// draw nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_50_to_55_tell_of_the_squad() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let words = crate::words::Words::load(&exe).unwrap();
+        let league = crate::league::LeagueTables::load(&exe).unwrap();
+        let mood = crate::mood::MoodTables::load(&exe).unwrap();
+        // Every man of the squad pleased at 100 with no reasons, none of
+        // the bits; `man` the fourth.
+        let load = || {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            for &id in &squad {
+                let p = a.player_mut(id).unwrap();
+                p.set_shown(p.shown() & !(BOOTLICKER | SPY | MOLE | SHUT_OUT | SMOKES | OWN_TRAINER));
+                p.set_flags(0);
+                p.set_contentment([100; 7]);
+                crate::mood::change(p, 0, 0);
+            }
+            (a, club, squad[3], squad)
+        };
+        let seed = |draws: &dyn Fn(&mut Random) -> bool| (0..10_000).find(|&s| draws(&mut Random::new(s))).unwrap();
+        let told = |r: &Records, posted: &Posted, man: u16| {
+            let event = crate::event_text::make(r, &texts, &|_| String::new(), &words.first_names, posted);
+            assert!(!event.text.contains('%') && event.text.contains(&r.known_as(man).unwrap()), "{}", event.text);
+        };
+        let one = |table: &'static [(u32, u16)], n: u16| {
+            seed(&|r| {
+                r.below(1);
+                weighed(table, r) == n
+            })
+        };
+        let today = 30;
+
+        // A bootlicker.
+        let (mut r, club, man, squad) = load();
+        let mut random = Random::new(3);
+        assert!(!bootlicker(&mut r, club, today, true, (&league, &mood), &mut Vec::new(), &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+        let p = r.player_mut(man).unwrap();
+        p.set_shown(p.shown() | BOOTLICKER);
+        let (mut recent, mut posted) = (Vec::new(), Vec::new());
+        let five = one(&BOOTLICKER_HAPPENINGS, 5);
+        assert!(bootlicker(&mut r, club, today, false, (&league, &mood), &mut recent, &mut posted, &mut Random::new(five)));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x3bc, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(recent, [BOOTLICKER_KEY + 5]);
+        told(&r, &posted[0], man);
+        assert!(bootlicker(&mut r, club, today, false, (&league, &mood), &mut recent, &mut posted, &mut Random::new(five)));
+        assert_eq!(posted.len(), 1);
+        let before = r.team(club.0, club.1).unwrap().mood();
+        let mut posted = Vec::new();
+        assert!(bootlicker(&mut r, club, today, false, (&league, &mood), &mut recent, &mut posted, &mut Random::new(one(&BOOTLICKER_HAPPENINGS, 1))));
+        assert_eq!(posted[0].text, 0x3b8);
+        assert_eq!(i32::from(r.team(club.0, club.1).unwrap().mood()), (i32::from(before) - 10).max(0));
+        let three = one(&BOOTLICKER_HAPPENINGS, 3);
+        let mut posted = Vec::new();
+        assert!(bootlicker(&mut r, club, today, false, (&league, &mood), &mut Vec::new(), &mut posted, &mut Random::new(three)));
+        assert!(bootlicker(&mut r, club, today, true, (&league, &mood), &mut Vec::new(), &mut posted, &mut Random::new(three)));
+        assert_eq!(posted.iter().map(|p| p.text).collect::<Vec<_>>(), [0x3ba]);
+        // Its text asks for `%s`, which the original's filling leaves.
+        assert!(told_of(&r, &texts, &words, &posted[0]).contains("Ihr Spieler %s kommt"));
+
+        // An informer found out.
+        let mut random = Random::new(3);
+        assert!(!informer(&mut r, club, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+        let p = r.player_mut(man).unwrap();
+        p.set_shown(p.shown() | SPY);
+        let mut posted = Vec::new();
+        assert!(informer(&mut r, club, &mut posted, &mut Random::new(one(&INFORMER_HAPPENINGS, 1))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x3d7, fill: Fill::NumberedOne(man) }]);
+        told(&r, &posted[0], man);
+        let p = r.player(man).unwrap();
+        assert_eq!((p.shown() & SHUT_OUT, p.contentment()[TEAM], p.contentment()[0]), (SHUT_OUT, 0, 90));
+        assert_eq!(r.player(squad[0]).unwrap().contentment()[0], 90);
+        // Or telling of a mole among his friends: posted, yet no news.
+        let (mut r, club, man, squad) = load();
+        let p = r.player_mut(man).unwrap();
+        p.set_shown(p.shown() | SPY);
+        p.set_friends([squad[0], 0, 0]);
+        let mole = r.player_mut(squad[0]).unwrap();
+        mole.set_shown(mole.shown() | MOLE);
+        let two = seed(&|r| {
+            r.below(1);
+            weighed(&INFORMER_HAPPENINGS, r) == 2 && r.below(1) == 0
+        });
+        let mut posted = Vec::new();
+        assert!(!informer(&mut r, club, &mut posted, &mut Random::new(two)));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x3d6, fill: Fill::Numbered(man, squad[0]) }]);
+        told(&r, &posted[0], man);
+        assert!(told_of(&r, &texts, &words, &posted[0]).contains(&r.known_as(squad[0]).unwrap()));
+
+        // Moles: none unhappy, no draw; an unhappy man turns.
+        let (mut r, club, man, squad) = load();
+        let mut random = Random::new(3);
+        assert!(!moles(&mut r, club, &mut random));
+        assert!(random == Random::new(3));
+        let p = r.player_mut(man).unwrap();
+        crate::mood::change(p, 0, -50);
+        crate::mood::change(p, TEAM, -50);
+        let mut random = Random::new(3);
+        assert!(moles(&mut r, club, &mut random));
+        let mut once = Random::new(3);
+        once.below(1);
+        assert!(random == once);
+        assert_eq!(r.player(man).unwrap().shown() & MOLE, MOLE);
+        // The press hears of the trainer once a round.
+        let flags = |r: &Records| r.team(club.0, club.1).unwrap().training_flags();
+        assert_ne!(r.team(club.0, club.1).unwrap().humans()[0], 0);
+        let start = flags(&r);
+        assert!(moles(&mut r, club, &mut Random::new(3)));
+        assert_eq!(flags(&r), start | TOLD_TRAINER);
+        // Of seven low with the trainer: told once, the round stepped.
+        for &id in &squad[..LOW_MANY] {
+            crate::mood::change(r.player_mut(id).unwrap(), 0, -20);
+        }
+        assert!(moles(&mut r, club, &mut Random::new(3)));
+        let round = (start & PRESS_ROUND) >> PRESS_SHIFT;
+        assert_eq!(flags(&r) & (TOLD_LOW | TOLD_TRAINER | PRESS_ROUND), TOLD_LOW | (round + 1).min(PRESS_MOST) << PRESS_SHIFT & PRESS_ROUND);
+        // A mole pleased again stops; with no one left unhappy, nothing.
+        let p = r.player_mut(man).unwrap();
+        p.set_contentment([100; 7]);
+        crate::mood::change(p, 0, 0);
+        for &id in &squad {
+            let p = r.player_mut(id).unwrap();
+            p.set_contentment([100; 7]);
+            crate::mood::change(p, 0, 0);
+        }
+        assert!(!moles(&mut r, club, &mut Random::new(3)));
+        assert_eq!(r.player(man).unwrap().shown() & MOLE, 0);
+
+        // A habit taken up and given up; smoking as the goal stands.
+        let (mut r, club, _, squad) = load();
+        let count = u32::from(r.team(club.0, club.1).unwrap().player_count());
+        let habit = |n: u32| seed(&|r| r.below(count) == 3 && r.below(HABITS) == n);
+        let mut posted = Vec::new();
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(3))));
+        assert!(posted.is_empty());
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(2))));
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(2))));
+        assert_eq!(r.player(squad[3]).unwrap().shown() & OWN_TRAINER, OWN_TRAINER);
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(3))));
+        assert_eq!(r.player(squad[3]).unwrap().shown() & OWN_TRAINER, 0);
+        let team = r.team(club.0, club.1).unwrap();
+        let short = crate::league::goal_reached(&r, &league, team) < 1 && crate::league::goal_missing(&r, &league, team) > 0;
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(if short { 0 } else { 1 }))));
+        assert!(habits(&mut r, club, &league, &mut posted, &mut Random::new(habit(if short { 1 } else { 0 }))));
+        let expect: &[u16] = if short { &[0x54e, 0x54f, 0x54c] } else { &[0x54e, 0x54f] };
+        assert_eq!(posted.iter().map(|p| p.text).collect::<Vec<_>>(), expect);
+        // Their texts speak of 5%: the man named.
+        for p in &posted {
+            assert!(told_of(&r, &texts, &words, p).starts_with(&format!("Ihr Spieler {}", r.known_as(squad[3]).unwrap())));
+        }
+    }
+
+    fn told_of(r: &Records, texts: &a3_files::saq::EventTexts, words: &crate::words::Words, posted: &Posted) -> String {
+        crate::event_text::make(r, texts, &|_| String::new(), &words.first_names, posted).text
     }
 }

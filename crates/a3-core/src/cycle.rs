@@ -1408,6 +1408,7 @@ impl Cycle {
                                 &mut season.recent_events,
                                 &self.data.rules.first_season,
                                 &self.data.rules.league,
+                                &self.data.rules.discipline.mood,
                                 &|club| crate::training_day::planned_today(&season.clubs, &self.data.world, club, today),
                                 &mut season.random,
                             );
