@@ -623,9 +623,9 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::news::informer`]), 52 ([`crate::news::moles`]) and 55
 /// ([`crate::news::habits`]) do here, and so does 19 for a man without a
 /// hobby ([`crate::news::about_a_player`]); 18 ([`crate::news::new_hobby`])
-/// always ends the news. The others (20 to 25, and 19's hobby news) are
-/// not built, so another picked category stands for the day's whole news
-/// here.
+/// and 19 for a man with one always end the news. The others (20 to 25)
+/// are not built, so another picked category stands for the day's whole
+/// news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
@@ -691,7 +691,7 @@ pub fn news(
                 crate::news::new_hobby(records, club, tables, &mut posted, random);
                 true
             }
-            19 => crate::news::about_a_player(records, club, random),
+            19 => crate::news::about_a_player(records, club, today, planned(club), &mut posted, random),
             _ => true,
         };
         if told {

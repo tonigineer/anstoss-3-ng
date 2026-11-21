@@ -12,8 +12,8 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and the handlers of categories 20 to 25 and the
-//! posting of category 19's hobby news (`FUN_005fd59d`).
+//! +0x8a and +0x8b; the handlers of categories 20 to 25; and eight of
+//! the hobbies of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
 //! player's military or civil service ([`service`]), and categories 3 to
@@ -26,8 +26,8 @@
 //! a man's new affair ([`new_affair`]), and the squad's own, 50, a
 //! bootlicker ([`bootlicker`]), 51, an informer ([`informer`]), 52, the
 //! mole who talks to the press ([`moles`]), and 55, a man's habits
-//! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), and 19's gate
-//! ([`about_a_player`]).
+//! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), and 19, a
+//! man's hobby's day ([`about_a_player`]).
 
 use std::ops::RangeInclusive;
 
@@ -333,6 +333,45 @@ const NEW_HOBBY_TEXT: u16 = 0x4d1;
 const MIDFIELD_HOBBY: u8 = 0x25;
 const MIDFIELD: u8 = 3;
 
+/// The hobbies whose day `FUN_005fd59d` has built here (+0x28d): fishing,
+/// the football manager game, the aquarium, stocks, stamps, American
+/// football, the garden, bees, art, travel, skiing and diving.
+const FISHING: u8 = 2;
+const GAME: u8 = 3;
+const AQUARIUM: u8 = 4;
+const STOCKS: u8 = 6;
+const STAMPS: u8 = 7;
+const FOOTBALL: u8 = 0xb;
+const GARDEN: u8 = 0xf;
+const BEES: u8 = 0x14;
+const ART: u8 = 0x18;
+const TRAVEL: u8 = 0x1f;
+const SKIING: u8 = 0x22;
+const DIVING: u8 = 0x23;
+/// The days fishing knocks him about (`FUN_00766af9(5)`), what the fresh
+/// fish lift the team's mood by and what a night's game takes off his
+/// freshness.
+const FISHING_KNOCK: u16 = 5;
+const FRESH_FISH: i32 = 10;
+const SLEEPLESS: i32 = -2;
+/// The injuries of the hobbies (`FUN_00766b92`): the kind and the days,
+/// those given none the kind's days of the table at `DAT_008ac341`.
+const SPRAINED_FOOT: (u8, i32) = (0xd, 7);
+const SPADE: (u8, i32) = (0x25, 112);
+const MALARIA: (u8, i32) = (0x52, 42);
+const BROKEN_LEG: (u8, i32) = (0x2a, 42);
+const JELLYFISH: (u8, i32) = (0x5b, 14);
+const NITROGEN: (u8, i32) = (0x5c, 0);
+/// A data set pleases a man less content with his distractions than this;
+/// stocks break a man younger than this; a dear stamp troubles a salary
+/// under this (the handle's +0x88); travel news comes before this day;
+/// skiing pleases a man less pleased with his private life than this.
+const DATA_SET_UNDER: i32 = 0x62;
+const BROKE_UNDER: i32 = 25;
+const DEAR_STAMP_SALARY: u16 = 500;
+const TRAVEL_BEFORE: i32 = 3;
+const SKIING_UNDER: i32 = 0x50;
+
 /// The club's doping cases (club +0x115, team +0x13e): their count in the
 /// low three bits, the top three kept when the association acts.
 const DOPING_CASES: usize = 0x13e;
@@ -514,13 +553,230 @@ pub fn new_hobby(
 /// The picked category 19 (`case 0x13` with `FUN_005fed08`): one man is
 /// drawn over the club's squad, as for category 18; a player-manager or
 /// a man without a hobby has nothing (the low half of its return 0), and
-/// the day's news goes on to its later rolls. A man's hobby's news
-/// (`FUN_005fd59d`, "EreignisHobby") is not built: a man with one stands
-/// for the day's whole news. Whether the news took place.
-pub fn about_a_player(records: &Records, club: (u16, u16), random: &mut Random) -> bool {
-    drawn_man(records, club, random)
-        .and_then(|id| records.player(id).map(|p| id <= LAST_REAL_ID && p.hobby() != 0))
-        .unwrap_or(false)
+/// the day's news goes on to its later rolls. A man with one meets his
+/// hobby's day ([`hobby_day`]), which returns 1 in its low half on every
+/// way out, so the news took place whatever it told. `planned` whether
+/// the club's plan holds anything but free today. Whether the news took
+/// place.
+pub fn about_a_player(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    planned: bool,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(id) = drawn_man(records, club, random) else { return false };
+    if id > LAST_REAL_ID || records.player(id).is_none_or(|p| p.hobby() == 0) {
+        return false;
+    }
+    hobby_day(records, club, id, today, planned, posted, random);
+    true
+}
+
+/// A man's hobby's day (`FUN_005fd59d`, "EreignisHobby %d"), by his hobby
+/// (+0x28d, `FUN_00702c9e`); "out" is the handle's days out (+0x2c).
+/// Fishing, one of three: knocked about five days by a bladder infection
+/// (0x482) or a poisoned fish (0x484), or fresh fish for the team, its
+/// mood up ten (0x483). The football manager game: two less fresh after a
+/// night's season (0x485), a sprained foot (0x486), or a data set found,
+/// three more content with his distractions while under 98 (0x487). The
+/// aquarium, one of two: three less (0x489), or for a married man the
+/// tank broken, five less (0x48a). Stocks, one of three: one time in ten
+/// a man under 25 of strength 2 or more broke, one point of strength off
+/// (0x48b); rich, his hobby stamps from now on (0x48c); or the shares
+/// gone, fifteen less (0x48d). Stamps, one of two: a dear stamp bought on
+/// a salary under 500, ten less (0x48e), or the collection stolen,
+/// fifteen less (0x48f). American football, one of two: up late (0x49c,
+/// nothing taken), or not out, a bruised rib, knocked about seven days
+/// (0x49d). The garden, one of three, not out: a spade in his foot
+/// (0x4a9) or knocked about a fortnight by hornets (0x4aa); or a
+/// bootlicker names a rose after his manager (0x4ab). The bees: the
+/// hobby forbidden (0x4ba, the wife's name left empty). Art, one of four:
+/// five less (0x4bb), or five and a draw of six less (0x4bc to 0x4be).
+/// Travel, before the third day: malaria (0x4c3), or seven days away
+/// (0x4c4, 0x4c5). Skiing, not out and from December to March, on a day
+/// without training: a few hours, three more pleased with his private
+/// life while under 80 (0x4c6), or a broken leg (0x4c7). Diving: a
+/// jellyfish (0x4c8) or nitrogen (0x4c9). The changes of his
+/// contentment are told with values (`FUN_00601043`) and not posted
+/// here; the others are told by his name, `%2` empty (`FUN_00600f2f`).
+/// The other hobbies of the original (books, computer games, looks,
+/// gambling, golf, food, motorbikes and sports cars) are not built: they
+/// tell nothing and draw nothing here.
+fn hobby_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    today: i32,
+    planned: bool,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    let Some(p) = records.player(id) else { return };
+    let out = crate::load::days_to(&records.globals, p.injured_to()) != 0;
+    let parts = p.contentment();
+    let married = p.partner() & 3 == WIFE;
+    let month = i32::from(records.globals.date()[1] as i16);
+    let distract = |records: &mut Records, by: i32| change(records, id, DISTRACTION, by);
+    let knock = |records: &mut Records, days: u16| crate::training_day::knock_for(records, id, days, today);
+    let injure = |records: &mut Records, (kind, days): (u8, i32)| crate::training_day::injure(records, id, kind, days, today);
+    let text = match p.hobby() {
+        FISHING => match random.below(3) {
+            0 => {
+                knock(records, FISHING_KNOCK);
+                0x482
+            }
+            1 => {
+                team_mood(records, club, FRESH_FISH);
+                0x483
+            }
+            _ => {
+                knock(records, FISHING_KNOCK);
+                0x484
+            }
+        },
+        GAME => match random.below(3) {
+            0 => {
+                tire(records, id, SLEEPLESS);
+                0x485
+            }
+            1 => {
+                injure(records, SPRAINED_FOOT);
+                0x486
+            }
+            _ => {
+                if i32::from(parts[DISTRACTION]) < DATA_SET_UNDER {
+                    distract(records, 3);
+                }
+                return;
+            }
+        },
+        AQUARIUM => {
+            if random.below(2) == 0 {
+                distract(records, -3);
+            } else if married {
+                distract(records, -5);
+            }
+            return;
+        }
+        STOCKS => match random.below(3) {
+            0 => {
+                let broke = random.below(10) == 0;
+                let Some(p) = records.player(id) else { return };
+                let age = years_since(records, (p.birth_day(), p.birth_month(), p.birth_year() as i16));
+                if !(broke && age < BROKE_UNDER && p.strength() > 1) {
+                    return;
+                }
+                let Some(p) = records.player_mut(id) else { return };
+                p.set_strength(p.strength() - 1);
+                0x48b
+            }
+            1 => {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_hobby(STAMPS);
+                }
+                0x48c
+            }
+            _ => {
+                distract(records, -15);
+                return;
+            }
+        },
+        STAMPS => {
+            if random.below(2) != 0 {
+                distract(records, -15);
+            } else if records.player(id).is_some_and(|p| p.salary() < DEAR_STAMP_SALARY) {
+                distract(records, -10);
+            }
+            return;
+        }
+        FOOTBALL => match random.below(2) {
+            0 => 0x49c,
+            _ if !out => {
+                knock(records, 7);
+                0x49d
+            }
+            _ => return,
+        },
+        GARDEN => match random.below(3) {
+            0 if !out => {
+                injure(records, SPADE);
+                0x4a9
+            }
+            1 if !out => {
+                knock(records, 14);
+                0x4aa
+            }
+            2 if records.player(id).is_some_and(|p| p.shown() & BOOTLICKER != 0) => 0x4ab,
+            _ => return,
+        },
+        BEES => {
+            if let Some(p) = records.player_mut(id) {
+                p.set_hobby(0);
+            }
+            0x4ba
+        }
+        ART => {
+            let by = if random.below(4) == 0 { -5 } else { -5 - random.below(6) as i32 };
+            distract(records, by);
+            return;
+        }
+        TRAVEL if today < TRAVEL_BEFORE => match random.below(3) {
+            0 => {
+                injure(records, MALARIA);
+                0x4c3
+            }
+            k => {
+                send_away(records, id, 7, 4);
+                0x4c3 + k as u16
+            }
+        },
+        SKIING if !out && !(4..=11).contains(&month) => {
+            if planned {
+                return;
+            }
+            if random.below(2) != 0 {
+                injure(records, BROKEN_LEG);
+                0x4c7
+            } else {
+                if i32::from(parts[PRIVATE]) < SKIING_UNDER {
+                    change(records, id, PRIVATE, 3);
+                }
+                return;
+            }
+        }
+        DIVING => {
+            if random.below(2) == 0 {
+                injure(records, JELLYFISH);
+                0x4c8
+            } else {
+                injure(records, NITROGEN);
+                0x4c9
+            }
+        }
+        _ => return,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+}
+
+/// The team's mood moved by `by` within 0 to 200 (`FUN_00698ef6` on the
+/// club's +0x9e, the team's +0xc4), the squad's reasons of mood left as
+/// they stand.
+fn team_mood(records: &mut Records, club: (u16, u16), by: i32) {
+    if let Some(team) = records.team_mut(club.0, club.1) {
+        team.set_mood((i32::from(team.mood()) + by).clamp(0, 200) as u8);
+    }
+}
+
+/// His freshness moved by `by` points (`FUN_005e5f40` on the handle's
+/// +0x18, a hundredth a point), within 0 and 10 000.
+fn tire(records: &mut Records, id: u16, by: i32) {
+    if let Some(p) = records.player_mut(id) {
+        let mut fresh = p.freshness();
+        fresh[0] = (i32::from(fresh[0]) + by * 100).clamp(0, 10_000) as i16;
+        p.set_freshness(fresh);
+    }
 }
 
 /// One man drawn over the club's squad (`FUN_0078a810(+0xe2)` into its
@@ -790,12 +1046,7 @@ fn military(
         1 | 2 | 4 => send_away(records, id, 7, 8),
         3 => {
             crate::training_day::knock_for(records, id, 1, today);
-            if let Some(p) = records.player_mut(id) {
-                // `FUN_005e5f40(-20)` on the handle's freshness (+0x18).
-                let mut fresh = p.freshness();
-                fresh[0] = (i32::from(fresh[0]) - 20 * 100).clamp(0, 10_000) as i16;
-                p.set_freshness(fresh);
-            }
+            tire(records, id, -20);
         }
         5 => crate::training_day::injure(records, id, OBSTACLE_INJURY.0, OBSTACLE_INJURY.1, today),
         6 => send_away(records, id, 3, 5),
@@ -1899,9 +2150,10 @@ pub fn habits(
     true
 }
 
-/// Whether a text is one of categories 18, 50, 51 and 55's.
+/// Whether a text is one of categories 18, 19, 50, 51 and 55's.
 pub fn squad_text(text: u16) -> bool {
     (0x3b8..=0x3cb).contains(&text)
+        || (0x482..=0x4d0).contains(&text)
         || text == 0x3d6
         || text == 0x3d7
         || (0x54c..=0x54f).contains(&text)
@@ -2184,7 +2436,8 @@ mod tests {
         // Without a hobby category 19 goes on, one draw taken.
         let s = seed(&|r| r.below(count) == 3);
         let mut random = Random::new(s);
-        assert!(!about_a_player(&r, club, &mut random));
+        assert!(!about_a_player(&mut r, club, 63, false, &mut posted, &mut random));
+        assert!(posted.is_empty());
         let mut expected = Random::new(s);
         expected.below(count);
         assert!(random == expected);
@@ -2213,7 +2466,92 @@ mod tests {
         let mut expected = Random::new(s);
         expected.below(count);
         assert!(random == expected);
-        assert!(about_a_player(&r, club, &mut Random::new(s)));
+        assert!(about_a_player(&mut r, club, 63, false, &mut Vec::new(), &mut Random::new(s)));
+    }
+
+    /// Category 19 on A's human squad, the drawn man given a hobby: the
+    /// fresh fish lift the team's mood ten, fishing's infection knocks him
+    /// about five days, the garden's spade lays him up for the table's 112
+    /// days — not while he is out already — the bees take his hobby, stocks
+    /// make him a collector of stamps, travel tells only before the third
+    /// day and sends him away a week; art moves his distractions without a
+    /// word. Each tells by his name and ends the day's news.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_mans_hobby_hurts_him_or_moves_his_mood() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let a = load();
+        let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = a.team(club.0, club.1).unwrap().player_count() as u32;
+        let man = a.team(club.0, club.1).unwrap().players()[3];
+        let today = i32::from(a.globals.day());
+        let seed = |n: u32, k: u32| (0..100_000u64).find(|&s| {
+            let mut r = Random::new(s);
+            r.below(count) == 3 && r.below(n) == k
+        }).unwrap();
+        // His day with `hobby` on `day`, the hobby's first draw `k` of `n`.
+        let run = |hobby: u8, day: i32, out: bool, (n, k): (u32, u32)| {
+            let mut r = load();
+            let p = r.player_mut(man).unwrap();
+            p.set_hobby(hobby);
+            p.set_injured_to([0, 0]);
+            if out {
+                crate::training_day::injure(&mut r, man, 1, 10, day);
+            }
+            let mut posted = Vec::new();
+            let mut random = Random::new(seed(n, k));
+            assert!(about_a_player(&mut r, club, day, false, &mut posted, &mut random));
+            (r, posted, random)
+        };
+        let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
+
+        let (r, posted, _) = run(FISHING, today, false, (3, 1));
+        assert_eq!(posted, told(0x483));
+        assert_eq!(i32::from(r.team(club.0, club.1).unwrap().mood()), (i32::from(a.team(club.0, club.1).unwrap().mood()) + 10).min(200));
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let text = crate::event_text::make(&r, &texts, &|id| format!("<{id}>"), &[], &posted[0]).text;
+        assert!(text.contains(&r.known_as(man).unwrap()) && text.contains("Fische"), "{text}");
+
+        let (r, posted, _) = run(FISHING, today, false, (3, 0));
+        assert_eq!(posted, told(0x482));
+        assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), (today + 5) as u16);
+
+        let (r, posted, _) = run(GARDEN, today, false, (3, 0));
+        assert_eq!(posted, told(0x4a9));
+        let p = r.player(man).unwrap();
+        assert_eq!((p.injury_kind(), crate::load::days_to(&r.globals, p.injured_to())), SPADE);
+        let (r, posted, _) = run(GARDEN, today, true, (3, 0));
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().injury_kind(), 1);
+
+        let (r, posted, random) = run(BEES, today, false, (3, 0));
+        assert_eq!(posted, told(0x4ba));
+        assert_eq!(r.player(man).unwrap().hobby(), 0);
+        let mut expected = Random::new(seed(3, 0));
+        expected.below(count);
+        assert!(random == expected, "the man alone drawn");
+
+        let (r, posted, _) = run(STOCKS, today, false, (3, 1));
+        assert_eq!(posted, told(0x48c));
+        assert_eq!(r.player(man).unwrap().hobby(), STAMPS);
+
+        let (_, posted, random) = run(TRAVEL, 5, false, (3, 1));
+        assert!(posted.is_empty());
+        let mut expected = Random::new(seed(3, 1));
+        expected.below(count);
+        assert!(random == expected, "no draw after the third day");
+        let (r, posted, _) = run(TRAVEL, 1, false, (3, 1));
+        assert_eq!(posted, told(0x4c4));
+        assert_eq!(crate::load::days_to(&r.globals, r.player(man).unwrap().away_to()), 7);
+
+        let (r, posted, _) = run(ART, today, false, (4, 0));
+        assert!(posted.is_empty());
+        let before = i32::from(a.player(man).unwrap().contentment()[DISTRACTION]);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), (before - 5).max(0));
     }
 
     /// Category 1 on A's human squad, one married man its only partner:
