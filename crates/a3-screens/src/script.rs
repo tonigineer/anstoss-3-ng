@@ -11963,12 +11963,12 @@ mod tests {
     /// Walking on from A with the generator at 12345/67890, the original
     /// opens its first event window (dialog 51) on day 64, for a youth
     /// player grown out of the day's news (text 861) — the replica's
-    /// draws part before it. With the generator at 12344/68100
+    /// draws part before it. With the generator at 12344/68173
     /// (the court's draw of day 67, the men's own training rolls, the
     /// week end's look at its last day's matches, each matchday's own
     /// two lists, the resting world's rolls, the condition the
     /// competition matches leave and the youth's weeks and the players'
-    /// private lives, moods and the squad's own news move the replica's later ones) its first
+    /// private lives, moods, the squad's own news and the men's hobbies move the replica's later ones) its first
     /// comes from a
     /// training: player event 4, the brawl of text 7, in the same window, its caption "Ereignis", Union's manager and the
     /// club as the original's (the caption bar matched pixel for pixel),
@@ -11984,7 +11984,7 @@ mod tests {
                         on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
                         on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
-        let then = format!("now random 12344 68100\n{handlers}until dialog 51");
+        let then = format!("now random 12344 68173\n{handlers}until dialog 51");
         let Some(runner) = on_save(&game, "A", &then) else { return };
         let dialog = &game.dialogs[&51];
         let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();

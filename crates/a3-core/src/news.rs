@@ -336,7 +336,7 @@ const MIDFIELD: u8 = 3;
 /// The hobbies whose day `FUN_005fd59d` has built here (+0x28d): fishing,
 /// the football manager game, the aquarium, stocks, stamps, books,
 /// computer games, American football, looks, gambling, golf, the garden,
-/// bees, art, travel, skiing and diving.
+/// bees, art, travel, skiing, diving, food, motorbikes and sports cars.
 const FISHING: u8 = 2;
 const GAME: u8 = 3;
 const AQUARIUM: u8 = 4;
@@ -354,6 +354,26 @@ const ART: u8 = 0x18;
 const TRAVEL: u8 = 0x1f;
 const SKIING: u8 = 0x22;
 const DIVING: u8 = 0x23;
+const FOOD: u8 = 0x13;
+const MOTORBIKES: u8 = 0x1c;
+const SPORTS_CARS: u8 = 0x26;
+/// Food tells only of a man whose condition as a list shows it
+/// (`FUN_00457e00`) is under this; the bit of +0x1b4 that makes him
+/// overweight (`FUN_006fff76`); the offence a gluttony earns him
+/// (`FUN_00702d95(1)`).
+const FOOD_UNDER: i32 = 0x3c;
+const OVERWEIGHT: u32 = 0x20;
+const GLUTTONY_OFFENCE: u8 = 1;
+/// Motorbikes and sports cars tell of a man older than this
+/// (`FUN_006ff01b`); the months without his licence a motorbike and a
+/// sports car cost him (+0x28e, `FUN_00702d31`), and what they take off
+/// his contentment with the press.
+const RIDER_OVER: i32 = 0x11;
+const BIKE_BAN: u8 = 2;
+const CAR_BAN: u8 = 1;
+const BIKE_PRESS: i32 = -5;
+const CAR_PRESS: i32 = -3;
+const WIFE_PRESS: i32 = -2;
 /// The days fishing knocks him about (`FUN_00766af9(5)`), what the fresh
 /// fish lift the team's mood by and what a night's game takes off his
 /// freshness.
@@ -368,6 +388,10 @@ const MALARIA: (u8, i32) = (0x52, 42);
 const BROKEN_LEG: (u8, i32) = (0x2a, 42);
 const JELLYFISH: (u8, i32) = (0x5b, 14);
 const NITROGEN: (u8, i32) = (0x5c, 0);
+const STOMACH: (u8, i32) = (0x54, 2);
+const BIKE_FALL: (u8, i32) = (0x5a, 7);
+const BIKE_CRASH: (u8, i32) = (0x31, 21);
+const CAR_CRASH: (u8, i32) = (0x5d, 0);
 /// A data set pleases a man less content with his distractions than this;
 /// stocks break a man younger than this; a dear stamp troubles a salary
 /// under this (the handle's +0x88); travel news comes before this day;
@@ -666,8 +690,22 @@ pub fn about_a_player(
 /// jellyfish (0x4c8) or nitrogen (0x4c9). The changes of his
 /// contentment are told with values (`FUN_00601043`) and not posted
 /// here; the others are told by his name, `%2` empty (`FUN_00600f2f`).
-/// The other hobbies of the original (0x13, 0x1c and 0x20) are not
-/// built: they tell nothing and draw nothing here.
+/// Food, for a man whose condition shows under 60: from 28 December to
+/// 13 January overweight (0x4b4); else one of six — overweight (0x4b2,
+/// 0x4b6, 0x4b7), slim again (0x4b3), overweight with an offence of
+/// level 1 and the manager asked over a fine (0x4b8, `FUN_005f29bc`'s
+/// question, not built: nothing posted), or a stomach upset, two days
+/// (0x4b9). Motorbikes, for a man over 17, one of six: a fall (0x4bf) or
+/// a crash (0x4c0), out the kind's days; or, while he has his licence,
+/// two months without it and five less content with the press (0x4c1,
+/// told with values; headline 0x4c2). Sports cars, one of six: while he
+/// has his licence and is not out, a crash (0x4cb); for a married man
+/// two less content with the press (0x4cc, 0x4ce, told with values;
+/// headlines 0x4cd, 0x4cf); for one over 17 with his licence and not
+/// out, a month without it and three less (0x4d0; headline 0x4d2); else
+/// at most a headline (0x4d3), nothing taken.
+/// The other hobby of the original (0x20) is not built: it tells
+/// nothing and draws nothing here.
 #[allow(clippy::too_many_arguments)]
 fn hobby_day(
     records: &mut Records,
@@ -891,6 +929,97 @@ fn hobby_day(
             } else {
                 injure(records, NITROGEN);
                 0x4c9
+            }
+        }
+        FOOD => {
+            let shown = i32::from(p.condition()) / 100;
+            let shown = if p.shown() & SMOKES == 0 { shown } else if shown < 5 { 0 } else { shown - 5 };
+            if shown >= FOOD_UNDER {
+                return;
+            }
+            let [day, month, _] = records.globals.date().map(|w| w as i16);
+            let christmas = (month == 12 && day >= 28) || (month == 1 && day <= 13);
+            let fat = |records: &mut Records, on: bool| {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_shown(if on { p.shown() | OVERWEIGHT } else { p.shown() & !OVERWEIGHT });
+                }
+            };
+            if christmas {
+                fat(records, true);
+                0x4b4
+            } else {
+                match random.below(6) {
+                    0 => {
+                        fat(records, true);
+                        0x4b2
+                    }
+                    1 => {
+                        fat(records, false);
+                        0x4b3
+                    }
+                    k @ (2 | 3) => {
+                        fat(records, true);
+                        0x4b4 + k as u16
+                    }
+                    4 => {
+                        fat(records, true);
+                        if let Some(p) = records.player_mut(id) {
+                            crate::discipline::note_offence(p, GLUTTONY_OFFENCE);
+                        }
+                        return;
+                    }
+                    _ => {
+                        injure(records, STOMACH);
+                        0x4b9
+                    }
+                }
+            }
+        }
+        MOTORBIKES => {
+            let age = years_since(records, (p.birth_day(), p.birth_month(), p.birth_year() as i16));
+            let licensed = p.get::<u8>(NO_LICENCE) == 0;
+            if age <= RIDER_OVER {
+                return;
+            }
+            match random.below(6) {
+                0 => {
+                    injure(records, BIKE_FALL);
+                    0x4bf
+                }
+                1 => {
+                    injure(records, BIKE_CRASH);
+                    0x4c0
+                }
+                2 if licensed => {
+                    if let Some(p) = records.player_mut(id) {
+                        p.put::<u8>(NO_LICENCE, BIKE_BAN);
+                    }
+                    change(records, id, PRESS, BIKE_PRESS);
+                    return;
+                }
+                _ => return,
+            }
+        }
+        SPORTS_CARS => {
+            let age = years_since(records, (p.birth_day(), p.birth_month(), p.birth_year() as i16));
+            let licensed = p.get::<u8>(NO_LICENCE) == 0;
+            match random.below(6) {
+                0 if licensed && !out => {
+                    injure(records, CAR_CRASH);
+                    0x4cb
+                }
+                1 | 2 if married => {
+                    change(records, id, PRESS, WIFE_PRESS);
+                    return;
+                }
+                3 if licensed && age > RIDER_OVER && !out => {
+                    if let Some(p) = records.player_mut(id) {
+                        p.put::<u8>(NO_LICENCE, CAR_BAN);
+                    }
+                    change(records, id, PRESS, CAR_PRESS);
+                    return;
+                }
+                _ => return,
             }
         }
         _ => return,
@@ -2848,6 +2977,148 @@ mod tests {
         let mut expected = Random::new(seed(&[]));
         expected.below(count);
         assert!(random == expected, "golf draws nothing");
+    }
+
+    /// Category 19 on A's human squad, the drawn man given food, a
+    /// motorbike or a sports car: food tells only of a man in poor
+    /// condition, makes him overweight or slim, at Christmas without a
+    /// draw; a gluttony notes an offence and posts nothing. The motorbike
+    /// lays a man over 17 up for the table's days or takes his licence two
+    /// months; the sports car crashes only a licensed man not out, takes a
+    /// married man's press two, and a licence a month.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_mans_hobby_of_food_and_wheels() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let a = load();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = a.team(club.0, club.1).unwrap().player_count() as u32;
+        let man = a.team(club.0, club.1).unwrap().players()[3];
+        let today = i32::from(a.globals.day());
+        let [_, _, year] = a.globals.date();
+        let seed = |draws: &[(u32, u32)]| {
+            (0..1_000_000u64)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(count) == 3 && draws.iter().all(|&(n, k)| r.below(n) == k)
+                })
+                .unwrap()
+        };
+        let run = |r: &mut Records, hobby: u8, draws: &[(u32, u32)]| {
+            r.player_mut(man).unwrap().set_hobby(hobby);
+            let mut posted = Vec::new();
+            let mut random = Random::new(seed(draws));
+            assert!(about_a_player(r, club, today, false, &league, &mut posted, &mut random));
+            (posted, random)
+        };
+        let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
+        let shown = |r: &Records| r.player(man).unwrap().shown();
+        let set = |r: &mut Records, condition: i16, smokes: bool, date: [u16; 3]| {
+            let p = r.player_mut(man).unwrap();
+            p.set_condition(condition);
+            p.set_shown(if smokes { p.shown() | SMOKES } else { p.shown() & !SMOKES } & !OVERWEIGHT);
+            p.set_injured_to([0, 0]);
+            r.globals.set_date(date);
+        };
+
+        // Food: a fit man tells nothing; a smoker's condition counts five less.
+        let mut r = load();
+        set(&mut r, 6_000, false, [15, 10, year]);
+        let (posted, random) = run(&mut r, FOOD, &[(6, 0)]);
+        assert!(posted.is_empty());
+        let mut expected = Random::new(seed(&[(6, 0)]));
+        expected.below(count);
+        assert!(random == expected, "no draw for a fit man");
+        set(&mut r, 6_400, true, [15, 10, year]);
+        assert_eq!(run(&mut r, FOOD, &[(6, 0)]).0, told(0x4b2));
+        assert_ne!(shown(&r) & OVERWEIGHT, 0);
+        assert_eq!(run(&mut r, FOOD, &[(6, 1)]).0, told(0x4b3));
+        assert_eq!(shown(&r) & OVERWEIGHT, 0);
+        assert_eq!(run(&mut r, FOOD, &[(6, 3)]).0, told(0x4b7));
+        // Christmas: overweight without a draw.
+        for date in [[28, 12, year], [13, 1, year]] {
+            set(&mut r, 5_000, false, date);
+            let (posted, random) = run(&mut r, FOOD, &[(6, 1)]);
+            assert_eq!(posted, told(0x4b4));
+            assert_ne!(shown(&r) & OVERWEIGHT, 0);
+            let mut expected = Random::new(seed(&[(6, 1)]));
+            expected.below(count);
+            assert!(random == expected, "no draw at Christmas");
+        }
+        set(&mut r, 5_000, false, [14, 1, year]);
+        assert_eq!(run(&mut r, FOOD, &[(6, 1)]).0, told(0x4b3));
+        // A gluttony: an offence of level 1, nothing posted.
+        let mut r = load();
+        set(&mut r, 5_000, false, [15, 10, year]);
+        let counted = (a.player(man).unwrap().offence_counts() & 3).saturating_add(1).min(3);
+        assert!(run(&mut r, FOOD, &[(6, 4)]).0.is_empty());
+        assert_ne!(shown(&r) & OVERWEIGHT, 0);
+        assert_eq!(r.player(man).unwrap().offence_counts() & 3, counted);
+        assert_eq!(run(&mut r, FOOD, &[(6, 5)]).0, told(0x4b9));
+        let p = r.player(man).unwrap();
+        assert_eq!((p.injury_kind(), crate::load::days_to(&r.globals, p.injured_to())), STOMACH);
+
+        // Motorbikes: nothing for a man of 17, else the table's days.
+        let mut r = load();
+        let age = |r: &mut Records, years: u16| {
+            let p = r.player_mut(man).unwrap();
+            p.set_birth_year(year - years - 1);
+            p.set_birth_day(31);
+            p.set_birth_month(12);
+            p.put::<u8>(NO_LICENCE, 0);
+            p.set_injured_to([0, 0]);
+        };
+        age(&mut r, 17);
+        assert!(run(&mut r, MOTORBIKES, &[(6, 0)]).0.is_empty());
+        age(&mut r, 18);
+        assert_eq!(run(&mut r, MOTORBIKES, &[(6, 1)]).0, told(0x4c0));
+        let p = r.player(man).unwrap();
+        assert_eq!((p.injury_kind(), crate::load::days_to(&r.globals, p.injured_to())), BIKE_CRASH);
+        age(&mut r, 18);
+        assert_eq!(run(&mut r, MOTORBIKES, &[(6, 0)]).0, told(0x4bf));
+        // The licence: two months gone, the press five less; once only.
+        age(&mut r, 18);
+        let press = i32::from(r.player(man).unwrap().contentment()[PRESS]);
+        assert!(run(&mut r, MOTORBIKES, &[(6, 2)]).0.is_empty());
+        assert_eq!(r.player(man).unwrap().get::<u8>(NO_LICENCE), BIKE_BAN);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[PRESS]), (press - 5).max(0));
+        let press = r.player(man).unwrap().contentment()[PRESS];
+        assert!(run(&mut r, MOTORBIKES, &[(6, 2)]).0.is_empty());
+        assert_eq!(r.player(man).unwrap().contentment()[PRESS], press);
+
+        // Sports cars: a crash for a licensed man not out.
+        assert!(run(&mut r, SPORTS_CARS, &[(6, 0)]).0.is_empty());
+        age(&mut r, 18);
+        crate::training_day::injure(&mut r, man, 1, 10, today);
+        assert!(run(&mut r, SPORTS_CARS, &[(6, 0)]).0.is_empty());
+        age(&mut r, 18);
+        assert_eq!(run(&mut r, SPORTS_CARS, &[(6, 0)]).0, told(0x4cb));
+        assert_eq!(r.player(man).unwrap().injury_kind(), CAR_CRASH.0);
+        // A licence a month and three less; a wife two less.
+        age(&mut r, 18);
+        let press = i32::from(r.player(man).unwrap().contentment()[PRESS]);
+        assert!(run(&mut r, SPORTS_CARS, &[(6, 3)]).0.is_empty());
+        assert_eq!(r.player(man).unwrap().get::<u8>(NO_LICENCE), CAR_BAN);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[PRESS]), (press - 3).max(0));
+        let p = r.player_mut(man).unwrap();
+        p.set_partner(p.partner() & !3);
+        let press = r.player(man).unwrap().contentment()[PRESS];
+        assert!(run(&mut r, SPORTS_CARS, &[(6, 1)]).0.is_empty());
+        assert_eq!(r.player(man).unwrap().contentment()[PRESS], press);
+        let p = r.player_mut(man).unwrap();
+        p.set_partner(p.partner() & !3 | WIFE);
+        assert!(run(&mut r, SPORTS_CARS, &[(6, 2)]).0.is_empty());
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[PRESS]), (i32::from(press) - 2).max(0));
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        for text in [0x4b2, 0x4b3, 0x4b4, 0x4b6, 0x4b7, 0x4b9, 0x4bf, 0x4c0, 0x4cb] {
+            let event = crate::event_text::make(&r, &texts, &|id| format!("<{id}>"), &[], &told(text)[0]).text;
+            assert!(event.contains(&r.known_as(man).unwrap()), "{text:#x}: {event}");
+        }
     }
 
     /// Category 1 on A's human squad, one married man its only partner:
