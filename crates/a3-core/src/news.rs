@@ -11,12 +11,15 @@
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
 //! +0x8a and +0x8b; and the handlers of the other categories but the
-//! first — nearest category 18 (`FUN_005fd4ae`), which rolls over the
+//! first six — nearest category 18 (`FUN_005fd4ae`), which rolls over the
 //! club's squad as 19 does and then picks one more weighted table when
 //! the talked-about player has no news flag yet.
 //!
-//! Category 1, a player's children ([`children`]), and category 2, a
-//! player's military or civil service ([`service`]), are here.
+//! Category 1, a player's children ([`children`]), category 2, a
+//! player's military or civil service ([`service`]), and categories 3 to
+//! 6, a single man's days ([`single`]), a girlfriend's
+//! ([`with_girlfriend`]), a married man's ([`married`]) and his wife's
+//! suspicion ([`suspicion`]), are here.
 
 use std::ops::RangeInclusive;
 
@@ -94,6 +97,65 @@ const STAR_AIRS: u16 = 0x800;
 /// The state of a girlfriend (bits 2 to 4 of +0x27e, `FUN_00702c12`)
 /// that leaves him free for a nurse.
 const PARTING_STATE: u8 = 3;
+
+/// The parts of his contentment the news of his private life moves:
+/// his private life (+0x293, `FUN_007010d9`) and his distractions
+/// (+0x294, `FUN_00701210`).
+const PRIVATE: usize = 4;
+const DISTRACTION: usize = 5;
+/// Heartsore, bit 0x10 of +0x1b4 (`FUN_006ffdfa`): no single man's news
+/// and no partner to take; healed once more pleased with his private
+/// life than this.
+const HEARTSORE: u32 = 0x10;
+const HEALED: i32 = 0x59;
+/// The happenings of a single man, a girlfriend's man, a married man and
+/// a suspecting wife, pairs of weight and number (`FUN_0060be4d` over
+/// `DAT_00a32634`, `DAT_00a32628`, `DAT_00a3261c` and `DAT_00a32610`,
+/// registered by `FUN_005fa6b6`, `FUN_005faa5e`, `FUN_005fb24c` and
+/// `FUN_005fb739` from `DAT_0088e70c`, `DAT_0088e71c` — twelve of
+/// weight 1 — `DAT_0088e74c` and `DAT_0088e778`).
+const SINGLE_HAPPENINGS: [(u32, u16); 4] = [(5, 1), (5, 2), (1, 3), (5, 4)];
+const GIRLFRIEND_HAPPENINGS: u32 = 12;
+const MARRIED_HAPPENINGS: [(u32, u16); 11] =
+    [(3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6), (3, 7), (3, 8), (3, 9), (1, 10), (1, 11)];
+const SUSPICION_HAPPENINGS: [(u32, u16); 4] = [(3, 1), (3, 2), (1, 3), (3, 4)];
+/// The happenings stand among the recent events as their number plus
+/// these.
+const SINGLE_KEY: i32 = 24_000;
+const GIRLFRIEND_KEY: i32 = 22_000;
+const MARRIED_KEY: i32 = 0x6b6c;
+/// A grandmother's trolley: an injury of kind 4 (no knock), a week out
+/// (`FUN_00766b92`).
+const TROLLEY_INJURY: (u8, i32) = (4, 7);
+/// His flat lies over a disco (bit 0x100 of +0x1b4, `FUN_006ffe7d`).
+const DISCO_FLAT: u32 = 0x100;
+/// His ex: her first name (+0x285), row (+0x287) and birthday (+0x18c);
+/// his partner's birthday (+0x188); the date they came together (+0x16c,
+/// day, month, year); the byte of their engagement (+0x170,
+/// `FUN_00702a9b`).
+const EX_NAME: usize = 0x285;
+const EX_ROW: usize = 0x287;
+const EX_BIRTHDAY: usize = 0x18c;
+const PARTNER_BIRTHDAY: usize = 0x188;
+const TOGETHER_SINCE: usize = 0x16c;
+const ENGAGED: usize = 0x170;
+/// Within this many days of their start his ex still matters.
+const YEAR_DAYS: i32 = 0x16d;
+/// A team-mate takes his girlfriend while he is less pleased with his
+/// private life than this.
+const LEAVES_PRIVATE: i32 = 0x5f;
+/// Bit 0x2000000 of +0x1b4 (`FUN_007028d7`), cleared when he parts, keeps
+/// him from going back to his ex.
+const BACK_GATE: u32 = 0x200_0000;
+/// His mother-in-law lives with him (bit 0x80000 of +0x1b4,
+/// `FUN_00700413`).
+const MOTHER_IN_LAW: u32 = 0x8_0000;
+/// An affair (bit 4 of +0x1b4, `FUN_00702a5b`), found out (bit 8,
+/// `FUN_00702a02`).
+const AFFAIR: u32 = 4;
+const SUSPECTED: u32 = 8;
+/// The date (`DAT_00b5cbda`, day and month) of no present.
+const CHRISTMAS_EVE: (u16, u16) = (24, 12);
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -502,6 +564,562 @@ fn send_away(records: &mut Records, id: u16, days: i32, reason: u8) {
     p.set_away_kind(p.away_kind() & 0xf0 | reason);
 }
 
+/// The picked category 3 (`case 3` with `FUN_005fa890`): the club's own
+/// real players with no partner go into one list (0x23 at most) unless
+/// heartsore (+0x1b4 bit 0x10, `FUN_006ffdfa`) — and a heartsore man
+/// pleased enough with his private life (past 0x59) is healed of it
+/// on the way (`FUN_006ffe1a(0)`). One of the list is drawn and meets
+/// his happening ([`single_day`]). Whether the news took place — with no
+/// one in the list it did not.
+pub fn single(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let mut free = Vec::new();
+    for &id in &squad {
+        if id > LAST_REAL_ID {
+            continue;
+        }
+        let Some(p) = records.player_mut(id) else { continue };
+        if p.partner() & 3 != 0 {
+            continue;
+        }
+        if p.shown() & HEARTSORE == 0 {
+            if free.len() < PICKS_MOST {
+                free.push(id);
+            }
+        } else if i32::from(p.contentment()[PRIVATE]) > HEALED {
+            p.set_shown(p.shown() & !HEARTSORE);
+        }
+    }
+    if free.is_empty() {
+        return false;
+    }
+    let id = free[random.below(free.len() as u32) as usize];
+    single_day(records, club, id, today, recent, tables, posted, random)
+}
+
+/// A single man's day (`FUN_005fa6ce`, "EreignisSolo"): one of four
+/// happenings weighed 5, 5, 1, 5, and one met lately not met again
+/// (24000 and its number). He falls in love — a new girlfriend, five
+/// less content with his distractions, told with values beside the text
+/// (0x44b, `FUN_00601043`), which the replica does not post; a new
+/// girlfriend who wears him out, five points of freshness and two of
+/// condition gone (0x44c); a grandmother's trolley in his heels, out a
+/// week with an injury of kind 4, unless out already (0x44d); or, for a
+/// man whose flat lies over a disco (+0x1b4 bit 0x100, `FUN_006ffe7d`),
+/// five points of freshness gone (0x44e).
+fn single_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    today: i32,
+    recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let happening = weighed(&SINGLE_HAPPENINGS, random);
+    if !meet(recent, SINGLE_KEY + i32::from(happening)) {
+        return true;
+    }
+    let Some(p) = records.player(id) else { return true };
+    let country = p.club()[0];
+    let (text, fill) = match happening {
+        1 => {
+            crate::first_season::new_partner(records, tables, country, id, random);
+            change(records, id, DISTRACTION, -5);
+            return true;
+        }
+        2 => {
+            crate::first_season::new_partner(records, tables, country, id, random);
+            if let Some(p) = records.player_mut(id) {
+                // `FUN_005e5f40(-5)` and `FUN_00411130(-2)` on the handle's
+                // freshness (+0x18) and condition (+0x16).
+                let mut fresh = p.freshness();
+                fresh[0] = (i32::from(fresh[0]) - 5 * 100).clamp(0, 10_000) as i16;
+                p.set_freshness(fresh);
+                p.set_condition((i32::from(p.condition()) - 2 * 100).clamp(0, 10_000) as i16);
+            }
+            (0x44c, Fill::Partnered(id))
+        }
+        3 => {
+            if crate::load::days_to(&records.globals, p.injured_to()) != 0 {
+                return true;
+            }
+            crate::training_day::injure(records, id, TROLLEY_INJURY.0, TROLLEY_INJURY.1, today);
+            (0x44d, Fill::Partnered(id))
+        }
+        _ => {
+            if p.shown() & DISCO_FLAT == 0 {
+                return true;
+            }
+            if let Some(p) = records.player_mut(id) {
+                let mut fresh = p.freshness();
+                fresh[0] = (i32::from(fresh[0]) - 5 * 100).clamp(0, 10_000) as i16;
+                p.set_freshness(fresh);
+            }
+            (0x44e, Fill::NumberedOne(id))
+        }
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill });
+    true
+}
+
+/// The picked category 4 (`case 4` with `FUN_005fb17a`): one of the
+/// club's own real players with a girlfriend is drawn (0x23 at most in
+/// the list) and meets his happening ([`girlfriend_day`]); with none the
+/// news did not take place.
+pub fn with_girlfriend(
+    records: &mut Records,
+    club: (u16, u16),
+    recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let men: Vec<u16> = squad
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID && records.player(id).is_some_and(|p| p.partner() & 3 == GIRLFRIEND))
+        .take(PICKS_MOST)
+        .collect();
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    girlfriend_day(records, club, id, recent, tables, posted, random)
+}
+
+/// A day with his girlfriend (`FUN_005faa76`, "EreignisHatFreundin"): one
+/// of twelve happenings alike, one met lately not met again (22000 and
+/// its number), most only while the two stand calm (state 0 of
+/// `FUN_00702c12`). Rows, a mocked compliment, a refused proposal, one
+/// before the whole stadium, her pressing to marry, her visit home: less
+/// pleased with his private life by 5 and a draw of 6 (1 and 3), 10 and
+/// of 10, 6 and of 8, 15 and of 5, or 5 — told with values (0x44f to
+/// 0x454, 0x45a), not posted. A team-mate takes her: one of the squad's
+/// free men drawn first (`FUN_005fa981`), then, while he is less pleased
+/// with his private life than 0x5f and no child is coming, she goes to
+/// the mate (`FUN_00702668`), both three more pleased (0x450). Calling
+/// her by his ex's name within a year of their start (0x455): back with
+/// the ex (`FUN_00702762`), unless bit 0x2000000 of +0x1b4 stands; the
+/// ex calling him (0x456). A man not engaged (+0x170) and with no
+/// children: a new girlfriend from the disco (0x457); she leaves him,
+/// 15 less (0x458, not posted); or she leaves him for a free team-mate,
+/// the two each other's rival (`FUN_00703ce5`), 15 less (0x459, not
+/// posted).
+fn girlfriend_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let happening = random.below(GIRLFRIEND_HAPPENINGS) as u16 + 1;
+    if !meet(recent, GIRLFRIEND_KEY + i32::from(happening)) {
+        return true;
+    }
+    let Some(p) = records.player(id) else { return true };
+    let has_girlfriend = p.partner() & 3 == GIRLFRIEND;
+    let calm = state(p) == 0;
+    let private = i32::from(p.contentment()[PRIVATE]);
+    let expecting = p.shown() & EXPECTING != 0;
+    let fresh_start = days_together(records, id) < YEAR_DAYS && p.get::<u8>(EX_NAME) != 0;
+    let unbound = p.get::<u8>(ENGAGED) == 0 && p.children() == 0 && calm;
+    let country = p.club()[0];
+    let text = match happening {
+        1 | 3 | 4 | 5 | 6 => {
+            if has_girlfriend && calm {
+                let (less, spread) = match happening {
+                    1 | 3 => (5, 6),
+                    4 => (10, 10),
+                    5 => (6, 8),
+                    _ => (15, 5),
+                };
+                let by = -less - random.below(spread) as i32;
+                change(records, id, PRIVATE, by);
+            }
+            return true;
+        }
+        2 => {
+            let Some(mate) = free_mate(records, club, random) else { return true };
+            if has_girlfriend && private < LEAVES_PRIVATE && calm && !expecting {
+                crate::first_season::part(records, mate);
+                take_partner(records, mate, id);
+                crate::first_season::part(records, id);
+                change(records, mate, PRIVATE, 3);
+                change(records, id, PRIVATE, 3);
+            }
+            return true;
+        }
+        7 => {
+            if !has_girlfriend || !fresh_start || !calm || p.shown() & BACK_GATE != 0 {
+                return true;
+            }
+            back_to_ex(records, id);
+            0x455
+        }
+        8 => {
+            if !has_girlfriend || !fresh_start || !calm {
+                return true;
+            }
+            0x456
+        }
+        9 => {
+            if !unbound {
+                return true;
+            }
+            crate::first_season::new_partner(records, tables, country, id, random);
+            0x457
+        }
+        10 => {
+            if unbound {
+                crate::first_season::part(records, id);
+                change(records, id, PRIVATE, -15);
+            }
+            return true;
+        }
+        11 => {
+            if !unbound || expecting {
+                return true;
+            }
+            let Some(mate) = free_mate(records, club, random) else { return true };
+            crate::first_season::part(records, mate);
+            take_partner(records, mate, id);
+            crate::first_season::part(records, id);
+            rivals(records, id, mate);
+            change(records, id, PRIVATE, -15);
+            return true;
+        }
+        _ => {
+            if calm {
+                change(records, id, PRIVATE, -5);
+            }
+            return true;
+        }
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::PartnerAndEx(id) });
+    true
+}
+
+/// The picked category 5 (`case 5` with `FUN_005fb634`): nothing while
+/// the club stands in a camp of its trainer's calendar (`FUN_005eab71`,
+/// yet the news took place); else one of the club's own real players
+/// married and with an affair (+0x284, `FUN_006ffbe3`) is drawn (0x23 at
+/// most in the list) and meets his happening ([`married_day`]); with none
+/// the news did not take place.
+pub fn married(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let camp = usize::from(team.humans()[0])
+        .checked_sub(1)
+        .and_then(|trainer| records.calendars.get(trainer))
+        .zip(usize::try_from(today).ok())
+        .is_some_and(|(calendar, d)| d < crate::year::CAMP_DAYS && crate::year::in_camp(calendar, d));
+    if camp {
+        return true;
+    }
+    let men: Vec<u16> = team
+        .players()
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID)
+        .filter(|&id| records.player(id).is_some_and(|p| p.partner() & 3 == WIFE && p.affair_name() != 0))
+        .take(PICKS_MOST)
+        .collect();
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    married_day(records, club, id, recent, posted, random)
+}
+
+/// A married man's day (`FUN_005fb264`, "EreignisSpielerIstVerheiratet"):
+/// one of eleven happenings weighed 3 nine times and 1 twice, one met
+/// lately not met again (27500 and its number); 4 to 7 have nothing.
+/// His wife gone with their child to a new man, for a man of strength 1
+/// (the handle's +0x2, the record's +0x21c) with one child: 40 and a
+/// draw of 11 less pleased with his private life (0x45b); his
+/// mother-in-law moving out, three more content with his distractions,
+/// or in, five less (+0x1b4 bit 0x80000; 0x45c, 0x45d); his wife's hair
+/// unseen, five less (0x462) — told with values, not posted. Talking of
+/// his affair in his sleep, calm with his wife, the affair found out
+/// (bits 4 off, 8 on, `FUN_00702a02`; 0x463). His wife caught robbing
+/// a bank: five less content with his distractions and his private life
+/// — the headline (0x465, `FUN_00789c32`) and the window (0x464,
+/// `FUN_006015fe`) are not posted. Christmas Eve with no present, four
+/// less (0x7be, not posted), and then the news did not take place.
+fn married_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let happening = weighed(&MARRIED_HAPPENINGS, random);
+    if !meet(recent, MARRIED_KEY + i32::from(happening)) {
+        return true;
+    }
+    let Some(p) = records.player(id) else { return true };
+    let shown = p.shown();
+    match happening {
+        1 => {
+            if p.strength() == 1 && p.partner() & 3 == WIFE && p.children() == 1 {
+                let by = -40 - random.below(11) as i32;
+                change(records, id, PRIVATE, by);
+            }
+        }
+        2 | 3 => {
+            let moves_in = happening == 3;
+            if (shown & MOTHER_IN_LAW == 0) == moves_in {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_shown(if moves_in { shown | MOTHER_IN_LAW } else { shown & !MOTHER_IN_LAW });
+                }
+                change(records, id, DISTRACTION, if moves_in { -5 } else { 3 });
+            }
+        }
+        8 => change(records, id, PRIVATE, -5),
+        9 => {
+            if p.affair_name() != 0 && state(p) == 0 {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_shown(shown & !AFFAIR | SUSPECTED);
+                }
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x463, fill: Fill::AffairAndWife(id) });
+            }
+        }
+        10 => {
+            change(records, id, DISTRACTION, -5);
+            change(records, id, PRIVATE, -5);
+        }
+        11 => {
+            let [day, month, _] = records.globals.date();
+            if (day, month) != CHRISTMAS_EVE {
+                return true;
+            }
+            change(records, id, PRIVATE, -4);
+            return false;
+        }
+        _ => {}
+    }
+    true
+}
+
+/// The picked category 6 (`case 6` with `FUN_005fb916`): one of the
+/// club's own real players married and in an affair (+0x1b4 bit 4,
+/// `FUN_00702a5b`) is drawn (0x23 at most in the list) and his wife
+/// grows suspicious ([`suspicion_day`]); with none the news did not take
+/// place.
+pub fn suspicion(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let men: Vec<u16> = squad
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID)
+        .filter(|&id| records.player(id).is_some_and(|p| p.partner() & 3 == WIFE && p.shown() & AFFAIR != 0))
+        .take(PICKS_MOST)
+        .collect();
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    suspicion_day(records, club, id, posted, random);
+    true
+}
+
+/// His wife suspects (`FUN_005fb751`, "EreignisFrauSchoepftVerdacht"): one
+/// of four happenings weighed 3, 3, 1, 3, kept among no recent events,
+/// none while the two do not stand calm. She catches him spying: the
+/// affair over (+0x284 cleared, bits 4 and 8 off, `FUN_00702962`), five
+/// less pleased with his private life (0x466); a detective's photos:
+/// their state 1 (`FUN_00702c39`), twenty less (0x467) — both told with
+/// values, not posted. His flowers and a photo in his purse (0x468); his
+/// card evenings (0x4d4), the affair found out (`FUN_00702a02`).
+fn suspicion_day(records: &mut Records, club: (u16, u16), id: u16, posted: &mut Vec<Posted>, random: &mut Random) {
+    let happening = weighed(&SUSPICION_HAPPENINGS, random);
+    let Some(p) = records.player_mut(id) else { return };
+    if state(p) != 0 {
+        return;
+    }
+    let text = match happening {
+        1 => {
+            p.set_affair_name(0);
+            p.set_shown(p.shown() & !(AFFAIR | SUSPECTED));
+            change(records, id, PRIVATE, -5);
+            return;
+        }
+        2 => {
+            p.set_partner(p.partner() & 0xe3 | 1 << 2);
+            change(records, id, PRIVATE, -20);
+            return;
+        }
+        3 => 0x468,
+        _ => {
+            p.set_shown(p.shown() & !AFFAIR | SUSPECTED);
+            0x4d4
+        }
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Partnered(id) });
+}
+
+/// Whether a text is one of categories 3 to 6's.
+pub fn partner_text(text: u16) -> bool {
+    (0x44b..=0x468).contains(&text) || text == 0x4d4 || text == 0x7be
+}
+
+/// One draw over a weighed table (`FUN_0060be4d` registered with no cap
+/// beyond the weights): the first entry heavier than what the roll left.
+fn weighed(table: &[(u32, u16)], random: &mut Random) -> u16 {
+    let mut rest = random.below(table.iter().map(|&(weight, _)| weight).sum());
+    for &(weight, code) in table {
+        if weight > rest {
+            return code;
+        }
+        rest -= weight;
+    }
+    0
+}
+
+/// How he and his partner stand (bits 2 to 4 of +0x27e, `FUN_00702c12`).
+fn state(p: &crate::records::Player) -> u8 {
+    p.partner() >> 2 & 7
+}
+
+/// One part of his contentment moved, his morale with it.
+fn change(records: &mut Records, id: u16, part: usize, by: i32) {
+    if let Some(p) = records.player_mut(id) {
+        crate::mood::change(p, part, by);
+    }
+}
+
+/// Days since he and his partner came together (`FUN_006ffc0a`): today's
+/// day number less that of the date at +0x16c (day, month, year).
+fn days_together(records: &Records, id: u16) -> i32 {
+    let Some(p) = records.player(id) else { return 0 };
+    let [day, month, year] = records.globals.date().map(|w| i32::from(w as i16));
+    let since = (i32::from(p.get::<u8>(TOGETHER_SINCE)), i32::from(p.get::<u8>(TOGETHER_SINCE + 1)), i32::from(p.get::<i16>(TOGETHER_SINCE + 2)));
+    crate::goodbye::day_number(day, month, year) - crate::goodbye::day_number(since.0, since.1, since.2)
+}
+
+/// A free team-mate (`FUN_005fa981`): the club's own real players with
+/// no partner who are not heartsore, 0x23 at most, one drawn.
+fn free_mate(records: &Records, club: (u16, u16), random: &mut Random) -> Option<u16> {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let free: Vec<u16> = squad
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID)
+        .filter(|&id| records.player(id).is_some_and(|p| p.partner() & 3 == 0 && p.shown() & HEARTSORE == 0))
+        .take(PICKS_MOST)
+        .collect();
+    (!free.is_empty()).then(|| free[random.below(free.len() as u32) as usize])
+}
+
+/// `to` takes the partner of `from` (`FUN_00702668`): her first name and
+/// row, the children's names, days of birth and count — not her
+/// birthday — no longer engaged, she his girlfriend, the two calm. The
+/// private lives' list (`FUN_004377b7`) is left out.
+fn take_partner(records: &mut Records, to: u16, from: u16) {
+    let Some(f) = records.player(from) else { return };
+    let (name, row, names, children) = (f.partner_name(), f.names_nation(), f.children_names(), f.children());
+    let dates: Vec<u32> = (0..5).map(|k| f.get::<u32>(BIRTH_DATES + 4 * k)).collect();
+    let Some(p) = records.player_mut(to) else { return };
+    p.set_partner_name(name);
+    p.set_names_nation(row);
+    p.set_children_names(names);
+    for (k, date) in dates.into_iter().enumerate() {
+        p.put::<u32>(BIRTH_DATES + 4 * k, date);
+    }
+    p.set_children(children);
+    p.put::<u8>(ENGAGED, 0);
+    p.set_partner(p.partner() & 0xe0 | GIRLFRIEND);
+}
+
+/// Back with his ex (`FUN_00702762`): he parts from his partner, who
+/// becomes his ex, and the ex before takes the partner's first name,
+/// row and birthday — the kind of partner stays none, as the original
+/// leaves it.
+fn back_to_ex(records: &mut Records, id: u16) {
+    let Some(p) = records.player(id) else { return };
+    let (name, row, birthday) = (p.get::<u8>(EX_NAME), p.get::<u8>(EX_ROW), p.get::<u32>(EX_BIRTHDAY));
+    crate::first_season::part(records, id);
+    let Some(p) = records.player_mut(id) else { return };
+    p.set_partner_name(name);
+    p.set_names_nation(row);
+    p.put::<u32>(PARTNER_BIRTHDAY, birthday);
+    p.put::<u8>(ENGAGED, 0);
+}
+
+/// The two become rivals (`FUN_00703ce5` on `one` with `other`): each
+/// lets go of the man he hated and that man of his in turn
+/// (`FUN_00703b1a`); a best friendship of `one` with `other` undone, the
+/// chain of best friends behind with it (`FUN_00703a80`, `FUN_00703a0c`);
+/// each off the other's friends (`FUN_00703854`) and dislikes
+/// (`FUN_00703930`, its slip zeroing the third friend); then each hates
+/// the other.
+fn rivals(records: &mut Records, one: u16, other: u16) {
+    for who in [one, other] {
+        let mut at = who;
+        while let Some(p) = records.player_mut(at).filter(|p| p.hates() != 0) {
+            at = p.hates();
+            p.set_hates(0);
+        }
+    }
+    if records.player(one).is_some_and(|p| p.best_friend() == other) {
+        if let Some(p) = records.player_mut(one) {
+            p.set_best_friend(0);
+        }
+        let mut at = other;
+        while let Some(p) = records.player_mut(at).filter(|p| p.best_friend() != 0) {
+            at = p.best_friend();
+            p.set_best_friend(0);
+        }
+    }
+    // Each call goes on to the other's list only when it found him, so
+    // the two take turns; a dislike in the third place stays after the
+    // shift and would send the original round for good — a few rounds
+    // stand for it here.
+    let (mut who, mut whom) = (one, other);
+    while let Some(p) = records.player_mut(who) {
+        let mut friends = p.friends();
+        let Some(at) = friends.iter().take_while(|&&f| f != 0).position(|&f| f == whom) else { break };
+        friends.copy_within(at + 1.., at);
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+    let (mut who, mut whom) = (one, other);
+    for _ in 0..4 {
+        let Some(p) = records.player_mut(who) else { break };
+        let mut dislikes = p.dislikes();
+        let Some(at) = dislikes.iter().take_while(|&&d| d != 0).position(|&d| d == whom) else { break };
+        dislikes.copy_within(at + 1.., at);
+        p.set_dislikes(dislikes);
+        let mut friends = p.friends();
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+    if let Some(p) = records.player_mut(one) {
+        p.set_hates(other);
+    }
+    if let Some(p) = records.player_mut(other) {
+        p.set_hates(one);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +1374,157 @@ mod tests {
         let day = today(&r);
         assert!(!service(&mut r, club, day, &mut Vec::new(), &tables, &mut Vec::new(), &mut random));
         assert!(random == Random::new(7));
+    }
+
+    /// Categories 3 to 6 on A's human squad, one man the only one who
+    /// fits: a single man's new girlfriend wearing him out (0x44c), a
+    /// heartsore one healed on the way; a girlfriend's man back with his
+    /// ex (0x455) and one losing her to a free team-mate; a married man's
+    /// affair talked of in his sleep (0x463) and Christmas Eve on another
+    /// day; a suspecting wife's find (0x468) and her detective. Each over
+    /// a list of one, its happening drawn over its weights.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_3_to_6_tell_of_partners() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let words = crate::words::Words::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        // Every man of the squad given `others`, the man `partner` and
+        // `shown` bits, calm.
+        let load = |others: u8, partner: u8, shown: u32| {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            let man = squad[3];
+            for &id in &squad {
+                let p = a.player_mut(id).unwrap();
+                p.set_partner(others);
+                p.set_shown(p.shown() & !(HEARTSORE | AFFAIR | EXPECTING));
+                p.set_affair_name(0);
+            }
+            let p = a.player_mut(man).unwrap();
+            p.set_partner(partner);
+            p.set_shown(p.shown() | shown);
+            p.set_injured_to([0, 0]);
+            (a, club, man, squad)
+        };
+        // The seed whose list of one draws happening `n` of `table`.
+        let seed = |table: &[(u32, u16)], n: u16| {
+            (0..10_000)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(1);
+                    weighed(table, &mut r) == n
+                })
+                .unwrap()
+        };
+        let alike: Vec<(u32, u16)> = (1..=12).map(|n| (1, n)).collect();
+        let told = |r: &Records, posted: &Posted, man: u16| {
+            let event = crate::event_text::make(r, &texts, &|_| String::new(), &words.first_names, posted);
+            assert!(!event.text.contains('%') && event.text.contains(&r.known_as(man).unwrap()), "{}", event.text);
+            event.text
+        };
+
+        // A single man's new girlfriend; a heartsore one beside him healed.
+        let (mut r, club, man, squad) = load(GIRLFRIEND, 0, 0);
+        let sore = squad[4];
+        let p = r.player_mut(sore).unwrap();
+        p.set_partner(0);
+        p.set_shown(p.shown() | HEARTSORE);
+        crate::mood::change(p, PRIVATE, 120);
+        let before = r.player(man).unwrap().clone();
+        let (mut posted, mut recent) = (Vec::new(), Vec::new());
+        let day = i32::from(r.globals.day());
+        assert!(single(&mut r, club, day, &mut recent, &tables, &mut posted, &mut Random::new(seed(&SINGLE_HAPPENINGS, 2))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x44c, fill: Fill::Partnered(man) }]);
+        assert_eq!(recent, [SINGLE_KEY + 2]);
+        let p = r.player(man).unwrap();
+        assert_eq!(p.partner() & 3, GIRLFRIEND);
+        assert_eq!(p.freshness()[0], (before.freshness()[0] - 500).max(0));
+        assert_eq!(p.condition(), (before.condition() - 200).max(0));
+        assert_eq!(r.player(sore).unwrap().shown() & HEARTSORE, 0);
+        let first = words.first_names[usize::from(p.names_nation()) * 100 + usize::from(p.partner_name())].clone();
+        assert!(told(&r, &posted[0], man).starts_with(&first));
+        // Met lately: not again.
+        let mut again = Vec::new();
+        assert!(single(&mut r, club, day, &mut recent, &tables, &mut again, &mut Random::new(seed(&SINGLE_HAPPENINGS, 2))));
+        assert!(again.is_empty());
+
+        // Back with his ex within a year of their start.
+        let (mut r, club, man, _) = load(0, GIRLFRIEND, 0);
+        let [d, m, y] = r.globals.date();
+        let p = r.player_mut(man).unwrap();
+        p.put::<u8>(TOGETHER_SINCE, d as u8);
+        p.put::<u8>(TOGETHER_SINCE + 1, m as u8);
+        p.put::<u16>(TOGETHER_SINCE + 2, y);
+        p.set_shown(p.shown() & !BACK_GATE);
+        p.put::<u8>(EX_NAME, 77);
+        let girl = p.partner_name();
+        let mut posted = Vec::new();
+        assert!(with_girlfriend(&mut r, club, &mut Vec::new(), &tables, &mut posted, &mut Random::new(seed(&alike, 7))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x455, fill: Fill::PartnerAndEx(man) }]);
+        let p = r.player(man).unwrap();
+        assert_eq!((p.partner() & 3, p.partner_name(), p.get::<u8>(EX_NAME)), (0, 77, girl));
+        told(&r, &posted[0], man);
+        // A team-mate takes her: the free man drawn, she his girlfriend.
+        let (mut r, club, man, squad) = load(WIFE, GIRLFRIEND, 0);
+        let mate = squad[5];
+        r.player_mut(mate).unwrap().set_partner(0);
+        crate::mood::change(r.player_mut(man).unwrap(), PRIVATE, -120);
+        let girl = r.player(man).unwrap().partner_name();
+        let mate_private = r.player(mate).unwrap().contentment()[PRIVATE];
+        let mut posted = Vec::new();
+        let s = seed(&alike, 2);
+        let mut random = Random::new(s);
+        assert!(with_girlfriend(&mut r, club, &mut Vec::new(), &tables, &mut posted, &mut random));
+        let mut after = Random::new(s);
+        after.below(1);
+        after.below(12);
+        after.below(1);
+        assert!(posted.is_empty() && random == after);
+        let (p, q) = (r.player(man).unwrap(), r.player(mate).unwrap());
+        assert_eq!((p.partner() & 3, p.get::<u8>(EX_NAME)), (0, girl));
+        assert_eq!((q.partner() & 3, q.partner_name()), (GIRLFRIEND, girl));
+        assert_eq!((p.contentment()[PRIVATE], q.contentment()[PRIVATE]), (3, (mate_private + 3).min(120)));
+
+        // A married man's affair talked of in his sleep.
+        let (mut r, club, man, _) = load(0, WIFE, 0);
+        r.player_mut(man).unwrap().set_affair_name(66);
+        let day = i32::from(r.globals.day());
+        let mut posted = Vec::new();
+        assert!(married(&mut r, club, day, &mut Vec::new(), &mut posted, &mut Random::new(seed(&MARRIED_HAPPENINGS, 9))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x463, fill: Fill::AffairAndWife(man) }]);
+        assert_eq!(r.player(man).unwrap().shown() & (AFFAIR | SUSPECTED), SUSPECTED);
+        let affair = words.first_names[usize::from(r.player(man).unwrap().names_nation()) * 100 + 66].clone();
+        assert!(told(&r, &posted[0], man).contains(&affair));
+        // Christmas Eve is not today: the news took place, nothing more.
+        assert_ne!((r.globals.date()[0], r.globals.date()[1]), CHRISTMAS_EVE);
+        let private = r.player(man).unwrap().contentment()[PRIVATE];
+        assert!(married(&mut r, club, day, &mut Vec::new(), &mut posted, &mut Random::new(seed(&MARRIED_HAPPENINGS, 11))));
+        assert_eq!(r.player(man).unwrap().contentment()[PRIVATE], private);
+        // No affair: no one, no draw.
+        let (mut r, ..) = load(0, WIFE, 0);
+        let mut random = Random::new(3);
+        assert!(!married(&mut r, club, day, &mut Vec::new(), &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+
+        // A suspecting wife's find, and her detective.
+        let (mut r, club, man, _) = load(0, WIFE, AFFAIR);
+        let mut posted = Vec::new();
+        assert!(suspicion(&mut r, club, &mut posted, &mut Random::new(seed(&SUSPICION_HAPPENINGS, 3))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x468, fill: Fill::Partnered(man) }]);
+        told(&r, &posted[0], man);
+        let private = i32::from(r.player(man).unwrap().contentment()[PRIVATE]);
+        assert!(suspicion(&mut r, club, &mut posted, &mut Random::new(seed(&SUSPICION_HAPPENINGS, 2))));
+        let p = r.player(man).unwrap();
+        assert_eq!((state(p), i32::from(p.contentment()[PRIVATE])), (1, (private - 20).max(0)));
+        // No longer calm: nothing more.
+        assert!(suspicion(&mut r, club, &mut posted, &mut Random::new(seed(&SUSPICION_HAPPENINGS, 3))));
+        assert_eq!(posted.len(), 1);
     }
 }

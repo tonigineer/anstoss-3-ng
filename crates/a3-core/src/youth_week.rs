@@ -860,8 +860,7 @@ mod tests {
         assert_eq!(liking(&r), up(liking(&a), 2));
 
         // The day's news: on the club's third half week some seed walks
-        // the youth, on the others none (a player's children and service
-        // aside).
+        // the youth, on the others none (a player's private life aside).
         let day = i32::from(a.globals.day());
         let slots = [day.rem_euclid(7) as i16];
         let tables = crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
@@ -871,7 +870,11 @@ mod tests {
                 r.globals.set_half_weeks(half);
                 crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &tables, &mut Random::new(s))
                     .iter()
-                    .any(|p| !crate::news::CHILDREN_TEXTS.contains(&p.text) && !crate::news::SERVICE_TEXTS.contains(&p.text))
+                    .any(|p| {
+                        !crate::news::CHILDREN_TEXTS.contains(&p.text)
+                            && !crate::news::SERVICE_TEXTS.contains(&p.text)
+                            && !crate::news::partner_text(p.text)
+                    })
             })
         };
         let at = hn as u16 % 3;

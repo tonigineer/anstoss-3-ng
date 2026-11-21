@@ -55,6 +55,13 @@ pub enum Fill {
     /// `%1` a man's name and `%2` nothing (`FUN_00600f2f` handed an
     /// empty string, as the news of a man's service is).
     NumberedOne(u16),
+    /// `%1` a man's name, `%2` his partner's first name and `%3` his
+    /// ex's — her name of his partner's row (`FUN_00601166` with
+    /// `FUN_0070173f` and `FUN_0070185c`), `%4` nothing.
+    PartnerAndEx(u16),
+    /// `%1` a man's name, `%2` his affair's first name and `%3` his
+    /// wife's (`FUN_00601166` with `FUN_007017db` and `FUN_0070173f`).
+    AffairAndWife(u16),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -130,13 +137,15 @@ pub fn make(
     let text = |id: u16| texts.get(usize::from(id)).unwrap_or_default();
     let name = |id: u16| records.known_as(id).unwrap_or_default();
     // `FUN_0067503a(nation, number)` over the table `DAT_00b9f048`.
-    let partner = |id: u16| {
+    let first_name = |id: u16, at: usize| {
         records
             .player(id)
-            .and_then(|p| first_names.get(usize::from(p.names_nation()) * 100 + usize::from(p.partner_name())))
+            .and_then(|p| first_names.get(usize::from(p.names_nation()) * 100 + usize::from(p.get::<u8>(at))))
             .cloned()
             .unwrap_or_default()
     };
+    // The partner's (+0x283), the affair's (+0x284), the ex's (+0x285).
+    let partner = |id: u16| first_name(id, 0x283);
     let body = text(posted.text);
     let text = match posted.fill {
         Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
@@ -146,6 +155,8 @@ pub fn make(
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),
         Fill::Partnered(id) => numbered(body, &[name(id), partner(id)]),
         Fill::NumberedOne(id) => numbered(body, &[name(id), String::new()]),
+        Fill::PartnerAndEx(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x285), String::new()]),
+        Fill::AffairAndWife(id) => numbered(body, &[name(id), first_name(id, 0x284), partner(id), String::new()]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),
