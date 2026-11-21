@@ -870,7 +870,7 @@ mod tests {
         let mut walked = |half: u16| {
             (0..400).any(|s| {
                 r.globals.set_half_weeks(half);
-                crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &tables, &league, &mut Random::new(s))
+                crate::training_day::news(&mut r, day, &slots, &mut Vec::new(), &tables, &league, &|_| false, &mut Random::new(s))
                     .iter()
                     .any(|p| {
                         !crate::news::CHILDREN_TEXTS.contains(&p.text)

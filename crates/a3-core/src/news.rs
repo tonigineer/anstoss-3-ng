@@ -10,8 +10,8 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and the handlers of categories 9 to 11 and of the
-//! later ones — nearest category 18 (`FUN_005fd4ae`), which rolls over the
+//! +0x8a and +0x8b; and the handlers of the later categories —
+//! nearest category 18 (`FUN_005fd4ae`), which rolls over the
 //! club's squad as 19 does and then picks one more weighted table when
 //! the talked-about player has no news flag yet.
 //!
@@ -21,7 +21,9 @@
 //! ([`with_girlfriend`]), a married man's ([`married`]) and his wife's
 //! suspicion ([`suspicion`]), are here, and categories 7, a wife who
 //! knows of the affair ([`affair_known`]), 8, a father's day with his
-//! family ([`family`]), and 12, a man's new affair ([`new_affair`]).
+//! family ([`family`]), 9, a wedding near ([`engaged`]), 10, a man in
+//! low spirits ([`low_spirits`]), 11, two at odds ([`at_odds`]), and 12,
+//! a man's new affair ([`new_affair`]).
 
 use std::ops::RangeInclusive;
 
@@ -200,6 +202,42 @@ const MOCKED_FROM: i32 = 100;
 /// The children's toys: an injury of kind 15 with the kind's own days
 /// (`FUN_00766b92(15, -1)`, the table at `DAT_008ac341`).
 const TOYS_INJURY: (u8, i32) = (15, 21);
+
+/// Category 9's happenings, three alike (`FUN_0060be4d` over
+/// `DAT_00a32640`, registered by `FUN_005fa37c` from `DAT_0088e700`) —
+/// the fourth case of `FUN_005fa394` no entry reaches; they stand among
+/// the recent events as their number plus 23000.
+const WEDDING_HAPPENINGS: [(u32, u16); 3] = [(1, 1), (1, 2), (1, 3)];
+const WEDDING_KEY: i32 = 23_000;
+/// A man is low while his private life and distractions together please
+/// him less than this.
+const LOW_SPIRITS: i32 = 0xa0;
+/// Category 10's happenings (`DAT_00a325ec`, registered by
+/// `FUN_005fc6a4` from `DAT_0088e7d8`) — no 5.
+const LOW_HAPPENINGS: [(u32, u16); 6] = [(30, 1), (3, 2), (3, 3), (3, 4), (30, 6), (30, 7)];
+/// The months he is still without his driving licence (+0x28e,
+/// `FUN_00702d31`).
+const NO_LICENCE: usize = 0x28e;
+/// The countries whose clubs' men drive on the left already (the club's
+/// +0x104).
+const LEFT_DRIVING: [u16; 2] = [0x10, 0x39];
+/// The second trait word's bits (the handle's +0x12) of a man who takes
+/// to drink, the bits of +0x1b4 he then has (`FUN_00703090(1)`), and the
+/// bit of a spy among the squad (`FUN_007001ed`).
+const DRINKER: u16 = 0x2610;
+const DRINKS: u32 = 0x80_0200;
+const SPY: u32 = 0x8000;
+/// A club of this number (its +0x103) has no spy to tell.
+const NO_SPIES: u16 = 200;
+/// Category 11: the state of two at odds (`FUN_00702c12`), the roll of a
+/// hundred under which they make up, how much his private life then
+/// pleases him (`FUN_0070117e(100)`), and how the row ends otherwise
+/// (`DAT_00a325d4`, registered by `FUN_005fcd85` from `DAT_0088e80c`).
+const AT_ODDS: u8 = 1;
+const MAKE_UP_IN: u32 = 100;
+const MAKE_UP_UNDER: u32 = 0x46;
+const MADE_UP: i32 = 100;
+const ROW_HAPPENINGS: [(u32, u16); 7] = [(30, 1), (3, 2), (3, 3), (3, 4), (3, 5), (30, 6), (30, 7)];
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -870,12 +908,7 @@ pub fn married(
     random: &mut Random,
 ) -> bool {
     let Some(team) = records.team(club.0, club.1) else { return false };
-    let camp = usize::from(team.humans()[0])
-        .checked_sub(1)
-        .and_then(|trainer| records.calendars.get(trainer))
-        .zip(usize::try_from(today).ok())
-        .is_some_and(|(calendar, d)| d < crate::year::CAMP_DAYS && crate::year::in_camp(calendar, d));
-    if camp {
+    if in_camp(records, club, today) {
         return true;
     }
     let men: Vec<u16> = team
@@ -1257,6 +1290,171 @@ fn family_day(
     }
 }
 
+/// The picked category 9 (`case 9` with `FUN_005fa5f8`): the club's own
+/// real men engaged (+0x170, `FUN_00702a9b`) go into a list (0x23 at
+/// most), yet none of it is drawn: the day ("EreignisKurzVorHochzeit",
+/// `FUN_005fa394`) is handed the squad slot past the last (the club's
+/// +0xb50 at the index the walk ended on, its +0xe2), as the original
+/// does. One of three happenings alike, one met lately not met again
+/// (23000 and its number). The first two ask that slot's man for a
+/// girlfriend, calm (she calls off the wedding: parting, his affair gone,
+/// 30 and a draw of 10 less pleased with his private life, 0x445) or
+/// with an affair (the other girlfriend's number found, `FUN_0070282a`,
+/// 0x446), both told with values and not posted here; the third is
+/// nothing. Out of a loaded save the slot past the last holds no man
+/// the replica knows of, so neither gate is met and nothing more is
+/// drawn. Whether the news took place — with no one engaged it did not.
+pub fn engaged(records: &Records, club: (u16, u16), recent: &mut Vec<i32>, random: &mut Random) -> bool {
+    if drawn_from(records, club, |p| p.get::<u8>(ENGAGED) != 0).is_empty() {
+        return false;
+    }
+    let happening = weighed(&WEDDING_HAPPENINGS, random);
+    meet(recent, WEDDING_KEY + i32::from(happening));
+    true
+}
+
+/// The picked category 10 (`case 10` with `FUN_005fc8e6`): one of the
+/// club's own real men whose private life and distractions (+0x293 and
+/// +0x294) together please him less than 0xa0 is drawn (0x23 at most in
+/// the list) and has a bad day ([`low_day`]); with none the news did not
+/// take place. `planned` is whether the club's plan (its +0xc0a) has
+/// anything but free for today.
+pub fn low_spirits(
+    records: &mut Records,
+    club: (u16, u16),
+    planned: bool,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let men = drawn_from(records, club, |p| {
+        let c = p.contentment();
+        i32::from(c[PRIVATE]) + i32::from(c[DISTRACTION]) < LOW_SPIRITS
+    });
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    low_day(records, club, id, planned, posted, random);
+    true
+}
+
+/// A bad day (`FUN_005fc6bc`, "EreignisNichtGut"): one of six
+/// happenings weighed 30, 3, 3, 3, 30, 30. He is not well (0x47d). His
+/// licence (+0x28e, months, `FUN_00702d31`) taken while he has it: a
+/// month for speeding to a training the plan holds today (0x47e,
+/// `FUN_005ea8cc`), six for a tree hit drunk (0x47f), six for driving
+/// on the left, not in the clubs of the countries 0x10 and 0x39 (0x480).
+/// A man of the trait bits 0x2610 starts drinking (+0x1b4 bits
+/// 0x800200, `FUN_00703090`), told when a spy (bit 0x8000,
+/// `FUN_006494b8`) is among the squad of a club numbered other than 200
+/// (0x481 — its `%1` him, its `%2` empty, as the original fills it). A
+/// man without his licence caught riding without a ticket, 3 less
+/// pleased with his private life, told with values (0x4d5), not posted.
+fn low_day(records: &mut Records, club: (u16, u16), id: u16, planned: bool, posted: &mut Vec<Posted>, random: &mut Random) {
+    let happening = weighed(&LOW_HAPPENINGS, random);
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let spied = club.1 != NO_SPIES && squad.iter().any(|&m| records.player(m).is_some_and(|p| p.shown() & SPY != 0));
+    let Some(p) = records.player_mut(id) else { return };
+    let licence = p.get::<u8>(NO_LICENCE);
+    let text = match happening {
+        1 => 0x47d,
+        2 if licence == 0 && planned => {
+            p.put::<u8>(NO_LICENCE, 1);
+            0x47e
+        }
+        3 if licence == 0 => {
+            p.put::<u8>(NO_LICENCE, 6);
+            0x47f
+        }
+        4 if licence == 0 && !LEFT_DRIVING.contains(&club.0) => {
+            p.put::<u8>(NO_LICENCE, 6);
+            0x480
+        }
+        6 if p.traits()[1] & DRINKER != 0 => {
+            p.set_shown(p.shown() | DRINKS);
+            if !spied {
+                return;
+            }
+            0x481
+        }
+        7 if licence > 0 => {
+            crate::mood::change(p, PRIVATE, -3);
+            return;
+        }
+        _ => return,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+}
+
+/// The picked category 11 (`case 0xb` with `FUN_005fcfcd`): nothing while
+/// the club stands in a camp of its trainer's calendar (`FUN_005eab71`,
+/// yet the news took place); else of the club's own real men at odds
+/// with their partner (state 1, `FUN_00702c12`), 0x23 at most, one is
+/// drawn ("EreignisVersEnd"): 70 times in 100 the two make up
+/// (`FUN_005fcd09`), his private life set to please him 100
+/// (`FUN_0070117e`), told of his girlfriend (0x4db) or else his wife
+/// (0x4dc); else it ends ([`row_end`]). With none the news did not take
+/// place.
+pub fn at_odds(records: &mut Records, club: (u16, u16), today: i32, posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    if in_camp(records, club, today) {
+        return true;
+    }
+    let men = drawn_from(records, club, |p| state(p) == AT_ODDS);
+    if men.is_empty() {
+        return false;
+    }
+    if random.below(MAKE_UP_IN) >= MAKE_UP_UNDER {
+        let id = men[random.below(men.len() as u32) as usize];
+        return row_end(records, id, random);
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    let Some(p) = records.player_mut(id) else { return true };
+    crate::mood::change(p, PRIVATE, MADE_UP - i32::from(p.contentment()[PRIVATE]));
+    let text = if p.partner() & 3 == GIRLFRIEND { 0x4db } else { 0x4dc };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Partnered(id) });
+    true
+}
+
+/// How the row ends (`FUN_005fcd9d`): one of seven happenings weighed
+/// 30, 3, 3, 3, 3, 30, 30, the first two a girlfriend's and the next two
+/// a wife's, swapped to fit him. She leaves him for good, 10 less pleased
+/// with his private life (0x4dd, 0x4df); he is done with her, 5 more
+/// (0x4de, 0x4e0); a married man before the divorce judge, 15 less
+/// (0x4e1) — all told with values, not posted here. The last two are
+/// none: the news did not take place.
+fn row_end(records: &mut Records, id: u16, random: &mut Random) -> bool {
+    let mut happening = weighed(&ROW_HAPPENINGS, random);
+    let Some(p) = records.player_mut(id) else { return true };
+    let girlfriend = p.partner() & 3 == GIRLFRIEND;
+    match happening {
+        1 | 2 if !girlfriend => happening += 2,
+        3 | 4 if girlfriend => happening -= 2,
+        _ => {}
+    }
+    let by = match happening {
+        1 | 3 => -10,
+        2 | 4 => 5,
+        5 if p.partner() & 3 == WIFE => -15,
+        5 => 0,
+        _ => return false,
+    };
+    if by != 0 {
+        crate::mood::change(p, PRIVATE, by);
+    }
+    true
+}
+
+/// Whether the club stands in a camp of its trainer's calendar (the
+/// club's +0x8a, `FUN_005eab71`): never from day 0x16b on.
+fn in_camp(records: &Records, club: (u16, u16), today: i32) -> bool {
+    records
+        .team(club.0, club.1)
+        .and_then(|team| usize::from(team.humans()[0]).checked_sub(1))
+        .and_then(|trainer| records.calendars.get(trainer))
+        .zip(usize::try_from(today).ok())
+        .is_some_and(|(calendar, d)| d < crate::year::CAMP_DAYS && crate::year::in_camp(calendar, d))
+}
+
 /// Which of his children [`child`] draws among (`FUN_007021cb`'s first
 /// argument: 0, 1, any other).
 #[derive(Clone, Copy)]
@@ -1325,9 +1523,9 @@ fn knocked_days(p: &crate::records::Player, today: i32) -> i32 {
     }
 }
 
-/// Whether a text is one of categories 3 to 8's and 12's.
+/// Whether a text is one of categories 3 to 12's.
 pub fn partner_text(text: u16) -> bool {
-    (0x44b..=0x47c).contains(&text) || (0x4e3..=0x4e5).contains(&text) || text == 0x4d4 || text == 0x7be
+    (0x44b..=0x481).contains(&text) || (0x4db..=0x4e5).contains(&text) || text == 0x4d4 || text == 0x7be
 }
 
 /// One draw over a weighed table (`FUN_0060be4d` registered with no cap
@@ -2096,6 +2294,158 @@ mod tests {
         r.player_mut(man).unwrap().set_partner(GIRLFRIEND);
         let mut random = Random::new(3);
         assert!(!family(&mut r, club, today, &league, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+    }
+
+    /// Categories 9 to 11 on A's human squad, one man fitting each: an
+    /// engaged man's day takes one draw and meets its happening once,
+    /// handed no man; a low man is not well (0x47d), loses his licence
+    /// for six months (0x47f) and not again, for a month only on a day
+    /// with training (0x47e), rides without a ticket once without it, and
+    /// takes to drink, told only with a spy in the squad (0x481); two at
+    /// odds make up (0x4db, 0x4dc), his private life at 100, or their
+    /// row ends in nothing. A list of none draws nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_9_to_11_tell_of_moods() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let words = crate::words::Words::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        // Every man of the squad pleased, calm, not engaged, licensed,
+        // no spy; the man with `partner`, his private life and
+        // distractions at `low`.
+        let load = |partner: u8, low: u8| {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            let man = squad[3];
+            for &id in &squad {
+                let p = a.player_mut(id).unwrap();
+                p.set_partner(GIRLFRIEND);
+                p.put::<u8>(ENGAGED, 0);
+                p.put::<u8>(NO_LICENCE, 0);
+                p.set_shown(p.shown() & !(SPY | DRINKS));
+                let mut c = p.contentment();
+                c[PRIVATE] = 100;
+                c[DISTRACTION] = 100;
+                p.set_contentment(c);
+            }
+            let p = a.player_mut(man).unwrap();
+            p.set_partner(partner);
+            let mut c = p.contentment();
+            c[PRIVATE] = low;
+            c[DISTRACTION] = low;
+            p.set_contentment(c);
+            let mut traits = p.traits();
+            traits[1] &= !DRINKER;
+            p.set_traits(traits);
+            (a, club, man, squad)
+        };
+        let seed = |draws: &dyn Fn(&mut Random) -> bool| (0..10_000).find(|&s| draws(&mut Random::new(s))).unwrap();
+        let low = |n: u16| {
+            seed(&|r| {
+                r.below(1);
+                weighed(&LOW_HAPPENINGS, r) == n
+            })
+        };
+        let told = |r: &Records, posted: &Posted, man: u16| {
+            let event = crate::event_text::make(r, &texts, &|_| String::new(), &words.first_names, posted);
+            assert!(!event.text.contains('%') && event.text.contains(&r.known_as(man).unwrap()), "{}", event.text);
+        };
+
+        // An engaged man: one draw, its happening met once.
+        let (mut r, club, man, _) = load(GIRLFRIEND, 100);
+        let mut random = Random::new(3);
+        assert!(!engaged(&r, club, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+        r.player_mut(man).unwrap().put::<u8>(ENGAGED, 1);
+        let mut recent = Vec::new();
+        let mut random = Random::new(3);
+        assert!(engaged(&r, club, &mut recent, &mut random));
+        let mut once = Random::new(3);
+        let happening = weighed(&WEDDING_HAPPENINGS, &mut once);
+        assert!(random == once);
+        assert_eq!(recent, [WEDDING_KEY + i32::from(happening)]);
+        assert!(engaged(&r, club, &mut recent, &mut Random::new(3)));
+        assert_eq!(recent.len(), 1);
+
+        // A low man.
+        let (mut r, club, man, squad) = load(GIRLFRIEND, 79);
+        let mut posted = Vec::new();
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(1))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x47d, fill: Fill::NumberedOne(man) }]);
+        told(&r, &posted[0], man);
+        // Six months without his licence, then nothing more to take.
+        let mut posted = Vec::new();
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(3))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x47f, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(r.player(man).unwrap().get::<u8>(NO_LICENCE), 6);
+        assert!(low_spirits(&mut r, club, true, &mut posted, &mut Random::new(low(2))));
+        assert_eq!(posted.len(), 1);
+        // Without it he rides without a ticket: 3 less, not posted.
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(7))));
+        assert_eq!((posted.len(), r.player(man).unwrap().contentment()[PRIVATE]), (1, 76));
+        // A month for speeding only to a day's training.
+        let (mut r, club, man, _) = load(GIRLFRIEND, 79);
+        let mut posted = Vec::new();
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(2))));
+        assert!(posted.is_empty());
+        assert!(low_spirits(&mut r, club, true, &mut posted, &mut Random::new(low(2))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x47e, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(r.player(man).unwrap().get::<u8>(NO_LICENCE), 1);
+        // A drinker, told once a spy is in the squad.
+        let p = r.player_mut(man).unwrap();
+        let mut traits = p.traits();
+        traits[1] |= 0x10;
+        p.set_traits(traits);
+        let mut posted = Vec::new();
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(6))));
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().shown() & DRINKS, DRINKS);
+        let spy = r.player_mut(squad[0]).unwrap();
+        spy.set_shown(spy.shown() | SPY);
+        assert!(low_spirits(&mut r, club, false, &mut posted, &mut Random::new(low(6))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x481, fill: Fill::NumberedOne(man) }]);
+        // Pleased enough: no one, no draw.
+        let (mut r, club, _, _) = load(GIRLFRIEND, 80);
+        let mut random = Random::new(3);
+        assert!(!low_spirits(&mut r, club, true, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+
+        // Two at odds make up.
+        let make_up = seed(&|r| r.below(MAKE_UP_IN) < MAKE_UP_UNDER);
+        for (partner, text) in [(GIRLFRIEND | AT_ODDS << 2, 0x4db), (WIFE | AT_ODDS << 2, 0x4dc)] {
+            let (mut r, club, man, _) = load(partner, 60);
+            let today = i32::from(r.globals.day());
+            let mut posted = Vec::new();
+            assert!(at_odds(&mut r, club, today, &mut posted, &mut Random::new(make_up)));
+            assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Partnered(man) }]);
+            told(&r, &posted[0], man);
+            assert_eq!(r.player(man).unwrap().contentment()[PRIVATE], 100);
+        }
+        // Their row ends: a wife's leaving, a girlfriend's told; the last
+        // two none.
+        let ends = |n: u16| {
+            seed(&|r| {
+                let out = r.below(MAKE_UP_IN) >= MAKE_UP_UNDER;
+                r.below(1);
+                out && weighed(&ROW_HAPPENINGS, r) == n
+            })
+        };
+        let (mut r, club, man, _) = load(GIRLFRIEND | AT_ODDS << 2, 60);
+        let today = i32::from(r.globals.day());
+        assert!(!in_camp(&r, club, today));
+        let mut posted = Vec::new();
+        assert!(at_odds(&mut r, club, today, &mut posted, &mut Random::new(ends(3))));
+        assert_eq!((posted.len(), r.player(man).unwrap().contentment()[PRIVATE]), (0, 50));
+        assert!(!at_odds(&mut r, club, today, &mut posted, &mut Random::new(ends(6))));
+        // Calm: no one, no draw.
+        let (mut r, club, _, _) = load(GIRLFRIEND, 60);
+        let mut random = Random::new(3);
+        assert!(!at_odds(&mut r, club, today, &mut Vec::new(), &mut random));
         assert!(random == Random::new(3));
     }
 }

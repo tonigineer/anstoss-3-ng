@@ -617,14 +617,16 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::youth_week::walk`]). A picked category's handler that
 /// posts nothing goes on so too: categories 1 ([`crate::news::children`])
 /// to 6 ([`crate::news::suspicion`]), 7 ([`crate::news::affair_known`]),
-/// 8 ([`crate::news::family`]) and 12 ([`crate::news::new_affair`]) do
-/// here. The others are not built, and the probe's trace of save
+/// 8 ([`crate::news::family`]), 9 ([`crate::news::engaged`]), 10
+/// ([`crate::news::low_spirits`]), 11 ([`crate::news::at_odds`]) and 12
+/// ([`crate::news::new_affair`]) do here. The others are not built, and the probe's trace of save
 /// A's day 63 ends that day's news at category 19's pick of the player,
 /// so another picked category stands for the day's whole news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
-/// classes a father's club is weighed by. (The town's share in the
+/// classes a father's club is weighed by, `planned` whether a club's
+/// plan holds anything but free today ([`planned_today`]). (The town's share in the
 /// stadium's building after a youth's quiet week is not built either.)
 pub fn news(
     records: &mut Records,
@@ -633,6 +635,7 @@ pub fn news(
     recent: &mut Vec<i32>,
     tables: &crate::first_season::Tables,
     league: &LeagueTables,
+    planned: &dyn Fn((u16, u16)) -> bool,
     random: &mut Random,
 ) -> Vec<Posted> {
     let mut posted = Vec::new();
@@ -656,6 +659,9 @@ pub fn news(
             6 => crate::news::suspicion(records, club, &mut posted, random),
             7 => crate::news::affair_known(records, club, &mut posted, random),
             8 => crate::news::family(records, club, today, league, &mut posted, random),
+            9 => crate::news::engaged(records, club, recent, random),
+            10 => crate::news::low_spirits(records, club, planned(club), &mut posted, random),
+            11 => crate::news::at_odds(records, club, today, &mut posted, random),
             12 => crate::news::new_affair(records, club, &mut posted, random),
             19 => {
                 crate::news::about_a_player(squad, random);
@@ -674,6 +680,19 @@ pub fn news(
         }
     }
     posted
+}
+
+/// Whether a human club's plan holds anything but free for today (the
+/// club object's +0xc0a row of the day, `FUN_005ea8cc`), as the day's
+/// training left it.
+pub fn planned_today(clubs: &BTreeMap<(usize, usize), ClubState>, world: &world::World, (country, number): (u16, u16), today: i32) -> bool {
+    let weekday = today.rem_euclid(7) as usize;
+    world
+        .countries
+        .iter()
+        .position(|c| c.as_ref().is_some_and(|c| c.nation == country))
+        .and_then(|slot| clubs.get(&(slot, usize::from(number))))
+        .is_some_and(|state| (0..training::SESSIONS).any(|k| state.training.unit(weekday, k) != training::FREE))
 }
 
 /// The tail's two draws of the day's news over the squad (`FUN_005ef8cc`).
