@@ -506,10 +506,11 @@ fn private_life(records: &mut Records, tables: &Tables, club_country: u8, id: u1
     }
 }
 
-/// A new girlfriend (`FUN_00702571`): the one before, if any, kept as his
-/// ex (`FUN_00702467`) and the children gone; her first name drawn from
-/// the women of his names' row, her birthday's day and month drawn.
-fn new_partner(records: &mut Records, tables: &Tables, club_country: u8, id: u16, random: &mut Random) {
+/// He and his partner part (`FUN_00702467`): she, if any, kept as his ex
+/// (her first name at +0x285, her row at +0x287, her birthday at +0x18c)
+/// and the children gone. The original also takes her dates off the
+/// private lives' list (`FUN_004377b7`), which the replica leaves out.
+pub(crate) fn part(records: &mut Records, id: u16) {
     let Some(p) = records.player_mut(id) else { return };
     if p.get::<u8>(PARTNER) & 3 != 0 {
         p.put::<u8>(0x285, p.get::<u8>(PARTNER_NAME));
@@ -520,6 +521,14 @@ fn new_partner(records: &mut Records, tables: &Tables, club_country: u8, id: u16
     p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) & 0xfc);
     p.set_children(0);
     p.put::<u8>(PASSING, 0);
+}
+
+/// A new girlfriend (`FUN_00702571`): the one before, if any, kept as his
+/// ex ([`part`]) and the children gone; her first name drawn from
+/// the women of his names' row, her birthday's day and month drawn.
+pub(crate) fn new_partner(records: &mut Records, tables: &Tables, club_country: u8, id: u16, random: &mut Random) {
+    part(records, id);
+    let Some(p) = records.player_mut(id) else { return };
     let name = random.below(50) as u8 + 50;
     let nation = usize::from(p.nation() & 0x7f);
     let row_of = if tables.own_names.get(nation).copied().unwrap_or(0) == 0 { usize::from(club_country) } else { nation };

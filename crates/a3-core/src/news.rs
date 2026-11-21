@@ -15,7 +15,8 @@
 //! club's squad as 19 does and then picks one more weighted table when
 //! the talked-about player has no news flag yet.
 //!
-//! Category 1, a player's children ([`children`]), is here.
+//! Category 1, a player's children ([`children`]), and category 2, a
+//! player's military or civil service ([`service`]), are here.
 
 use std::ops::RangeInclusive;
 
@@ -64,6 +65,35 @@ const GLAD_PRIVATE: i32 = 100;
 const MANY_CHILDREN: i16 = 4;
 /// Category 1's texts, wishes and children on the way.
 pub const CHILDREN_TEXTS: RangeInclusive<u16> = 0x410..=0x41e;
+
+/// Category 2's texts, a man's military service (0x430 to 0x437) and his
+/// civil service (0x438 to 0x43a).
+pub const SERVICE_TEXTS: RangeInclusive<u16> = 0x430..=0x43a;
+/// Only German men serve: the handle's nation byte (+0x24, the record's
+/// +0x225) compared whole.
+const GERMANY: u8 = 0x0e;
+/// The service of a man, bits 5 and 6 of the partner byte +0x27e
+/// (`FUN_00700581`): military, civil.
+const MILITARY: u8 = 1;
+const CIVIL: u8 = 2;
+/// The happenings of each service, weighed alike (`FUN_0060be4d` over
+/// `DAT_00a3267c`, registered by `FUN_005f9595` from `DAT_0088e6b0`:
+/// eight of weight 1; and over `DAT_00a32670`, `FUN_005f9899` from
+/// `DAT_0088e6d0`: three).
+const MILITARY_HAPPENINGS: u32 = 8;
+const CIVIL_HAPPENINGS: u32 = 3;
+/// A happening of the military service stands among the recent events as
+/// its number plus this.
+const MILITARY_KEY: i32 = 0x57e4;
+/// The injury the obstacle course leaves (`FUN_00766b92` with kind 10 and
+/// no days: the kind's days of the table at `DAT_008ac341`, no knock).
+const OBSTACLE_INJURY: (u8, i32) = (10, 35);
+/// The second trait word's star airs (the handle's +0x12, the record's
+/// +0x1ca), which the work in a care home takes away.
+const STAR_AIRS: u16 = 0x800;
+/// The state of a girlfriend (bits 2 to 4 of +0x27e, `FUN_00702c12`)
+/// that leaves him free for a nurse.
+const PARTING_STATE: u8 = 3;
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -223,13 +253,9 @@ fn expecting(
     if partner == 0 {
         return false;
     }
-    if recent.contains(&EXPECTING_KEY) {
+    if !meet(recent, EXPECTING_KEY) {
         return true;
     }
-    if recent.len() == RECENT {
-        recent.remove(0);
-    }
-    recent.push(EXPECTING_KEY);
     let due = i32::from(records.globals.day()) + DUE_AFTER + random.below(DUE_SPREAD) as i32;
     if !expect(records, id, due) {
         return false;
@@ -296,6 +322,184 @@ fn expect(records: &mut Records, id: u16, due: i32) -> bool {
     }
     p.set_shown(p.shown() & !WISH | EXPECTING);
     true
+}
+
+/// An event met anew (`FUN_005e5e90`, `FUN_005e5ee0`): not when it
+/// stands among the recent events already; else it goes in among them,
+/// the oldest of twenty out.
+fn meet(recent: &mut Vec<i32>, key: i32) -> bool {
+    if recent.contains(&key) {
+        return false;
+    }
+    if recent.len() == RECENT {
+        recent.remove(0);
+    }
+    recent.push(key);
+    true
+}
+
+/// The picked category 2 (`case 2` with `FUN_005f9a2d`): the club's own
+/// real players — no playing manager (below 0x4269) — who are German and
+/// serve, in the army or in civil service, go into one list (0x23 at
+/// most) with no draw; one of them is drawn and his service has its
+/// happening ([`military`], [`civil`]). Whether the news took place —
+/// with no one serving it did not, and the day's news goes on to its
+/// later rolls. `today` is the day counter, `recent` the events lately
+/// met, `tables` those a new girlfriend is drawn from.
+pub fn service(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let serving: Vec<u16> = squad
+        .into_iter()
+        .filter(|&id| id <= LAST_REAL_ID)
+        .filter(|&id| records.player(id).is_some_and(|p| p.nation() == GERMANY && matches!(serves(p), MILITARY | CIVIL)))
+        .take(PICKS_MOST)
+        .collect();
+    if serving.is_empty() {
+        return false;
+    }
+    let id = serving[random.below(serving.len() as u32) as usize];
+    if records.player(id).is_some_and(|p| serves(p) == MILITARY) {
+        military(records, club, id, today, recent, posted, random)
+    } else {
+        civil(records, club, id, tables, posted, random)
+    }
+}
+
+/// His service (`FUN_00700581`).
+fn serves(p: &crate::records::Player) -> u8 {
+    p.partner() >> 5 & 3
+}
+
+/// A soldier's day (`FUN_005f95ad`): a man out injured or away from the
+/// club has none, yet the news took place. One of eight happenings is
+/// drawn, and one met lately is not met again; then: a week on the
+/// training ground (0x430), at manoeuvres (0x431) or in the sick bay
+/// after a gas drill (0x433), away seven days; a march leaving him
+/// knocked about a day and twenty points less fresh (0x432); the
+/// obstacle course's torn ligament (0x434); three days in the guardroom
+/// for a row with his officer (0x435); a day and night of guard duty, two
+/// days away (0x436); or his girlfriend leaves him, ten and a draw of ten
+/// less pleased with his private life — the original tells this with
+/// values beside the text (`FUN_00601043`, window `CEreignis2Werte`),
+/// which the replica does not post. A man with no girlfriend has nothing
+/// of it.
+fn military(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    today: i32,
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(p) = records.player(id) else { return true };
+    let globals = &records.globals;
+    if crate::load::days_to(globals, p.injured_to()) != 0 || crate::load::days_to(globals, p.away_to()) != 0 {
+        return true;
+    }
+    let happening = random.below(MILITARY_HAPPENINGS) as u16 + 1;
+    if !meet(recent, MILITARY_KEY + i32::from(happening)) {
+        return true;
+    }
+    let text = 0x42f + happening;
+    match happening {
+        1 | 2 | 4 => send_away(records, id, 7, 8),
+        3 => {
+            crate::training_day::knock_for(records, id, 1, today);
+            if let Some(p) = records.player_mut(id) {
+                // `FUN_005e5f40(-20)` on the handle's freshness (+0x18).
+                let mut fresh = p.freshness();
+                fresh[0] = (i32::from(fresh[0]) - 20 * 100).clamp(0, 10_000) as i16;
+                p.set_freshness(fresh);
+            }
+        }
+        5 => crate::training_day::injure(records, id, OBSTACLE_INJURY.0, OBSTACLE_INJURY.1, today),
+        6 => send_away(records, id, 3, 5),
+        7 => send_away(records, id, 2, 8),
+        _ => {
+            if records.player(id).is_none_or(|p| p.partner() & 3 != GIRLFRIEND) {
+                return true;
+            }
+            crate::first_season::part(records, id);
+            let by = -10 - random.below(10) as i32;
+            if let Some(p) = records.player_mut(id) {
+                crate::mood::change_private(p, by);
+            }
+            return true;
+        }
+    }
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+    true
+}
+
+/// A day of civil service (`FUN_005f98b1`): one of three happenings,
+/// none kept among the recent events: a week's course, away seven days
+/// (0x438); the care home taking his star airs away, told only of a man
+/// who has them (0x439); or, for a man with no partner or a girlfriend in
+/// the state of parting, a new girlfriend, the nurse he falls for, ten
+/// and a draw of ten more pleased with his private life — told with
+/// values (0x43a), not posted here.
+fn civil(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(p) = records.player(id) else { return true };
+    let (partner, country) = (p.partner(), p.club()[0]);
+    let text = match random.below(CIVIL_HAPPENINGS) + 1 {
+        1 => {
+            send_away(records, id, 7, 9);
+            0x438
+        }
+        2 => {
+            let Some(p) = records.player_mut(id) else { return true };
+            let mut traits = p.traits();
+            if traits[1] & STAR_AIRS == 0 {
+                return true;
+            }
+            traits[1] &= !STAR_AIRS;
+            p.set_traits(traits);
+            0x439
+        }
+        _ => {
+            if partner & 3 == 0 || partner & 3 == GIRLFRIEND && partner >> 2 & 7 == PARTING_STATE {
+                crate::first_season::new_partner(records, tables, country, id, random);
+                let by = 10 + random.below(10) as i32;
+                if let Some(p) = records.player_mut(id) {
+                    crate::mood::change_private(p, by);
+                }
+            }
+            return true;
+        }
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+    true
+}
+
+/// Away from the club for `days` (`FUN_006fe907` on the handle's first
+/// absence, +0x6a and the reason in the low half of +0x66): not when he
+/// is away longer already. The write-back keeps the days as the date
+/// they last to (+0x1e4) and the reason at +0x26b.
+fn send_away(records: &mut Records, id: u16, days: i32, reason: u8) {
+    let to = crate::medical::date_in(&records.globals, days);
+    let Some(p) = records.player(id) else { return };
+    if crate::load::days_to(&records.globals, p.away_to()) > days {
+        return;
+    }
+    let Some(p) = records.player_mut(id) else { return };
+    p.set_away_to(to);
+    p.set_away_kind(p.away_kind() & 0xf0 | reason);
 }
 
 #[cfg(test)]
@@ -429,5 +633,128 @@ mod tests {
         let told = crate::mood::parts(p)[0] > WISH_CONTENT;
         let wished = told.then_some(Posted { club, code: PRIVATE_NEWS, text: 0x410, fill: Fill::Partnered(man) });
         assert_eq!(posted, wished.into_iter().collect::<Vec<_>>());
+    }
+
+    /// Category 2 on A's human squad, one German man its only one
+    /// serving: drawn over a list of one, his happening one of eight in
+    /// the army — away a week and told (0x430), not met again while among
+    /// the recent events; the obstacle course's injury of kind 10 for 35
+    /// days; his girlfriend leaving him, untold — or of three in civil
+    /// service: the star airs taken and told (0x439), a nurse his new
+    /// girlfriend. With no one serving no draw is made.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_2_tells_of_a_mans_service() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let load = |service: u8, partner: u8| {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            let man = squad[3];
+            for &id in &squad {
+                let p = a.player_mut(id).unwrap();
+                p.set_partner(p.partner() & !0x60);
+            }
+            let p = a.player_mut(man).unwrap();
+            p.set_nation(GERMANY);
+            p.set_partner(service << 5 | partner);
+            p.set_injured_to([0, 0]);
+            p.set_away_to([0, 0]);
+            (a, club, man)
+        };
+        let today = |r: &Records| i32::from(r.globals.day());
+        // The seed whose happening of `of` is `n`, and the generator after.
+        let seed = |of: u32, n: u32| {
+            let s = (0..10_000)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(1);
+                    r.below(of) + 1 == n
+                })
+                .unwrap();
+            let mut after = Random::new(s);
+            after.below(1);
+            after.below(of);
+            (s, after)
+        };
+        let run = |r: &mut Records, club, recent: &mut Vec<i32>, s: u64| {
+            let (mut posted, mut random) = (Vec::new(), Random::new(s));
+            let day = today(r);
+            assert!(service(r, club, day, recent, &tables, &mut posted, &mut random));
+            (posted, random)
+        };
+
+        // A week on the training ground.
+        let (mut r, club, man) = load(MILITARY, 0);
+        let (s, after) = seed(MILITARY_HAPPENINGS, 1);
+        let mut recent = Vec::new();
+        let (posted, random) = run(&mut r, club, &mut recent, s);
+        assert!(random == after, "the draws as the original's");
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x430, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(recent, [MILITARY_KEY + 1]);
+        let p = r.player(man).unwrap();
+        assert_eq!(p.away_to(), crate::medical::date_in(&r.globals, 7));
+        assert_eq!(p.away_kind() & 0xf, 8);
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &[], &posted[0]);
+        assert!(told.text.starts_with("Ihr Spieler ") && told.text.contains(&r.known_as(man).unwrap()), "{}", told.text);
+        assert!(!told.text.contains('%'), "{}", told.text);
+        // Met lately, it is not met again; away, he has no happening.
+        let (mut again, ..) = load(MILITARY, 0);
+        let (posted, _) = run(&mut again, club, &mut recent, s);
+        assert!(posted.is_empty() && again.player(man).unwrap().away_to() == [0, 0]);
+        let (posted, random) = run(&mut r, club, &mut Vec::new(), s);
+        let mut drawn = Random::new(s);
+        drawn.below(1);
+        assert!(posted.is_empty() && random == drawn);
+
+        // The obstacle course.
+        let (mut r, ..) = load(MILITARY, 0);
+        let (s, _) = seed(MILITARY_HAPPENINGS, 5);
+        let (posted, _) = run(&mut r, club, &mut Vec::new(), s);
+        assert_eq!(posted[0].text, 0x434);
+        let p = r.player(man).unwrap();
+        assert_eq!((p.injury_kind(), p.injured_to()), (10, crate::medical::date_in(&r.globals, 35)));
+
+        // His girlfriend leaves him, a draw of ten more.
+        let (mut r, ..) = load(MILITARY, GIRLFRIEND);
+        let private = r.player(man).unwrap().contentment()[4];
+        let (s, _) = seed(MILITARY_HAPPENINGS, 8);
+        let (posted, _) = run(&mut r, club, &mut Vec::new(), s);
+        let p = r.player(man).unwrap();
+        assert!(posted.is_empty() && p.partner() & 3 == 0);
+        assert!(p.contentment()[4] < private || private == 0, "{private} {:?}", p.contentment());
+
+        // The care home takes his star airs.
+        let (mut r, ..) = load(CIVIL, 0);
+        let p = r.player_mut(man).unwrap();
+        p.set_traits([p.traits()[0], p.traits()[1] | STAR_AIRS]);
+        let (s, after) = seed(CIVIL_HAPPENINGS, 2);
+        let (posted, random) = run(&mut r, club, &mut Vec::new(), s);
+        assert!(random == after);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x439, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(r.player(man).unwrap().traits()[1] & STAR_AIRS, 0);
+        // Without them nothing is told.
+        let (posted, _) = run(&mut r, club, &mut Vec::new(), s);
+        assert!(posted.is_empty());
+
+        // A nurse: a new girlfriend.
+        let (mut r, ..) = load(CIVIL, 0);
+        let (s, _) = seed(CIVIL_HAPPENINGS, 3);
+        let (posted, _) = run(&mut r, club, &mut Vec::new(), s);
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().partner() & 3, GIRLFRIEND);
+
+        // No one serving: no draw, no news.
+        let (mut r, ..) = load(0, 0);
+        let mut random = Random::new(7);
+        let day = today(&r);
+        assert!(!service(&mut r, club, day, &mut Vec::new(), &tables, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(7));
     }
 }

@@ -1401,7 +1401,14 @@ impl Cycle {
                         // What it tells comes up before the day's
                         // matches (`FUN_005f1eaf`, the window waiting).
                         if let Some(gates) = &slots {
-                            news = crate::training_day::news(records, today, gates, &mut season.recent_events, &mut season.random);
+                            news = crate::training_day::news(
+                                records,
+                                today,
+                                gates,
+                                &mut season.recent_events,
+                                &self.data.rules.first_season,
+                                &mut season.random,
+                            );
                         }
                         // The day's league games, behind its routine and
                         // on its own day: where the original lets its

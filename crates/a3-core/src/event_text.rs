@@ -52,6 +52,9 @@ pub enum Fill {
     /// `%1` a man's name and `%2` his partner's first name, from the
     /// first names of his nation (`FUN_00600f2f` with `FUN_0070173f`).
     Partnered(u16),
+    /// `%1` a man's name and `%2` nothing (`FUN_00600f2f` handed an
+    /// empty string, as the news of a man's service is).
+    NumberedOne(u16),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -142,6 +145,7 @@ pub fn make(
         Fill::NamedNumber(id, n) => body.replacen("%s", &name(id), 1).replacen("%d", &n.to_string(), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),
         Fill::Partnered(id) => numbered(body, &[name(id), partner(id)]),
+        Fill::NumberedOne(id) => numbered(body, &[name(id), String::new()]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),

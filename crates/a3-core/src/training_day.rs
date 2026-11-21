@@ -615,18 +615,20 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// (`FUN_005e2bb9`), neither built; else on every third half week by the
 /// club's number the club's youth walks its week, the human told
 /// ([`crate::youth_week::walk`]). A picked category's handler that
-/// posts nothing goes on so too: category 1 ([`crate::news::children`])
-/// does here. The others are not built, and the probe's trace of save
+/// posts nothing goes on so too: categories 1 ([`crate::news::children`])
+/// and 2 ([`crate::news::service`]) do here. The others are not built, and the probe's trace of save
 /// A's day 63 ends that day's news at category 19's pick of the player,
 /// so another picked category stands for the day's whole news here.
 /// `recent` are the events lately met
-/// ([`crate::season::Season::recent_events`]). (The town's share in the
+/// ([`crate::season::Season::recent_events`]), `tables` those a new
+/// girlfriend's name and birthday are drawn from. (The town's share in the
 /// stadium's building after a youth's quiet week is not built either.)
 pub fn news(
     records: &mut Records,
     today: i32,
     slots: &[i16],
     recent: &mut Vec<i32>,
+    tables: &crate::first_season::Tables,
     random: &mut Random,
 ) -> Vec<Posted> {
     let mut posted = Vec::new();
@@ -643,6 +645,7 @@ pub fn news(
         let told = match code {
             0 => false,
             1 => crate::news::children(records, club, recent, &mut posted, random),
+            2 => crate::news::service(records, club, today, recent, tables, &mut posted, random),
             19 => {
                 crate::news::about_a_player(squad, random);
                 true
@@ -1837,7 +1840,7 @@ pub(crate) fn injure(records: &mut Records, id: u16, kind: u8, days: i32, today:
 
 /// Knocked about for `days` (`FUN_00766af9`, the handle's +0x2f, which
 /// the record keeps as the day it lasts to, +0x1de).
-fn knock_for(records: &mut Records, id: u16, days: u16, today: i32) {
+pub(crate) fn knock_for(records: &mut Records, id: u16, days: u16, today: i32) {
     if let Some(p) = records.player_mut(id) {
         p.put::<u16>(0x1de, if days == 0 { 0 } else { (today as u16).wrapping_add(days) });
     }
