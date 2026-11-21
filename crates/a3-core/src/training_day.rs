@@ -616,13 +616,15 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// club's number the club's youth walks its week, the human told
 /// ([`crate::youth_week::walk`]). A picked category's handler that
 /// posts nothing goes on so too: categories 1 ([`crate::news::children`])
-/// to 6 ([`crate::news::suspicion`]), 7 ([`crate::news::affair_known`])
-/// and 12 ([`crate::news::new_affair`]) do here. The others are not built, and the probe's trace of save
+/// to 6 ([`crate::news::suspicion`]), 7 ([`crate::news::affair_known`]),
+/// 8 ([`crate::news::family`]) and 12 ([`crate::news::new_affair`]) do
+/// here. The others are not built, and the probe's trace of save
 /// A's day 63 ends that day's news at category 19's pick of the player,
 /// so another picked category stands for the day's whole news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
-/// girlfriend's name and birthday are drawn from. (The town's share in the
+/// girlfriend's name and birthday are drawn from, `league` the goal
+/// classes a father's club is weighed by. (The town's share in the
 /// stadium's building after a youth's quiet week is not built either.)
 pub fn news(
     records: &mut Records,
@@ -630,6 +632,7 @@ pub fn news(
     slots: &[i16],
     recent: &mut Vec<i32>,
     tables: &crate::first_season::Tables,
+    league: &LeagueTables,
     random: &mut Random,
 ) -> Vec<Posted> {
     let mut posted = Vec::new();
@@ -652,6 +655,7 @@ pub fn news(
             5 => crate::news::married(records, club, today, recent, &mut posted, random),
             6 => crate::news::suspicion(records, club, &mut posted, random),
             7 => crate::news::affair_known(records, club, &mut posted, random),
+            8 => crate::news::family(records, club, today, league, &mut posted, random),
             12 => crate::news::new_affair(records, club, &mut posted, random),
             19 => {
                 crate::news::about_a_player(squad, random);

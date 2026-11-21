@@ -1407,6 +1407,7 @@ impl Cycle {
                                 gates,
                                 &mut season.recent_events,
                                 &self.data.rules.first_season,
+                                &self.data.rules.league,
                                 &mut season.random,
                             );
                         }

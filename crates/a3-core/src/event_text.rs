@@ -74,6 +74,9 @@ pub enum Fill {
     /// affair's and `%4` nothing (`FUN_00601166` with `FUN_0070173f` and
     /// `FUN_007017db`).
     PartnerAndAffair(u16),
+    /// `%1` a man's name and `%2` the first name of his child of that
+    /// number (`FUN_00600f2f` with `FUN_00701818`, the names at +0x288).
+    Child(u16, u8),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -176,6 +179,7 @@ pub fn make(
         }
         Fill::Affair(id) => numbered(body, &[name(id), first_name(id, 0x284)]),
         Fill::PartnerAndAffair(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x284), String::new()]),
+        Fill::Child(id, k) => numbered(body, &[name(id), first_name(id, 0x288 + usize::from(k))]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),

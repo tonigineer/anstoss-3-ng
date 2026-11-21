@@ -10,7 +10,7 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and the handlers of categories 8 to 11 and of the
+//! +0x8a and +0x8b; and the handlers of categories 9 to 11 and of the
 //! later ones — nearest category 18 (`FUN_005fd4ae`), which rolls over the
 //! club's squad as 19 does and then picks one more weighted table when
 //! the talked-about player has no news flag yet.
@@ -20,8 +20,8 @@
 //! 6, a single man's days ([`single`]), a girlfriend's
 //! ([`with_girlfriend`]), a married man's ([`married`]) and his wife's
 //! suspicion ([`suspicion`]), are here, and categories 7, a wife who
-//! knows of the affair ([`affair_known`]), and 12, a man's new affair
-//! ([`new_affair`]).
+//! knows of the affair ([`affair_known`]), 8, a father's day with his
+//! family ([`family`]), and 12, a man's new affair ([`new_affair`]).
 
 use std::ops::RangeInclusive;
 
@@ -173,6 +173,33 @@ const NO_AFFAIR_FROM: u8 = 100;
 /// A new affair's first name (`FUN_007029a7`): one of the fifty past the
 /// first fifty of his nation's row, not his partner's.
 const AFFAIR_NAMES: (u32, u8) = (50, 50);
+
+/// The happenings of a married father's family, eighteen weighed 3
+/// (`FUN_0060be4d` over `DAT_00a325f8`, registered by `FUN_005fbbe5`
+/// from `DAT_0088e790`).
+const FAMILY_HAPPENINGS: [(u32, u16); 18] = [
+    (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6), (3, 7), (3, 8), (3, 9),
+    (3, 10), (3, 11), (3, 12), (3, 13), (3, 14), (3, 15), (3, 16), (3, 17), (3, 18),
+];
+/// A son bears one of the first fifty names of his row (+0x288 on,
+/// `FUN_00701ffa`), a daughter one of the fifty after.
+const SONS_NAMES: u8 = 0x32;
+/// The youngest child born less than this many days ago keeps his father
+/// awake (`FUN_00702084`).
+const NEWBORN_DAYS: i32 = 0xb4;
+/// A father older than this goes roller-skating with his son.
+const SKATING_FROM: i32 = 0x19;
+/// The knock the skating leaves (the handle's +0x2f).
+const GRAZED_DAYS: u16 = 7;
+/// The months a school's parents' evening falls in (`DAT_00b5cbdc`):
+/// November, and January to April.
+const PARENTS_EVENING: [u16; 5] = [11, 1, 2, 3, 4];
+/// From this day (`DAT_00b5cbd4`) a son is mocked at school for his
+/// father's club missing its goal.
+const MOCKED_FROM: i32 = 100;
+/// The children's toys: an injury of kind 15 with the kind's own days
+/// (`FUN_00766b92(15, -1)`, the table at `DAT_008ac341`).
+const TOYS_INJURY: (u8, i32) = (15, 21);
 
 /// The category table (`DAT_0088e128`, 24 pairs of weight and code
 /// registered at a cap of 10 000): a total weight of 2100, the codes 1
@@ -1075,9 +1102,232 @@ fn drawn_from(records: &Records, club: (u16, u16), keep: impl Fn(&crate::records
         .collect()
 }
 
-/// Whether a text is one of categories 3 to 7's and 12's.
+/// The picked category 8 (`case 8` with `FUN_005fc5b5`): one of the
+/// club's own real players married and with children is drawn (0x23 at
+/// most in the list) and has a day with his family ([`family_day`]);
+/// with none the news did not take place.
+pub fn family(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    league: &crate::league::LeagueTables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let men = drawn_from(records, club, |p| p.partner() & 3 == WIFE && p.children() > 0);
+    if men.is_empty() {
+        return false;
+    }
+    let id = men[random.below(men.len() as u32) as usize];
+    family_day(records, club, id, today, league, posted, random);
+    true
+}
+
+/// A father's day (`FUN_005fbbfd`, "EreignisKinderImAlter"): one of
+/// eighteen happenings weighed alike, most about one of his children of
+/// an age ([`child`], drawn before the other gates are asked). Told as
+/// plain texts: grazed roller-skating with a son of 8 to 14, knocked a
+/// week, the father older than 25 and neither out nor knocked (0x46c); a
+/// cow on a farm, a child of 6 to 14 (0x46d); the toys he falls over,
+/// three weeks out, with more than two children and not out (0x47a).
+/// The others move his distractions (+0x294, `FUN_00701210`) and are
+/// told with values beside the text (`FUN_00601043`, `FUN_006012df`,
+/// `FUN_00601467`), which the replica does not post: a baby under 180
+/// days old crying at night, 5 (0x46b); at the parents' evening, from
+/// November to April, a son of 6 to 14 or a daughter of 12 to 16, 4
+/// (0x46e, 0x46f); a son of 14 to 17 wrecking the car, 4 and a draw of 4
+/// (0x470); a daughter of 12 to 16 running away, 5 and a draw of 5
+/// (0x471); a son of 13 to 16 breaking into a car, twice in the table, 4
+/// and a draw of 5 (0x472); from day 100 a son of 6 to 15 mocked for the
+/// club missing its goal ([`crate::league::goal_missing`]), 2 (0x474);
+/// with the two calm, his wife's broken leg, two sons of 3 to 14, 2
+/// (0x475), the hamster, two children of 3 to 14, 5 (0x476), two of 11 to
+/// 14 smoking, 5 and his private life 3 (0x477), the children's mess
+/// with more than two, 4 (0x479); a daughter of 13 to 16 kissing the
+/// neighbours' boy, 3 (0x478), or of 10 to 16 flooding the flat, the
+/// table's last two, 4 (0x47c). The fight of two sons (0x47b) no
+/// happening tells.
+fn family_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    today: i32,
+    league: &crate::league::LeagueTables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    let happening = weighed(&FAMILY_HAPPENINGS, random);
+    let Some(p) = records.player(id) else { return };
+    let married = p.partner() & 3 == WIFE;
+    let calm = state(p) == 0;
+    let children = p.children();
+    let evening = PARENTS_EVENING.contains(&records.globals.date()[1]);
+    let distract = |records: &mut Records, by: i32| change(records, id, DISTRACTION, by);
+    let pair = |records: &Records, kind: Kid, years: RangeInclusive<i32>, random: &mut Random| {
+        let one = child(records, id, kind, years.clone(), random);
+        let other = child(records, id, kind, years, random);
+        married && calm && one.is_some() && other.is_some() && one != other
+    };
+    match happening {
+        1 => {
+            if children > 0 && days_since_youngest(records, id) < NEWBORN_DAYS {
+                distract(records, 0);
+                distract(records, -5);
+            }
+        }
+        2 => {
+            let birth = (p.birth_day(), p.birth_month(), p.birth_year() as i16);
+            if years_since(records, birth) > SKATING_FROM
+                && crate::load::days_to(&records.globals, p.injured_to()) == 0
+                && knocked_days(p, today) == 0
+            {
+                if let Some(k) = child(records, id, Kid::Son, 8..=14, random) {
+                    crate::training_day::knock_for(records, id, GRAZED_DAYS, today);
+                    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x46c, fill: Fill::Child(id, k) });
+                }
+            }
+        }
+        3 => {
+            let k = child(records, id, Kid::Any, 6..=14, random);
+            if let (true, Some(k)) = (married, k) {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x46d, fill: Fill::Child(id, k) });
+            }
+        }
+        4 | 5 => {
+            let (kind, years) = if happening == 4 { (Kid::Son, 6..=14) } else { (Kid::Daughter, 12..=16) };
+            if child(records, id, kind, years, random).is_some() && married && evening {
+                distract(records, 0);
+                distract(records, -4);
+            }
+        }
+        6 => {
+            if child(records, id, Kid::Son, 14..=17, random).is_some() && married {
+                distract(records, 0);
+                let more = random.below(4) as i32;
+                distract(records, -4 - more);
+            }
+        }
+        7..=9 => {
+            let (kind, years, by) = if happening == 7 { (Kid::Daughter, 12..=16, -5) } else { (Kid::Son, 13..=16, -4) };
+            if child(records, id, kind, years, random).is_some() && married {
+                let more = random.below(5) as i32;
+                distract(records, by - more);
+            }
+        }
+        10 => {
+            let missing = records.team(club.0, club.1).map_or(0, |t| crate::league::goal_missing(records, league, t));
+            if today >= MOCKED_FROM && missing != 0 && child(records, id, Kid::Son, 6..=15, random).is_some() && married {
+                distract(records, -2);
+            }
+        }
+        11 => {
+            if pair(records, Kid::Son, 3..=14, random) {
+                distract(records, -2);
+            }
+        }
+        12 => {
+            if pair(records, Kid::Any, 3..=14, random) {
+                distract(records, -5);
+            }
+        }
+        13 => {
+            if pair(records, Kid::Any, 11..=14, random) {
+                change(records, id, PRIVATE, -3);
+                distract(records, -5);
+            }
+        }
+        14 | 17 | 18 => {
+            let (years, by) = if happening == 14 { (13..=16, -3) } else { (10..=16, -4) };
+            if child(records, id, Kid::Daughter, years, random).is_some() {
+                distract(records, by);
+            }
+        }
+        15 => {
+            if married && calm && children > 2 {
+                distract(records, -4);
+            }
+        }
+        16 => {
+            if children > 2 && crate::load::days_to(&records.globals, p.injured_to()) == 0 {
+                crate::training_day::injure(records, id, TOYS_INJURY.0, TOYS_INJURY.1, today);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x47a, fill: Fill::Partnered(id) });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Which of his children [`child`] draws among (`FUN_007021cb`'s first
+/// argument: 0, 1, any other).
+#[derive(Clone, Copy)]
+enum Kid {
+    Son,
+    Daughter,
+    Any,
+}
+
+/// One of his children of `kind` whose age (`FUN_0070202a`, the birth
+/// dates at +0x174) lies in `years`, drawn (`FUN_007021cb`): his number,
+/// none with no draw.
+fn child(records: &Records, id: u16, kind: Kid, years: RangeInclusive<i32>, random: &mut Random) -> Option<u8> {
+    let p = records.player(id)?;
+    let fits: Vec<u8> = (0..p.children().clamp(0, MOST_CHILDREN) as u8)
+        .filter(|&k| {
+            let son = p.get::<u8>(0x288 + usize::from(k)) < SONS_NAMES;
+            match kind {
+                Kid::Son => son,
+                Kid::Daughter => !son,
+                Kid::Any => true,
+            }
+        })
+        .filter(|&k| years.contains(&years_since(records, birth_date(p, k))))
+        .collect();
+    (!fits.is_empty()).then(|| fits[random.below(fits.len() as u32) as usize])
+}
+
+/// The day of birth of his child `k` (day, month, year from +0x174).
+fn birth_date(p: &crate::records::Player, k: u8) -> (u8, u8, i16) {
+    let at = BIRTH_DATES + 4 * usize::from(k);
+    (p.get::<u8>(at), p.get::<u8>(at + 1), p.get::<i16>(at + 2))
+}
+
+/// Full years since a date as the game counts them (`FUN_0067582a`):
+/// one more once its day of the year is reached, none below nought
+/// before.
+fn years_since(records: &Records, (day, month, year): (u8, u8, i16)) -> i32 {
+    let [today, this_month, this_year] = records.globals.date().map(|w| i32::from(w as i16));
+    let years = this_year - i32::from(year) - 1;
+    let (day, month) = (i32::from(day), i32::from(month));
+    if month < this_month || month == this_month && day <= today {
+        years + 1
+    } else {
+        years.max(0)
+    }
+}
+
+/// Days since his youngest child was born (`FUN_00702084`), -1 with none.
+fn days_since_youngest(records: &Records, id: u16) -> i32 {
+    let Some(p) = records.player(id) else { return -1 };
+    if p.children() < 1 {
+        return -1;
+    }
+    let (day, month, year) = birth_date(p, (p.children().min(MOST_CHILDREN) - 1) as u8);
+    let [d, m, y] = records.globals.date().map(|w| i32::from(w as i16));
+    crate::goodbye::day_number(d, m, y) - crate::goodbye::day_number(day.into(), month.into(), year.into())
+}
+
+/// The days he is still knocked about, as the training's handle holds
+/// them (+0x2f, which `FUN_00636638` reckons out of the day at +0x1de).
+fn knocked_days(p: &crate::records::Player, today: i32) -> i32 {
+    match p.get::<u16>(0x1de) {
+        0 => 0,
+        to => (i32::from(to) - today).max(0),
+    }
+}
+
+/// Whether a text is one of categories 3 to 8's and 12's.
 pub fn partner_text(text: u16) -> bool {
-    (0x44b..=0x46a).contains(&text) || (0x4e3..=0x4e5).contains(&text) || text == 0x4d4 || text == 0x7be
+    (0x44b..=0x47c).contains(&text) || (0x4e3..=0x4e5).contains(&text) || text == 0x4d4 || text == 0x7be
 }
 
 /// One draw over a weighed table (`FUN_0060be4d` registered with no cap
@@ -1741,6 +1991,111 @@ mod tests {
         let (mut r, club, _) = load(WIFE, 0);
         let mut random = Random::new(3);
         assert!(!new_affair(&mut r, club, &mut Vec::new(), &mut random));
+        assert!(random == Random::new(3));
+    }
+
+    /// Category 8 on A's human squad, one married father of a son of ten:
+    /// roller-skating grazes him a week (0x46c, the son named), not when
+    /// he is knocked already; the toys of three children put him three
+    /// weeks out (0x47a); a baby born today costs him 5 of his
+    /// distractions, told with values and so not posted here. A squad
+    /// with no married father draws nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_8_tells_of_a_fathers_family() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let words = crate::words::Words::load(&exe).unwrap();
+        let league = crate::league::LeagueTables::load(&exe).unwrap();
+        // Every man of the squad with a girlfriend, the man married, 30,
+        // fit, with children born `ago` years before today, the first a
+        // son (name 7), the others daughters.
+        let load = |children: i16, ago: u16| {
+            let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+            let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+            let club = (u16::from(hc), hn as u16);
+            let squad = a.team(club.0, club.1).unwrap().players();
+            let man = squad[3];
+            let [d, m, y] = a.globals.date();
+            for &id in &squad {
+                a.player_mut(id).unwrap().set_partner(GIRLFRIEND);
+            }
+            let p = a.player_mut(man).unwrap();
+            p.set_partner(WIFE);
+            p.set_birth_year(y - 30);
+            p.set_injured_to([0, 0]);
+            p.put::<u16>(0x1de, 0);
+            p.set_children(children);
+            p.set_children_names([7, 60, 61, 62, 63]);
+            for k in 0..children as usize {
+                let at = BIRTH_DATES + 4 * k;
+                p.put::<u8>(at, d as u8);
+                p.put::<u8>(at + 1, m as u8);
+                p.put::<u16>(at + 2, y - ago);
+            }
+            let mut c = p.contentment();
+            c[DISTRACTION] = 80;
+            p.set_contentment(c);
+            (a, club, man)
+        };
+        let seed = |n: u16| {
+            (0..10_000)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(1);
+                    weighed(&FAMILY_HAPPENINGS, &mut r) == n
+                })
+                .unwrap()
+        };
+        let told = |r: &Records, posted: &Posted, man: u16| {
+            let event = crate::event_text::make(r, &texts, &|_| String::new(), &words.first_names, posted);
+            assert!(!event.text.contains('%') && event.text.contains(&r.known_as(man).unwrap()), "{}", event.text);
+            event.text
+        };
+
+        // Roller-skating with his son of ten.
+        let (mut r, club, man) = load(1, 10);
+        let today = i32::from(r.globals.day());
+        let mut posted = Vec::new();
+        assert!(family(&mut r, club, today, &league, &mut posted, &mut Random::new(seed(2))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x46c, fill: Fill::Child(man, 0) }]);
+        let son = &words.first_names[usize::from(r.player(man).unwrap().names_nation()) * 100 + 7];
+        assert!(told(&r, &posted[0], man).contains(son.as_str()));
+        assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), today as u16 + 7);
+        // Knocked already: nothing.
+        let mut posted = Vec::new();
+        assert!(family(&mut r, club, today, &league, &mut posted, &mut Random::new(seed(2))));
+        assert!(posted.is_empty());
+        // A son too young for it.
+        let (mut r, club, _) = load(1, 5);
+        let mut posted = Vec::new();
+        assert!(family(&mut r, club, today, &league, &mut posted, &mut Random::new(seed(2))));
+        assert!(posted.is_empty());
+
+        // The toys of three children.
+        let (mut r, club, man) = load(3, 4);
+        let mut posted = Vec::new();
+        assert!(family(&mut r, club, today, &league, &mut posted, &mut Random::new(seed(16))));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x47a, fill: Fill::Partnered(man) }]);
+        told(&r, &posted[0], man);
+        let p = r.player(man).unwrap();
+        assert_eq!((p.injury_kind(), crate::load::days_to(&r.globals, p.injured_to())), TOYS_INJURY);
+
+        // A baby born today: 5 less, nothing posted.
+        let (mut r, club, man) = load(1, 0);
+        let mut posted = Vec::new();
+        assert!(family(&mut r, club, today, &league, &mut posted, &mut Random::new(seed(1))));
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().contentment()[DISTRACTION], 75);
+
+        // No married father: no one, no draw.
+        let (mut r, club, man) = load(0, 0);
+        r.player_mut(man).unwrap().set_partner(GIRLFRIEND);
+        let mut random = Random::new(3);
+        assert!(!family(&mut r, club, today, &league, &mut Vec::new(), &mut random));
         assert!(random == Random::new(3));
     }
 }
