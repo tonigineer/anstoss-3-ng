@@ -12,7 +12,7 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; the handlers of categories 20 to 25; and three of
+//! +0x8a and +0x8b; the handlers of categories 22 to 25; and three of
 //! the hobbies of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
@@ -26,8 +26,10 @@
 //! a man's new affair ([`new_affair`]), and the squad's own, 50, a
 //! bootlicker ([`bootlicker`]), 51, an informer ([`informer`]), 52, the
 //! mole who talks to the press ([`moles`]), and 55, a man's habits
-//! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), and 19, a
-//! man's hobby's day ([`about_a_player`]).
+//! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), 19, a man's
+//! hobby's day ([`about_a_player`]), 20, the press on a man
+//! ([`press_on_a_player`]), and 21, a man against his trainer
+//! ([`revolt`]).
 
 use std::ops::RangeInclusive;
 
@@ -932,9 +934,7 @@ fn hobby_day(
             }
         }
         FOOD => {
-            let shown = i32::from(p.condition()) / 100;
-            let shown = if p.shown() & SMOKES == 0 { shown } else if shown < 5 { 0 } else { shown - 5 };
-            if shown >= FOOD_UNDER {
+            if shown_condition(p) >= FOOD_UNDER {
                 return;
             }
             let [day, month, _] = records.globals.date().map(|w| w as i16);
@@ -1027,6 +1027,240 @@ fn hobby_day(
     posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
 }
 
+/// Category 20's press on a man (`FUN_005e56a5`): his match bits (+0x25b,
+/// the handle's +0x57) that he stood the last match, his grade in it
+/// twice over (+0x273's low four bits, the handle's +0xb8,
+/// `FUN_00705e9b`) of a flop at least, his season's grades (`FUN_00705eb6`)
+/// above, his league matches (+0x253, the handle's +0x54) above.
+const STOOD_THE_MATCH: u8 = 1;
+const FLOP_GRADE: u8 = 10;
+const FLOP_SEASON: i32 = 40;
+const FLOP_MATCHES: u8 = 10;
+const FLOP_PRESS: i32 = -6;
+/// The sensitive man (the second trait word's 0x400, the handle's +0x12)
+/// under this morale (+0x296, the handle's +0xca) and of this grade.
+const SENSITIVE: u16 = 0x400;
+const SENSITIVE_MORALE: u8 = 80;
+const SENSITIVE_GRADE: u8 = 8;
+/// The man in his contract's last year (the handle's +0x94) above this
+/// strength.
+const ABROAD_STRENGTH: u8 = 9;
+/// The millionaire under this content with his private life (+0x293,
+/// `FUN_007011f1`), above this strength and age (`FUN_006ff01b`).
+const MILLIONAIRE_PRIVATE: u8 = 90;
+const MILLIONAIRE_STRENGTH: u8 = 8;
+const MILLIONAIRE_AGE: i32 = 24;
+const PRESS_KNOCK: i32 = -8;
+const MILLIONAIRE_PRESS: i32 = -10;
+
+/// The picked category 20 (`case 0x14` with `FUN_005e56a5`,
+/// "EreignisProbPresse"): one man drawn over the club's squad, as for
+/// category 18; a player-manager ends the day's news untold. The press
+/// takes up the first that fits him, his contentment with the press
+/// (`FUN_00700fa2`) down: a flop who stood the last match with a grade of
+/// 5 or worse, his season's grades above 40, more than ten league
+/// matches, his club short of its season's goal (`FUN_00775f0a`), six
+/// down (headline 0x5ef, his name and the club's manager's); a sensitive
+/// man under 80 of morale with a grade of 4 or worse, eight (0x5f1); a
+/// man in his contract's last year above strength 9, off abroad, eight
+/// (0x5f2); a millionaire under 90 content with his private life, above
+/// strength 8 and older than 24, ten (0x5f4). The others never come:
+/// the flop's season's grades come to 35 at most, the man of the crisis
+/// (0x5f0) asks for more than three of the manager's last three matches
+/// (`FUN_005ee8c6` counts three at most), the national call (0x5f3)
+/// stands behind a constant false. The
+/// headlines (`FUN_00789c32`) are not posted here. With none of them the
+/// news goes on.
+pub fn press_on_a_player(
+    records: &mut Records,
+    club: (u16, u16),
+    league: &crate::league::LeagueTables,
+    random: &mut Random,
+) -> bool {
+    let Some(id) = drawn_man(records, club, random) else { return false };
+    if id > LAST_REAL_ID {
+        return true;
+    }
+    let (Some(team), Some(p)) = (records.team(club.0, club.1), records.player(id)) else { return false };
+    let missing = crate::league::goal_missing(records, league, team);
+    let grade = p.grade() & 0xf;
+    let age = years_since(records, (p.birth_day(), p.birth_month(), p.birth_year() as i16));
+    let by = if p.match_bits() & STOOD_THE_MATCH != 0
+        && grade >= FLOP_GRADE
+        && season_grades(p) > FLOP_SEASON
+        && p.league_matches() > FLOP_MATCHES
+        && missing > 0
+    {
+        FLOP_PRESS
+    } else if p.morale() < SENSITIVE_MORALE && p.traits()[1] & SENSITIVE != 0 && grade >= SENSITIVE_GRADE {
+        PRESS_KNOCK
+    } else if crate::transfer_week::years_left(records, p) == 1 && p.strength() > ABROAD_STRENGTH {
+        PRESS_KNOCK
+    } else if p.contentment()[PRIVATE] < MILLIONAIRE_PRIVATE && p.strength() > MILLIONAIRE_STRENGTH && age > MILLIONAIRE_AGE {
+        MILLIONAIRE_PRESS
+    } else {
+        return false;
+    };
+    change(records, id, PRESS, by);
+    true
+}
+
+/// His season's grades (`FUN_00705eb6`): over the matchdays he played
+/// (+0x319, bit 0x80), five times the mean of the grade in bits 2 to 4;
+/// none played, nought.
+fn season_grades(p: &crate::records::Player) -> i32 {
+    let played: Vec<i32> = p.matchdays().iter().filter(|&&d| d & 0x80 != 0).map(|&d| i32::from(d & 0x1c) >> 2).collect();
+    if played.is_empty() {
+        return 0;
+    }
+    played.iter().sum::<i32>() * 10 / played.len() as i32 / 2
+}
+
+/// Category 21's happenings (`FUN_0060be4d` over `DAT_00a2eb5c`,
+/// registered by `FUN_005e59e6` from `DAT_0088d8f8` at a cap of 10 000):
+/// six weighed 10, so the rest of the roll is none; one met lately is
+/// not met again (26 500 and its number).
+const REVOLTS: [(u32, u16); 6] = [(10, 1), (10, 2), (10, 3), (10, 4), (10, 5), (10, 6)];
+const REVOLTS_CAP: u32 = 10_000;
+const REVOLT_MET: i32 = 0x6784;
+/// The second trait word's bits that keep a man out of it.
+const LOYAL: u16 = 0x120;
+/// Under this content with the trainer (`FUN_007008b9`) a man rebels,
+/// under the other he kicks; under this the board's confidence
+/// (`FUN_007701b2`).
+const REBEL_CONTENT: i32 = 0x50;
+const KICK_CONTENT: i32 = 0x5a;
+const REBEL_CONFIDENCE: i32 = 0x50;
+/// The conditioning units of a plan (`FUN_005ea83f` asks for each).
+const CONDITIONING: [u8; 3] = [0x11, 0x10, 6];
+/// More matchdays than the first and fewer than the second, and the
+/// condition as a list shows it under this.
+const UNFIT_ROUNDS: (usize, usize) = (5, 15);
+const UNFIT_CONDITION: i32 = 0x32;
+/// The trainer's grievances of his flags (+0x1b0, the handle's +0x20).
+const GRIEVED: u32 = 0x5000;
+/// The offence a foul on the trainer notes (`FUN_00702d95(1)`).
+const FOUL_OFFENCE: u8 = 1;
+
+/// The picked category 21 (`case 0x15` with `FUN_005e5de6`): nothing for
+/// a club without its trainer's number (+0x8a); else one man drawn over
+/// the squad, and a real one without the loyal traits (0x120) has his
+/// day ([`revolt_day`]). Otherwise the news goes on.
+/// `units` are today's three sessions of the club's plan.
+pub fn revolt(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    units: [u8; 3],
+    league: &crate::league::LeagueTables,
+    (recent, posted): (&mut Vec<i32>, &mut Vec<Posted>),
+    random: &mut Random,
+) -> bool {
+    let trainer = records.team(club.0, club.1).map_or(0, |t| t.humans()[0]);
+    if trainer == 0 {
+        return false;
+    }
+    let Some(id) = drawn_man(records, club, random) else { return false };
+    if id > LAST_REAL_ID || records.player(id).is_none_or(|p| p.traits()[1] & LOYAL != 0) {
+        return false;
+    }
+    revolt_day(records, club, id, usize::from(trainer - 1), today, units, league, recent, posted, random)
+}
+
+/// A man against his trainer (`FUN_005e5a01`, "EreignisAufstand %d"):
+/// one of six happenings, none in most rolls, which goes on with the
+/// news; one met lately ends it untold. Every other ends it, told or not.
+/// 1: under 80 content with the trainer, the manager without the
+/// majority of his club's shares (`FUN_00406b4f`) and a plan for today
+/// (`FUN_005ea8cc`), the man refuses him — his contentment with the
+/// trainer (+0x28f, `FUN_00700846`) to nought, told with values beside
+/// the text (0x5f5, `FUN_00601043`), which the replica does not post.
+/// 2: under 90, a kick from behind in a practice match (0x5f6, whose
+/// `%s` the numbered fill leaves standing). 3: under 80, a conditioning
+/// unit today and the match tomorrow (the club's +0xb44), the club short
+/// of its season's goal and the board's confidence under 80: he
+/// complains to a reporter (0x5f7; headline 0x5f8). 4: under 80, not
+/// all three conditioning units today and no match tomorrow, the human
+/// club's two bytes rising (`FUN_0069947b`), past the fifth matchday and
+/// before the fifteenth, not out unvisited (+0x270's low six bits,
+/// `FUN_007061a0`), a condition under 50 and the board's confidence
+/// under 80: he finds the team unfit (0x5f9; headline 0x5fa). 5: one with
+/// the trainer's grievances 0x1000 or 0x4000 elbows him (0x5fb). 6: one
+/// with them knees him, an offence of level 1 noted, and the manager is
+/// asked what he does (0x5fc, `FUN_005f29bc`'s question, not built:
+/// nothing posted). The posts take his name and, as `%2`, the manager's
+/// last name (the manager's +0xa), which neither text asks for.
+#[allow(clippy::too_many_arguments)]
+fn revolt_day(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    manager: usize,
+    today: i32,
+    units: [u8; 3],
+    league: &crate::league::LeagueTables,
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let happening = weighed_within(&REVOLTS, REVOLTS_CAP, random);
+    if happening == 0 {
+        return false;
+    }
+    if !meet(recent, REVOLT_MET + i32::from(happening)) {
+        return true;
+    }
+    let (Some(team), Some(p)) = (records.team(club.0, club.1), records.player(id)) else { return true };
+    let content = crate::mood::parts(p)[0];
+    let confidence = crate::stock::confidence(records, manager);
+    let conditioning = CONDITIONING.map(|unit| units.contains(&unit));
+    let next = i32::from(team.next_day());
+    let text = match happening {
+        1 => {
+            let planned = units.iter().any(|&u| u != crate::training::FREE);
+            if content < REBEL_CONTENT && !crate::stock::majority(records, manager) && planned {
+                if let Some(p) = records.player_mut(id) {
+                    let mut parts = p.contentment();
+                    parts[0] = 0;
+                    p.set_contentment(parts);
+                    p.set_morale(crate::mood::morale(p));
+                }
+            }
+            return true;
+        }
+        2 if content < KICK_CONTENT => 0x5f6,
+        3 if content < REBEL_CONTENT
+            && conditioning.contains(&true)
+            && next == today + 1
+            && crate::league::goal_missing(records, league, team) > 0
+            && confidence < REBEL_CONFIDENCE =>
+        {
+            0x5f7
+        }
+        4 if content < REBEL_CONTENT
+            && conditioning.contains(&false)
+            && next > today + 1
+            && rising(records, team)
+            && (UNFIT_ROUNDS.0 + 1..UNFIT_ROUNDS.1).contains(&crate::league::matchdays(records, team))
+            && p.visits() & 0x3f == 0
+            && shown_condition(p) < UNFIT_CONDITION
+            && confidence < REBEL_CONFIDENCE =>
+        {
+            0x5f9
+        }
+        5 if p.flags() & GRIEVED != 0 => 0x5fb,
+        6 if p.flags() & GRIEVED != 0 => {
+            if let Some(p) = records.player_mut(id) {
+                crate::discipline::note_offence(p, FOUL_OFFENCE);
+            }
+            return true;
+        }
+        _ => return true,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+    true
+}
+
 /// The team's mood moved by `by` within 0 to 200 (`FUN_00698ef6` on the
 /// club's +0x9e, the team's +0xc4), the squad's reasons of mood left as
 /// they stand.
@@ -1053,11 +1287,24 @@ fn tire(records: &mut Records, id: u16, by: i32) {
 /// two bytes at +0x11e4 rising (`FUN_0069947b`).
 fn nose_due(records: &Records, club: (u16, u16), league: &crate::league::LeagueTables) -> bool {
     let Some(team) = records.team(club.0, club.1) else { return false };
-    let rising = usize::from(team.human())
+    crate::league::matchdays(records, team) > NOSE_AFTER
+        && crate::league::goal_missing(records, league, team) > NOSE_SHORT
+        && rising(records, team)
+}
+
+/// The human club's two bytes at +0x11e4 rising (`FUN_0069947b`).
+fn rising(records: &Records, team: &crate::records::Team) -> bool {
+    usize::from(team.human())
         .checked_sub(1)
         .and_then(|s| records.extras.get(s))
-        .is_some_and(|e| e.get::<u8>(RISING) < e.get::<u8>(RISING + 1));
-    crate::league::matchdays(records, team) > NOSE_AFTER && crate::league::goal_missing(records, league, team) > NOSE_SHORT && rising
+        .is_some_and(|e| e.get::<u8>(RISING) < e.get::<u8>(RISING + 1))
+}
+
+/// His condition as a list shows it (`FUN_00457e00`): a smoker's five
+/// less, never under nought.
+fn shown_condition(p: &crate::records::Player) -> i32 {
+    let shown = i32::from(p.condition()) / 100;
+    if p.shown() & SMOKES == 0 { shown } else if shown < 5 { 0 } else { shown - 5 }
 }
 
 /// Another man of the club's squad (`FUN_005ec9d8`): its real players but
@@ -2533,7 +2780,13 @@ pub fn partner_text(text: u16) -> bool {
 /// One draw over a weighed table (`FUN_0060be4d` registered with no cap
 /// beyond the weights): the first entry heavier than what the roll left.
 fn weighed(table: &[(u32, u16)], random: &mut Random) -> u16 {
-    let mut rest = random.below(table.iter().map(|&(weight, _)| weight).sum());
+    weighed_within(table, 0, random)
+}
+
+/// One draw over a weighed table registered at a cap (`FUN_0060bdb7`
+/// raises it to the weights' sum): a roll past the weights draws 0.
+fn weighed_within(table: &[(u32, u16)], cap: u32, random: &mut Random) -> u16 {
+    let mut rest = random.below(cap.max(table.iter().map(|&(weight, _)| weight).sum()));
     for &(weight, code) in table {
         if weight > rest {
             return code;
@@ -3119,6 +3372,140 @@ mod tests {
             let event = crate::event_text::make(&r, &texts, &|id| format!("<{id}>"), &[], &told(text)[0]).text;
             assert!(event.contains(&r.known_as(man).unwrap()), "{text:#x}: {event}");
         }
+    }
+
+    /// Categories 20 and 21 on A's human squad, the fourth man drawn: the
+    /// press takes eight off a sensitive man in poor form and off one in
+    /// his contract's last year, ten off a strong unhappy millionaire, and
+    /// lets an ordinary man be, the news going on. Category 21's roll
+    /// mostly draws nothing and goes on; a kick and an elbow are told by
+    /// his name, once only while they stand among the recent events; a
+    /// knee notes an offence untold; a refusal on a day of training puts
+    /// his contentment with the trainer to nought; a loyal man or a club
+    /// without its trainer's number has nothing of it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_20_and_21_tell_of_the_press_and_the_trainer() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = r.team(club.0, club.1).unwrap().player_count() as u32;
+        let man = r.team(club.0, club.1).unwrap().players()[3];
+        assert!(man <= LAST_REAL_ID);
+        let year = r.globals.start_year();
+        let press = |r: &Records| r.player(man).unwrap().contentment()[PRESS];
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let fourth = seed(&|r| r.below(count) == 3);
+
+        // An ordinary man: nothing, one draw.
+        let p = r.player_mut(man).unwrap();
+        p.set_traits([p.traits()[0], 0]);
+        p.set_strength(5);
+        p.set_contract(year + 3);
+        p.set_morale(100);
+        p.set_grade(4);
+        p.set_flags(0);
+        let mut parts = p.contentment();
+        parts[PRESS] = 60;
+        parts[PRIVATE] = 100;
+        p.set_contentment(parts);
+        let mut random = Random::new(fourth);
+        assert!(!press_on_a_player(&mut r, club, &league, &mut random));
+        let mut expected = Random::new(fourth);
+        expected.below(count);
+        assert!(random == expected);
+        assert_eq!(press(&r), 60);
+        // A sensitive man in poor form.
+        let p = r.player_mut(man).unwrap();
+        p.set_traits([p.traits()[0], SENSITIVE]);
+        p.set_morale(70);
+        p.set_grade(SENSITIVE_GRADE);
+        assert!(press_on_a_player(&mut r, club, &league, &mut Random::new(fourth)));
+        assert_eq!(press(&r), 52);
+        // In his contract's last year.
+        let p = r.player_mut(man).unwrap();
+        p.set_traits([p.traits()[0], 0]);
+        p.set_strength(10);
+        p.set_contract(year + 1);
+        assert!(press_on_a_player(&mut r, club, &league, &mut Random::new(fourth)));
+        assert_eq!(press(&r), 44);
+        // A strong unhappy millionaire past 24.
+        let p = r.player_mut(man).unwrap();
+        p.set_contract(year + 3);
+        p.set_birth_year(year - 30);
+        let mut parts = p.contentment();
+        parts[PRIVATE] = 80;
+        p.set_contentment(parts);
+        assert!(press_on_a_player(&mut r, club, &league, &mut Random::new(fourth)));
+        assert_eq!(press(&r), 34);
+        // His season's grades never pass 35.
+        let p = r.player_mut(man).unwrap();
+        p.set_matchdays([0x80 | 7 << 2; 46]);
+        assert_eq!(season_grades(p), 35);
+
+        // Category 21.
+        assert_ne!(r.team(club.0, club.1).unwrap().humans()[0], 0);
+        let happening = |k: u32| seed(&|r| r.below(count) == 3 && (k * 10..k * 10 + 10).contains(&r.below(REVOLTS_CAP)));
+        let training = [0x11, crate::training::FREE, crate::training::FREE];
+        let mut recent = Vec::new();
+        let mut posted = Vec::new();
+        let p = r.player_mut(man).unwrap();
+        let mut parts = p.contentment();
+        parts[0] = 60;
+        p.set_contentment(parts);
+        // Mostly nothing.
+        let none = seed(&|r| r.below(count) == 3 && r.below(REVOLTS_CAP) >= 60);
+        let mut random = Random::new(none);
+        assert!(!revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut random));
+        let mut expected = Random::new(none);
+        expected.below(count);
+        expected.below(REVOLTS_CAP);
+        assert!(random == expected && recent.is_empty() && posted.is_empty());
+        // A kick, once while it stands among the recent events.
+        let s = happening(1);
+        assert!(revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut Random::new(s)));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x5f6, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(recent, [REVOLT_MET + 2]);
+        assert!(revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut Random::new(s)));
+        assert_eq!(posted.len(), 1);
+        // An elbow and a knee from a man with the trainer's grievance.
+        r.player_mut(man).unwrap().set_flags(0x1000);
+        assert!(revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut Random::new(happening(4))));
+        assert_eq!(posted[1], Posted { club, code: PRIVATE_NEWS, text: 0x5fb, fill: Fill::NumberedOne(man) });
+        let offences = r.player(man).unwrap().offences();
+        assert!(revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut Random::new(happening(5))));
+        assert_eq!(posted.len(), 2);
+        assert_ne!(r.player(man).unwrap().offences(), offences);
+        r.player_mut(man).unwrap().set_flags(0);
+        // A refusal: nothing on a free day, nought on a day of training.
+        let s = happening(0);
+        let free = [crate::training::FREE; 3];
+        assert!(revolt(&mut r, club, 63, free, &league, (&mut recent, &mut posted), &mut Random::new(s)));
+        assert_eq!(r.player(man).unwrap().contentment()[0], 60);
+        recent.clear();
+        assert!(revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut Random::new(s)));
+        assert_eq!(r.player(man).unwrap().contentment()[0], 0);
+        assert_eq!(posted.len(), 2);
+        // A loyal man: nothing, one draw.
+        let p = r.player_mut(man).unwrap();
+        p.set_traits([p.traits()[0], 0x20]);
+        let mut random = Random::new(happening(1));
+        recent.clear();
+        assert!(!revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut random));
+        let mut expected = Random::new(happening(1));
+        expected.below(count);
+        assert!(random == expected && recent.is_empty());
+        // A club without its trainer's number: no draw.
+        let team = r.team_mut(club.0, club.1).unwrap();
+        let humans = team.humans();
+        team.set_humans([0, humans[1]]);
+        let mut random = Random::new(happening(1));
+        assert!(!revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut random));
+        assert!(random == Random::new(happening(1)));
     }
 
     /// Category 1 on A's human squad, one married man its only partner:

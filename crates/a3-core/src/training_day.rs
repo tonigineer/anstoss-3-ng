@@ -623,14 +623,16 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::news::informer`]), 52 ([`crate::news::moles`]) and 55
 /// ([`crate::news::habits`]) do here, and so does 19 for a man without a
 /// hobby ([`crate::news::about_a_player`]); 18 ([`crate::news::new_hobby`])
-/// and 19 for a man with one always end the news. The others (20 to 25)
-/// are not built, so another picked category stands for the day's whole
-/// news here.
+/// and 19 for a man with one always end the news; 20, the press on a man
+/// ([`crate::news::press_on_a_player`]), and 21, a man against his
+/// trainer ([`crate::news::revolt`]), go on when they tell nothing. The
+/// others (22 to 25) are not built, so another picked category stands
+/// for the day's whole news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
-/// classes a father's club is weighed by, `planned` whether a club's
-/// plan holds anything but free today ([`planned_today`]), `mood` what
+/// classes a father's club is weighed by, `plan` a club's three
+/// sessions of today ([`units_today`]), `mood` what
 /// the team's mood does to its squad, `reported` the humans' doping
 /// reports and `controls` where a reported club's positive control goes
 /// (event 0xcb). The group news of a club below 100 of mood
@@ -645,7 +647,7 @@ pub fn news(
     tables: &crate::first_season::Tables,
     league: &LeagueTables,
     mood: &MoodTables,
-    planned: &dyn Fn((u16, u16)) -> bool,
+    plan: &dyn Fn((u16, u16)) -> [u8; training::SESSIONS],
     (reported, controls): (&mut Reports, &mut Vec<crate::doping_control::Control>),
     random: &mut Random,
 ) -> Vec<Posted> {
@@ -669,6 +671,8 @@ pub fn news(
         }
         let code = crate::news::pick(random);
         let squad = records.team(club.0, club.1).map_or(0, |team| team.player_count());
+        let units = plan(club);
+        let planned = units.iter().any(|&u| u != training::FREE);
         let told = match code {
             0 => false,
             1 => crate::news::children(records, club, recent, &mut posted, random),
@@ -680,10 +684,10 @@ pub fn news(
             7 => crate::news::affair_known(records, club, &mut posted, random),
             8 => crate::news::family(records, club, today, league, &mut posted, random),
             9 => crate::news::engaged(records, club, recent, random),
-            10 => crate::news::low_spirits(records, club, planned(club), &mut posted, random),
+            10 => crate::news::low_spirits(records, club, planned, &mut posted, random),
             11 => crate::news::at_odds(records, club, today, &mut posted, random),
             12 => crate::news::new_affair(records, club, &mut posted, random),
-            50 => crate::news::bootlicker(records, club, today, planned(club), (league, mood), recent, &mut posted, random),
+            50 => crate::news::bootlicker(records, club, today, planned, (league, mood), recent, &mut posted, random),
             51 => crate::news::informer(records, club, &mut posted, random),
             52 => crate::news::moles(records, club, random),
             55 => crate::news::habits(records, club, league, &mut posted, random),
@@ -691,7 +695,9 @@ pub fn news(
                 crate::news::new_hobby(records, club, tables, &mut posted, random);
                 true
             }
-            19 => crate::news::about_a_player(records, club, today, planned(club), league, &mut posted, random),
+            19 => crate::news::about_a_player(records, club, today, planned, league, &mut posted, random),
+            20 => crate::news::press_on_a_player(records, club, league, random),
+            21 => crate::news::revolt(records, club, today, units, league, (recent, &mut posted), random),
             _ => true,
         };
         if told {
@@ -711,17 +717,18 @@ pub fn news(
 /// ([`crate::season::Season::reported`]).
 pub type Reports = [[bool; crate::records::MANAGERS]; crate::records::MANAGERS];
 
-/// Whether a human club's plan holds anything but free for today (the
-/// club object's +0xc0a row of the day, `FUN_005ea8cc`), as the day's
-/// training left it.
-pub fn planned_today(clubs: &BTreeMap<(usize, usize), ClubState>, world: &world::World, (country, number): (u16, u16), today: i32) -> bool {
+/// A human club's three sessions of today in its plan (the club object's
+/// +0xc0a row of the day, which `FUN_005ea83f` asks unit by unit, and
+/// `FUN_005ea8cc` whether any is not free), as the day's training left
+/// it; all free for a club the replica holds no plan of.
+pub fn units_today(clubs: &BTreeMap<(usize, usize), ClubState>, world: &world::World, (country, number): (u16, u16), today: i32) -> [u8; training::SESSIONS] {
     let weekday = today.rem_euclid(7) as usize;
     world
         .countries
         .iter()
         .position(|c| c.as_ref().is_some_and(|c| c.nation == country))
         .and_then(|slot| clubs.get(&(slot, usize::from(number))))
-        .is_some_and(|state| (0..training::SESSIONS).any(|k| state.training.unit(weekday, k) != training::FREE))
+        .map_or([training::FREE; training::SESSIONS], |state| std::array::from_fn(|k| state.training.unit(weekday, k)))
 }
 
 /// The tail's two draws of the day's news over the squad (`FUN_005ef8cc`).
