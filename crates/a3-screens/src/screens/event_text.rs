@@ -47,7 +47,18 @@ impl Screen for EventText {
         let Args::Event(posted) = args else { return };
         let Some(records) = cx.state.records.as_ref() else { return };
         let Some(texts) = EventTexts::load(&cx.game.dir) else { return };
-        let event = event_text::make(records, &texts, &|id| cx.game.text(id).to_owned(), &cx.game.rules.words.first_names, &posted);
+        let mut event = event_text::make(records, &texts, &|id| cx.game.text(id).to_owned(), &cx.game.rules.words.first_names, &posted);
+        // What only the game's world and money writing fill in.
+        match posted.fill {
+            event_text::Fill::Club => {
+                let slot = cx.game.world.slot_of(posted.club.0).unwrap_or(0);
+                event.text = cx.game.with_club(&event.text, (slot, usize::from(posted.club.1)));
+            }
+            event_text::Fill::FalseReport(_, amount) => {
+                event.text = event.text.replacen("%s", &super::playerinfo::money(cx.game, i64::from(amount)), 1);
+            }
+            _ => {}
+        }
         let mut who = String::new();
         if let Some(m) = usize::from(event.manager).checked_sub(1).and_then(|m| records.managers.get(m)) {
             who = format!("{} {}", m.first_name(), m.last_name());

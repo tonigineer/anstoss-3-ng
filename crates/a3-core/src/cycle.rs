@@ -1378,6 +1378,7 @@ impl Cycle {
                 let mut controls = Vec::new();
                 let mut cups = None;
                 let mut news = Vec::new();
+                let mut news_controls = Vec::new();
                 {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1410,6 +1411,7 @@ impl Cycle {
                                 &self.data.rules.league,
                                 &self.data.rules.discipline.mood,
                                 &|club| crate::training_day::planned_today(&season.clubs, &self.data.world, club, today),
+                                (&mut season.reported, &mut news_controls),
                                 &mut season.random,
                             );
                         }
@@ -1512,6 +1514,11 @@ impl Cycle {
                     }
                 }
                 self.day_events(news)?;
+                // A reported club's positive control (event 0xcb from
+                // `FUN_005db227`), posted in the day's news.
+                for control in news_controls {
+                    self.ask(Request::with(DOPING_CONTROL, Args::Doping(control)))?;
+                }
                 // The matches' dialogs come up as `FUN_00710839` posts
                 // them, on the day they are played, before the youth
                 // leagues and the world's day move it on.

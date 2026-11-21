@@ -84,6 +84,13 @@ pub enum Fill {
     /// `FUN_00730300`) rather than `ereignis.saq`'s, its `%s` a man's
     /// name (as `FUN_0074d2b5` builds a trial's end).
     GameNamed(u16),
+    /// The text's `v1` … `v20` the club's phrases (`FUN_00733486`), put
+    /// in where the window shows it, with the world's club names.
+    Club,
+    /// The first `%s` a human manager's name, by his number
+    /// (`FUN_006a537d`), the second an amount of money (`FUN_004daf8f`),
+    /// written where the window shows it.
+    FalseReport(u16, i32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,7 +171,14 @@ pub fn make(
     let body = text(posted.text);
     let text = match posted.fill {
         Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
-        Fill::Plain => body.to_owned(),
+        Fill::Plain | Fill::Club => body.to_owned(),
+        Fill::FalseReport(number, _) => {
+            let who = usize::from(number)
+                .checked_sub(1)
+                .and_then(|m| records.managers.get(m))
+                .map_or(String::new(), |m| format!("{} {}", m.first_name(), m.last_name()));
+            body.replacen("%s", &who, 1)
+        }
         Fill::Named(id) => body.replacen("%s", &name(id), 1),
         Fill::NamedNumber(id, n) => body.replacen("%s", &name(id), 1).replacen("%d", &n.to_string(), 1),
         Fill::Numbered(one, other) => numbered(body, &[name(one), name(other)]),

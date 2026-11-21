@@ -3,9 +3,11 @@
 //! advance `FUN_0064f981` runs it for the clubs whose slot its gates
 //! drew today, after the training).
 //!
-//! What is not here yet: the club's waiting-event gate `FUN_006a700a`,
-//! which draws once only in one of its late cases and finds nothing in
-//! the replica; the group news `FUN_005e3885` rolls 400 off the club's
+//! Before the pick stand the association's points for repeated doping
+//! ([`doping_penalty`]) and the doping reports against the club's trainer
+//! ([`doping_reports`]). What is not here yet: the appointments due that
+//! the waiting-event gate `FUN_006a700a` runs (it never ends the news);
+//! the group news `FUN_005e3885` rolls 400 off the club's
 //! fan byte (+0x9e), which the replica has no part of — on the compared
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
@@ -325,6 +327,140 @@ const NEWS: [(u32, u16); 24] = [
     (500, 52),
     (20, 55),
 ];
+
+/// The club's doping cases (club +0x115, team +0x13e): their count in the
+/// low three bits, the top three kept when the association acts.
+const DOPING_CASES: usize = 0x13e;
+const CASES_COUNT: u8 = 7;
+const CASES_KEPT: u8 = 0xe0;
+/// More cases than this, and the association acts.
+const CASES_TOLERATED: u8 = 2;
+/// Only before this half week of the season (`DAT_00b5cbd2 < 0x50`).
+const PENALTY_BEFORE: u16 = 0x50;
+/// The club's penalty points (club +0x100, team +0x12a, three points
+/// each in the table): the association takes two, six points.
+const PENALTY: u8 = 3;
+const PENALTY_TAKEN: u8 = 2;
+/// The text "Dopingfälle v5 … 6 Punkte abgezogen" and its code.
+pub const PENALTY_TEXT: u16 = 0x6f;
+const PENALTY_CODE: u16 = 99;
+/// What it costs the club's public image (`FUN_00698d01(-10)`, kept to
+/// 10..50).
+const PENALTY_IMAGE: i32 = -10;
+const IMAGE_LEAST: i32 = 10;
+const IMAGE_MOST: i32 = 50;
+
+/// The association's points for repeated doping (`FUN_005ef8cc` after
+/// its waiting events and rest gate): before the season's 80th half week,
+/// a club with more than two doping cases and no penalty points yet is
+/// told so with its phrases (text 0x6f, event 99 through `FUN_00733486`),
+/// its cases go back to one, it loses six points and ten of its public
+/// image. The day's news goes on.
+pub fn doping_penalty(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>) {
+    if records.globals.half_weeks() >= PENALTY_BEFORE {
+        return;
+    }
+    let Some(team) = records.team_mut(club.0, club.1) else { return };
+    let cases = team.get::<u8>(DOPING_CASES);
+    let flags = team.get::<u8>(crate::statistics::TEAM_FLAGS);
+    if cases & CASES_COUNT <= CASES_TOLERATED || flags & PENALTY != 0 {
+        return;
+    }
+    posted.push(Posted { club, code: PENALTY_CODE, text: PENALTY_TEXT, fill: Fill::Club });
+    team.put::<u8>(DOPING_CASES, (cases & CASES_KEPT) + 1);
+    team.put::<u8>(crate::statistics::TEAM_FLAGS, flags | PENALTY_TAKEN);
+    let image = (i32::from(team.public_image()) + PENALTY_IMAGE).clamp(IMAGE_LEAST, IMAGE_MOST);
+    team.set_public_image(image as u8);
+}
+
+/// A false report costs the reporter's club this at its other costs
+/// (`DAT_00a3b38c`, club +0x2c0), told with text 0x703, code 0x60.
+pub const FALSE_REPORT: i32 = 50_000;
+pub const FALSE_REPORT_TEXT: u16 = 0x703;
+const OTHER_COSTS: usize = 0x2c0 + crate::finances::CLUB_TO_TEAM;
+/// A manager's reports followed up count to two (`FUN_006a662d(1)`).
+const REPORTS_COUNTED: i16 = 2;
+/// The control tests two men of the squad.
+const TESTED: u32 = 2;
+
+/// The doping reports against the club's trainer (`FUN_005db227`): each
+/// other human in his order (`FUN_006a421a` up to `DAT_00b5cbce`) who
+/// reported him (`DAT_00a2e016`) has his report taken and counted
+/// (`FUN_006a662d(1)`, to two). With any, the association tests two men
+/// of the squad drawn apart (`FUN_00675698(2, squad)`, the live player's
+/// +0x57 bit 0x40, then `FUN_005dae5f`): a positive sample shows its
+/// control (event 0xcb, dialog 41); with none, every reporter at a club
+/// pays 50 000 for the false accusation, told with the trainer's name.
+/// Whether the day's news ends here comes back.
+pub fn doping_reports(
+    records: &mut Records,
+    club: (u16, u16),
+    reported: &mut [[bool; crate::records::MANAGERS]; crate::records::MANAGERS],
+    controls: &mut Vec<crate::doping_control::Control>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(trainer) = records.team(club.0, club.1).map(|t| t.humans()[0]) else { return false };
+    let order = records.globals.order();
+    let humans = usize::from(records.globals.humans()).min(order.len());
+    let mut reporters = Vec::new();
+    for &number in &order[..humans] {
+        let (Ok(reporter), Some(target)) = (usize::try_from(number - 1), usize::from(trainer).checked_sub(1)) else {
+            continue;
+        };
+        if number == i16::from(trainer) {
+            continue;
+        }
+        let Some(flag) = reported.get_mut(reporter).and_then(|row| row.get_mut(target)) else { continue };
+        if *flag {
+            *flag = false;
+            reporters.push(reporter);
+            if let Some(m) = records.managers.get_mut(reporter) {
+                if m.doping_reports() < REPORTS_COUNTED {
+                    m.set_doping_reports(m.doping_reports() + 1);
+                }
+            }
+        }
+    }
+    if reporters.is_empty() {
+        return false;
+    }
+    let squad = records.team(club.0, club.1).map_or(Vec::new(), |t| t.players());
+    let mut drawn = [u32::MAX; TESTED as usize];
+    let over = (squad.len() as u32).max(TESTED);
+    for k in 0..drawn.len() {
+        drawn[k] = loop {
+            let at = random.below(over);
+            if !drawn[..k].contains(&at) {
+                break at;
+            }
+        };
+    }
+    let picked: Vec<u16> = drawn.iter().filter_map(|&at| squad.get(at as usize).copied()).collect();
+    let control = crate::doping_control::test(records, club.0, club.1, &picked, random);
+    if let Some(control) = control.filter(|c| (0..usize::from(c.count)).any(|k| c.positive[k])) {
+        controls.push(control);
+        return true;
+    }
+    for reporter in reporters {
+        let Some(m) = records.managers.get(reporter) else { continue };
+        let at = (m.country(), m.team());
+        if at.0 == 0 {
+            continue;
+        }
+        if let Some(team) = records.team_mut(at.0, at.1) {
+            let costs = team.get::<i32>(OTHER_COSTS).wrapping_add(FALSE_REPORT);
+            team.put(OTHER_COSTS, costs);
+        }
+        posted.push(Posted {
+            club: at,
+            code: PRIVATE_NEWS,
+            text: FALSE_REPORT_TEXT,
+            fill: Fill::FalseReport(u16::from(trainer), FALSE_REPORT),
+        });
+    }
+    true
+}
 
 /// The day's pick of the news category: one roll over the cap of 10 000;
 /// the walk subtracts each weight not standing above the rest, and the
@@ -2894,5 +3030,75 @@ mod tests {
 
     fn told_of(r: &Records, texts: &a3_files::saq::EventTexts, words: &crate::words::Words, posted: &Posted) -> String {
         crate::event_text::make(r, texts, &|_| String::new(), &words.first_names, posted).text
+    }
+
+    /// The gates before the pick: three doping cases cost the club six
+    /// points, ten of its image and the cases but one, told once; a
+    /// report against its trainer is taken, two men tested, and without
+    /// a positive sample the reporter's club pays 50 000 and the news ends.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn doping_penalty_and_reports_gate_the_news() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut a = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+        let club = (u16::from(hc), hn as u16);
+        assert!(a.globals.half_weeks() < PENALTY_BEFORE);
+        let team = a.team_mut(club.0, club.1).unwrap();
+        team.put::<u8>(DOPING_CASES, 0x83);
+        team.put::<u8>(crate::statistics::TEAM_FLAGS, 0);
+        team.set_public_image(25);
+        let mut posted = Vec::new();
+        doping_penalty(&mut a, club, &mut posted);
+        assert_eq!(posted, [Posted { club, code: 99, text: PENALTY_TEXT, fill: Fill::Club }]);
+        let team = a.team(club.0, club.1).unwrap();
+        assert_eq!(team.get::<u8>(DOPING_CASES), 0x81);
+        assert_eq!(team.get::<u8>(crate::statistics::TEAM_FLAGS), 2);
+        assert_eq!(team.public_image(), 15);
+        doping_penalty(&mut a, club, &mut posted);
+        assert_eq!(posted.len(), 1, "one case left, no more");
+
+        // A second human at another club reported the trainer.
+        let trainer = a.team(club.0, club.1).unwrap().humans()[0];
+        let other: u8 = if trainer == 1 { 2 } else { 1 };
+        let mut order = a.globals.order();
+        order[..2].copy_from_slice(&[trainer as i16, other as i16]);
+        a.globals.set_order(order);
+        a.globals.set_humans(2);
+        let far = (club.0, if club.1 == 1 { 2 } else { 1 });
+        let m = &mut a.managers[usize::from(other) - 1];
+        m.set_country(far.0);
+        m.set_team(far.1);
+        m.set_doping_reports(0);
+        let costs = a.team(far.0, far.1).unwrap().get::<i32>(OTHER_COSTS);
+        let mut reported = [[false; crate::records::MANAGERS]; crate::records::MANAGERS];
+        reported[usize::from(other) - 1][usize::from(trainer) - 1] = true;
+        let squad = a.team(club.0, club.1).unwrap().players();
+        for &id in &squad {
+            a.player_mut(id).unwrap().set_doping(0);
+        }
+        let (mut controls, mut posted) = (Vec::new(), Vec::new());
+        let mut random = Random::from_state(20261121, 0);
+        let mut expected = random.clone();
+        let first = expected.below(squad.len() as u32);
+        while expected.below(squad.len() as u32) == first {}
+        assert!(doping_reports(&mut a, club, &mut reported, &mut controls, &mut posted, &mut random));
+        assert!(random == expected, "two men drawn apart, no sample positive");
+        assert!(controls.is_empty());
+        assert!(!reported[usize::from(other) - 1][usize::from(trainer) - 1], "the report taken");
+        assert_eq!(a.managers[usize::from(other) - 1].doping_reports(), 1);
+        assert_eq!(a.team(far.0, far.1).unwrap().get::<i32>(OTHER_COSTS), costs + FALSE_REPORT);
+        let fill = Fill::FalseReport(u16::from(trainer), FALSE_REPORT);
+        assert_eq!(posted, [Posted { club: far, code: PRIVATE_NEWS, text: FALSE_REPORT_TEXT, fill }]);
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let told = crate::event_text::make(&a, &texts, &|_| String::new(), &[], &posted[0]).text;
+        let m = &a.managers[usize::from(trainer) - 1];
+        assert!(told.contains(&format!("{} {}", m.first_name(), m.last_name())), "{told}");
+        // Nobody reported: the news goes on, nothing drawn.
+        let before = random.clone();
+        assert!(!doping_reports(&mut a, club, &mut reported, &mut controls, &mut posted, &mut random));
+        assert!(random == before);
     }
 }

@@ -629,7 +629,11 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// girlfriend's name and birthday are drawn from, `league` the goal
 /// classes a father's club is weighed by, `planned` whether a club's
 /// plan holds anything but free today ([`planned_today`]), `mood` what
-/// the team's mood does to its squad. (The town's share in the
+/// the team's mood does to its squad, `reported` the humans' doping
+/// reports and `controls` where a reported club's positive control goes
+/// (event 0xcb). The group news of a club below 100 of mood
+/// (`FUN_005e3885`, a roll of 400 then a pick over the run-time table at
+/// `0xa2eba4`) is not built. (The town's share in the
 /// stadium's building after a youth's quiet week is not built either.)
 pub fn news(
     records: &mut Records,
@@ -640,6 +644,7 @@ pub fn news(
     league: &LeagueTables,
     mood: &MoodTables,
     planned: &dyn Fn((u16, u16)) -> bool,
+    (reported, controls): (&mut Reports, &mut Vec<crate::doping_control::Control>),
     random: &mut Random,
 ) -> Vec<Posted> {
     let mut posted = Vec::new();
@@ -650,8 +655,17 @@ pub fn news(
         if slots.get(k) != Some(&(today.rem_euclid(7) as i16)) {
             continue;
         }
-        let code = crate::news::pick(random);
         let club = (u16::from(country), number as u16);
+        // The gates before the pick: the waiting events (`FUN_006a700a`,
+        // whose return keeps only the sign of its count in the high half,
+        // so it never ends the news; the appointments due it runs are not
+        // built), the rest gate (above), the association's points for
+        // repeated doping, and the reports of doping against the trainer.
+        crate::news::doping_penalty(records, club, &mut posted);
+        if crate::news::doping_reports(records, club, reported, controls, &mut posted, random) {
+            continue;
+        }
+        let code = crate::news::pick(random);
         let squad = records.team(club.0, club.1).map_or(0, |team| team.player_count());
         let told = match code {
             0 => false,
@@ -689,6 +703,10 @@ pub fn news(
     }
     posted
 }
+
+/// Which humans reported which to the association for doping
+/// ([`crate::season::Season::reported`]).
+pub type Reports = [[bool; crate::records::MANAGERS]; crate::records::MANAGERS];
 
 /// Whether a human club's plan holds anything but free for today (the
 /// club object's +0xc0a row of the day, `FUN_005ea8cc`), as the day's
