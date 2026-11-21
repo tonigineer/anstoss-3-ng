@@ -1564,9 +1564,9 @@ record! {
     0xb5cbe0 => day_of_year, set_day_of_year: u16;
     /// Days in this year.
     0xb5cca4 => year_days, set_year_days: u16;
-    /// The European ranking: fifteen countries, a row of 0x24 bytes each
-    /// starting with the country (`DAT_00b5d1a8`).
-    0xb5d1a8 => ranking, set_ranking: [u8; 15 * 0x24];
+    /// The European ranking: 0x25 countries, a row of 0x24 bytes each
+    /// starting with the country (`DAT_00b5d1a8`, `memset` 0x534).
+    0xb5d1a8 => ranking, set_ranking: [u8; 37 * 0x24];
     /// A player for each position whose market value counts a fifth more,
     /// by id.
     0xb5dfd0 => stars, set_stars: [u16; 11];

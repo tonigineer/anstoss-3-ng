@@ -245,10 +245,11 @@ mod tests {
             dump.globals.get::<i16>(FREE_LATER)
         );
         let mut records = Records::blank();
-        // The head of FUN_00686684 has put its two names first
-        // (`DAT_00b5dfca`, `DAT_00b5dfc8`, "Der" "Teamchef"), not read yet.
-        records.names = dump.names[..2].to_vec();
+        records.globals.set_main_country(dump.globals.main_country());
+        // The head of FUN_00686684 puts "Der" and "Teamchef" first in the
+        // pool, which the referees' and free players' names follow.
         let dir = std::path::PathBuf::from(game).join("Data.a3");
+        crate::land_clubs::read_head(&mut records, &dir).unwrap();
         let (mut next, mut entry) = (1, first(11) as u16);
         read_pool(&mut records, &dir, &mut next, &mut entry, &mut Random::new(1)).unwrap();
         for id in FIRST_REFEREE..FIRST_REFEREE + REFEREES {

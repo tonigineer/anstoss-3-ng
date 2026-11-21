@@ -686,6 +686,127 @@ pub fn read_foreign(
     FOREIGN_TEAMS
 }
 
+/// The ranking's rows and their length (`DAT_00b5d1a8`, `memset` 0x534).
+const RANKING: usize = 0x25;
+const RANKING_ROW: usize = 0x24;
+const RANKING_AT: usize = 0xb5d1a8;
+/// A row's values in `UEFA`: the country, then six numbers.
+const RANKING_VALUES: usize = 7;
+/// The codes behind the rows, the three fixed clubs' pairs, the three
+/// others and the two numbers in `UEFA`'s values; 0x26 of them.
+const CODES_AT: usize = RANKING * RANKING_VALUES + 14;
+/// A country block's byte its short code stands at (`DAT_019f8186`).
+const CODE: usize = 0x196;
+/// The nation's slot among the codes (the exe table at `DAT_008a3da8`).
+const CODE_SLOTS: [u8; 0x75] = [
+    0, 0, 0, 0, 0, 0, 0, 0x0b, 0, 0x12, 0, 0, 0, 0x0f, 0, 0,
+    1, 0, 0, 0x14, 2, 0, 0, 0x0e, 6, 0x1d, 0x16, 0x15, 3, 0, 0, 0,
+    0, 0, 0x18, 0, 0, 0, 0x1e, 0x1c, 0, 5, 0, 0, 0, 0x1b, 0x17, 8,
+    0, 0, 0, 0x11, 0, 0x0d, 0x0c, 0, 0, 9, 0x10, 0x0a, 0, 0x1f, 0x20, 4,
+    0, 0x21, 0, 7, 0x1a, 0x13, 0, 0, 0, 0x22, 0, 0x19, 0x23, 0x24, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+];
+/// A more country takes its own name, not the code, where this byte
+/// stands (the exe table at `DAT_0089dcd8`).
+const CODE_OWN: [u8; 0x75] = [
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1,
+    0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+    1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0,
+    1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+];
+
+/// `FUN_00686684`'s head, `Kleinig.sav` read before any club: its `UEFA`
+/// rows — the country, then the six numbers of its seasons (`FUN_00401f82`,
+/// `FUN_00401ed5`), the first five of them summed to the row's total — into
+/// the ranking, exchanged by that total highest first (`FUN_00423bd5`); and
+/// its 38 short codes into the played countries' blocks at [`CODE`], the
+/// main one's at its slot and each more country's by the table at
+/// [`CODE_SLOTS`], its own name instead where [`CODE_OWN`] stands. Then the
+/// `MISC` tail's two names, the FIFA president's, interned as `FUN_0068b511`
+/// does with the pool as it stands, their indices into `DAT_00b5dfca` and
+/// `DAT_00b5dfc8`; `FUN_0067bab0`'s reset follows, and "Der" and "Teamchef"
+/// (`DAT_008a3fb8`, `s_Teamchef_008a3fbc`) begin the pool anew. The first
+/// turn's dump stands with them first; its 4 and 5 in the two indices count
+/// the names an already open session had put into the pool before.
+pub fn read_head(records: &mut Records, dir: &Path) -> io::Result<()> {
+    let kleinig = Section::read(&find(dir, "Kleinig.sav")?)?;
+    let Some(misc) = kleinig.child("MISC") else { return Ok(()) };
+    if let Some(uefa) = misc.child("UEFA") {
+        let mut rows = vec![[0u8; RANKING_ROW]; RANKING];
+        for (row, values) in uefa.values.chunks(RANKING_VALUES).enumerate().take(RANKING) {
+            let number = |n: usize| atoi(values.get(n).map(String::as_str).unwrap_or(""));
+            let total = (1..=5).fold(0f32, |sum, n| sum + number(n) as f32);
+            rows[row][0..2].copy_from_slice(&(number(0) as i16).to_le_bytes());
+            rows[row][4..8].copy_from_slice(&total.to_le_bytes());
+            for n in 0..6 {
+                rows[row][8 + n * 4..12 + n * 4].copy_from_slice(&(number(n + 1) as f32).to_le_bytes());
+            }
+        }
+        // `FUN_00423bd5`: every later row with the greater total exchanges
+        // places with the one standing at the earlier place.
+        for a in 0..RANKING {
+            for c in a + 1..RANKING {
+                let (x, y) = (f32::from_le_bytes(rows[a][4..8].try_into().unwrap()), f32::from_le_bytes(rows[c][4..8].try_into().unwrap()));
+                if x < y {
+                    rows.swap(a, c);
+                }
+            }
+        }
+        for (row, bytes) in rows.iter().enumerate() {
+            records.globals.put(RANKING_AT + row * RANKING_ROW, *bytes);
+        }
+        let code = |nation: usize| -> &str {
+            let slot = usize::from(CODE_SLOTS.get(nation).copied().unwrap_or(0));
+            uefa.values.get(CODES_AT + slot).map(String::as_str).unwrap_or("")
+        };
+        let main = usize::try_from(records.globals.main_country()).unwrap_or(0);
+        put_code(records, 0, code(main));
+        let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
+        for (i, &other) in records.globals.more_countries().iter().take(more).enumerate() {
+            let nation = usize::try_from(other).unwrap_or(0);
+            // Else the original copies a local it never filled; what its
+            // stack held no reading finds out.
+            if CODE_OWN.get(nation).copied().unwrap_or(0) == 0 {
+                put_code(records, i + 1, code(nation));
+            }
+        }
+    }
+    // The president's names stand in the `MISC` tail after the three
+    // numbers; `FUN_0068b511` scans the pool by strcmp and appends.
+    let name = |n: usize| misc.values.get(n).map_or("", String::as_str);
+    let (last, first) = (name(3), name(4));
+    let mut names = std::mem::take(&mut records.names);
+    {
+        let mut pool = Pool::new(&mut names);
+        records.globals.put::<u16>(0xb5dfca, if last.is_empty() { 0 } else { pool.index(last) });
+        records.globals.put::<u16>(0xb5dfc8, if first.is_empty() { 0 } else { pool.index(first) });
+    }
+    names.clear();
+    {
+        let mut pool = Pool::new(&mut names);
+        pool.index("Der");
+        pool.index("Teamchef");
+    }
+    records.names = names;
+    Ok(())
+}
+
+/// One country block's short code, as `strcpy` leaves it: the bytes and
+/// their NUL, the rest of the field as it was.
+fn put_code(records: &mut Records, slot: usize, text: &str) {
+    let Some(block) = records.block_mut(&format!("0x19f7fd0[{slot}]")) else { return };
+    let bytes = text.as_bytes();
+    let n = bytes.len().min(block.len().saturating_sub(CODE + 1));
+    block[CODE..CODE + n].copy_from_slice(&bytes[..n]);
+    block[CODE + n] = 0;
+}
+
 /// `FUN_00686684`'s clubs for a new game of one country played, the one of
 /// `main` among the eleven: its leagues and teams first, then those of each
 /// other country, eight of them. The persons and players counted on from
@@ -988,6 +1109,49 @@ mod tests {
         club.fill(&mut team, 14, 3, &mut pool);
         assert_eq!((team.name(), team.short_name(), team.country(), team.number()), ("1.FSV Mainz 05 und ".into(), "FSV".into(), 14, 3));
         assert_eq!((team.get::<i64>(0x488), team.get::<u16>(0x110), team.get::<u8>(0x124), team.legal_form()), (-20_000_000, 1 | 0x1000, 0x80, 2));
+    }
+
+    /// The head of the oracle's new game: the 0x25 ranking rows of
+    /// `Kleinig.sav` sorted by their total, the short code in the main
+    /// country's block, and "Der" and "Teamchef" first in the pool.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_games_records_head_reads_as_the_original() {
+        let (Some(game), Some(oracle)) = (std::env::var_os("ANSTOSS3_DIR"), std::env::var_os("ANSTOSS3_ORACLE")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_DIR or ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap();
+        let mut records = Records::blank();
+        records.globals.set_main_country(dump.globals.main_country());
+        let dir = std::path::PathBuf::from(game).join("Data.a3");
+        read_head(&mut records, &dir).unwrap();
+        for row in 0..RANKING {
+            let at = RANKING_AT + row * RANKING_ROW;
+            assert_eq!(records.globals.get::<[u8; RANKING_ROW]>(at), dump.globals.get::<[u8; RANKING_ROW]>(at), "ranking row {row}");
+        }
+        // The played countries' codes: main and each more country the
+        // table gives a code to, the own-name ones left as the original
+        // left their stack in them.
+        for i in 0..=4 {
+            let own = i > 0 && CODE_OWN.get(usize::try_from(records.globals.more_countries()[i - 1]).unwrap_or(0)).copied().unwrap_or(0) != 0;
+            if own {
+                continue;
+            }
+            let name = format!("0x19f7fd0[{i}]");
+            let (mine, theirs) = (records.block(&name).unwrap(), dump.block(&name).unwrap());
+            assert_eq!(mine[CODE..CODE + 6], theirs[CODE..CODE + 6], "country code {i}");
+        }
+        assert_eq!(&records.names[..2], ["Der", "Teamchef"]);
+        // The head names the president in the pool as it stands when the
+        // head runs; the first turn's 4 and 5 count the names a session
+        // open before the head had put in its pool, not the fresh one.
+        assert_eq!((records.globals.get::<u16>(0xb5dfca), records.globals.get::<u16>(0xb5dfc8)), (0, 1));
     }
 
     /// The clubs of the oracle's new game in Germany
