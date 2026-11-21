@@ -12,7 +12,7 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; the handlers of categories 20 to 25; and eight of
+//! +0x8a and +0x8b; the handlers of categories 20 to 25; and three of
 //! the hobbies of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
@@ -334,14 +334,20 @@ const MIDFIELD_HOBBY: u8 = 0x25;
 const MIDFIELD: u8 = 3;
 
 /// The hobbies whose day `FUN_005fd59d` has built here (+0x28d): fishing,
-/// the football manager game, the aquarium, stocks, stamps, American
-/// football, the garden, bees, art, travel, skiing and diving.
+/// the football manager game, the aquarium, stocks, stamps, books,
+/// computer games, American football, looks, gambling, golf, the garden,
+/// bees, art, travel, skiing and diving.
 const FISHING: u8 = 2;
 const GAME: u8 = 3;
 const AQUARIUM: u8 = 4;
 const STOCKS: u8 = 6;
 const STAMPS: u8 = 7;
+const BOOKS: u8 = 8;
+const COMPUTER_GAMES: u8 = 9;
 const FOOTBALL: u8 = 0xb;
+const LOOKS: u8 = 0xc;
+const GAMBLING: u8 = 0x11;
+const GOLF: u8 = 0x12;
 const GARDEN: u8 = 0xf;
 const BEES: u8 = 0x14;
 const ART: u8 = 0x18;
@@ -371,6 +377,47 @@ const BROKE_UNDER: i32 = 25;
 const DEAR_STAMP_SALARY: u16 = 500;
 const TRAVEL_BEFORE: i32 = 3;
 const SKIING_UNDER: i32 = 0x50;
+/// A diary tells from after this day (`DAT_00b5cbd4` > 0xbd): the team's
+/// mood twenty down and an offence of this level noted on him.
+const DIARY_AFTER: i32 = 0xbd;
+const DIARY_MOOD: i32 = -20;
+const DIARY_OFFENCE: u8 = 2;
+/// A man older than this writes his life's story (`FUN_006ff01b`) unless
+/// the bit 0x40 of +0x1b4 bars him (`FUN_00702cdf`; only `FUN_00702cff`
+/// sets it, and nothing calls that).
+const BOOK_OVER: i32 = 0x1e;
+const BOOK_BARRED: u32 = 0x40;
+/// A German man with a child on the way names it: the marks of the names
+/// at +0x1b4 (`FUN_007023db`, `FUN_00702410`), either of which counts as
+/// named (`FUN_007022d7`, `FUN_00702359`), and the first names a child
+/// of his may already have taken (the names at +0x288): "Lara", "Rolf".
+const NAMED_LARA: u32 = 0x1000_0000;
+const NAMED_ROLF: u32 = 0x800_0000;
+const NAMED: u32 = NAMED_LARA | NAMED_ROLF;
+const LARA: u8 = b'O';
+const ROLF: u8 = b')';
+/// The days the sunbed and the tattoo knock him about (`FUN_00766af9`);
+/// the sunbed burns only the skin of this kind (+0x21a's low three bits,
+/// `FUN_00707725`).
+const SUNBURN_KNOCK: u16 = 5;
+const TATTOO_KNOCK: u16 = 2;
+const FAIR_SKIN: u8 = 0;
+/// The press part of his contentment (+0x292, `FUN_00700fa2`) and what a
+/// new woman seen with him takes off it.
+const PRESS: usize = 3;
+const NEW_WOMAN: i32 = -2;
+/// The nose put right only for a man without a partner, after more than
+/// ten matchdays, his club more than two places short of its season's
+/// goal and its two bytes at +0x11e4 (`FUN_0069947b`: the human club's
+/// extra 0x2568 under 0x2569; meaning not traced) rising.
+const NOSE_AFTER: usize = 10;
+const NOSE_SHORT: i32 = 2;
+const RISING: usize = 0x2568;
+/// What gambling moves his distractions by: the casino, roulette or
+/// poker, and giving it up.
+const CASINO: i32 = -10;
+const ROULETTE: i32 = -5;
+const GIVEN_UP: i32 = 6;
 
 /// The club's doping cases (club +0x115, team +0x13e): their count in the
 /// low three bits, the top three kept when the association acts.
@@ -563,6 +610,7 @@ pub fn about_a_player(
     club: (u16, u16),
     today: i32,
     planned: bool,
+    league: &crate::league::LeagueTables,
     posted: &mut Vec<Posted>,
     random: &mut Random,
 ) -> bool {
@@ -570,7 +618,7 @@ pub fn about_a_player(
     if id > LAST_REAL_ID || records.player(id).is_none_or(|p| p.hobby() == 0) {
         return false;
     }
-    hobby_day(records, club, id, today, planned, posted, random);
+    hobby_day(records, club, id, today, planned, league, posted, random);
     true
 }
 
@@ -587,7 +635,24 @@ pub fn about_a_player(
 /// (0x48b); rich, his hobby stamps from now on (0x48c); or the shares
 /// gone, fifteen less (0x48d). Stamps, one of two: a dear stamp bought on
 /// a salary under 500, ten less (0x48e), or the collection stolen,
-/// fifteen less (0x48f). American football, one of two: up late (0x49c,
+/// fifteen less (0x48f). Books, one of two: a diary after day 189, the
+/// team's mood twenty down and an offence of level 2 noted (0x490, told
+/// with values); or, for a man over 30, one of three — doping confessed
+/// (0x491), a harmless life's story (0x493), or two others of the squad
+/// drawn ([`other_man`]) who fall out with each other, told with both
+/// names (0x494; the handbook 0x495 asks for a fourth draw of three).
+/// Computer games, one of two (the original's 0x49a and 0x49b ask for a
+/// third and fourth): a German man with a child on the way, not named
+/// yet, names it "Lara" if a girl (0x496, 0x497 with children) or is
+/// talked out of "Kurt" for "Rolf" (0x498, 0x499). Looks, one of six: a
+/// sunburn for fair skin, knocked about five days (0x49e); a tattoo, two
+/// days (0x49f); new hair (0x4a0); a new woman, two less content with the
+/// press (0x4a1, told with values); a nose put right ([`NOSE_AFTER`],
+/// 0x4a3). Gambling, one of four: the casino, ten less (0x4ac); roulette
+/// or poker, five less (0x4ae, 0x4af); or given up, his hobby gone, six
+/// more (0x4b0) — all told with values. Golf only makes a headline. The
+/// headlines (0x492, 0x4a2, 0x4a4, 0x4ad, 0x4b1; `FUN_00789c32`) are not
+/// posted here. American football, one of two: up late (0x49c,
 /// nothing taken), or not out, a bruised rib, knocked about seven days
 /// (0x49d). The garden, one of three, not out: a spade in his foot
 /// (0x4a9) or knocked about a fortnight by hornets (0x4aa); or a
@@ -601,15 +666,16 @@ pub fn about_a_player(
 /// jellyfish (0x4c8) or nitrogen (0x4c9). The changes of his
 /// contentment are told with values (`FUN_00601043`) and not posted
 /// here; the others are told by his name, `%2` empty (`FUN_00600f2f`).
-/// The other hobbies of the original (books, computer games, looks,
-/// gambling, golf, food, motorbikes and sports cars) are not built: they
-/// tell nothing and draw nothing here.
+/// The other hobbies of the original (0x13, 0x1c and 0x20) are not
+/// built: they tell nothing and draw nothing here.
+#[allow(clippy::too_many_arguments)]
 fn hobby_day(
     records: &mut Records,
     club: (u16, u16),
     id: u16,
     today: i32,
     planned: bool,
+    league: &crate::league::LeagueTables,
     posted: &mut Vec<Posted>,
     random: &mut Random,
 ) {
@@ -691,6 +757,78 @@ fn hobby_day(
             }
             return;
         }
+        BOOKS => {
+            if random.below(2) == 0 {
+                if today > DIARY_AFTER {
+                    team_mood(records, club, DIARY_MOOD);
+                    if let Some(p) = records.player_mut(id) {
+                        crate::discipline::note_offence(p, DIARY_OFFENCE);
+                    }
+                }
+                return;
+            }
+            let age = years_since(records, (p.birth_day(), p.birth_month(), p.birth_year() as i16));
+            if age <= BOOK_OVER || p.shown() & BOOK_BARRED != 0 {
+                return;
+            }
+            match random.below(3) {
+                0 => 0x491,
+                1 => 0x493,
+                _ => {
+                    let first = other_man(records, club, id, random);
+                    let second = other_man(records, club, id, random);
+                    let (Some(first), Some(second)) = (first, second) else { return };
+                    if first == second {
+                        return;
+                    }
+                    crate::training_day::fall_out(records, first, second);
+                    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x494, fill: Fill::NumberedThree(id, first, second) });
+                    return;
+                }
+            }
+        }
+        COMPUTER_GAMES => {
+            let (mark, name, texts) = if random.below(2) == 0 { (NAMED_LARA, LARA, [0x496, 0x497]) } else { (NAMED_ROLF, ROLF, [0x498, 0x499]) };
+            let children = p.children();
+            let named = p.shown() & NAMED != 0 || p.children_names().iter().take(children.max(0) as usize).any(|&n| n == name);
+            if p.nation() != GERMANY || p.shown() & EXPECTING == 0 || named {
+                return;
+            }
+            let Some(p) = records.player_mut(id) else { return };
+            p.set_shown(p.shown() | mark);
+            texts[usize::from(children != 0)]
+        }
+        LOOKS => match random.below(6) {
+            0 if p.face()[0] & 7 == FAIR_SKIN => {
+                knock(records, SUNBURN_KNOCK);
+                0x49e
+            }
+            1 => {
+                knock(records, TATTOO_KNOCK);
+                0x49f
+            }
+            2 => 0x4a0,
+            3 => {
+                change(records, id, PRESS, NEW_WOMAN);
+                return;
+            }
+            4 if p.partner() & 3 == 0 && nose_due(records, club, league) => 0x4a3,
+            _ => return,
+        },
+        GAMBLING => {
+            match random.below(4) {
+                0 => distract(records, CASINO),
+                3 => {
+                    if let Some(p) = records.player_mut(id) {
+                        p.set_hobby(0);
+                    }
+                    distract(records, GIVEN_UP);
+                }
+                _ => distract(records, ROULETTE),
+            }
+            return;
+        }
+        GOLF => return,
         FOOTBALL => match random.below(2) {
             0 => 0x49c,
             _ if !out => {
@@ -777,6 +915,36 @@ fn tire(records: &mut Records, id: u16, by: i32) {
         fresh[0] = (i32::from(fresh[0]) + by * 100).clamp(0, 10_000) as i16;
         p.set_freshness(fresh);
     }
+}
+
+/// Whether a man of the club may have his nose put right (`case 4` of
+/// the looks): more than ten matchdays played in its league
+/// (`FUN_00692744`), more than two places short of its season's goal
+/// (`FUN_00775f0a`, [`crate::league::goal_missing`]) and the human club's
+/// two bytes at +0x11e4 rising (`FUN_0069947b`).
+fn nose_due(records: &Records, club: (u16, u16), league: &crate::league::LeagueTables) -> bool {
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let rising = usize::from(team.human())
+        .checked_sub(1)
+        .and_then(|s| records.extras.get(s))
+        .is_some_and(|e| e.get::<u8>(RISING) < e.get::<u8>(RISING + 1));
+    crate::league::matchdays(records, team) > NOSE_AFTER && crate::league::goal_missing(records, league, team) > NOSE_SHORT && rising
+}
+
+/// Another man of the club's squad (`FUN_005ec9d8`): its real players but
+/// him and those who hate him (+0x206), 0x23 at most, one drawn; none
+/// and nothing drawn when there is no such man.
+fn other_man(records: &Records, club: (u16, u16), id: u16, random: &mut Random) -> Option<u16> {
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    let such: Vec<u16> = squad
+        .into_iter()
+        .filter(|&o| o <= LAST_REAL_ID && o != id && records.player(o).is_some_and(|p| p.hates() != id))
+        .take(PICKS_MOST)
+        .collect();
+    if such.is_empty() {
+        return None;
+    }
+    Some(such[random.below(such.len() as u32) as usize])
 }
 
 /// One man drawn over the club's squad (`FUN_0078a810(+0xe2)` into its
@@ -2413,6 +2581,7 @@ mod tests {
         let keeps = dir.parent().unwrap().join("saves-kept");
         let tables =
             crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
         let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
         let (hc, hn) = crate::statistics::human_clubs(&r)[0];
         let club = (u16::from(hc), hn as u16);
@@ -2436,7 +2605,7 @@ mod tests {
         // Without a hobby category 19 goes on, one draw taken.
         let s = seed(&|r| r.below(count) == 3);
         let mut random = Random::new(s);
-        assert!(!about_a_player(&mut r, club, 63, false, &mut posted, &mut random));
+        assert!(!about_a_player(&mut r, club, 63, false, &league, &mut posted, &mut random));
         assert!(posted.is_empty());
         let mut expected = Random::new(s);
         expected.below(count);
@@ -2466,7 +2635,7 @@ mod tests {
         let mut expected = Random::new(s);
         expected.below(count);
         assert!(random == expected);
-        assert!(about_a_player(&mut r, club, 63, false, &mut Vec::new(), &mut Random::new(s)));
+        assert!(about_a_player(&mut r, club, 63, false, &league, &mut Vec::new(), &mut Random::new(s)));
     }
 
     /// Category 19 on A's human squad, the drawn man given a hobby: the
@@ -2484,6 +2653,7 @@ mod tests {
         let keeps = dir.parent().unwrap().join("saves-kept");
         let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
         let a = load();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
         let (hc, hn) = crate::statistics::human_clubs(&a)[0];
         let club = (u16::from(hc), hn as u16);
         let count = a.team(club.0, club.1).unwrap().player_count() as u32;
@@ -2504,7 +2674,7 @@ mod tests {
             }
             let mut posted = Vec::new();
             let mut random = Random::new(seed(n, k));
-            assert!(about_a_player(&mut r, club, day, false, &mut posted, &mut random));
+            assert!(about_a_player(&mut r, club, day, false, &league, &mut posted, &mut random));
             (r, posted, random)
         };
         let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
@@ -2552,6 +2722,132 @@ mod tests {
         assert!(posted.is_empty());
         let before = i32::from(a.player(man).unwrap().contentment()[DISTRACTION]);
         assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), (before - 5).max(0));
+    }
+
+    /// Category 19 on A's human squad, the drawn man's hobby reaching the
+    /// press: a diary after day 189 sours the team's mood twenty and
+    /// marks an offence of level 2, telling nothing; a man over 30 tells
+    /// of doping, or of two team-mates who fall out with each other over
+    /// his book; a German man with a child on the way names it once; a
+    /// tattoo knocks him two days, a sunburn only fair skin; a new woman
+    /// costs two of the press; gambling given up takes the hobby away;
+    /// golf draws nothing past the man.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_mans_hobby_reaches_the_press() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = || Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let a = load();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&a)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = a.team(club.0, club.1).unwrap().player_count() as u32;
+        let man = a.team(club.0, club.1).unwrap().players()[3];
+        let today = i32::from(a.globals.day());
+        let year = a.globals.date()[2] as u16;
+        // A seed drawing the man and then each `(n, k)`.
+        let seed = |draws: &[(u32, u32)]| {
+            (0..1_000_000u64)
+                .find(|&s| {
+                    let mut r = Random::new(s);
+                    r.below(count) == 3 && draws.iter().all(|&(n, k)| r.below(n) == k)
+                })
+                .unwrap()
+        };
+        let run = |r: &mut Records, hobby: u8, day: i32, draws: &[(u32, u32)]| {
+            r.player_mut(man).unwrap().set_hobby(hobby);
+            let mut posted = Vec::new();
+            let mut random = Random::new(seed(draws));
+            assert!(about_a_player(r, club, day, false, &league, &mut posted, &mut random));
+            (posted, random)
+        };
+        let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
+        let mood = |r: &Records| i32::from(r.team(club.0, club.1).unwrap().mood());
+
+        // The diary: nothing before day 190, then the mood and an offence.
+        let mut r = load();
+        let (posted, _) = run(&mut r, BOOKS, DIARY_AFTER, &[(2, 0)]);
+        assert!(posted.is_empty());
+        assert_eq!((mood(&r), r.player(man).unwrap().offences()), (mood(&a), a.player(man).unwrap().offences()));
+        let (posted, _) = run(&mut r, BOOKS, DIARY_AFTER + 1, &[(2, 0)]);
+        assert!(posted.is_empty());
+        assert_eq!(mood(&r), (mood(&a) - 20).max(0));
+        let p = r.player(man).unwrap();
+        assert_eq!(p.offences(), a.player(man).unwrap().offences() | 0x20);
+        let counted = (a.player(man).unwrap().offence_counts() >> 2 & 3).saturating_add(1).min(3);
+        assert_eq!(p.offence_counts() >> 2 & 3, counted);
+
+        // The life's story of a man over 30.
+        let older = |r: &mut Records, by: u16| {
+            let p = r.player_mut(man).unwrap();
+            p.set_birth_year(year - by);
+            p.set_shown(p.shown() & !BOOK_BARRED);
+        };
+        let mut r = load();
+        older(&mut r, 25);
+        let (posted, random) = run(&mut r, BOOKS, today, &[(2, 1), (3, 0)]);
+        assert!(posted.is_empty());
+        let mut expected = Random::new(seed(&[(2, 1), (3, 0)]));
+        expected.below(count);
+        expected.below(2);
+        assert!(random == expected, "no third draw for a young man");
+        older(&mut r, 35);
+        assert_eq!(run(&mut r, BOOKS, today, &[(2, 1), (3, 0)]).0, told(0x491));
+        assert_eq!(run(&mut r, BOOKS, today, &[(2, 1), (3, 1)]).0, told(0x493));
+        // Two team-mates drawn fall out with each other.
+        let (posted, _) = run(&mut r, BOOKS, today, &[(2, 1), (3, 2)]);
+        let [Posted { text: 0x494, fill: Fill::NumberedThree(him, one, other), .. }] = posted[..] else { panic!("{posted:?}") };
+        assert!(him == man && one != other && one != man && other != man);
+        assert!(r.player(one).unwrap().dislikes().contains(&other) && r.player(other).unwrap().dislikes().contains(&one));
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let text = crate::event_text::make(&r, &texts, &|id| format!("<{id}>"), &[], &posted[0]).text;
+        for id in [man, one, other] {
+            assert!(text.contains(&r.known_as(id).unwrap()), "{text}");
+        }
+
+        // A child on the way, named once; a child named so already.
+        let mut r = load();
+        let p = r.player_mut(man).unwrap();
+        p.set_nation(GERMANY);
+        p.set_shown(p.shown() & !NAMED | EXPECTING);
+        p.set_children(0);
+        assert_eq!(run(&mut r, COMPUTER_GAMES, today, &[(2, 0)]).0, told(0x496));
+        assert_ne!(r.player(man).unwrap().shown() & NAMED_LARA, 0);
+        assert!(run(&mut r, COMPUTER_GAMES, today, &[(2, 1)]).0.is_empty());
+        let p = r.player_mut(man).unwrap();
+        p.set_shown(p.shown() & !NAMED);
+        p.set_children(1);
+        p.set_children_names([ROLF, 0, 0, 0, 0]);
+        assert!(run(&mut r, COMPUTER_GAMES, today, &[(2, 1)]).0.is_empty());
+        assert_eq!(run(&mut r, COMPUTER_GAMES, today, &[(2, 0)]).0, told(0x497));
+
+        // Looks: the tattoo, the sunburn for fair skin alone, a new woman.
+        let mut r = load();
+        assert_eq!(run(&mut r, LOOKS, today, &[(6, 1)]).0, told(0x49f));
+        assert_eq!(i32::from(r.player(man).unwrap().get::<u16>(0x1de)), today + 2);
+        let p = r.player_mut(man).unwrap();
+        p.set_face([1, p.face()[1]]);
+        assert!(run(&mut r, LOOKS, today, &[(6, 0)]).0.is_empty());
+        let p = r.player_mut(man).unwrap();
+        p.set_face([8, p.face()[1]]);
+        assert_eq!(run(&mut r, LOOKS, today, &[(6, 0)]).0, told(0x49e));
+        let press = i32::from(r.player(man).unwrap().contentment()[PRESS]);
+        assert!(run(&mut r, LOOKS, today, &[(6, 3)]).0.is_empty());
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[PRESS]), (press - 2).max(0));
+
+        // Gambling given up; golf.
+        let mut r = load();
+        let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
+        assert!(run(&mut r, GAMBLING, today, &[(4, 3)]).0.is_empty());
+        assert_eq!(r.player(man).unwrap().hobby(), 0);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), (before + 6).min(crate::mood::MOST));
+        let (posted, random) = run(&mut r, GOLF, today, &[]);
+        assert!(posted.is_empty());
+        let mut expected = Random::new(seed(&[]));
+        expected.below(count);
+        assert!(random == expected, "golf draws nothing");
     }
 
     /// Category 1 on A's human squad, one married man its only partner:

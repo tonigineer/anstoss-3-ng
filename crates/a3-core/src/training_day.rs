@@ -691,7 +691,7 @@ pub fn news(
                 crate::news::new_hobby(records, club, tables, &mut posted, random);
                 true
             }
-            19 => crate::news::about_a_player(records, club, today, planned(club), &mut posted, random),
+            19 => crate::news::about_a_player(records, club, today, planned(club), league, &mut posted, random),
             _ => true,
         };
         if told {
@@ -2712,7 +2712,7 @@ fn draw_defender(records: &Records, list: &[u16], random: &mut Random) -> Option
 /// (`FUN_00703930`, as in [`crate::talk`]'s reconciling), and when one
 /// man's three dislikes all stand, the first of them leaves and the
 /// new one is written past the list, onto the best friend's own place.
-fn fall_out(records: &mut Records, young: u16, elder: u16) {
+pub(crate) fn fall_out(records: &mut Records, young: u16, elder: u16) {
     if records.player(young).is_some_and(|p| p.hates() == elder) {
         return;
     }
