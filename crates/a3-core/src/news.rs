@@ -4798,6 +4798,12 @@ const SEARCH_OFFENCE: u8 = 1;
 const FOUNTAIN_OFFENCE: u8 = 2;
 const FLAG_OFFENCE: u8 = 3;
 const DISCO_OFFENCE: u8 = 2;
+/// The offences the star's airs note before their windows: the
+/// walk-offs from the hard frozen pitch and the ruined lawn at two,
+/// the half-hearted conditioning drill and the refused camp at one.
+const WALKOFF_OFFENCE: u8 = 2;
+const DRILL_OFFENCE: u8 = 1;
+const CAMP_OFFENCE: u8 = 1;
 /// The hobby of chasing women (`FUN_00702c9e`, the handle's +0x28d):
 /// the twelfth of the exe's forty hobby names at 0x8a8c7e, its game
 /// text 3960 "Frauen" — the gay bar's gate.
@@ -4906,7 +4912,22 @@ const WOMEN_HOBBY: u8 = 0xc;
 /// the discipline word at +0xa7 past five as 21 did: it never stands,
 /// neither is heard. 100 has him dead drunk in the club's own disco,
 /// thrown out by the bouncers (0x6fd, tone two, not asking outright);
-/// level two noted. The other twenty codes end consumed too.
+/// level two noted. The star's airs, codes 51 to 56 behind the trait
+/// word's bit [`STAR_AIRS`]: 51 walks him off training over a pitch too
+/// hard frozen (0x50b, tone two) and 52 off a lawn he calls a sure way
+/// to injury (0x50e, tone two) — both exactly while training stands
+/// planned today ([`planned`], `FUN_005ea8cc`), he stands unhurt
+/// ([`crate::load::days_to`] on the injury handle) and his morale byte
+/// (+0xca, [`crate::records::Player::morale`]) stands under 0x50; each
+/// notes [`WALKOFF_OFFENCE`]. 53 has no gate: no appetite for the
+/// conditioning drill, he trains only half-hearted (0x50f, tone one),
+/// [`DRILL_OFFENCE`] noted. 54 won't go to the camp before the match
+/// and wants to stay with his wife (0x510, tone one) while he is
+/// married (`FUN_006ffb14`, the partner kind at wife) and the two's
+/// state stands at nought (`FUN_00702c12`, [`state`]); [`CAMP_OFFENCE`]
+/// noted. None of these four windows asks outright, so none goes
+/// posted; 55 and 56 ask the bit and do nothing — consumed. The other
+/// sixteen codes end consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -5069,6 +5090,40 @@ pub fn player_news(
         // the discipline word at +0xa7 past five, as 21 did: it never
         // stands, so the stripper party stays unheard.
         46 | 47 => {}
+        // 51 and 52: the star walks off training over a pitch too hard
+        // frozen (0x50b) and off a lawn he calls a sure way to injury
+        // (0x50e), each in a tone-two window — exactly while training
+        // stands planned today ([`planned`], `FUN_005ea8cc`), he
+        // stands unhurt (`*(short*)(man + 0x2c)`, [`crate::load::days_to`]
+        // off +0x1da) and his morale byte (+0xca) stands under 0x50;
+        // each notes [`WALKOFF_OFFENCE`] and posts nothing.
+        51 | 52 => {
+            let sulky = records.player(man).is_some_and(|p| {
+                crate::load::days_to(&records.globals, p.injured_to()) == 0 && p.morale() < 0x50
+            });
+            if planned && sulky {
+                mark_offence(records, man, WALKOFF_OFFENCE);
+            }
+        }
+        // 53: no gate — no appetite for the conditioning drill, he
+        // trains only half-hearted (0x50f, tone one); [`DRILL_OFFENCE`]
+        // noted, nothing posted.
+        53 => mark_offence(records, man, DRILL_OFFENCE),
+        // 54: the camp before the match refused for his wife's sake
+        // (0x510, tone one) — exactly while he is married
+        // (`FUN_006ffb14`, the partner kind at wife) and the two's
+        // state stands at nought (`FUN_00702c12`, [`state`]);
+        // [`CAMP_OFFENCE`] noted, nothing posted.
+        54 => {
+            let wed = records
+                .player(man)
+                .is_some_and(|p| p.partner() & 3 == WIFE && state(p) == 0);
+            if wed {
+                mark_offence(records, man, CAMP_OFFENCE);
+            }
+        }
+        // 55 and 56: the bit asked, the case's own body empty.
+        55 | 56 => {}
         // 100: dead drunk in the club's own disco, thrown out (0x6fd);
         // the tone-two window does not ask, nothing posted.
         100 => mark_offence(records, man, DISCO_OFFENCE),
@@ -5875,6 +5930,145 @@ mod tests {
             mark_clean(&mut r, man);
             r.player_mut(man).unwrap().set_contentment([50; 7]);
             let (posted, recent) = run(&mut r, s);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty());
+            let p = r.player(man).unwrap();
+            assert_eq!(crate::discipline::offence(p), 0);
+            assert_eq!(p.contentment(), [50; 7]);
+        }
+    }
+
+    /// The star's airs, codes 51 to 56: the walk-offs over the hard
+    /// frozen pitch and the ruined lawn note level two exactly while
+    /// training stands planned today, the drawn man stands unhurt and
+    /// his morale stands under 0x50 — unplanned, of a morale at 0x50,
+    /// or hurt, he stays clean; the half-hearted conditioning drill
+    /// notes level one ungated; the refused camp notes level one
+    /// exactly while the man is married and the two's state stands at
+    /// nought — partnerless or estranged he goes to camp; none of the
+    /// four posts, and 55 and 56 ask the bit and move nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_starairs_walk_off_the_frozen_pitch() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_star = |r: &mut Records, man: u16| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                traits[1] |= STAR_AIRS;
+                p.set_traits(traits);
+                p.set_offences(0);
+                p.set_offence_counts(0);
+            }
+        };
+        let run = |r: &mut Records, s: u64, planned: bool| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, planned, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // 53: no gate beyond the bit — the half-hearted drill notes
+        // level one and its window posts nothing.
+        let s = weighed_to(53);
+        let man = drawn_by(s);
+        mark_star(&mut r, man);
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [53 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "the drill is told in its window only");
+        let p = r.player(man).unwrap();
+        assert_eq!(crate::discipline::offence(p), DRILL_OFFENCE);
+        assert_eq!(p.offence_counts(), 1 << (2 * (DRILL_OFFENCE - 1)));
+
+        // 51 and 52: unplanned he stays clean; planned but of a morale
+        // at 0x50 he stays clean; planned, low-spirited but hurt he
+        // stays clean; planned, fit and of 30 morale, level two noted
+        // and nothing posted.
+        for code in [51u16, 52] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_star(&mut r, man);
+            if let Some(p) = r.player_mut(man) {
+                p.set_injured_to([0, 0]);
+                p.set_morale(0x50);
+            }
+            let (posted, recent) = run(&mut r, s, false);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty(), "no training today");
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "no training today");
+            mark_star(&mut r, man);
+            run(&mut r, s, true);
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "morale at 0x50 stands too high");
+            mark_star(&mut r, man);
+            let hurt = crate::medical::date_in(&r.globals, 7);
+            if let Some(p) = r.player_mut(man) {
+                p.set_morale(30);
+                p.set_injured_to(hurt);
+            }
+            run(&mut r, s, true);
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "the hurt man was not out on the pitch");
+            mark_star(&mut r, man);
+            r.player_mut(man).unwrap().set_injured_to([0, 0]);
+            let (posted, recent) = run(&mut r, s, true);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty(), "the walk-off is told in its window only");
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), WALKOFF_OFFENCE, "{code}");
+        }
+
+        // 54: partnerless and estranged he goes to the camp unmarked;
+        // married and at nought with his wife, level one noted and
+        // nothing posted.
+        let s = weighed_to(54);
+        let man = drawn_by(s);
+        mark_star(&mut r, man);
+        r.player_mut(man).unwrap().set_partner(0);
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [54 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "no wife to stay with");
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "no wife to stay with");
+        mark_star(&mut r, man);
+        r.player_mut(man).unwrap().set_partner(WIFE | (2 << 2));
+        run(&mut r, s, false);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "estranged, he goes to camp anyway");
+        mark_star(&mut r, man);
+        r.player_mut(man).unwrap().set_partner(WIFE);
+        let (posted, _) = run(&mut r, s, false);
+        assert!(posted.is_empty());
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), CAMP_OFFENCE);
+
+        // 55 and 56: the bit asked, the case empty — the key goes
+        // among them and the man keeps his figures.
+        for code in [55u16, 56] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_star(&mut r, man);
+            r.player_mut(man).unwrap().set_contentment([50; 7]);
+            let (posted, recent) = run(&mut r, s, false);
             assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
             assert!(posted.is_empty());
             let p = r.player(man).unwrap();
