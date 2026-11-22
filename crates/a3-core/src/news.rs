@@ -12,7 +12,7 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; the handlers of categories 22 to 25; and three of
+//! +0x8a and +0x8b; the handlers of categories 24 and 25; and three of
 //! the hobbies of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
@@ -28,8 +28,9 @@
 //! mole who talks to the press ([`moles`]), and 55, a man's habits
 //! ([`habits`]); 18, a man's new hobby ([`new_hobby`]), 19, a man's
 //! hobby's day ([`about_a_player`]), 20, the press on a man
-//! ([`press_on_a_player`]), and 21, a man against his trainer
-//! ([`revolt`]).
+//! ([`press_on_a_player`]), 21, a man against his trainer
+//! ([`revolt`]), 22, a new man's first months ([`first_months`]), and
+//! 23, a schoolboy's days ([`school_days`]).
 
 use std::ops::RangeInclusive;
 
@@ -1329,6 +1330,222 @@ fn drawn_man(records: &Records, club: (u16, u16), random: &mut Random) -> Option
     let team = records.team(club.0, club.1)?;
     let at = random.below(u32::from(team.player_count())) as usize;
     team.players().get(at).copied()
+}
+
+/// The two happenings of a new man's first months, weighed alike
+/// (`FUN_0060be4d` over the list at `DAT_00a32658`, registered by
+/// `FUN_005f9ebf` from `DAT_0088e6f0`); the second is never told.
+const FIRST_MONTHS: [(u32, u16); 2] = [(1, 1), (1, 2)];
+/// The five happenings of a schoolboy's day, weighed alike
+/// (`FUN_0060be4d` over `DAT_00a32664`, registered by `FUN_005f9b78`
+/// from `DAT_0088e6dc`).
+const SCHOOL_DAYS: [(u32, u16); 5] = [(1, 1), (1, 2), (1, 3), (1, 4), (1, 5)];
+/// The season from which a new man's first months are talked about
+/// (`FUN_005f9fd0` with `DAT_00b5cbc8`), and the months under which he
+/// still counts as new (`FUN_006ff5d5`).
+const FIRST_MONTHS_SEASON: u16 = 3;
+const NEW_AT_THE_CLUB: i32 = 4;
+/// The men each of the two categories gathers at most.
+const MEN_MOST: usize = 0x14;
+/// A schoolboy is this old in the season's start year, 18 with a
+/// birthday before August and 19 with one later (`FUN_005f9d6d`).
+const SCHOOLBOY_AGE: (i32, i32) = (18, 19);
+/// The kind of planner appointment that keeps the school news off the
+/// day, the day from which it no longer does, and the June of the
+/// Abitur (`FUN_005eab71`, `FUN_005f9b90`).
+const TALK_KIND: u8 = 1;
+const TALK_UNTIL: u16 = 0x16b;
+const ABITUR_MONTH: u16 = 6;
+/// Ten to nineteen off his contentment with his private life when the
+/// girlfriend stays behind (`FUN_007010d9`), and four off his
+/// distractions at the school's burden or exam (`FUN_00701210`).
+const MOVE_KNOCK: i32 = -10;
+const MOVE_SPREAD: u32 = 10;
+const SCHOOL_KNOCK: i32 = -4;
+
+/// The picked category 22 (`case 0x16` with `FUN_005f9fd0`, the label
+/// "EreignisErsteMonate %d"): the day's news ends untold in the game's
+/// first two seasons. Else its men are the club's squad in order, real
+/// ids, standing at the club under four months ([`months_at_the_club`])
+/// — twenty at most, one drawn; none and the news goes on. His talk
+/// ([`girlfriend_stays`]).
+pub fn first_months(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if records.globals.seasons() < FIRST_MONTHS_SEASON {
+        return true;
+    }
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let newcomers: Vec<u16> = team
+        .players()
+        .into_iter()
+        .filter(|&id| {
+            id <= LAST_REAL_ID
+                && records.player(id).is_some_and(|p| months_at_the_club(records, &p) < NEW_AT_THE_CLUB)
+        })
+        .take(MEN_MOST)
+        .collect();
+    if newcomers.is_empty() {
+        return false;
+    }
+    let id = newcomers[random.below(newcomers.len() as u32) as usize];
+    girlfriend_stays(records, club, id, posted, random)
+}
+
+/// How long a man stands at his club, in months (`FUN_006ff5d5`): with
+/// stations of his career, the year and the month between today and the
+/// last one's date, the month he came counted on (`FUN_006758f3`);
+/// without one, `FUN_006758a6`'s thirtieth of the days between the
+/// first of July 1997 and today — a count of the year's day number
+/// ([`year_days`]) only, so it nears six by the year's end.
+fn months_at_the_club(records: &Records, p: &crate::records::Player) -> i32 {
+    let [day, month, year] = records.globals.date().map(|w| i32::from(w as i16));
+    match p.joined() {
+        Some((_, joined_month, joined_year)) => {
+            (year - i32::from(joined_year)) * 12 + month - i32::from(joined_month) + 1
+        }
+        None => (year_days(day, month, year) - year_days(1, 7, 1997)) / 30,
+    }
+}
+
+/// The year's day number of a date (`FUN_00675dd3` out of the month
+/// table at `DAT_008a3088`): the whole months before this one,
+/// February's 29 added from March on in a leap year (`FUN_00675e65`),
+/// this day, less one.
+fn year_days(day: i32, month: i32, year: i32) -> i32 {
+    const MONTH_DAYS: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let whole = usize::try_from(month - 1).unwrap_or(0).min(MONTH_DAYS.len());
+    let leap = year % 400 == 0 || (year % 4 == 0 && year % 100 != 0);
+    MONTH_DAYS[..whole].iter().sum::<i32>() - 1 + i32::from(leap && month > 2) + day
+}
+
+/// The new man's talk (`FUN_005f9ed7`, "EreignisErsteMonate %d"): the
+/// second happening ends the news untold; the first asks a girlfriend —
+/// not a wife, not none — no children and the two not far from parting
+/// (her state, bits 2 to 4, nought), else it ends untold as well. She
+/// will not move to the new town: ten to nineteen off his private life,
+/// and the Trennung told with her first name (0x43b).
+fn girlfriend_stays(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    match weighed(&FIRST_MONTHS, random) {
+        1 => {}
+        2 => return true,
+        _ => return false,
+    }
+    let Some(p) = records.player(id) else { return true };
+    if p.partner() & 3 != GIRLFRIEND || p.children() != 0 || state(&p) != 0 {
+        return true;
+    }
+    change(records, id, PRIVATE, MOVE_KNOCK - random.below(MOVE_SPREAD) as i32);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x43b, fill: Fill::Partnered(id) });
+    true
+}
+
+/// The picked category 23 (`case 0x17` with `FUN_005f9d6d`, the label
+/// "EreignisSchüler %d"): a talk booked in the club's planner ends the
+/// day's news untold ([`talk_booked`]). Else its men are the club's
+/// squad in order, real ids, still at school (their standing, bits 3
+/// and 4, not 3) and 18 or 19 in the season's start year
+/// ([`SCHOOLBOY_AGE`]) — twenty at most, one drawn; none and the news
+/// goes on. His day at school ([`schoolboy`]).
+pub fn school_days(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if talk_booked(records, club) {
+        return true;
+    }
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let start = i32::from(records.globals.start_year());
+    let boys: Vec<u16> = team
+        .players()
+        .into_iter()
+        .filter(|&id| {
+            id <= LAST_REAL_ID
+                && records.player(id).is_some_and(|p| {
+                    (p.school() >> 3) & 3 != 3
+                        && i32::from(p.birth_year())
+                            == start
+                                - if p.birth_month() < 8 { SCHOOLBOY_AGE.0 } else { SCHOOLBOY_AGE.1 }
+                })
+        })
+        .take(MEN_MOST)
+        .collect();
+    if boys.is_empty() {
+        return false;
+    }
+    let id = boys[random.below(boys.len() as u32) as usize];
+    schoolboy(records, club, id, posted, random)
+}
+
+/// The club's planner standing against the school news (`FUN_005eab71`
+/// over the planner of the club's human number, its +0x8a; out of 1 to
+/// 4 zeroed and passing): from the season's day 0x16b on it is not
+/// asked at all. Else an appointment of the kind 1 today ends the
+/// news — or, failing that, the last such appointment before today,
+/// when it names a man or a club.
+fn talk_booked(records: &Records, club: (u16, u16)) -> bool {
+    let today = records.globals.day();
+    if today >= TALK_UNTIL {
+        return false;
+    }
+    let Some(slot) = records
+        .team(club.0, club.1)
+        .and_then(|t| usize::from(t.human()).checked_sub(1))
+    else {
+        return false;
+    };
+    let Some(planner) = records.planners.get(slot) else { return false };
+    let at = usize::from(today);
+    planner.day(at).kind == TALK_KIND
+        || (0..at)
+            .rev()
+            .find(|&d| planner.day(d).kind == TALK_KIND)
+            .is_some_and(|d| planner.day(d).player != 0)
+}
+
+/// The schoolboy's day (`FUN_005f9b90`, "EreignisSchüler %d"), one of
+/// five drawn alike: the school's burden (0x619) or an important exam
+/// (0x61a), four off his distractions, unless the teacher already backs
+/// him; while he stands at 0 at school, a teacher who hates football
+/// (0x61b, his standing to 1) or one who supports him (0x61c, to 2);
+/// and in June the Abitur done (0x61d). All told by his name; only a
+/// drawn nought — which these weights never draw — lets the news go on.
+fn schoolboy(
+    records: &mut Records,
+    club: (u16, u16),
+    id: u16,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let happening = weighed(&SCHOOL_DAYS, random);
+    let standing = (records.player(id).map_or(0, |p| p.school()) >> 3) & 3;
+    let text = match happening {
+        1 | 2 if standing != 2 => {
+            change(records, id, DISTRACTION, SCHOOL_KNOCK);
+            if happening == 1 { 0x619 } else { 0x61a }
+        }
+        3 | 4 if standing == 0 => {
+            if let Some(p) = records.player_mut(id) {
+                p.set_school(p.school() & 0xe7 | ((happening - 2) << 3) as u8);
+            }
+            if happening == 3 { 0x61b } else { 0x61c }
+        }
+        5 if records.globals.date()[1] == ABITUR_MONTH => 0x61d,
+        _ => return happening != 0,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+    true
 }
 
 /// The picked category 1 (`case 1` with `FUN_005f8ca8`): each man of
@@ -2694,6 +2911,13 @@ pub fn habits(
     true
 }
 
+/// Whether a text is one of categories 22 and 23's: the girlfriend who
+/// stays behind (0x43b), and the schoolboy's burden, exam, teachers and
+/// Abitur (0x619 to 0x61d).
+pub fn newcomer_text(text: u16) -> bool {
+    text == 0x43b || (0x619..=0x61d).contains(&text)
+}
+
 /// Whether a text is one of categories 18, 19, 50, 51 and 55's.
 pub fn squad_text(text: u16) -> bool {
     (0x3b8..=0x3cb).contains(&text)
@@ -3506,6 +3730,149 @@ mod tests {
         let mut random = Random::new(happening(1));
         assert!(!revolt(&mut r, club, 63, training, &league, (&mut recent, &mut posted), &mut random));
         assert!(random == Random::new(happening(1)));
+    }
+
+    /// Categories 22 and 23 on A's human squad, the fourth man drawn:
+    /// while the game writes its second season the news ends untold; in
+    /// its third he, signed with no career station and under four months
+    /// at the club, with a girlfriend, no children and the two at peace,
+    /// hears the Trennung (0x43b, with her first name) and takes ten to
+    /// nineteen off his private life — the second happening, a wife and
+    /// a father end it untold. Category 23: an appointment of kind 1 in
+    /// the club's planner today ends the news untold; else the one
+    /// schoolboy — 18 in the start year with a spring birthday — hears
+    /// the teacher who hates football (0x61b, his standing to 1, only
+    /// while it stands at 0) or the school's burden (0x619, four off his
+    /// distractions, but not for a teacher who backs him), and in June
+    /// the Abitur (0x61d) while out of June nothing is told; a schoolboy
+    /// done with school leaves the news going on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn categories_22_and_23_talk_to_newcomers_and_schoolboys() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let real: Vec<u16> = squad.into_iter().filter(|&id| id <= LAST_REAL_ID).collect();
+        let man = real[3];
+        let [day, _, year] = r.globals.date();
+        let start = r.globals.start_year();
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let away = seed(&|r| r.below(2) == 0);
+
+        // Category 22: he stands at the club without a career station,
+        // all the others since before the last season.
+        for &id in real.iter().filter(|&&id| id != man) {
+            let p = r.player_mut(id).unwrap();
+            p.set_career_count(1);
+            p.put::<u8>(0x20, 1);
+            p.put::<u8>(0x21, 1);
+            p.put::<u16>(0x22, year - 2);
+        }
+        let p = r.player_mut(man).unwrap();
+        p.set_career_count(0);
+        p.set_partner(GIRLFRIEND);
+        p.set_children(0);
+        let mut parts = p.contentment();
+        parts[PRIVATE] = 100;
+        p.set_contentment(parts);
+        assert!(months_at_the_club(&r, &r.player(man).unwrap()) < NEW_AT_THE_CLUB);
+        let mut posted = Vec::new();
+        // The game's second season: untold, no draw.
+        r.globals.set_seasons(2);
+        let mut random = Random::new(away);
+        assert!(first_months(&mut r, club, &mut posted, &mut random));
+        assert!(random == Random::new(away) && posted.is_empty());
+        // Its third: the talk and the knock on his private life.
+        r.globals.set_seasons(FIRST_MONTHS_SEASON);
+        let mut random = Random::new(away);
+        assert!(first_months(&mut r, club, &mut posted, &mut random));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x43b, fill: Fill::Partnered(man) }]);
+        let mut expected = Random::new(away);
+        expected.below(2);
+        let knock = 10 + expected.below(10);
+        assert_eq!(r.player(man).unwrap().contentment()[PRIVATE], (100 - knock) as u8);
+        assert!(random == expected);
+        // The second happening, a wife and a father end it untold.
+        let second = seed(&|r| r.below(2) == 1);
+        assert!(first_months(&mut r, club, &mut posted, &mut Random::new(second)));
+        r.player_mut(man).unwrap().set_partner(WIFE);
+        let mut random = Random::new(away);
+        assert!(first_months(&mut r, club, &mut posted, &mut random));
+        let mut expected = Random::new(away);
+        expected.below(2);
+        assert!(random == expected && posted.len() == 1);
+        r.player_mut(man).unwrap().set_partner(GIRLFRIEND);
+        r.player_mut(man).unwrap().set_children(2);
+        assert!(first_months(&mut r, club, &mut posted, &mut Random::new(away)));
+        assert_eq!(posted.len(), 1);
+
+        // Category 23: he is 18 in the start year with a spring
+        // birthday, all the others grown men; the planner of his club's
+        // human has no appointment before today.
+        for &id in real.iter().filter(|&&id| id != man) {
+            r.player_mut(id).unwrap().set_birth_year(start - 30);
+        }
+        let p = r.player_mut(man).unwrap();
+        p.set_birth_month(3);
+        p.set_birth_year(start - 18);
+        p.set_school(0);
+        let mut parts = p.contentment();
+        parts[DISTRACTION] = 100;
+        p.set_contentment(parts);
+        let human = r.team(club.0, club.1).unwrap().human();
+        assert_ne!(human, 0, "the club knows its human");
+        let slot = usize::from(human) - 1;
+        let today = usize::from(r.globals.day());
+        for d in 0..=today {
+            r.planners[slot].set_entry(d, [0; crate::records::PLANNER_ENTRY]);
+        }
+        let trouble = seed(&|r| r.below(5) == 2);
+        let burden = seed(&|r| r.below(5) == 0);
+        let abitur = seed(&|r| r.below(5) == 4);
+        // A talk booked today: untold, no draw.
+        let mut entry = [0u8; crate::records::PLANNER_ENTRY];
+        entry[0] = TALK_KIND;
+        entry[4] = 1;
+        r.planners[slot].set_entry(today, entry);
+        let mut random = Random::new(trouble);
+        assert!(school_days(&mut r, club, &mut posted, &mut random));
+        assert!(random == Random::new(trouble) && posted.len() == 1);
+        r.planners[slot].set_entry(today, [0; crate::records::PLANNER_ENTRY]);
+        // The teacher who hates football, his standing from 0 to 1.
+        let mut random = Random::new(trouble);
+        assert!(school_days(&mut r, club, &mut posted, &mut random));
+        assert_eq!(posted[1], Posted { club, code: PRIVATE_NEWS, text: 0x61b, fill: Fill::NumberedOne(man) });
+        let mut expected = Random::new(trouble);
+        expected.below(5);
+        assert!(random == expected);
+        assert_eq!((r.player(man).unwrap().school() >> 3) & 3, 1);
+        // The school's burden: four off his distractions.
+        assert!(school_days(&mut r, club, &mut posted, &mut Random::new(burden)));
+        assert_eq!(posted[2], Posted { club, code: PRIVATE_NEWS, text: 0x619, fill: Fill::NumberedOne(man) });
+        assert_eq!(r.player(man).unwrap().contentment()[DISTRACTION], 96);
+        // The teacher's trouble once more: not while he stands at 1.
+        assert!(school_days(&mut r, club, &mut posted, &mut Random::new(trouble)));
+        assert_eq!(posted.len(), 3);
+        // The burden of a man the teacher backs: nothing.
+        r.player_mut(man).unwrap().set_school(2 << 3);
+        assert!(school_days(&mut r, club, &mut posted, &mut Random::new(burden)));
+        assert_eq!(posted.len(), 3);
+        // The Abitur in June, and in September nothing.
+        r.globals.set_date([day, 6, year]);
+        assert!(school_days(&mut r, club, &mut posted, &mut Random::new(abitur)));
+        assert_eq!(posted[3], Posted { club, code: PRIVATE_NEWS, text: 0x61d, fill: Fill::NumberedOne(man) });
+        r.globals.set_date([day, 9, year]);
+        assert!(school_days(&mut r, club, &mut posted, &mut Random::new(abitur)));
+        assert_eq!(posted.len(), 4);
+        // Done with school: he is no schoolboy, the news goes on.
+        r.player_mut(man).unwrap().set_school(3 << 3);
+        let mut random = Random::new(abitur);
+        assert!(!school_days(&mut r, club, &mut posted, &mut random));
+        assert!(random == Random::new(abitur));
     }
 
     /// Category 1 on A's human squad, one married man its only partner:

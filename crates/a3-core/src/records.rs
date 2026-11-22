@@ -338,6 +338,11 @@ record! {
     /// Problems: gambled away at the president's (low two bits), with the
     /// language (bits 2 and 3).
     0x27f => problems, set_problems: u8;
+    /// His standing with the school, bits 3 and 4 (`FUN_00706523`): 0 at
+    /// school, 1 with a teacher who hates football, 2 with one who backs
+    /// him, 3 the school done (`FUN_007064f6`); only 1 and 2 are set, by
+    /// `FUN_0070654a` in the schoolboy's news.
+    0x280 => school, set_school: u8;
     /// Names, from the first names of the nation at +0x286: his partner's,
     /// an affair's, his children's.
     0x283 => partner_name, set_partner_name: u8;

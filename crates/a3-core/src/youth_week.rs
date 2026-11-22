@@ -878,6 +878,7 @@ mod tests {
                             && !crate::news::SERVICE_TEXTS.contains(&p.text)
                             && !crate::news::partner_text(p.text)
                             && !crate::news::squad_text(p.text)
+                            && !crate::news::newcomer_text(p.text)
                     })
             })
         };

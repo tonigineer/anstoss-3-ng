@@ -624,9 +624,11 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::news::habits`]) do here, and so does 19 for a man without a
 /// hobby ([`crate::news::about_a_player`]); 18 ([`crate::news::new_hobby`])
 /// and 19 for a man with one always end the news; 20, the press on a man
-/// ([`crate::news::press_on_a_player`]), and 21, a man against his
-/// trainer ([`crate::news::revolt`]), go on when they tell nothing. The
-/// others (22 to 25) are not built, so another picked category stands
+/// ([`crate::news::press_on_a_player`]), 21, a man against his trainer
+/// ([`crate::news::revolt`]), 22, a new man's first months
+/// ([`crate::news::first_months`]), and 23, a schoolboy's days
+/// ([`crate::news::school_days`]), go on when they tell nothing. The
+/// others (24 and 25) are not built, so another picked category stands
 /// for the day's whole news here.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
@@ -698,6 +700,8 @@ pub fn news(
             19 => crate::news::about_a_player(records, club, today, planned, league, &mut posted, random),
             20 => crate::news::press_on_a_player(records, club, league, random),
             21 => crate::news::revolt(records, club, today, units, league, (recent, &mut posted), random),
+            22 => crate::news::first_months(records, club, &mut posted, random),
+            23 => crate::news::school_days(records, club, &mut posted, random),
             _ => true,
         };
         if told {
