@@ -4784,7 +4784,8 @@ const MARTIAL_ARTS: u8 = 0x15;
 /// with nothing told, and a new one goes among them before the switch
 /// reads the man's character bit ([`asked_trait`]) and the case's own
 /// gates. Here are the private-life happenings, codes 1 to 6 behind the
-/// trait word's bit 2. Every one of their texts goes through
+/// trait word's bit 2, and the public-life ones, codes 11 to 14 behind
+/// bit 4. Every one of their texts goes through
 /// `FUN_005f29bc`'s question to the manager or is told with values
 /// (`FUN_00601043`) — neither is built here (as elsewhere in this
 /// module), so nothing is posted; only the marks stand. 1: furious at
@@ -4800,8 +4801,18 @@ const MARTIAL_ARTS: u8 = 0x15;
 /// (+0x9e, the team record's Stimmung) stands under 80 and the club
 /// stands in a camp of its trainer's calendar ([`in_camp`]); the
 /// offence noted. 6: a rival fan meets his kung fu (0x4eb) when his
-/// hobby is martial arts ([`MARTIAL_ARTS`]); the offence noted. The
-/// other forty-four codes end consumed, as before.
+/// hobby is martial arts ([`MARTIAL_ARTS`]); the offence noted. 11:
+/// elected his home town's carnival prince (0x4ec) with no further
+/// gate, and 12: a few quarters too many at the wine festival (0x4ed)
+/// while the day before held a planned unit ([`planned_yesterday`],
+/// `FUN_005ea950`) — each takes five off his distractions
+/// (`FUN_00701210(-5)`, as at code 3) and is told with the old and the
+/// new figure. 13: a real crowd favourite (0x4ee), told by name
+/// (`FUN_00600f2f`) only while the club stands level with its season's
+/// goal (`FUN_00775f0a`, [`crate::league::goal_missing`] at nought),
+/// and 14: a bit part in a TV crime show (0x4ef, weighed one) told by
+/// name alone — neither leaves a mark. The other forty codes end
+/// consumed, as before.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -4846,7 +4857,17 @@ pub fn player_news(
                 mark_offence(records, man, KUNGFU_OFFENCE);
             }
         }
-        // The rest of `FUN_005e08f1`'s cases come in their parts.
+        11 => change(records, man, DISTRACTION, -5),
+        12 => {
+            if planned_yesterday(records, club, today) {
+                change(records, man, DISTRACTION, -5);
+            }
+        }
+        // 13 and 14 tell by name only — 13 of a crowd favourite when the
+        // club stands level with its season's goal (`FUN_00775f0a`), 14
+        // of a TV bit part always — and no text stands here, so nothing
+        // moves. The rest of `FUN_005e08f1`'s cases come in their parts.
+        13 | 14 => {}
         _ => {}
     }
 }
@@ -4857,6 +4878,29 @@ fn mark_offence(records: &mut Records, id: u16, level: u8) {
     if let Some(p) = records.player_mut(id) {
         crate::discipline::note_offence(p, level);
     }
+}
+
+/// Whether the wine festival waited for the club the day before
+/// (`FUN_005ea950`): the day number no whole week, and yesterday's row
+/// of the club object's plan at +0xc0a (the extra data's plan,
+/// [`crate::records::Extra::plan`]) holds a unit that is not free — the
+/// same row check `FUN_005ea8cc` makes of today's row for the code 2
+/// gate, one day back and never on a week's first day.
+fn planned_yesterday(records: &Records, club: (u16, u16), today: i32) -> bool {
+    let back = today.rem_euclid(7);
+    if back == 0 {
+        return false;
+    }
+    let row = (back as usize - 1) * crate::training::SESSIONS;
+    records
+        .team(club.0, club.1)
+        .and_then(|team| usize::from(team.human()).checked_sub(1))
+        .and_then(|slot| records.extras.get(slot))
+        .is_some_and(|extra| {
+            extra.plan()[row..][..crate::training::SESSIONS]
+                .iter()
+                .any(|&unit| unit != crate::training::FREE)
+        })
 }
 
 #[cfg(test)]
@@ -5088,6 +5132,123 @@ mod tests {
         let mut random = Random::new(s);
         player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
         assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+    }
+
+    /// The happenings behind the trait word's bit 4 on A's human club:
+    /// the carnival prince takes five off the drawn man's distractions
+    /// as the trees did, the wine festival only while yesterday's row of
+    /// the club's plan held a unit and the day number is no whole week.
+    /// The crowd favourite and the bit part leave nothing behind, and
+    /// every code's key stands among the lately met.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_public_happenings_cut_the_distractions() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let slot = usize::from(team.human()) - 1;
+        let today = i32::from(r.globals.day());
+        let week = today - today.rem_euclid(7);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let set_row = |r: &mut Records, row: usize, units: [u8; 3]| {
+            let extra = r.extras.get_mut(slot).expect("extra data of the human club");
+            let mut plan = extra.plan();
+            plan[row * 3..][..3].copy_from_slice(&units);
+            extra.set_plan(plan);
+        };
+
+        // Code 11: the carnival prince, five off his distractions and
+        // no offence noted.
+        let s = weighed_to(11);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] |= 0x4;
+            p.set_traits(traits);
+            p.set_offences(0);
+            p.set_offence_counts(0);
+        }
+        let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+        assert_eq!(recent, [11 + HAPPENING_MET]);
+        let p = r.player(man).unwrap();
+        assert_eq!(i32::from(p.contentment()[DISTRACTION]), (before - 5).max(0));
+        assert_eq!(crate::discipline::offence(p), 0);
+
+        // Code 12: the wine festival never waits on a whole week of a
+        // day number, however full that day before's row was.
+        let s = weighed_to(12);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] |= 0x4;
+            p.set_traits(traits);
+        }
+        set_row(&mut r, 0, [0, 0, 0]);
+        let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, week, false, &league, &mut recent, &mut random);
+        assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+        assert_eq!(recent, [12 + HAPPENING_MET]);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before, "a whole week of a day");
+
+        // The day after the week's first: row 0 is the day before's.
+        // All free, the man keeps his figure; one unit there, and the
+        // festival takes five off it.
+        set_row(&mut r, 0, [crate::training::FREE; 3]);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+        assert_eq!(recent, [12 + HAPPENING_MET]);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before, "yesterday all free");
+        set_row(&mut r, 0, [crate::training::FREE, 0, crate::training::FREE]);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+        assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), (before - 5).max(0));
+
+        // 13 and 14: told by name only — the crowd favourite and the
+        // TV bit part leave the man as he was, key meted either way.
+        for code in [13, 14] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                traits[1] |= 0x4;
+                p.set_traits(traits);
+            }
+            let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before);
+        }
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
