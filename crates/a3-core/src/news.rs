@@ -33,8 +33,8 @@
 //! 23, a schoolboy's days ([`school_days`]), and 24, the men far from
 //! home ([`far_from_home`]) — its walk, its lists and the tale it tells
 //! on one of its men, and 25, happenings among the club's own men
-//! ([`in_the_team`]), whose two first tell of team-mates made best
-//! friends.
+//! ([`in_the_team`]), telling of team-mates made best friends and of a
+//! friendship in the team steadied, shared, renewed or ended.
 
 use std::ops::RangeInclusive;
 
@@ -2142,6 +2142,328 @@ fn friends_by_wives(
     true
 }
 
+/// The most men each of the pair drawers keeps (`0x23`, as in category
+/// 1's lists).
+const PAIRS_MOST: usize = 0x23;
+
+/// The pair happenings 3 to 5 draw (`FUN_005ecccc`): the squad's real
+/// men with a best friend (`FUN_0070162e`), 35 at most, one of them
+/// drawn (`FUN_0078a810` over the list, which under two of them draws
+/// nought without drawing). The man and his best friend must both
+/// stand in the club's squad (`FUN_006968c4`) for the happening to go
+/// ahead.
+fn pair_by_best_friend(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let men: Vec<u16> = squad
+        .iter()
+        .filter(|&&id| id <= LAST_REAL_ID && records.player(id).is_some_and(|p| p.best_friend() != 0))
+        .take(PAIRS_MOST)
+        .copied()
+        .collect();
+    let at = random.below(men.len() as u32) as usize;
+    let one = *men.get(at)?;
+    let other = records.player(one)?.best_friend();
+    (other != 0 && squad.contains(&other)).then_some((one, other))
+}
+
+/// The pair happenings 6 and 7 draw (`FUN_005ecdc8`): the squad's real
+/// men with a best friend or — lacking one — a first friend (+0x1f8,
+/// `FUN_007015c6`), 35 at most, drawn the same way; the second man is
+/// the best friend where he has one and the first friend otherwise, and
+/// must stand in the club's squad as well.
+fn pair_by_friend(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let mut men: Vec<u16> = Vec::new();
+    for &id in squad.iter().filter(|&&id| id <= LAST_REAL_ID) {
+        let linked = records.player(id).is_some_and(|p| p.best_friend() != 0 || p.friends()[0] != 0);
+        if linked && men.len() < PAIRS_MOST {
+            men.push(id);
+        }
+    }
+    let at = random.below(men.len() as u32) as usize;
+    let one = *men.get(at)?;
+    let man = records.player(one)?;
+    let other = if man.best_friend() != 0 { man.best_friend() } else { man.friends()[0] };
+    (other != 0 && squad.contains(&other)).then_some((one, other))
+}
+
+/// `FUN_00703a80` with `FUN_00703a0c`: the second man off the first's
+/// best friend, when he is him, and along the chain of best friends
+/// from the second on each lets go of his.
+fn drop_best_friend(records: &mut Records, one: u16, other: u16) {
+    if records.player(one).is_some_and(|p| p.best_friend() != other) {
+        return;
+    }
+    if let Some(p) = records.player_mut(one) {
+        p.set_best_friend(0);
+    }
+    let mut at = other;
+    while let Some(p) = records.player_mut(at).filter(|p| p.best_friend() != 0) {
+        at = p.best_friend();
+        p.set_best_friend(0);
+    }
+}
+
+/// `FUN_00703b8e` with `FUN_00703b1a`: the same along the hated men
+/// (+0x206).
+fn drop_hated(records: &mut Records, one: u16, other: u16) {
+    if records.player(one).is_some_and(|p| p.hates() != other) {
+        return;
+    }
+    if let Some(p) = records.player_mut(one) {
+        p.set_hates(0);
+    }
+    let mut at = other;
+    while let Some(p) = records.player_mut(at).filter(|p| p.hates() != 0) {
+        at = p.hates();
+        p.set_hates(0);
+    }
+}
+
+/// `FUN_00703854`: a man off the first man's friends (+0x1f8), the
+/// rest sliding up; when it found him the first man goes off the
+/// other's friends the same way, and off that one's in turn.
+fn drop_friend(records: &mut Records, one: u16, other: u16) {
+    let (mut who, mut whom) = (one, other);
+    while let Some(p) = records.player_mut(who) {
+        let mut friends = p.friends();
+        let Some(at) = friends.iter().take_while(|&&f| f != 0).position(|&f| f == whom) else { break };
+        friends.copy_within(at + 1.., at);
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+}
+
+/// `FUN_00703930` with its slip: a man off the first man's dislikes
+/// (+0x1fe), the rest sliding up, and — the original's slip, writing
+/// past the list — his third friend zeroed; then the other's lists the
+/// same way. As with the rivals' lists a few rounds stand for the
+/// round the slip can start again.
+fn drop_dislike(records: &mut Records, one: u16, other: u16) {
+    let (mut who, mut whom) = (one, other);
+    for _ in 0..4 {
+        let Some(p) = records.player_mut(who) else { break };
+        let mut dislikes = p.dislikes();
+        let Some(at) = dislikes.iter().take_while(|&&d| d != 0).position(|&d| d == whom) else { break };
+        dislikes.copy_within(at + 1.., at);
+        p.set_dislikes(dislikes);
+        let mut friends = p.friends();
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+}
+
+/// `FUN_007032db`: a man into the first man's friends: he is left
+/// there where he already stands before the first empty place; when all
+/// three places are taken the first friend is dropped first
+/// ([`drop_friend`], the first man going off his lists in turn); he
+/// stands in the first empty place.
+fn add_friend(records: &mut Records, one: u16, other: u16) {
+    let Some(p) = records.player(one) else { return };
+    let friends = p.friends();
+    if friends.iter().take_while(|&&f| f != 0).any(|&f| f == other) {
+        return;
+    }
+    if friends.iter().all(|&f| f != 0) {
+        drop_friend(records, one, friends[0]);
+    }
+    if let Some(p) = records.player_mut(one) {
+        let mut friends = p.friends();
+        if let Some(at) = friends.iter().position(|&f| f == 0) {
+            friends[at] = other;
+            p.set_friends(friends);
+        }
+    }
+}
+
+/// `FUN_00703cba`: the two let go of their ties — the second man off
+/// the first's best friend with the chain from the second on
+/// ([`drop_best_friend`]), and the friendship ([`drop_friend`]).
+fn break_ties(records: &mut Records, one: u16, other: u16) {
+    drop_best_friend(records, one, other);
+    drop_friend(records, one, other);
+}
+
+/// `FUN_00703d8c` on the two, while the second is not the first man's
+/// best friend — which [`break_ties`] has just seen to: his hate of
+/// the other goes with its chain ([`drop_hated`]), their dislikes go
+/// ([`drop_dislike`] with its slip), and each man joins the other's
+/// friends ([`add_friend`]).
+fn mend_to_friends(records: &mut Records, one: u16, other: u16) {
+    if records.player(one).is_some_and(|p| p.best_friend() == other) {
+        return;
+    }
+    drop_hated(records, one, other);
+    drop_dislike(records, one, other);
+    add_friend(records, one, other);
+    add_friend(records, other, one);
+}
+
+/// `FUN_007053bb` on a man: his two most wanting parts of contentment
+/// (+0x28f, seven of them) are brought halfway to 100; his morale is
+/// left standing as it is.
+fn lift_two_lowest(records: &mut Records, who: u16) {
+    let Some(p) = records.player_mut(who) else { return };
+    let mut parts = p.contentment();
+    let mut done = [false; 7];
+    for _ in 0..2 {
+        let Some(at) = (0..7).filter(|&k| !done[k]).min_by_key(|&k| parts[k]) else { break };
+        done[at] = true;
+        if parts[at] < 100 {
+            parts[at] += ((100 - u32::from(parts[at])) / 2) as u8;
+        }
+    }
+    p.set_contentment(parts);
+}
+
+/// `FUN_00705539` on the one unhappy man, with the happy one: his two
+/// most wanting parts of the first three (trainer, team and club) are
+/// brought halfway to 100, and the other man's parts of the same
+/// places go down by as much; both men's morale is left standing.
+fn share_contentment(records: &mut Records, unhappy: u16, happy: u16) {
+    let Some(p) = records.player(unhappy) else { return };
+    let mut mine = p.contentment();
+    let mut lifts = Vec::new();
+    let mut done = [false; 3];
+    for _ in 0..2 {
+        let Some(at) = (0..3).filter(|&k| !done[k]).min_by_key(|&k| mine[k]) else { break };
+        done[at] = true;
+        if mine[at] < 100 {
+            let by = ((100 - u32::from(mine[at])) / 2) as u8;
+            mine[at] += by;
+            lifts.push((at, by));
+        }
+    }
+    if let Some(p) = records.player_mut(unhappy) {
+        p.set_contentment(mine);
+    }
+    if let Some(p) = records.player_mut(happy) {
+        let mut theirs = p.contentment();
+        for (at, by) in lifts {
+            theirs[at] = theirs[at].wrapping_sub(by);
+        }
+        p.set_contentment(theirs);
+    }
+}
+
+/// Code 3 (`case 3`, text 0x554): [`pair_by_best_friend`], the two
+/// sorted by morale (+0xca, the club place's morale) so the one of the
+/// better stands first. When his morale stands over 100 and the
+/// other's under 85, the other's two most wanting parts of contentment
+/// go halfway to 100 ([`lift_two_lowest`], his morale left standing)
+/// and the club is told of the two; the better one in `%1`. Every way
+/// out ends the news.
+fn friend_steadies_morale(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = pair_by_best_friend(records, club, random) else { return true };
+    let morale = |id: u16| i32::from(records.player(id).map_or(0, |p| p.morale()));
+    let (well, troubled) = if morale(one) >= morale(other) { (one, other) } else { (other, one) };
+    if !(morale(well) > 100 && morale(troubled) < 85) {
+        return true;
+    }
+    lift_two_lowest(records, troubled);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x554, fill: Fill::Names(well, troubled) });
+    true
+}
+
+/// Code 4 (`case 4`, text 0x555): only while the club's mood byte
+/// (+0x9e, the team record's Stimmung at +0xc4) stands 50 (0x32) or
+/// above — else the news ends without a pair. [`pair_by_best_friend`],
+/// the two sorted by the mean of the three first contentment parts
+/// (`FUN_006ff14d` over [`crate::mood::parts`]) so the more pleased
+/// stands first. Over 100 for him and under 85 for the other, the two
+/// share their good mood ([`share_contentment`]) and 0x555 tells of
+/// them, the pleased one in `%1`.
+fn friends_share_contentment(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if records.team(club.0, club.1).is_none_or(|t| t.mood() < 50) {
+        return true;
+    }
+    let Some((one, other)) = pair_by_best_friend(records, club, random) else { return true };
+    let pleased = |id: u16| {
+        records.player(id).map_or(0, |p| {
+            let parts = crate::mood::parts(p);
+            (parts[0] + parts[1] + parts[2]) / 3
+        })
+    };
+    let (glad, sad) = if pleased(one) >= pleased(other) { (one, other) } else { (other, one) };
+    if !(pleased(glad) > 100 && pleased(sad) < 85) {
+        return true;
+    }
+    share_contentment(records, sad, glad);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x555, fill: Fill::Names(glad, sad) });
+    true
+}
+
+/// Code 5 (`case 5`, text 0x556): while the club's mood byte stands
+/// 100 (0x64) or below. [`pair_by_best_friend`] with no sorting; the
+/// two let go of their ties ([`break_ties`]) and mend them as friends
+/// instead ([`mend_to_friends`]): hate and dislike between them go and
+/// each joins the other's friends. 0x556 tells of the drawn man in
+/// `%1` and his best friend in `%2`.
+fn friendship_renewed(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if records.team(club.0, club.1).is_none_or(|t| t.mood() > 100) {
+        return true;
+    }
+    let Some((one, other)) = pair_by_best_friend(records, club, random) else { return true };
+    break_ties(records, one, other);
+    mend_to_friends(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x556, fill: Fill::Names(one, other) });
+    true
+}
+
+/// Code 6 (`case 6`, text 0x557): [`pair_by_friend`], the two sorted by
+/// their contentment with the trainer (the parts' first, `FUN_007008b9`)
+/// so the less content stands first. His part under 80 (0x50) and the
+/// other's 100 (0x64) or better, the two let go of their ties
+/// ([`break_ties`]) and 0x557 tells of them, the unhappy one in `%1`.
+fn friendship_ends_over_trainer(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = pair_by_friend(records, club, random) else { return true };
+    let trainer = |id: u16| records.player(id).map_or(0, |p| crate::mood::parts(p)[0]);
+    let (down, up) = if trainer(one) > trainer(other) { (other, one) } else { (one, other) };
+    if !(trainer(down) < 80 && trainer(up) >= 100) {
+        return true;
+    }
+    break_ties(records, down, up);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x557, fill: Fill::Names(down, up) });
+    true
+}
+
+/// Code 7 (`case 7`, text 0x558): [`pair_by_friend`] with no sorting
+/// and no leave — the two simply let go of their ties ([`break_ties`])
+/// and 0x558 tells of the drawn man in `%1` and his friend in `%2`.
+fn friendship_ends(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = pair_by_friend(records, club, random) else { return true };
+    break_ties(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x558, fill: Fill::Names(one, other) });
+    true
+}
+
 /// The picked category 25 (`FUN_005ffeb7`, label "EreignisImTeam %d"):
 /// one man drawn over the club's squad (`FUN_0078a810` over the club's
 /// +0xe2, which under two men draws nought without drawing); an empty
@@ -2169,6 +2491,11 @@ pub fn in_the_team(
     match weighed(&TEAM_HAPPENINGS, random) {
         1 => friends_by_hobby(records, club, tables, posted, random),
         2 => friends_by_wives(records, club, posted, random),
+        3 => friend_steadies_morale(records, club, posted, random),
+        4 => friends_share_contentment(records, club, posted, random),
+        5 => friendship_renewed(records, club, posted, random),
+        6 => friendship_ends_over_trainer(records, club, posted, random),
+        7 => friendship_ends(records, club, posted, random),
         // Code 0 cannot be drawn; the others end the news: 9, 0xd, 0xf,
         // 0x1a and 0x1d stand untold in the original itself, the rest
         // until the parts after this one build them.
@@ -5913,7 +6240,7 @@ mod tests {
         let untold = seed(&|rnd| {
             let door = opens(rnd);
             let sub = rnd.below(692);
-            door && (60..90).contains(&sub)
+            door && (210..240).contains(&sub)
         });
         let mut random = Random::new(untold);
         assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
@@ -5928,5 +6255,144 @@ mod tests {
         let mut random = Random::new(1);
         assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
         assert!(random == Random::new(1) && posted.len() == 2);
+    }
+
+    /// Happenings 3 to 7 of category 25 on A's human club: the pair
+    /// drawn from the club's best friends (3 to 5) or among its friends
+    /// (6 and 7), always one man holding the other so the drawers draw
+    /// him without drawing. The friend of better morale brings the
+    /// troubled one's two most wanting parts of contentment halfway to
+    /// 100 (0x554); with the club's mood 50 or up the two share their
+    /// three first parts, the glad one's going down by as much (0x555);
+    /// with the mood 100 or down they let their ties go and stand each
+    /// in the other's friends (0x556); the one less content with the
+    /// trainer ends the friendship (0x557) and 0x558 ends it plain.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_25_sours_or_builds_up_a_friendship() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = usize::from(r.team(club.0, club.1).unwrap().player_count());
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let real: Vec<u16> = squad.iter().copied().filter(|&id| id != 0 && id <= LAST_REAL_ID).collect();
+        let (first, second) = (real[0], real[1]);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let opens = |rnd: &mut Random| matches!(squad.get(rnd.below(count as u32) as usize), Some(&id) if id != 0 && id <= LAST_REAL_ID);
+        let pair = |lo: u32, hi: u32| {
+            seed(&|rnd| {
+                let door = opens(rnd);
+                let sub = rnd.below(692);
+                door && (lo..hi).contains(&sub)
+            })
+        };
+        let told = |text: u16, one: u16, other: u16| Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Names(one, other) };
+        let two_drawn = |seed: u64| {
+            let mut e = Random::new(seed);
+            e.below(count as u32);
+            e.below(692);
+            e
+        };
+
+        for &id in &real {
+            let p = r.player_mut(id).unwrap();
+            p.set_best_friend(0);
+            p.set_hates(0);
+            p.set_friends([0; 3]);
+            p.set_dislikes([0; 3]);
+            p.set_flags(0);
+            p.set_morale(90);
+            p.set_contentment([70; 7]);
+        }
+        r.player_mut(first).unwrap().set_best_friend(second);
+        let mut posted = Vec::new();
+
+        // Happening 3 (60 till 90): only over 100 morale for the better
+        // one and under 85 for the other does the friend steady the
+        // troubled one's two most wanting parts halfway to 100.
+        let three = pair(60, 90);
+        r.player_mut(first).unwrap().set_morale(100);
+        r.player_mut(second).unwrap().set_morale(50);
+        r.player_mut(second).unwrap().set_contentment([10, 90, 90, 90, 90, 90, 90]);
+        let mut random = Random::new(three);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(posted.is_empty() && random == two_drawn(three), "morale at 100 is not over it");
+        r.player_mut(first).unwrap().set_morale(110);
+        let mut random = Random::new(three);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted, [told(0x554, first, second)]);
+        assert_eq!(r.player(second).unwrap().contentment(), [55, 95, 90, 90, 90, 90, 90]);
+        assert_eq!(r.player(second).unwrap().morale(), 50, "the morale stays standing");
+        assert!(random == two_drawn(three), "one man to draw from draws nothing");
+
+        // Happening 4 (90 till 120): the club's mood must stand 50 or
+        // up, else the news ends before a pair is drawn. At 120 the
+        // glad one shares: his two best-represented places of the
+        // first three parts go down by what the sad one's two most
+        // wanting rise.
+        let four = pair(90, 120);
+        r.player_mut(first).unwrap().set_contentment([110; 7]);
+        r.player_mut(second).unwrap().set_contentment([50, 60, 70, 70, 70, 70, 70]);
+        r.team_mut(club.0, club.1).unwrap().set_mood(40);
+        let mut random = Random::new(four);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 1 && random == two_drawn(four), "a bad club mood ends the news at once");
+        r.team_mut(club.0, club.1).unwrap().set_mood(120);
+        let mut random = Random::new(four);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted[1], told(0x555, first, second));
+        assert_eq!(r.player(second).unwrap().contentment(), [75, 80, 70, 70, 70, 70, 70]);
+        assert_eq!(r.player(first).unwrap().contentment(), [85, 90, 110, 110, 110, 110, 110]);
+        assert!(random == two_drawn(four));
+
+        // Happening 5 (120 till 150): while the club's mood stands 100
+        // or below, the best-friend tie goes and the two stand each in
+        // the other's friends instead.
+        let five = pair(120, 150);
+        let mut random = Random::new(five);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 2 && random == two_drawn(five), "a good club mood keeps the tie");
+        r.team_mut(club.0, club.1).unwrap().set_mood(40);
+        let mut random = Random::new(five);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted[2], told(0x556, first, second));
+        assert_eq!(r.player(first).unwrap().best_friend(), 0);
+        assert_eq!(r.player(first).unwrap().friends(), [second, 0, 0]);
+        assert_eq!(r.player(second).unwrap().friends(), [first, 0, 0]);
+        assert!(random == two_drawn(five));
+
+        // Happening 6 (150 till 180): the drawer now takes first
+        // friends too — with the second man's lists emptied only the
+        // first man stands in it, his friend holding for a best
+        // friend. The one less content with the trainer ends it, under
+        // 80 against 100 or better on the other.
+        r.player_mut(second).unwrap().set_friends([0; 3]);
+        let six = pair(150, 180);
+        r.player_mut(first).unwrap().set_contentment([80, 70, 70, 70, 70, 70, 70]);
+        r.player_mut(second).unwrap().set_contentment([100; 7]);
+        let mut random = Random::new(six);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 3 && random == two_drawn(six), "at 80 the trainer part is not under it");
+        r.player_mut(first).unwrap().set_contentment([50, 70, 70, 70, 70, 70, 70]);
+        let mut random = Random::new(six);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted[3], told(0x557, first, second));
+        assert_eq!(r.player(first).unwrap().friends(), [0, 0, 0], "the friendship is gone");
+        assert!(random == two_drawn(six));
+
+        // Happening 7 (180 till 210): the two simply let their ties
+        // go, no leave asked.
+        r.player_mut(first).unwrap().set_friends([second, 0, 0]);
+        let seven = pair(180, 210);
+        let mut random = Random::new(seven);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted[4], told(0x558, first, second));
+        assert_eq!(r.player(first).unwrap().friends(), [0, 0, 0]);
+        assert!(random == two_drawn(seven));
     }
 }
