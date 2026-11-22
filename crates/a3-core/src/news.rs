@@ -4792,6 +4792,12 @@ const CHERRY_OFFENCE: u8 = 1;
 const BOOKS_OFFENCE: u8 = 2;
 const DRUNK_OFFENCE: u8 = 2;
 const SEARCH_OFFENCE: u8 = 1;
+/// The offences the family's second half notes before its windows: the
+/// market fountain and the disco drunk-out at two, the flag burning at
+/// three.
+const FOUNTAIN_OFFENCE: u8 = 2;
+const FLAG_OFFENCE: u8 = 3;
+const DISCO_OFFENCE: u8 = 2;
 /// The hobby of chasing women (`FUN_00702c9e`, the handle's +0x28d):
 /// the twelfth of the exe's forty hobby names at 0x8a8c7e, its game
 /// text 3960 "Frauen" — the gay bar's gate.
@@ -4877,7 +4883,30 @@ const WOMEN_HOBBY: u8 = 0xc;
 /// module, so nothing is posted — except that 37's window asks outright
 /// ("Wie reagieren Sie?", 0x4fa): it goes posted by name, its answer
 /// left to the fine question's part. 38's text asks the same words at
-/// tone one and stays untold. The other thirty codes end consumed too.
+/// tone one and stays untold. The family's second half, codes 39 to 47
+/// and 100 behind the same [`MODEL_TRAIT`] bit: 39 tells the brothel
+/// raid's arrest by name (0x4fc) only while the man stands without any
+/// partner (`FUN_00702b8c`, his partner kind at nought) and marks
+/// nothing. 40 is caught pirating indexed games (0x4fe, told with
+/// values), five less content with his distractions. 41 is arrested
+/// drunk after peeing into the market fountain (0x4ff), level two
+/// noted; its tone-two window does not ask outright, so nothing goes
+/// posted. 42 lets an interview disparage the club's president (0x501,
+/// told by name) while the club stands level with its season's goal,
+/// past its tenth matchday, and its manager holds no majority of the
+/// club's shares (`FUN_00406b4f`, [`crate::stock::majority`]). 43
+/// burns a club flag on the market square (0x502) once his discontent
+/// ([`crate::transfer_week::discontent`], `FUN_00770877`) stands above
+/// one; level three noted. 44 is consumed by its own case with nothing
+/// told. 45's flat is searched for cocaine and finds nothing (0x504,
+/// told with values), three less content with his distractions. 46
+/// reads the share majority under 42's goal and matchday gates and
+/// throws the answer away — nothing moves. 47's stripper party (0x508),
+/// like code 48's Verona talk (0x509) the picker never draws, waits on
+/// the discipline word at +0xa7 past five as 21 did: it never stands,
+/// neither is heard. 100 has him dead drunk in the club's own disco,
+/// thrown out by the bouncers (0x6fd, tone two, not asking outright);
+/// level two noted. The other twenty codes end consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -4992,6 +5021,57 @@ pub fn player_news(
             }
         }
         38 => mark_offence(records, man, SEARCH_OFFENCE),
+        // The family's second half, 39 to 47 and 100. 39: the brothel
+        // raid tells by name only while the man has no partner at all
+        // (`FUN_00702b8c`), and marks nothing either way.
+        39 => {
+            if records.player(man).is_some_and(|p| p.partner() & 3 == 0) {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x4fc, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 40: pirating indexed games (0x4fe, told with values), five
+        // off the distractions.
+        40 => change(records, man, DISTRACTION, -5),
+        // 41: arrested after peeing drunk into the market fountain
+        // (0x4ff); the tone-two window does not ask, nothing posted.
+        41 => mark_offence(records, man, FOUNTAIN_OFFENCE),
+        // 42: the interview against the president (0x501, told by name)
+        // while the club stands level with its season's goal past its
+        // tenth matchday and its manager holds no majority of its
+        // shares (`FUN_00406b4f(mgr + 0x1a, club + 0x104, + 0x103)`).
+        42 => {
+            let even = records.team(club.0, club.1).is_some_and(|team| {
+                crate::league::goal_missing(records, league, team) == 0
+                    && crate::league::matchdays(records, team) > 10
+            });
+            let boss = records
+                .team(club.0, club.1)
+                .and_then(|team| usize::from(team.humans()[0]).checked_sub(1));
+            if even && boss.is_some_and(|boss| !crate::stock::majority(records, boss)) {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x501, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 43: the flag burning (0x502) once his discontent stands above
+        // one (`FUN_00770877`); its tone-three window asks nothing here.
+        43 => {
+            if records.player(man).is_some_and(|p| crate::transfer_week::discontent(&p) > 1) {
+                mark_offence(records, man, FLAG_OFFENCE);
+            }
+        }
+        // 44 is consumed by its own case. 45: the cocaine search finds
+        // nothing (0x504, told with values), three off the
+        // distractions.
+        44 => {}
+        45 => change(records, man, DISTRACTION, -3),
+        // 46: 42's goal and matchday gates, then the share majority is
+        // called and its answer thrown away. 47 — and its twin 48, the
+        // Verona talk, which the picker's table never draws — waits on
+        // the discipline word at +0xa7 past five, as 21 did: it never
+        // stands, so the stripper party stays unheard.
+        46 | 47 => {}
+        // 100: dead drunk in the club's own disco, thrown out (0x6fd);
+        // the tone-two window does not ask, nothing posted.
+        100 => mark_offence(records, man, DISCO_OFFENCE),
         _ => {}
     }
 }
@@ -5639,6 +5719,168 @@ mod tests {
         let one = &posted[0];
         assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x4fa));
         assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
+    }
+
+    /// The family's second half, codes 39 to 47 and 100: the brothel
+    /// raid posts by name only while the man has no partner and marks
+    /// nothing; the game piracy and the empty cocaine search take five
+    /// and three off his distractions with nothing posted or noted;
+    /// the market fountain and the club disco note level two and post
+    /// nothing; the flag burns exactly while his discontent stands
+    /// above one, level three noted; and the interview against the
+    /// president tells by name exactly while the club stands level
+    /// with its season's goal past its tenth matchday and its manager
+    /// holds no majority of its shares. 44, 46 and 47 move nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_character_happenings_run_on_to_the_flag() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let missing = crate::league::goal_missing(&r, &league, &team);
+        let days = crate::league::matchdays(&r, &team);
+        let holds = crate::stock::majority(&r, usize::from(team.humans()[0]) - 1);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_clean = |r: &mut Records, man: u16| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                traits[1] |= MODEL_TRAIT;
+                p.set_traits(traits);
+                p.set_offences(0);
+                p.set_offence_counts(0);
+                p.set_flags(0);
+            }
+        };
+        let run = |r: &mut Records, s: u64| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, false, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // 39: the brothel raid tells by name only while the man has no
+        // partner at all — a wife's man says nothing — and he stays
+        // unmarked either way.
+        let s = weighed_to(39);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man);
+        r.player_mut(man).unwrap().set_partner(0);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [39 + HAPPENING_MET]);
+        assert_eq!(posted.len(), 1);
+        let one = &posted[0];
+        assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x4fc));
+        assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        mark_clean(&mut r, man);
+        r.player_mut(man).unwrap().set_partner(WIFE);
+        let (posted, _) = run(&mut r, s);
+        assert!(posted.is_empty(), "the married man keeps the raid to himself");
+
+        // 40 and 45: the indexed-game piracy takes five off the
+        // distractions, the empty cocaine search three — told with
+        // values, posted nowhere, unmarked.
+        for (code, knock) in [(40u16, 5), (45, 3)] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_clean(&mut r, man);
+            r.player_mut(man).unwrap().set_contentment([50; 7]);
+            let (posted, recent) = run(&mut r, s);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty(), "the figures are told, not posted");
+            let p = r.player(man).unwrap();
+            assert_eq!(i32::from(p.contentment()[DISTRACTION]), 50 - knock);
+            assert_eq!(crate::discipline::offence(p), 0);
+        }
+
+        // 41 and 100: the market fountain and the club's own disco note
+        // level two with no gate and post nothing — their tone-two
+        // windows do not ask outright.
+        for (code, level) in [(41u16, FOUNTAIN_OFFENCE), (100, DISCO_OFFENCE)] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_clean(&mut r, man);
+            let (posted, recent) = run(&mut r, s);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty(), "0x{:x} is told in its window only", code);
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), level);
+        }
+
+        // 43: the flag burns exactly while his discontent stands above
+        // one — fed up at twenty he notes level three, content at a
+        // hundred he stays clean.
+        let s = weighed_to(43);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man);
+        if let Some(p) = r.player_mut(man) {
+            p.set_best_friend(0);
+            p.set_contentment([20; 7]);
+        }
+        assert!(crate::transfer_week::discontent(r.player(man).unwrap()) > 1, "fed up");
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [43 + HAPPENING_MET]);
+        assert!(posted.is_empty());
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), FLAG_OFFENCE);
+        mark_clean(&mut r, man);
+        r.player_mut(man).unwrap().set_contentment([100; 7]);
+        assert!(crate::transfer_week::discontent(r.player(man).unwrap()) <= 1, "content again");
+        run(&mut r, s);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+
+        // 42: the interview against the president tells by name exactly
+        // while kept A stands level with its goal ({missing} short),
+        // past its tenth matchday ({days} in) and its manager holds no
+        // majority of its shares (he does: {holds}).
+        let s = weighed_to(42);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [42 + HAPPENING_MET]);
+        let told = missing == 0 && days > 10 && !holds;
+        assert_eq!(posted.len(), usize::from(told), "{missing} short, day {days}, holds: {holds}");
+        if told {
+            let one = &posted[0];
+            assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x501));
+            assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
+        }
+
+        // 44, 46 and 47: the flat case, the thrown-away majority and
+        // the party behind the discipline word move nothing.
+        for code in [44u16, 46, 47] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_clean(&mut r, man);
+            r.player_mut(man).unwrap().set_contentment([50; 7]);
+            let (posted, recent) = run(&mut r, s);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty());
+            let p = r.player(man).unwrap();
+            assert_eq!(crate::discipline::offence(p), 0);
+            assert_eq!(p.contentment(), [50; 7]);
+        }
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
