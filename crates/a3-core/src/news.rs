@@ -11,8 +11,8 @@
 //! fan byte (+0x9e), which the replica has no part of — on the compared
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
-//! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; and three of the hobbies of category 19's hobby
+//! the day counter; the player-manager block behind the club's byte
+//! +0x8b; and three of the hobbies of category 19's hobby
 //! news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
@@ -5308,6 +5308,365 @@ pub fn player_news(
     }
 }
 
+/// The thirty happenings of the player-manager's own news, weighed
+/// alike (`FUN_0060be4d` over the list at `DAT_00a2ebb0`, registered by
+/// `FUN_0060bdb7(0x1e, DAT_0088d7e0)` from the exe's 0x48d7e0: weight
+/// ten each, codes 1 to 30); the cap of −1 falls to the weights' sum,
+/// so a code of nought never stands.
+const MANAGER_EVENTS: [(u32, u16); 30] = [
+    (10, 1),
+    (10, 2),
+    (10, 3),
+    (10, 4),
+    (10, 5),
+    (10, 6),
+    (10, 7),
+    (10, 8),
+    (10, 9),
+    (10, 10),
+    (10, 11),
+    (10, 12),
+    (10, 13),
+    (10, 14),
+    (10, 15),
+    (10, 16),
+    (10, 17),
+    (10, 18),
+    (10, 19),
+    (10, 20),
+    (10, 21),
+    (10, 22),
+    (10, 23),
+    (10, 24),
+    (10, 25),
+    (10, 26),
+    (10, 27),
+    (10, 28),
+    (10, 29),
+    (10, 30),
+];
+
+/// The key a player-manager happening stands by among the events lately
+/// met (`FUN_005e5e90(code + 0x639c)`; `FUN_005e5ee0` adds it when it
+/// is not there yet).
+const MANAGER_MET: i32 = 25_500;
+
+/// The player-manager's state of study, the low two bits of +0x281
+/// (`FUN_0070319f`, set by `FUN_007031c3`): nought none, 1 the
+/// correspondence course taken up, 2 its first exam failed, 3 the exam
+/// being sat.
+const MANAGER_STATE: usize = 0x281;
+fn studies(p: &crate::records::Player) -> u8 {
+    p.get::<u8>(MANAGER_STATE) & 3
+}
+fn set_studies(records: &mut Records, man: u16, to: u8) {
+    if let Some(p) = records.player_mut(man) {
+        p.put::<u8>(MANAGER_STATE, p.get::<u8>(MANAGER_STATE) & 0xfc | to);
+    }
+}
+
+/// The player-manager's firm, bits 4 to 6 of the same byte
+/// (`FUN_0070324f`, set by `FUN_00703276`): nought none, then the
+/// chain of its stories up to 6, his career ended for the firm.
+fn firm(p: &crate::records::Player) -> u8 {
+    p.get::<u8>(MANAGER_STATE) >> 4 & 7
+}
+fn set_firm(records: &mut Records, man: u16, to: u8) {
+    if let Some(p) = records.player_mut(man) {
+        p.put::<u8>(MANAGER_STATE, p.get::<u8>(MANAGER_STATE) & 0x8f | to << 4);
+    }
+}
+
+/// Bit 0x80 of +0x1b4 (`FUN_00701696`, set by `FUN_007016b8`): the man
+/// at the trainer's course in Cologne.
+const TRAINER_EXAM: u32 = 0x80;
+/// The offence the ski ad taken against his injury notes
+/// (`FUN_00702d95(1)`).
+const SPOT_OFFENCE: u8 = 1;
+
+/// The player-manager's own news (`FUN_005e2bb9` and `FUN_005e2152`,
+/// `crate::training_day`'s tail behind the five-thousandths draw): the
+/// club's human-manager marker at +0x8a — the loop there runs only
+/// human clubs, so it always stands — and one man of the squad drawn
+/// ([`drawn_man`]); managers at play from 0x4269 up ([`LAST_REAL_ID`])
+/// are left alone before the picker runs at all. One of thirty
+/// happenings weighs alike ([`MANAGER_EVENTS`]) and stands among the
+/// lately met under [`MANAGER_MET`] once; the frame's debug print
+/// (`FUN_006c6380("EreignisAndereAblenkung %d")`) leaves no mark. The
+/// happenings carry the man's private career along two states in his
+/// byte +0x281 and tell of a house built, a licence, a villa, a
+/// Berater and the ads a known man shoots; only those told by name —
+/// and 0x54a, asking outright ("Wie reagieren Sie?") — come posted,
+/// the rest told with the old and the new distraction figure and
+/// posted nowhere, as ever in this module.
+///
+/// The studies, [`studies`]' bits: 1 takes the correspondence course
+/// up over 25 years old ([`crate::free_agents::age`], `FUN_006ff01b`)
+/// with none begun (0x52e, values, five off his distractions); 6 the
+/// first exam failed (0x533, by name), 7 failed twice — no more
+/// studying (0x534), 8 the exam sat from 1 or 2 (0x535), 9 done with a
+/// party (0x536). The trainer's exam in Cologne (3, 0x530, values)
+/// waits for 30 years and the course bit [`TRAINER_EXAM`] unset, and
+/// five goes onto the distractions. 4: fresh-looking (shown freshness
+/// over 4, `FUN_006ff649`) and his flat not over a disco yet
+/// ([`DISCO_FLAT`]), he builds a house and works on it himself (0x531,
+/// by name): five off the first freshness figure, clamped at nought
+/// and 10000 (`FUN_005e5f40(−5)`).
+///
+/// The firm, [`firm`]'s bits, all told with values: 10 over 25 with
+/// none yet founds a computer firm (0x537, 0→2, four off); 11 it runs
+/// (0x538, 2→1, six off); 12 it grows again (0x539, 1→2, three on);
+/// 13 bankruptcy (0x53a, 1→0, ten off); 14 the expansion (0x53b, 2→3,
+/// four on); 15 the stock company and Manager of the Month (0x53c,
+/// 3→4, five off); 16 its sponsor plans (0x53d, by name, 4→5) and 17
+/// he ends his playing career for it (0x53e, by name, 5→6 — no other
+/// code brings the six). 18: the motorcycle licence (0x53f, by name) —
+/// the hobby goes to [`MOTORBIKES`] unless it stands there. 19: the
+/// new Berater (0x540, values), five off the distractions exactly
+/// while training stands planned today. 20: the villa (0x541, by
+/// name) sets [`DISCO_FLAT`] while unset. 21: he works as Fachberater
+/// for another manager (0x542, values), two off, ungated. The ads'
+/// family, two off the distractions and gated by the case's own name
+/// or bit (all values): 22 paper handkerchiefs, "Andreas Möller"
+/// (0x543); 23 the living-room sofa, "Polster" (0x544); 24 dog food,
+/// "Chapuisat" (0x545); 25 the zoo, "Kahn" (0x546); 26 razors,
+/// "Kirsten" (0x547); 27 the youth magazine behind the
+/// [`MARKET_VALUE`] bit (0x548); 28 the acne remedy, "Christian Ziege"
+/// (0x549); 30 the pinstripe suit, "Lars Ricken" (0x54b) — the names
+/// `FUN_006feb4d`'s full and `FUN_006fea7c`'s surname (the names table
+/// at the record's +0x1c0). 29: only a "Matthäus" eight to twenty-nine
+/// days out (`*(short*)(man + 0x2c)`, [`crate::load::days_to`] off
+/// +0x1da) played the ski ad against his injury: one noted
+/// ([`SPOT_OFFENCE`]) and the reaction asked (0x54a, posted by name).
+/// Codes 2 and 5 have no case body at all.
+pub fn manager_news(
+    records: &mut Records,
+    club: (u16, u16),
+    planned: bool,
+    recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) {
+    let Some(man) = drawn_man(records, club, random) else { return };
+    if man > LAST_REAL_ID {
+        return;
+    }
+    let code = weighed_within(&MANAGER_EVENTS, u32::MAX, random);
+    if code == 0 || !meet(recent, i32::from(code) + MANAGER_MET) {
+        return;
+    }
+    // (`FUN_006c6380`, the frame's five-byte no-op, stands.)
+    let called = records.known_as(man).unwrap_or_default();
+    let last = records.player(man).map(|p| records.name(p.last_name()).to_owned()).unwrap_or_default();
+    match code {
+        // 1: over 25 with none begun, the correspondence course takes
+        // up (0x52e, values): the state on one, five off the
+        // distractions (`FUN_00701210(-5)`, the getter `FUN_00701328`).
+        1 => {
+            let grown = records
+                .player(man)
+                .is_some_and(|p| crate::free_agents::age(records, &p) > 0x19 && studies(&p) == 0);
+            if grown {
+                set_studies(records, man, 1);
+                change(records, man, DISTRACTION, -5);
+            }
+        }
+        // 2 and 5: no body at all.
+        2 | 5 => {}
+        // 3: over 30 and not at the course yet ([`TRAINER_EXAM`]), the
+        // trainer's exam in Cologne (0x530, values): the bit set, five
+        // onto the distractions.
+        3 => {
+            let free = records
+                .player(man)
+                .is_some_and(|p| crate::free_agents::age(records, &p) > 0x1e && p.shown() & TRAINER_EXAM == 0);
+            if free {
+                if let Some(p) = records.player_mut(man) {
+                    let shown = p.shown();
+                    p.set_shown(shown | TRAINER_EXAM);
+                }
+                change(records, man, DISTRACTION, 5);
+            }
+        }
+        // 4: he builds a house and works on it himself (0x531, by
+        // name) while fresh-looking and the flat bit stands clear —
+        // five off the first freshness figure.
+        4 => {
+            let building = records.player(man).is_some_and(|p| {
+                crate::evaluation::freshness_points(&p) > 4 && p.shown() & DISCO_FLAT == 0
+            });
+            if building {
+                if let Some(p) = records.player_mut(man) {
+                    let mut fresh = p.freshness();
+                    fresh[0] = (i32::from(fresh[0]) - 5 * 100).clamp(0, 10_000) as i16;
+                    p.set_freshness(fresh);
+                }
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x531, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // The studies' chain, each told by name.
+        6 => {
+            if records.player(man).is_some_and(|p| studies(&p) == 1) {
+                set_studies(records, man, 2);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x533, fill: Fill::NumberedOne(man) });
+            }
+        }
+        7 => {
+            if records.player(man).is_some_and(|p| studies(&p) == 2) {
+                set_studies(records, man, 0);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x534, fill: Fill::NumberedOne(man) });
+            }
+        }
+        8 => {
+            if records.player(man).is_some_and(|p| matches!(studies(&p), 1 | 2)) {
+                set_studies(records, man, 3);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x535, fill: Fill::NumberedOne(man) });
+            }
+        }
+        9 => {
+            if records.player(man).is_some_and(|p| studies(&p) == 3) {
+                set_studies(records, man, 0);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x536, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // The firm's chain.
+        10 => {
+            let founded = records
+                .player(man)
+                .is_some_and(|p| crate::free_agents::age(records, &p) > 0x19 && firm(&p) == 0);
+            if founded {
+                set_firm(records, man, 2);
+                change(records, man, DISTRACTION, -4);
+            }
+        }
+        11 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 2) {
+                set_firm(records, man, 1);
+                change(records, man, DISTRACTION, -6);
+            }
+        }
+        12 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 1) {
+                set_firm(records, man, 2);
+                change(records, man, DISTRACTION, 3);
+            }
+        }
+        13 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 1) {
+                set_firm(records, man, 0);
+                change(records, man, DISTRACTION, -10);
+            }
+        }
+        14 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 2) {
+                set_firm(records, man, 3);
+                change(records, man, DISTRACTION, 4);
+            }
+        }
+        15 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 3) {
+                set_firm(records, man, 4);
+                change(records, man, DISTRACTION, -5);
+            }
+        }
+        // 16 and 17, the firm's last steps, tell by name.
+        16 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 4) {
+                set_firm(records, man, 5);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x53d, fill: Fill::NumberedOne(man) });
+            }
+        }
+        17 => {
+            if records.player(man).is_some_and(|p| firm(&p) == 5) {
+                set_firm(records, man, 6);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x53e, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 18: the licence — the hobby over 0x1c stands gone.
+        18 => {
+            let riding = records.player(man).is_some_and(|p| p.hobby() != MOTORBIKES);
+            if riding {
+                if let Some(p) = records.player_mut(man) {
+                    p.set_hobby(MOTORBIKES);
+                }
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x53f, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 19: the Berater at planned training, five off.
+        19 => {
+            if planned {
+                change(records, man, DISTRACTION, -5);
+            }
+        }
+        // 20: the villa sets the flat bit.
+        20 => {
+            let homeless = records.player(man).is_some_and(|p| p.shown() & DISCO_FLAT == 0);
+            if homeless {
+                if let Some(p) = records.player_mut(man) {
+                    let shown = p.shown();
+                    p.set_shown(shown | DISCO_FLAT);
+                }
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x541, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 21: the Fachberater, ungated, two off.
+        21 => change(records, man, DISTRACTION, -2),
+        // The ads' family: the case's name or bit, then two off.
+        22 => {
+            if called == "Andreas Möller" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        23 => {
+            if last == "Polster" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        24 => {
+            if last == "Chapuisat" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        25 => {
+            if last == "Kahn" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        26 => {
+            if last == "Kirsten" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        27 => {
+            if records.player(man).is_some_and(|p| p.traits()[1] & MARKET_VALUE != 0) {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        28 => {
+            if called == "Christian Ziege" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        // 29: Matthäus, eight to twenty-nine days out, played the ski
+        // ad — one noted and the reaction asked outright (0x54a).
+        29 => {
+            let spotted = records.player(man).is_some_and(|p| {
+                last == "Matthäus" && (0x08..0x1e).contains(&crate::load::days_to(&records.globals, p.injured_to()))
+            });
+            if spotted {
+                mark_offence(records, man, SPOT_OFFENCE);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x54a, fill: Fill::NumberedOne(man) });
+            }
+        }
+        30 => {
+            if called == "Lars Ricken" {
+                change(records, man, DISTRACTION, -2);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Notes an offence of `level` on the drawn man (`FUN_00702d95`, meted
 /// before the manager is asked).
 fn mark_offence(records: &mut Records, id: u16, level: u8) {
@@ -6527,6 +6886,113 @@ mod tests {
         }
         run(&mut r, s, true);
         assert_eq!(r.player(man).unwrap().contentment()[TEAM], 0, "the team part floors at nought");
+    }
+
+    /// The player-manager's own news: code 1, a grown man with none
+    /// begun, begins the correspondence course — one on the study bits
+    /// of +0x281, five off his distractions, told with values only —
+    /// and begun once only; code 6 fails the first exam from one and
+    /// not from nought, by name at 0x533; code 18 takes the motorcycle
+    /// licence by name at 0x53f unless the hobby stands there; code 19
+    /// pays the Berater only with training planned today.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_player_managers_news_begins_his_studies() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let grown: Vec<bool> = squad
+            .iter()
+            .map(|&id| r.player(id).is_some_and(|p| crate::free_agents::age(&r, &p) > 0x19))
+            .collect();
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16, of_age: bool| {
+            seed(&|random| {
+                let at = random.below(count) as usize;
+                weighed_within(&MANAGER_EVENTS, u32::MAX, random) == code
+                    && squad[at] <= LAST_REAL_ID
+                    && (!of_age || grown[at])
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let studies_of = |r: &Records, man: u16| r.player(man).unwrap().get::<u8>(MANAGER_STATE) & 3;
+        let run = |r: &mut Records, s: u64, planned: bool| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            manager_news(r, club, planned, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // 1: over 25 with none begun the course is taken up — state
+        // one, five off the distractions, values only.
+        let s = weighed_to(1, true);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let rest = p.get::<u8>(MANAGER_STATE) & 0xfc;
+            p.put::<u8>(MANAGER_STATE, rest);
+            p.set_contentment([50; 7]);
+        }
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [1 + MANAGER_MET]);
+        assert!(posted.is_empty(), "told with values only");
+        assert_eq!(studies_of(&r, man), 1, "the course begun");
+        assert_eq!(r.player(man).unwrap().contentment()[DISTRACTION], 45, "five off");
+
+        // Begun once only: with the course standing the same roll
+        // meets its key and moves nothing.
+        let (posted, _) = run(&mut r, s, false);
+        assert!(posted.is_empty());
+        assert_eq!(studies_of(&r, man), 1);
+        assert_eq!(r.player(man).unwrap().contentment()[DISTRACTION], 45);
+
+        // 6: the first exam fails from one, not from nought.
+        let s = weighed_to(6, false);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let rest = p.get::<u8>(MANAGER_STATE) & 0xfc;
+            p.put::<u8>(MANAGER_STATE, rest);
+        }
+        let (posted, _) = run(&mut r, s, false);
+        assert!(posted.is_empty(), "no exam to fail with no course");
+        if let Some(p) = r.player_mut(man) {
+            p.put::<u8>(MANAGER_STATE, p.get::<u8>(MANAGER_STATE) | 1);
+        }
+        let (posted, _) = run(&mut r, s, false);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x533, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(studies_of(&r, man), 2, "the first exam failed");
+
+        // 18: the licence by name, unless the hobby stands there.
+        let s = weighed_to(18, false);
+        let man = drawn_by(s);
+        r.player_mut(man).unwrap().set_hobby(0);
+        let (posted, _) = run(&mut r, s, false);
+        assert_eq!(r.player(man).unwrap().hobby(), MOTORBIKES);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x53f, fill: Fill::NumberedOne(man) }]);
+        let (posted, _) = run(&mut r, s, false);
+        assert!(posted.is_empty(), "the licence stands taken");
+
+        // 19: the Berater only with training planned today.
+        let s = weighed_to(19, false);
+        let man = drawn_by(s);
+        r.player_mut(man).unwrap().set_contentment([50; 7]);
+        run(&mut r, s, false);
+        assert_eq!(r.player(man).unwrap().contentment(), [50; 7], "no training, no Berater");
+        run(&mut r, s, true);
+        assert_eq!(r.player(man).unwrap().contentment()[DISTRACTION], 45);
     }
 
     /// The discipline news, codes 81 and 82, behind the [`DISCIPLINE`]

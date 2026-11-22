@@ -157,7 +157,7 @@ fn condition_points(player: &records::Player) -> i32 {
 /// How fresh a player looks (`FUN_006ff649`): his three freshness
 /// figures in hundreds, so at most 100; no figure at all counts as
 /// none, which the game turns into a wild negative.
-fn freshness_points(player: &records::Player) -> i32 {
+pub(crate) fn freshness_points(player: &records::Player) -> i32 {
     let [one, two, three] = player.freshness();
     let sum = i32::from(one) + i32::from(two) + i32::from(three);
     if sum < 0 {

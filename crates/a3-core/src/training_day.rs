@@ -613,7 +613,8 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// goes on over the club's squad (+0xe2): under it of a thousand the
 /// squad's player news ([`crate::news::player_news`]), which ends the
 /// day's news for the club either way, else under it of five thousand
-/// the player-manager's (`FUN_005e2bb9`, not built); else on every
+/// the player-manager's own news ([`crate::news::manager_news`],
+/// behind the club's human marker at +0x8a); else on every
 /// third half week by the club's number the club's youth walks its
 /// week, the human told
 /// ([`crate::youth_week::walk`]). A picked category's handler that
@@ -724,7 +725,7 @@ pub fn news(
             continue;
         }
         if random.below(OTHER_NEWS) < u32::from(squad) {
-            // `FUN_005e2bb9`, the player-manager's own news: not built.
+            crate::news::manager_news(records, club, planned, recent, &mut posted, random);
             continue;
         }
         if records.globals.half_weeks() % 3 == number as u16 % 3 {
