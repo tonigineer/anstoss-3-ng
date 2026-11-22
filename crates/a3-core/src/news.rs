@@ -12,8 +12,8 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; the handler of category 25; and three of the hobbies
-//! of category 19's hobby news (`FUN_005fd59d`).
+//! +0x8a and +0x8b; and three of the hobbies of category 19's hobby
+//! news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
 //! player's military or civil service ([`service`]), and categories 3 to
@@ -32,7 +32,9 @@
 //! ([`revolt`]), 22, a new man's first months ([`first_months`]), and
 //! 23, a schoolboy's days ([`school_days`]), and 24, the men far from
 //! home ([`far_from_home`]) — its walk, its lists and the tale it tells
-//! on one of its men.
+//! on one of its men, and 25, happenings among the club's own men
+//! ([`in_the_team`]), whose two first tell of team-mates made best
+//! friends.
 
 use std::ops::RangeInclusive;
 
@@ -1934,6 +1936,244 @@ fn list_men(
         }
     } else if homesick.len() < MEN_KEEP {
         homesick.push(id);
+    }
+}
+
+/// The happenings among the club's own men (`FUN_0060bdb7`'s table at
+/// `DAT_0088e8c8`, 25 entries) whose cap it raises to the weights' sum,
+/// 692, so the walk never lands past them; the codes 0x10 to 0x13 and
+/// from 0x32 on stand in the switch of `FUN_005fedb0` but not in the
+/// table, and the two entries of weight 6 fall on 0x1c and 0x1d.
+const TEAM_HAPPENINGS: [(u32, u16); 25] = [
+    (30, 1),
+    (30, 2),
+    (30, 3),
+    (30, 4),
+    (30, 5),
+    (30, 6),
+    (30, 7),
+    (30, 8),
+    (30, 9),
+    (30, 10),
+    (30, 11),
+    (30, 12),
+    (30, 13),
+    (30, 14),
+    (30, 15),
+    (30, 0x14),
+    (30, 0x15),
+    (30, 0x16),
+    (30, 0x17),
+    (30, 0x18),
+    (20, 0x19),
+    (30, 0x1a),
+    (30, 0x1b),
+    (6, 0x1c),
+    (6, 0x1d),
+];
+/// What the team's news tells of two men made friends by their shared
+/// hobby (0x552) and of two whose wives bring them together (0x553).
+const FRIENDS_BY_HOBBY_TEXT: u16 = 0x552;
+const FRIENDS_BY_WIVES_TEXT: u16 = 0x553;
+/// The byte whose low half must stand 0 in both men for a friendship to
+/// come about (`FUN_00706980`).
+const FRIENDLY_BYTE: usize = 0xb6;
+
+/// Two team-mates the team's happenings take up (`FUN_005ecc89` with
+/// `FUN_005ecbfd`): five tries at most of two distinct squad slots
+/// (`FUN_00675698` over the club's +0xe2, raised to two) holding real
+/// men, where the first one's best friend (+0x204), hated man (+0x206),
+/// friends (+0x1f8) and dislikes (+0x1fe) hold not the other
+/// (`FUN_00703e5c`, which reads only the first one's lists). An empty
+/// place (0) or a player-manager fails the try; none when no try
+/// worked.
+fn unlinked_men(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let over = (squad.len() as u32).max(2);
+    for _ in 0..5 {
+        let one_at = random.below(over);
+        let other_at = loop {
+            let at = random.below(over);
+            if at != one_at {
+                break at;
+            }
+        };
+        let (Some(one), Some(other)) = (squad.get(one_at as usize).copied(), squad.get(other_at as usize).copied()) else {
+            continue;
+        };
+        if one == 0 || one > LAST_REAL_ID || other == 0 || other > LAST_REAL_ID {
+            continue;
+        }
+        if records.player(one).is_some_and(|p| {
+            p.best_friend() != other && p.hates() != other && !p.friends().contains(&other) && !p.dislikes().contains(&other)
+        }) {
+            return Some((one, other));
+        }
+    }
+    None
+}
+
+/// The two at odds with the school (`FUN_005ee303`): both of the two
+/// low bits of +0x280 set (`FUN_0070060a`) and not the same.
+fn at_cross_purposes(records: &Records, one: u16, other: u16) -> bool {
+    let school = |id: u16| records.player(id).map_or(0, |p| p.school() & 3);
+    let (a, b) = (school(one), school(other));
+    a != 0 && b != 0 && a != b
+}
+
+/// The two become best friends (`FUN_00703c28` on one with the other):
+/// each lets go of his best friend and that one of his in turn
+/// (`FUN_00703a0c`); where the first hated the other his chain of hated
+/// men goes the same way (`FUN_00703b1a`); each off the other's friends
+/// (`FUN_00703854`, going on to the other's list only when it found
+/// him) and dislikes (`FUN_00703930`, its slip zeroing a friend); then
+/// each the other's best friend.
+fn become_best_friends(records: &mut Records, one: u16, other: u16) {
+    for who in [one, other] {
+        let mut at = who;
+        while let Some(p) = records.player_mut(at).filter(|p| p.best_friend() != 0) {
+            at = p.best_friend();
+            p.set_best_friend(0);
+        }
+    }
+    if records.player(one).is_some_and(|p| p.hates() == other) {
+        let mut at = one;
+        while let Some(p) = records.player_mut(at).filter(|p| p.hates() != 0) {
+            at = p.hates();
+            p.set_hates(0);
+        }
+    }
+    // As in the rivals' lists: a dislike in the third place stays after
+    // the shift and would send the original round for good — a few
+    // rounds stand for it here.
+    let (mut who, mut whom) = (one, other);
+    while let Some(p) = records.player_mut(who) {
+        let mut friends = p.friends();
+        let Some(at) = friends.iter().take_while(|&&f| f != 0).position(|&f| f == whom) else { break };
+        friends.copy_within(at + 1.., at);
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+    let (mut who, mut whom) = (one, other);
+    for _ in 0..4 {
+        let Some(p) = records.player_mut(who) else { break };
+        let mut dislikes = p.dislikes();
+        let Some(at) = dislikes.iter().take_while(|&&d| d != 0).position(|&d| d == whom) else { break };
+        dislikes.copy_within(at + 1.., at);
+        p.set_dislikes(dislikes);
+        let mut friends = p.friends();
+        friends[2] = 0;
+        p.set_friends(friends);
+        (who, whom) = (whom, who);
+    }
+    if let Some(p) = records.player_mut(one) {
+        p.set_best_friend(other);
+    }
+    if let Some(p) = records.player_mut(other) {
+        p.set_best_friend(one);
+    }
+}
+
+/// Code 1 of the team's happenings (`case 1`, text 0x552): two team-
+/// mates not yet linked ([`unlinked_men`]); of both the low half of
+/// +0xb6 nought (`FUN_00706980`), not at odds with the school
+/// ([`at_cross_purposes`]), both without a best friend (`FUN_0070162e`)
+/// and both with a hobby (`FUN_00702c9e`); when the hobbies are the
+/// same they become friends ([`become_best_friends`]) and the club is
+/// told of the shared one — his hobby's game text (`FUN_007335e0`) in
+/// `%3`, his name and the other's in `%1` and `%2`. The news ends every
+/// way out.
+fn friends_by_hobby(
+    records: &mut Records,
+    club: (u16, u16),
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = unlinked_men(records, club, random) else { return true };
+    let unfriendly = |id: u16| records.player(id).is_some_and(|p| p.get::<u8>(FRIENDLY_BYTE) & 0xf != 0);
+    if unfriendly(one) || unfriendly(other) || at_cross_purposes(records, one, other) {
+        return true;
+    }
+    let hindering = |id: u16| records.player(id).is_some_and(|p| p.best_friend() != 0 || p.hobby() == 0);
+    if hindering(one) || hindering(other) {
+        return true;
+    }
+    let hobby = records.player(one).unwrap().hobby();
+    if records.player(other).unwrap().hobby() != hobby {
+        return true;
+    }
+    become_best_friends(records, one, other);
+    posted.push(Posted {
+        club,
+        code: PRIVATE_NEWS,
+        text: FRIENDS_BY_HOBBY_TEXT,
+        fill: Fill::NamesAndGame(one, other, tables.hobby_text(hobby)),
+    });
+    true
+}
+
+/// Code 2 (`case 2`, text 0x553): the same pair drawer, not at odds
+/// with the school, both married (`FUN_006ffb14`, the wife at the low
+/// two bits of +0x27e), partners at state 0 with both ([`state`],
+/// `FUN_00702c12`) and neither with a best friend — they become friends
+/// and it posts about the wives. The original fills only the first name
+/// buffer, so `%3` and `%4` stand empty; which name its `%1` really
+/// shows rests on a buffer no call site wrote.
+fn friends_by_wives(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = unlinked_men(records, club, random) else { return true };
+    if at_cross_purposes(records, one, other) {
+        return true;
+    }
+    let hindering = |id: u16| {
+        records.player(id).is_some_and(|p| p.partner() & 3 != WIFE || state(p) != 0 || p.best_friend() != 0)
+    };
+    if hindering(one) || hindering(other) {
+        return true;
+    }
+    become_best_friends(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: FRIENDS_BY_WIVES_TEXT, fill: Fill::Names(one, other) });
+    true
+}
+
+/// The picked category 25 (`FUN_005ffeb7`, label "EreignisImTeam %d"):
+/// one man drawn over the club's squad (`FUN_0078a810` over the club's
+/// +0xe2, which under two men draws nought without drawing); an empty
+/// place or a player-manager ends the news. The man only opens the
+/// door: the happening (`FUN_005fedb0`) draws its code over
+/// [`TEAM_HAPPENINGS`] and ends the news on every one of them; code 0
+/// alone — never drawn, the cap raised to the weights' sum — would let
+/// the day's news go on. The debug print (`FUN_006c6380`) is left out
+/// as everywhere.
+pub fn in_the_team(
+    records: &mut Records,
+    club: (u16, u16),
+    tables: &crate::first_season::Tables,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let count = usize::from(team.player_count());
+    let squad = team.players();
+    let at = if count < 2 { 0 } else { random.below(count as u32) as usize };
+    let Some(man) = squad.get(at).copied() else { return true };
+    if man == 0 || man > LAST_REAL_ID {
+        return true;
+    }
+    match weighed(&TEAM_HAPPENINGS, random) {
+        1 => friends_by_hobby(records, club, tables, posted, random),
+        2 => friends_by_wives(records, club, posted, random),
+        // Code 0 cannot be drawn; the others end the news: 9, 0xd, 0xf,
+        // 0x1a and 0x1d stand untold in the original itself, the rest
+        // until the parts after this one build them.
+        0 => false,
+        _ => true,
     }
 }
 
@@ -5546,5 +5786,147 @@ mod tests {
         let before = random.clone();
         assert!(!doping_reports(&mut a, club, &mut reported, &mut controls, &mut posted, &mut random));
         assert!(random == before);
+    }
+
+    /// Category 25 on A's human club: one man of the first team opens
+    /// the door (a player-manager or an empty place ends the news, an
+    /// empty team not even drawing), the happening is weighed over the
+    /// team's 25 entries, total 692. The hobby pair: two men neither of
+    /// whom the first one's lists hold, both without a best friend,
+    /// with +0xb6's low half nought and hobby 5, become best friends
+    /// and the club is told (0x552) with the shared
+    /// hobby's game text; a set half, a school at cross purposes or the
+    /// second man without a hobby ends it untold. The wives' pair tells
+    /// 0x553 of two married men at state 0 with each other. An unbuilt
+    /// happening and the no-op ones end the news after the two draws,
+    /// posting nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_25_makes_two_team_mates_friends() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = usize::from(r.team(club.0, club.1).unwrap().player_count());
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let over = (squad.len() as u32).max(2);
+        let real: Vec<u16> = squad.iter().copied().filter(|&id| id != 0 && id <= LAST_REAL_ID).collect();
+        let (first, second) = (real[0], real[1]);
+        let i0 = squad.iter().position(|&id| id == first).unwrap() as u32;
+        let i1 = squad.iter().position(|&id| id == second).unwrap() as u32;
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let opens = |rnd: &mut Random| matches!(squad.get(rnd.below(count as u32) as usize), Some(&id) if id != 0 && id <= LAST_REAL_ID);
+
+        for &id in &real {
+            let p = r.player_mut(id).unwrap();
+            p.set_best_friend(0);
+            p.set_hates(0);
+            p.set_friends([0; 3]);
+            p.set_dislikes([0; 3]);
+            p.set_school(0);
+            p.put::<u8>(FRIENDLY_BYTE, 0);
+            p.set_hobby(5);
+        }
+        // The hobby pair: the one happening under 30 of the 692 and
+        // the two drawn slots exactly the two men, neither of them
+        // holding the other in his lists.
+        let friends = seed(&|rnd| {
+            let door = opens(rnd);
+            let sub = rnd.below(692);
+            let one_at = rnd.below(over);
+            let other_at = rnd.below(over);
+            door && sub < 30 && one_at == i0 && other_at == i1
+        });
+        let mut posted = Vec::new();
+        let mut random = Random::new(friends);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(
+            posted,
+            [Posted { club, code: PRIVATE_NEWS, text: 0x552, fill: Fill::NamesAndGame(first, second, tables.hobby_text(5)) }]
+        );
+        assert_eq!(r.player(first).unwrap().best_friend(), second);
+        assert_eq!(r.player(second).unwrap().best_friend(), first);
+        let mut expected = Random::new(friends);
+        expected.below(count as u32);
+        expected.below(692);
+        expected.below(over);
+        expected.below(over);
+        assert!(random == expected);
+
+        // A set half at +0xb6, a school at cross purposes and a man
+        // without a hobby each end the talk untold, pair and all drawn.
+        r.player_mut(first).unwrap().set_best_friend(0);
+        r.player_mut(second).unwrap().set_best_friend(0);
+        r.player_mut(first).unwrap().put::<u8>(FRIENDLY_BYTE, 1);
+        let mut random = Random::new(friends);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(random == expected && posted.len() == 1);
+        r.player_mut(first).unwrap().put::<u8>(FRIENDLY_BYTE, 0);
+        r.player_mut(first).unwrap().set_school(1);
+        r.player_mut(second).unwrap().set_school(2);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut Random::new(friends)));
+        assert_eq!(posted.len(), 1);
+        r.player_mut(first).unwrap().set_school(0);
+        r.player_mut(second).unwrap().set_school(0);
+        r.player_mut(second).unwrap().set_hobby(0);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut Random::new(friends)));
+        assert_eq!(posted.len(), 1);
+        r.player_mut(second).unwrap().set_hobby(5);
+        assert_eq!(r.player(first).unwrap().best_friend(), 0, "untold ways link nothing");
+
+        // The wives' pair: the happening in 30 till 60, both married
+        // and at state 0 with their partners.
+        let wives = seed(&|rnd| {
+            let door = opens(rnd);
+            let sub = rnd.below(692);
+            let one_at = rnd.below(over);
+            let other_at = rnd.below(over);
+            door && (30..60).contains(&sub) && one_at == i0 && other_at == i1
+        });
+        r.player_mut(first).unwrap().set_partner(WIFE);
+        r.player_mut(second).unwrap().set_partner(WIFE);
+        let mut random = Random::new(wives);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted[1], Posted { club, code: PRIVATE_NEWS, text: 0x553, fill: Fill::Names(first, second) });
+        assert_eq!(r.player(first).unwrap().best_friend(), second);
+        let mut expected = Random::new(wives);
+        expected.below(count as u32);
+        expected.below(692);
+        expected.below(over);
+        expected.below(over);
+        assert!(random == expected);
+        // A man unmarried ends it.
+        r.player_mut(first).unwrap().set_partner(0);
+        r.player_mut(first).unwrap().set_best_friend(0);
+        r.player_mut(second).unwrap().set_best_friend(0);
+        let mut random = Random::new(wives);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(random == expected && posted.len() == 2);
+        r.player_mut(first).unwrap().set_partner(WIFE);
+
+        // An unbuilt happening: the news ends after its draw, nothing
+        // posted.
+        let untold = seed(&|rnd| {
+            let door = opens(rnd);
+            let sub = rnd.below(692);
+            door && (60..90).contains(&sub)
+        });
+        let mut random = Random::new(untold);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert_eq!(posted.len(), 2);
+        let mut expected = Random::new(untold);
+        expected.below(count as u32);
+        expected.below(692);
+        assert!(random == expected);
+
+        // No first team: the door ends the news without a draw.
+        r.team_mut(club.0, club.1).unwrap().set_player_count(0);
+        let mut random = Random::new(1);
+        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        assert!(random == Random::new(1) && posted.len() == 2);
     }
 }

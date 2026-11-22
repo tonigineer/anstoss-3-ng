@@ -59,6 +59,15 @@ pub enum Fill {
     /// with two `FUN_006feb4d`, as a man's autobiography tells of two
     /// team-mates).
     NumberedThree(u16, u16, u16),
+    /// `%1` and `%2` two men's names and `%3` one of the game's texts by
+    /// its id, 0 none (`FUN_00601166` with `FUN_006feb4d` and
+    /// `FUN_007335e0`, as the hobby two team-mates share is), `%4`
+    /// nothing.
+    NamesAndGame(u16, u16, u16),
+    /// `%1` and `%2` two men's names and `%3` `%4` nothing
+    /// (`FUN_00601166` with one `FUN_006feb4d`, its second name buffer
+    /// left unfilled as it is when the wives bring two men together).
+    Names(u16, u16),
     /// `%1` a man's name, `%2` his partner's first name and `%3` his
     /// ex's — her name of his partner's row (`FUN_00601166` with
     /// `FUN_0070173f` and `FUN_0070185c`), `%4` nothing.
@@ -197,6 +206,11 @@ pub fn make(
         Fill::Partnered(id) => numbered(body, &[name(id), partner(id)]),
         Fill::NumberedOne(id) => numbered(body, &[name(id), String::new()]),
         Fill::NumberedThree(id, one, other) => numbered(body, &[name(id), name(one), name(other), String::new()]),
+        Fill::NamesAndGame(one, other, what) => {
+            let what = if what == 0 { String::new() } else { game(what) };
+            numbered(body, &[name(one), name(other), what, String::new()])
+        }
+        Fill::Names(one, other) => numbered(body, &[name(one), name(other), String::new(), String::new()]),
         Fill::PartnerAndEx(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x285), String::new()]),
         Fill::AffairAndWife(id) => numbered(body, &[name(id), first_name(id, 0x284), partner(id), String::new()]),
         Fill::WifeByName(id) => {
