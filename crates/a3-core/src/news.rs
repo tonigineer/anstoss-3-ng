@@ -4780,6 +4780,23 @@ const KUNGFU_OFFENCE: u8 = 3;
 /// the kung fu's gate.
 const MARTIAL_ARTS: u8 = 0x15;
 
+/// The offences the character happenings note on the man before their
+/// windows (`FUN_00702d95`, each level its window's tone): the
+/// marijuana catch at three, the police report, the gay bar, the
+/// doctored books and the drunk arrival at training at two, the
+/// cherry feud and the flat search at one.
+const MARIJUANA_OFFENCE: u8 = 3;
+const REPORT_OFFENCE: u8 = 2;
+const BAR_OFFENCE: u8 = 2;
+const CHERRY_OFFENCE: u8 = 1;
+const BOOKS_OFFENCE: u8 = 2;
+const DRUNK_OFFENCE: u8 = 2;
+const SEARCH_OFFENCE: u8 = 1;
+/// The hobby of chasing women (`FUN_00702c9e`, the handle's +0x28d):
+/// the twelfth of the exe's forty hobby names at 0x8a8c7e, its game
+/// text 3960 "Frauen" — the gay bar's gate.
+const WOMEN_HOBBY: u8 = 0xc;
+
 /// The squad's player news of the day (`FUN_005e20fd`, run by
 /// `FUN_005ef8cc` when its roll of a thousand falls under the club's
 /// squad count +0xe2): a man of the squad is drawn, one happening of
@@ -4832,8 +4849,35 @@ const MARTIAL_ARTS: u8 = 0x15;
 /// (`FUN_00676f16`, [`crate::evaluation::average_condition`]), the
 /// man's own shown condition above 60 (`FUN_00457e00`,
 /// [`shown_condition`]) and the club rising on the calendar
-/// (`FUN_0069947b`, [`rising`]). The other thirty-eight codes end
-/// consumed too.
+/// (`FUN_0069947b`, [`rising`]). The character happenings, codes 31 to
+/// 38 behind the trait word's bit [`MODEL_TRAIT`]: 31 gets a man caught
+/// smoking marijuana (0x4f2); 32 has him posed split-naked for a big
+/// ladies' magazine, buried in fan mail and dreadfully distracting for
+/// his reading girlfriend (0x4f3, told with the old and the new
+/// figures — not posted here) while his girlfriend stands at nought
+/// ([`state`], `FUN_00702c12`; `FUN_006ffb3e`), four off his private
+/// life (`FUN_007010d9`) and four off his distractions (`FUN_00701210`);
+/// 33 brings a police report of drunk insults in the pedestrian zone
+/// (0x4f4) while the club stands level with its season's goal
+/// (`FUN_00775f0a`, [`crate::league::goal_missing`] at nought), after a
+/// window headline of the pöbeling man (0x4f5, `FUN_00789c32`) has read
+/// itself out — not a news post, the known skip; 34 has him seen dead
+/// drunk in a gay bar past midnight (0x4f6) only while his hobby
+/// chases women ([`WOMEN_HOBBY`]); 35 ends his cherry feud on the
+/// neighbour's video camera (0x4f7); 36 catches him prettying up his
+/// shirt-sales figures in the books (0x4f9); 37 has him arrive at
+/// training slightly drunk while training stands planned today
+/// ([`planned`], `FUN_005ea8cc`); and 38 searches his flat on an
+/// anonymous tip and finds smaller amounts of doping-list means
+/// (0x4fb). Each notes its offence — [`MARIJUANA_OFFENCE`] three,
+/// [`REPORT_OFFENCE`], [`BAR_OFFENCE`], [`BOOKS_OFFENCE`] and
+/// [`DRUNK_OFFENCE`] two, [`CHERRY_OFFENCE`] and [`SEARCH_OFFENCE`]
+/// one — and ends there: the original shows these texts in question
+/// windows to the manager, unbuilt here as the other questions of this
+/// module, so nothing is posted — except that 37's window asks outright
+/// ("Wie reagieren Sie?", 0x4fa): it goes posted by name, its answer
+/// left to the fine question's part. 38's text asks the same words at
+/// tone one and stays untold. The other thirty codes end consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -4910,6 +4954,44 @@ pub fn player_news(
                 posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x4f1, fill: Fill::NumberedOne(man) });
             }
         }
+        // 31 to 38, the character family: each text stands in the
+        // original's question window to the manager, unbuilt here —
+        // only the one asking outright ("Wie reagieren Sie?") goes
+        // posted, the marks aside.
+        31 => mark_offence(records, man, MARIJUANA_OFFENCE),
+        32 => {
+            let smitten = records
+                .player(man)
+                .is_some_and(|p| p.partner() & 3 == GIRLFRIEND && state(p) == 0);
+            if smitten {
+                change(records, man, PRIVATE, -4);
+                change(records, man, DISTRACTION, -4);
+            }
+        }
+        33 => {
+            if records
+                .team(club.0, club.1)
+                .is_some_and(|team| crate::league::goal_missing(records, league, team) == 0)
+            {
+                // (`FUN_00789c32(7, 0x4f5, .., mgr + 10, -4)` reads out
+                // the window headline — not a news post, not built.)
+                mark_offence(records, man, REPORT_OFFENCE);
+            }
+        }
+        34 => {
+            if records.player(man).is_some_and(|p| p.hobby() == WOMEN_HOBBY) {
+                mark_offence(records, man, BAR_OFFENCE);
+            }
+        }
+        35 => mark_offence(records, man, CHERRY_OFFENCE),
+        36 => mark_offence(records, man, BOOKS_OFFENCE),
+        37 => {
+            if planned {
+                mark_offence(records, man, DRUNK_OFFENCE);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x4fa, fill: Fill::NumberedOne(man) });
+            }
+        }
+        38 => mark_offence(records, man, SEARCH_OFFENCE),
         _ => {}
     }
 }
@@ -5392,6 +5474,171 @@ mod tests {
         extra.put::<u8>(RISING + 1, 0);
         let (posted, _) = told(&mut r, s);
         assert!(posted.is_empty(), "the club not rising");
+    }
+
+    /// The character happenings on A's human club: with the trait
+    /// word's bit 0x200 clear the drawn happening is consumed with
+    /// nothing noted; set, the marijuana catch notes level three, the
+    /// cherry feud level one, the books level two and the flat search
+    /// level one, the gay bar only while the drawn man's hobby chases
+    /// women and the police report exactly while the club stands level
+    /// with its season's goal. The drunk training arrival marks and
+    /// posts its question by name only while training stands planned;
+    /// the magazine takes four off the private life and the
+    /// distractions only while a girlfriend stands at nought, and the
+    /// single man keeps his figures. Nothing else goes posted.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_character_happenings_note_and_ask() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let missing = crate::league::goal_missing(&r, &league, &team);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_clean = |r: &mut Records, man: u16, on: bool| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                if on {
+                    traits[1] |= MODEL_TRAIT;
+                } else {
+                    traits[1] &= !MODEL_TRAIT;
+                }
+                p.set_traits(traits);
+                p.set_offences(0);
+                p.set_offence_counts(0);
+            }
+        };
+        let run = |r: &mut Records, s: u64, planned: bool| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, planned, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // Code 31 with the bit clear: the key goes among them, the man
+        // keeps his record clean; set, the catch notes level three,
+        // once — and its window posts nothing.
+        let s = weighed_to(31);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man, false);
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [31 + HAPPENING_MET]);
+        assert!(posted.is_empty());
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        mark_clean(&mut r, man, true);
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [31 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "the catch is told in its window only");
+        let p = r.player(man).unwrap();
+        assert_eq!(crate::discipline::offence(p), MARIJUANA_OFFENCE);
+        assert_eq!(p.offences(), 0x10 << (MARIJUANA_OFFENCE - 1));
+        assert_eq!(p.offence_counts(), 1 << (2 * (MARIJUANA_OFFENCE - 1)));
+
+        // Code 32: a single man keeps all seven figures at fifty; a
+        // girlfriend's man loses four of his private life and four of
+        // his distractions to the magazine and its fan mail — told
+        // with values, posted nowhere.
+        let s = weighed_to(32);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man, true);
+        if let Some(p) = r.player_mut(man) {
+            p.set_partner(0);
+            p.set_contentment([50; 7]);
+        }
+        let (posted, _) = run(&mut r, s, false);
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().contentment(), [50; 7], "no girlfriend, no magazine");
+        if let Some(p) = r.player_mut(man) {
+            p.set_partner(GIRLFRIEND);
+        }
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [32 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "the figures are told, not posted");
+        let parts = r.player(man).unwrap().contentment();
+        assert_eq!(parts[PRIVATE], 46);
+        assert_eq!(parts[DISTRACTION], 46);
+
+        // Code 33: the police report speaks exactly while the club
+        // stands level with its season's goal — kept A stands
+        // {missing} short.
+        let s = weighed_to(33);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man, true);
+        let (posted, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [33 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "the window headline is not a news post");
+        assert_eq!(
+            crate::discipline::offence(r.player(man).unwrap()),
+            if missing == 0 { REPORT_OFFENCE } else { 0 },
+            "kept A stands {missing} short of its goal"
+        );
+
+        // Code 34: the gay bar talks only while his hobby chases women.
+        let s = weighed_to(34);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man, true);
+        r.player_mut(man).unwrap().set_hobby(0);
+        let (_, recent) = run(&mut r, s, false);
+        assert_eq!(recent, [34 + HAPPENING_MET]);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        mark_clean(&mut r, man, true);
+        r.player_mut(man).unwrap().set_hobby(WOMEN_HOBBY);
+        run(&mut r, s, false);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), BAR_OFFENCE);
+
+        // 35, 36 and 38: no gate beyond the bit — the cherry feud at
+        // level one, the books at level two, the flat search at level
+        // one, none of them posted.
+        for (code, level) in [(35, CHERRY_OFFENCE), (36, BOOKS_OFFENCE), (38, SEARCH_OFFENCE)] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_clean(&mut r, man, true);
+            let (posted, recent) = run(&mut r, s, false);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty());
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), level);
+        }
+
+        // 37: without training today the slightly drunk arrival passes
+        // unmarked; with it, level two noted and the question posted
+        // by name — the one window asking outright.
+        let s = weighed_to(37);
+        let man = drawn_by(s);
+        mark_clean(&mut r, man, true);
+        let (posted, _) = run(&mut r, s, false);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        assert!(posted.is_empty(), "no training today");
+        mark_clean(&mut r, man, true);
+        let (posted, recent) = run(&mut r, s, true);
+        assert_eq!(recent, [37 + HAPPENING_MET]);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), DRUNK_OFFENCE);
+        assert_eq!(posted.len(), 1);
+        let one = &posted[0];
+        assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x4fa));
+        assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
