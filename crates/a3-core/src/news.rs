@@ -3,17 +3,16 @@
 //! advance `FUN_0064f981` runs it for the clubs whose slot its gates
 //! drew today, after the training).
 //!
-//! Before the pick stand the association's points for repeated doping
-//! ([`doping_penalty`]) and the doping reports against the club's trainer
-//! ([`doping_reports`]). What is not here yet: the appointments due that
-//! the waiting-event gate `FUN_006a700a` runs (it never ends the news);
-//! the group news `FUN_005e3885` rolls 400 off the club's
-//! fan byte (+0x9e), which the replica has no part of — on the compared
-//! days of save A it stands at 100 or above, so no roll runs before the
-//! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
-//! the day counter; the player-manager block behind the club's byte
-//! +0x8b; and three of the hobbies of category 19's hobby
-//! news (`FUN_005fd59d`).
+//! Before the pick stand the appointments due ([`appointments`], run by
+//! the waiting-event gate `FUN_006a700a`, which never ends the news),
+//! the association's points for repeated doping ([`doping_penalty`]),
+//! the doping reports against the club's trainer ([`doping_reports`])
+//! and the group news ([`fan_clubs`]: `FUN_005e3885` rolls 400 off the
+//! club's mood, the team's +0xc4, and its pick ends the day's news
+//! whatever it then tells). What is not here yet: the rest gate
+//! `FUN_005ef56c` reads two run-time flags beside the day counter; the
+//! player-manager block behind the club's byte +0x8b; and three of the
+//! hobbies of category 19's hobby news (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
 //! player's military or civil service ([`service`]), and categories 3 to
@@ -1290,6 +1289,423 @@ fn team_mood(records: &mut Records, club: (u16, u16), by: i32) {
     if let Some(team) = records.team_mut(club.0, club.1) {
         team.set_mood((i32::from(team.mood()) + by).clamp(0, 200) as u8);
     }
+}
+
+// ---- The appointments due today (`FUN_006a700a`) ----------------------
+
+/// The four fan groups, each at weight 10 (`DAT_0088d858`, laid into
+/// the run-time picker `0xa2eba4` by `FUN_005e386d`), so the group of
+/// [`fan_clubs`] falls even.
+const FAN_GROUPS: [(u32, u16); 4] = [(10, 1), (10, 2), (10, 3), (10, 4)];
+
+/// The seven tellings of a birthday (`FUN_005f77c1` draws over the
+/// picker `0xa326c4`, filled by `FUN_005f77a9` from `DAT_0088e610` at
+/// weight 1 each).
+const BIRTHDAY_WAYS: [(u32, u16); 7] = [(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7)];
+
+/// The three ways of the call-up (`FUN_005f7aff` draws over the picker
+/// `0xa326b8`, filled from `DAT_0088e62c` at weight 1 each).
+const CALL_UP: [(u32, u16); 3] = [(1, 1), (1, 2), (1, 3)];
+
+/// The seven tellings of a child's birthday (`FUN_005f92e7` draws over
+/// the picker `0xa32688`, filled by `FUN_005f92cf` from `DAT_0088e694`
+/// at weight 1 each).
+const CHILD_WAYS: [(u32, u16); 7] = [(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7)];
+
+/// The club's fan flags, the byte of the team record at +0x8ee: a
+/// group held in the bits `0x10` to `0x80` (`FUN_0069a949` sets one,
+/// `FUN_0069a9ba` clears it again) beside the member bits `0x1` to
+/// `0x8` (`FUN_0069a882`); the record's field list has no name for it.
+const FAN_FLAGS: usize = 0x8ee;
+
+/// The appointments due today for the club's human (`FUN_006a700a`):
+/// `FUN_006a694b` copies the human's list out of
+/// [`crate::rollover::APPOINTMENTS`] — nought or a fifth slot copies
+/// none — and every entry of the twenty whose date (+0, +1, +2) stands
+/// today runs its kind's handler (+4). The gate throws away what the
+/// handlers return, keeping only the sign of their count in its high
+/// half, so the day's news goes on after any of them; only
+/// [`fan_clubs`], which stands after, can end it.
+pub fn appointments(records: &mut Records, club: (u16, u16), planned: bool, posted: &mut Vec<Posted>, random: &mut Random) {
+    let Some(human) = records.team(club.0, club.1).map(|t| usize::from(t.human())) else { return };
+    let Some(slot) = human.checked_sub(1).filter(|s| *s < 4) else { return };
+    let [day, month, year] = records.globals.date();
+    let at = slot * crate::rollover::APPOINTMENT_LIST;
+    let mut due: Vec<[u8; crate::rollover::APPOINTMENT]> = Vec::new();
+    if let Some(list) = records.block(crate::rollover::APPOINTMENTS).and_then(|b| b.get(at..at + crate::rollover::APPOINTMENT_LIST)) {
+        for i in 0..usize::from(u16::from_le_bytes([list[0], list[1]])).min(20) {
+            let e: [u8; crate::rollover::APPOINTMENT] = list[2 + i * 14..16 + i * 14].try_into().unwrap();
+            if u16::from_le_bytes([e[2], e[3]]) == year && u16::from(e[1]) == month && u16::from(e[0]) == day {
+                due.push(e);
+            }
+        }
+    }
+    for e in &due {
+        let kind = u16::from_le_bytes([e[4], e[5]]);
+        let id = u16::from_le_bytes([e[8], e[9]]);
+        match kind {
+            // The association's call-up of 0x16, the talk about the
+            // trainer of 0x44, 0x45 and 0x65, the league place of 0x48
+            // (`FUN_006a8060` weighs it off `FUN_006755b8` over the
+            // club's +0x104, +0x105 and tells one of 0x6d8 to 0x6da)
+            // and the youth steps of 0x41 and 0x42 (whose four texts
+            // 0x386 to 0x389 all wait on the step of the club object's
+            // age byte +2, kept nowhere in the record): no part that
+            // books them is built, and no save read here holds one.
+            0x16 | 0x41 | 0x42 | 0x44 | 0x45 | 0x48 | 0x65 => {}
+            // A quarrel with the board (`FUN_006a7bdd`): fifteen off
+            // the club's mood (`FUN_007147ce`) and the club's own news
+            // 0x6c of code 99.
+            0x3c => {
+                team_mood(records, club, -15);
+                posted.push(Posted::plain(club, 99, 0x6c));
+            }
+            // A man stands in or steps out (`FUN_006a7c02`,
+            // `FUN_006a7c3c`, `FUN_006a7c9d`, ids below 0x426e only
+            // for the last two): 0x3d only names him, 0x3e that he
+            // came and 0x3f that he went, each six on to the club's
+            // mood; the name comes out of the record behind
+            // `FUN_00636459`.
+            0x3d => posted.push(Posted { club, code: 99, text: 0x6d, fill: Fill::Named(id) }),
+            0x3e | 0x3f if (1..0x426e).contains(&id) => {
+                posted.push(Posted { club, code: 99, text: if kind == 0x3e { 0x24c } else { 0x24b }, fill: Fill::Named(id) });
+                team_mood(records, club, 6);
+            }
+            // The under-8s' turn one year on (`FUN_005f49cf`): the
+            // squad's holders of the club's under-8 flag (the club
+            // object's +0xba bit 0x80, kept nowhere in the record)
+            // grow and lose it; of the club's own words the replica
+            // holds the training one, whose meeting bit (the club's
+            // +0xdf8, the team's +0x308) goes off. The club's news
+            // 0x107 of code 0x61 waits behind the player-manager
+            // block at the club's +0x8a and +0x8b, not built.
+            0x40 => {
+                if let Some(team) = records.team_mut(club.0, club.1) {
+                    let flags = team.training_flags();
+                    team.set_training_flags(flags & !8);
+                }
+            }
+            // The loan's start and end (`FUN_006a7e6b`): the club
+            // object's age byte takes the entry's word (the replica
+            // keeps no such byte) and tells 0x67c of a man coming in
+            // (kind 0x46) or 0x67d of one going (0x47), his name and
+            // his club's (`FUN_00731356`) in the text.
+            0x46 | 0x47 if (1..17_000).contains(&id) => {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: if kind == 0x46 { 0x67c } else { 0x67d }, fill: Fill::Named(id) });
+            }
+            0x66 if records.player(id).is_some() => enlistment(records, club, id, posted, random),
+            // His time is served (`FUN_005f7c2f`): the service bits
+            // of +0x27e, 5 and 6, go off.
+            0x67 => {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_partner(p.partner() & 0x9f);
+                }
+            }
+            0x68 if records.player(id).is_some() => child_birthday(records, club, id, posted, random),
+            // The married man's quiet day (`FUN_005f8463`): only for
+            // a man whose partner bits stand at 1 (`FUN_006ffb3e` on
+            // +0x27e), one of the four texts 0x400 to 0x403 drawn.
+            0x69 if records.player(id).is_some() => {
+                if records.player(id).is_some_and(|p| p.partner() & 3 == 1) {
+                    let text = (0x400 + random.below(4)) as u16;
+                    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+                }
+            }
+            // The champions' party (case 0x6a) sends its invitations
+            // to the manager's own record and posts 0x66a only behind
+            // the player-manager block at the club's +0x8a and +0x8b;
+            // [`crate::honours`] books it and names the party not
+            // built.
+            0x6a => {}
+            // His birthday (`FUN_005f77c1`).
+            100 if records.player(id).is_some() => birthday(records, club, id, planned, posted, random),
+            _ => {}
+        }
+    }
+}
+
+/// The birthday news of a man (`FUN_005f77c1`): one of seven tellings
+/// drawn over the picker, each on its own condition; `FUN_00700a6d`
+/// moves his contentment with the team (the record's +0x290, [`TEAM`])
+/// and `FUN_00698ef6` the club's mood.
+fn birthday(records: &mut Records, club: (u16, u16), id: u16, planned: bool, posted: &mut Vec<Posted>, random: &mut Random) {
+    match weighed(&BIRTHDAY_WAYS, random) {
+        0 => {}
+        // A fan club of his breaks down (`FUN_005ec8fa`, whose exact
+        // ledger the replica holds not: his group bits of +0x280 go
+        // off and the club's flag with them) — 0x3df names him.
+        1 => {
+            let fan = records.player(id).map_or(0, |p| p.school() & 3);
+            if fan != 0 {
+                if let Some(p) = records.player_mut(id) {
+                    p.set_school(p.school() & 0xfc);
+                }
+                if let Some(team) = records.team_mut(club.0, club.1) {
+                    team.put::<u8>(FAN_FLAGS, team.get::<u8>(FAN_FLAGS) & !(1 << (fan - 1)));
+                }
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3df, fill: Fill::NumberedOne(id) });
+            }
+        }
+        // A man without a best friend (the second check,
+        // `FUN_007015c6`, is not built) mopes five off his being with
+        // the team — 0x3e0.
+        2 => {
+            if records.player(id).is_some_and(|p| p.best_friend() == 0) {
+                change(records, id, TEAM, -5);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3e0, fill: Fill::NumberedOne(id) });
+            }
+        }
+        // The same man cheers when the club's mood stands above 100
+        // — five on, 0x3e1.
+        3 => {
+            let cheer = records.player(id).is_some_and(|p| p.best_friend() == 0)
+                && records.team(club.0, club.1).is_some_and(|t| i32::from(t.mood()) > 100);
+            if cheer {
+                change(records, id, TEAM, 5);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3e1, fill: Fill::NumberedOne(id) });
+            }
+        }
+        // In good spirits, over 0x78 of `FUN_007008b9` — five on and
+        // 0x3e6.
+        4 => {
+            if records.player(id).is_some_and(|p| i32::from(crate::mood::morale(p)) > 0x78) {
+                change(records, id, TEAM, 5);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x3e6, fill: Fill::NumberedOne(id) });
+            }
+        }
+        // Thirty years (`FUN_00701328`'s and `FUN_00701210`'s numbers
+        // stand in the original's text) — 999.
+        5 => {
+            let today = crate::free_agents::today(records).expect("the game's date");
+            if records.player(id).is_some_and(|p| crate::statistics::age_on(p, today) == 30) {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 999, fill: Fill::NumberedOne(id) });
+            }
+        }
+        // Married and in good spirits (`FUN_006ffb3e` on +0x27e):
+        // 1000 with his partner's name, five on to the club's mood.
+        6 => {
+            let cheer = records.player(id).is_some_and(|p| p.partner() & 3 == 1 && i32::from(crate::mood::morale(p)) > 0x78);
+            if cheer {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 1000, fill: Fill::Partnered(id) });
+                team_mood(records, club, 5);
+            }
+        }
+        // He stands well with the club (over 0x5a of +0x291, the
+        // getter `FUN_00700c42`) and training stands planned today:
+        // 0x3e9 plain and five on to the club's mood.
+        7 => {
+            if records.player(id).is_some_and(|p| i32::from(p.contentment()[CLUB]) > 0x5a) && planned {
+                posted.push(Posted::plain(club, PRIVATE_NEWS, 0x3e9));
+                team_mood(records, club, 5);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The call-up news (`FUN_005f7aff`): a man with the friendly word's
+/// low nibble set (`FUN_00706980` over +0xb6) or already in service
+/// ([`serves`], `FUN_00700581`) hears nothing; one of the trait word's
+/// airs (bit 0x40 of the handle's +0x10) hears 0x3ed instead of the
+/// draw, which else tells 0x3ea, 0x3eb or 0x3ec. The enlistment
+/// itself (`FUN_007018e8`, `FUN_007018b4`, `FUN_00701945`) moves the
+/// club's soldier ledger, not built.
+fn enlistment(records: &Records, club: (u16, u16), id: u16, posted: &mut Vec<Posted>, random: &mut Random) {
+    let Some(p) = records.player(id) else { return };
+    if p.get::<u8>(FRIENDLY_BYTE) & 0xf != 0 || serves(p) != 0 {
+        return;
+    }
+    let text = if p.traits()[1] & 0x40 != 0 {
+        0x3ed
+    } else {
+        match weighed(&CALL_UP, random) {
+            1 => 0x3ea,
+            2 => 0x3eb,
+            3 => 0x3ec,
+            _ => return,
+        }
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
+}
+
+/// A child's birthday news (`FUN_005f92e7`): the first child held
+/// (`FUN_00701f67` finds it; here the first with a birth year), his
+/// age off the birth dates and his sex off the name byte
+/// (`FUN_00701ffa`); then one of seven tellings drawn. 0x429 and 0x42a
+/// tell of a boy past 3 and under 13, 0x42b of a girl the same; two
+/// tellings name nothing; 0x42e (a boy past 13 and under 17, the
+/// original with two numbers more from `FUN_00701210`) and 0x42f (any
+/// child past 13 and under 17) close it.
+fn child_birthday(records: &Records, club: (u16, u16), id: u16, posted: &mut Vec<Posted>, random: &mut Random) {
+    let Some(p) = records.player(id) else { return };
+    let Some(kid) = (0..p.children().clamp(0, MOST_CHILDREN) as u8).find(|&k| p.get::<i16>(BIRTH_DATES + 4 * usize::from(k) + 2) != 0) else {
+        return;
+    };
+    let son = p.get::<u8>(0x288 + usize::from(kid)) < SONS_NAMES;
+    let age = years_since(records, birth_date(p, kid));
+    let at = weighed(&CHILD_WAYS, random);
+    let text = match at {
+        1 | 2 if son && (4..=12).contains(&age) => if at == 1 { 0x429 } else { 0x42a },
+        3 if !son && (4..=12).contains(&age) => 0x42b,
+        6 if son && (14..=16).contains(&age) => 0x42e,
+        7 if (14..=16).contains(&age) => 0x42f,
+        _ => return,
+    };
+    posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Child(id, kid) });
+}
+
+/// The men of one fan group lose it (`FUN_00700690`, the group bits of
+/// +0x280 off) and the club the group's `0x10` bit of +0x8ee
+/// (`FUN_0069a9ba`).
+fn scatter(records: &mut Records, club: (u16, u16), men: &[u16], group: u16) {
+    for &id in men {
+        if let Some(p) = records.player_mut(id) {
+            p.set_school(p.school() & 0xfc);
+        }
+    }
+    if let Some(team) = records.team_mut(club.0, club.1) {
+        team.put::<u8>(FAN_FLAGS, team.get::<u8>(FAN_FLAGS) & !(0x10 << (group - 1)));
+    }
+}
+
+/// Which squad men stand in fan group `group` (the two low bits of
+/// +0x280).
+fn fan_members(records: &Records, squad: &[u16], group: u16) -> Vec<u16> {
+    squad.iter().copied().filter(|&id| records.player(id).is_some_and(|p| u16::from(p.school() & 3) == group)).collect()
+}
+
+/// The group news of the fan clubs (`FUN_005e3885`): a club below 100
+/// of mood (the team's +0xc4) rolls 400, and once in four hundred a
+/// fan group is drawn over the four even weights — and the day's news
+/// ends there and then, told or not. The tale wants three men of the
+/// squad none of the others loathes or shuns (`FUN_005e30d4` over
+/// +0x206 and +0x1fe, real ids only): groups 1 and 2 three men drawn
+/// at once from the squad (`FUN_005e31e4`, its three in the order of
+/// their years); group 3 two men of 24 and up not in low spirits
+/// (`FUN_007008b9` under 0x5a, at most 0x23 of them) with one under
+/// 22 (at most ten; `FUN_005e3391`); group 4 the three eldest lads
+/// past the club's age byte 8 and with no standing at school
+/// (`FUN_005e354d`, weighing that byte times a hundred on the
+/// reckoned years — the replica has only the years, `FUN_006ff01b`).
+/// The three stand in the club's next group (`FUN_005e2e76`: the first
+/// of 1 to 3 holding no man, else the emptiest, whose men are
+/// scattered first; [`scatter`] and [`fan_members`] follow
+/// `FUN_0070062e`, `FUN_007006e8` and `FUN_005e2ca0`), the club takes
+/// the group's flags of +0x8ee (`FUN_0069a949`, `FUN_0069a882`), and
+/// one text of 0x581 to 0x584 names the three.
+pub fn fan_clubs(records: &mut Records, club: (u16, u16), posted: &mut Vec<Posted>, random: &mut Random) -> bool {
+    if records.team(club.0, club.1).is_none_or(|t| i32::from(t.mood()) >= 100) || random.below(400) != 0 {
+        return false;
+    }
+    let group = weighed(&FAN_GROUPS, random);
+    if group == 0 {
+        return false;
+    }
+    let today = crate::free_agents::today(records).expect("the game's date");
+    let squad = records.team(club.0, club.1).map(|t| t.players()).unwrap_or_default();
+    // `FUN_005e30d4`: all three real (its ids run below 0x4269) and
+    // none of the three in another's lists of loathing or shunning,
+    // each way round.
+    let free_of_each_other = |ids: [u16; 3]| -> bool {
+        ids.iter().all(|&id| id > 0 && id <= LAST_REAL_ID)
+            && not_yet_linked(records, ids[0], ids[1])
+            && not_yet_linked(records, ids[1], ids[0])
+            && not_yet_linked(records, ids[0], ids[2])
+            && not_yet_linked(records, ids[2], ids[0])
+            && not_yet_linked(records, ids[1], ids[2])
+            && not_yet_linked(records, ids[2], ids[1])
+    };
+    let three = match group {
+        1 | 2 => {
+            if squad.len() < 3 {
+                None
+            } else {
+                let drawn = crate::cup_draw::choose(3, squad.len(), random);
+                let mut ids: [u16; 3] = drawn.iter().map(|&at| squad[at]).collect::<Vec<_>>().try_into().unwrap();
+                ids.sort_by_key(|&id| records.player(id).map_or(0, |p| crate::statistics::age_on(p, today)));
+                free_of_each_other(ids).then_some(ids)
+            }
+        }
+        3 => {
+            let mut young: Vec<u16> = Vec::new();
+            let mut old: Vec<u16> = Vec::new();
+            for &id in &squad {
+                let Some(p) = records.player(id) else { continue };
+                if id >= 0x4269 {
+                    continue;
+                }
+                let age = crate::statistics::age_on(p, today);
+                if age < 24 {
+                    if age < 22 && young.len() < 10 {
+                        young.push(id);
+                    }
+                } else if i32::from(crate::mood::morale(p)) < 0x5a && old.len() < 0x23 {
+                    old.push(id);
+                }
+            }
+            if old.len() < 2 || young.is_empty() {
+                None
+            } else {
+                let pair = crate::cup_draw::choose(2, old.len(), random);
+                let ids = [old[pair[0]], old[pair[1]], young[random.below(young.len() as u32) as usize]];
+                free_of_each_other(ids).then_some(ids)
+            }
+        }
+        4 => {
+            let mut best: Vec<(i32, u16)> = Vec::new();
+            for &id in &squad {
+                let Some(p) = records.player(id) else { continue };
+                if id >= 0x4269 || p.school() & 3 != 0 {
+                    continue;
+                }
+                let age = crate::statistics::age_on(p, today);
+                if age <= 8 {
+                    continue;
+                }
+                let at = best.iter().rposition(|&(other, _)| other >= age).map_or(0, |a| a + 1);
+                if at < 3 {
+                    best.insert(at, (age, id));
+                    best.truncate(3);
+                }
+            }
+            (best.len() == 3).then(|| [best[0].1, best[1].1, best[2].1]).filter(|ids| free_of_each_other(*ids))
+        }
+        _ => None,
+    };
+    if let Some(ids) = three {
+        let mut lists = [fan_members(records, &squad, 1), fan_members(records, &squad, 2), fan_members(records, &squad, 3)];
+        let take = match lists.iter().position(Vec::is_empty) {
+            Some(at) => at + 1,
+            None => {
+                let at = (0..3).min_by_key(|&g| lists[g].len()).unwrap();
+                scatter(records, club, &lists[at], (at + 1) as u16);
+                lists[at].clear();
+                at + 1
+            }
+        } as u16;
+        // The three stand in (`FUN_0070062e` on each of them, its two
+        // low bits the group; `FUN_007006e8` sets the member bit 0x10
+        // and is called around the middle one).
+        for (n, &id) in ids.iter().enumerate() {
+            if let Some(p) = records.player_mut(id) {
+                let joined = p.school() | if n == 1 { 0x10 } else { 0 };
+                p.set_school(joined & 0xfc | u8::try_from(take).unwrap_or(0));
+            }
+        }
+        if let Some(team) = records.team_mut(club.0, club.1) {
+            team.put::<u8>(FAN_FLAGS, team.get::<u8>(FAN_FLAGS) | 0x10 << (take - 1) | 1 << (take - 1));
+        }
+        // Groups left with one or two men scatter again
+        // (`FUN_005e2ca0`).
+        for g in 1..=3 {
+            let men = fan_members(records, &squad, g);
+            if (1..=2).contains(&men.len()) {
+                scatter(records, club, &men, g);
+            }
+        }
+        posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x581 + take - 1, fill: Fill::NumberedThree(ids[0], ids[1], ids[2]) });
+    }
+    true
 }
 
 /// His freshness moved by `by` points (`FUN_005e5f40` on the handle's
@@ -9913,5 +10329,29 @@ mod tests {
         assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
         assert_eq!(r.player(second).unwrap().dislikes(), [first, 0, 0]);
         assert!(random == drawn, "the lone man of one position draws not");
+    }
+
+    /// The gate `FUN_006a700a` runs the entries dated today only: the
+    /// quarrel of kind 0x3c fifteen off the club's mood and posts 0x6c
+    /// of code 99, and the like entry dated a year on stands unread.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_day_runs_only_appointments_dated_today() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let human = r.team(club.0, club.1).unwrap().human();
+        let [day, month, year] = r.globals.date();
+        let mood = i32::from(r.team(club.0, club.1).unwrap().mood());
+        crate::rollover::book_appointment(&mut r, human, crate::rollover::appointment(day as u8, month as u8, year, 0x3c, 0, 0));
+        crate::rollover::book_appointment(&mut r, human, crate::rollover::appointment(day as u8, month as u8, year + 1, 0x3c, 0, 0));
+        let mut random = Random::new(7);
+        let mut posted = Vec::new();
+        appointments(&mut r, club, false, &mut posted, &mut random);
+        assert_eq!(posted, [Posted::plain(club, 99, 0x6c)]);
+        assert_eq!(i32::from(r.team(club.0, club.1).unwrap().mood()), mood - 15);
     }
 }

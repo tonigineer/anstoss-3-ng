@@ -647,10 +647,8 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// a far-from-home tale is weighed by
 /// ([`crate::world::World::nation_kinds`]), `reported` the humans' doping
 /// reports and `controls` where a reported club's positive control goes
-/// (event 0xcb). The group news of a club below 100 of mood
-/// (`FUN_005e3885`, a roll of 400 then a pick over the run-time table at
-/// `0xa2eba4`) is not built. (The town's share in the
-/// stadium's building after a youth's quiet week is not built either.)
+/// (event 0xcb). (The town's share in the stadium's building after a
+/// youth's quiet week is not built.)
 pub fn news(
     records: &mut Records,
     today: i32,
@@ -673,19 +671,25 @@ pub fn news(
             continue;
         }
         let club = (u16::from(country), number as u16);
-        // The gates before the pick: the waiting events (`FUN_006a700a`,
-        // whose return keeps only the sign of its count in the high half,
-        // so it never ends the news; the appointments due it runs are not
-        // built), the rest gate (above), the association's points for
-        // repeated doping, and the reports of doping against the trainer.
+        let squad = records.team(club.0, club.1).map_or(0, |team| team.player_count());
+        let units = plan(club);
+        let planned = units.iter().any(|&u| u != training::FREE);
+        // The gates before the pick: the waiting appointments
+        // (`FUN_006a700a`, whose return keeps only the sign of its
+        // count in the high half, so it never ends the news), the rest
+        // gate (above), the association's points for repeated doping,
+        // the reports of doping against the trainer, and the group
+        // news of a club below 100 of mood — its 400-roll and
+        // fan-group pick end the day told or not (`FUN_005e3885`).
+        crate::news::appointments(records, club, planned, &mut posted, random);
         crate::news::doping_penalty(records, club, &mut posted);
         if crate::news::doping_reports(records, club, reported, controls, &mut posted, random) {
             continue;
         }
+        if crate::news::fan_clubs(records, club, &mut posted, random) {
+            continue;
+        }
         let code = crate::news::pick(random);
-        let squad = records.team(club.0, club.1).map_or(0, |team| team.player_count());
-        let units = plan(club);
-        let planned = units.iter().any(|&u| u != training::FREE);
         let told = match code {
             0 => false,
             1 => crate::news::children(records, club, recent, &mut posted, random),
