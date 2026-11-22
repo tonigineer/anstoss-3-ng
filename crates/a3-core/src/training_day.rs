@@ -610,10 +610,12 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// [`crate::statistics::human_clubs`]. What the clubs are told comes back.
 ///
 /// With no category picked (the rest of the table, 0) `FUN_005ef8cc`
-/// goes on over the club's squad (+0xe2): under it of a thousand a player's news
-/// (`FUN_005e20fd`), else under it of five thousand another
-/// (`FUN_005e2bb9`), neither built; else on every third half week by the
-/// club's number the club's youth walks its week, the human told
+/// goes on over the club's squad (+0xe2): under it of a thousand the
+/// squad's player news ([`crate::news::player_news`]), which ends the
+/// day's news for the club either way, else under it of five thousand
+/// the player-manager's (`FUN_005e2bb9`, not built); else on every
+/// third half week by the club's number the club's youth walks its
+/// week, the human told
 /// ([`crate::youth_week::walk`]). A picked category's handler that
 /// posts nothing goes on so too: categories 1 ([`crate::news::children`])
 /// to 6 ([`crate::news::suspicion`]), 7 ([`crate::news::affair_known`]),
@@ -717,7 +719,12 @@ pub fn news(
         if told {
             continue;
         }
-        if random.below(PLAYER_NEWS) < u32::from(squad) || random.below(OTHER_NEWS) < u32::from(squad) {
+        if random.below(PLAYER_NEWS) < u32::from(squad) {
+            crate::news::player_news(records, club, recent, random);
+            continue;
+        }
+        if random.below(OTHER_NEWS) < u32::from(squad) {
+            // `FUN_005e2bb9`, the player-manager's own news: not built.
             continue;
         }
         if records.globals.half_weeks() % 3 == number as u16 % 3 {

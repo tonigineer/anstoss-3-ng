@@ -3473,7 +3473,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\non 383 click at 460 210\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\non 383 click at 460 210\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -11508,7 +11508,7 @@ mod tests {
         let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 383 click at 460 210";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\non 332 ok\non 383 click at 460 210";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 269")) else { return };
         let dialog = &game.dialogs[&269];
         let view = runner.host.view();
@@ -11610,7 +11610,7 @@ mod tests {
         let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok";
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 332")) else { return };
         assert_eq!(seen(&runner, 269), 0, "the report comes before the table");
         let dialog = &game.dialogs[&332];
@@ -11669,7 +11669,7 @@ mod tests {
         let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0";
+                    on 308 choose 4095 0\non 41 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 96")) else { return };
         assert_eq!(seen(&runner, 332), 0, "the information comes before the report");
         let dialog = &game.dialogs[&96];
@@ -11731,7 +11731,7 @@ mod tests {
         let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
                     on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
-                    on 308 choose 4095 0\non 96 ok";
+                    on 308 choose 4095 0\non 96 ok\non 41 ok";
         let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 93")) else { return };
         assert_eq!(seen(&runner, 96), 1, "the break comes behind the last information");
         assert_eq!(seen(&runner, 332), 0, "and before the report");

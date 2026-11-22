@@ -39,7 +39,11 @@
 //! character, the young and two not yet acquainted, friendships
 //! begun — and of men fallen out: over a form crisis, a revenge
 //! foul, an overheard sneer, a mocked age, a snatched advertising
-//! contract and one sister two of them love.
+//! contract and one sister two of them love. With no category picked the
+//! day goes on over the club's squad: [`player_news`] draws a man and
+//! weighs one of the fifty happenings of the table `FUN_005e08d9`
+//! registers, meted among the lately met and gated by the man's character
+//! bit — the happenings' tales come in their parts.
 
 use std::ops::RangeInclusive;
 
@@ -4670,10 +4674,227 @@ fn rivals(records: &mut Records, one: u16, other: u16) {
         p.set_hates(one);
     }
 }
+/// The happenings of the squad's player news, the picker table
+/// `FUN_005e08d9` registers with `FUN_0060bdb7(0x32, ..)`: the code and
+/// its weight, as the fifty pairs lie in the exe at 0x48d6e8. Codes 4,
+/// 5 and 14 weigh one, the rest ten; 48 to 50 lie unregistered and a
+/// roll of 473 and up weighs no code at all — the picker hands out code
+/// 0 and `FUN_005e08f1` returns without a word.
+const PLAYER_EVENTS: [(u32, u16); 50] = [
+    (10, 1),
+    (10, 2),
+    (10, 3),
+    (1, 4),
+    (1, 5),
+    (10, 6),
+
+    (10, 11),
+    (10, 12),
+    (10, 13),
+    (1, 14),
+
+    (10, 21),
+    (10, 22),
+
+    (10, 31),
+    (10, 32),
+    (10, 33),
+    (10, 34),
+    (10, 35),
+    (10, 36),
+    (10, 37),
+    (10, 38),
+    (10, 39),
+    (10, 40),
+    (10, 41),
+    (10, 42),
+    (10, 43),
+    (10, 44),
+    (10, 45),
+    (10, 46),
+    (10, 47),
+
+    (10, 51),
+    (10, 52),
+    (10, 53),
+    (10, 54),
+    (10, 55),
+    (10, 56),
+    (10, 57),
+    (10, 58),
+    (10, 59),
+
+    (10, 61),
+    (10, 62),
+    (10, 63),
+    (10, 64),
+    (10, 65),
+    (10, 66),
+
+    (10, 71),
+    (10, 72),
+    (10, 73),
+
+    (10, 81),
+    (10, 82),
+    (10, 100),
+];
+
+/// The key a happening stands by among the events lately met
+/// (`FUN_005e5e90(code + 0x5fb4)`; `FUN_005e5ee0` adds it when it is
+/// not there yet).
+const HAPPENING_MET: i32 = 24_500;
+
+/// The bit of the man's second trait word a happening asks — the switch
+/// of `FUN_005e08f1` over `short*(man + 0x12)`; codes 57 to 59 fall in
+/// its default, which asks no bit.
+fn asked_trait(code: u16) -> Option<u16> {
+    match code {
+        1..=6 => Some(0x2),
+        11..=14 => Some(0x4),
+        21 | 22 => Some(0x100),
+        31..=47 | 100 => Some(MODEL_TRAIT),
+        51..=56 => Some(STAR_AIRS),
+        61..=66 => Some(SENSITIVE),
+        71..=73 => Some(0x1000),
+        81 | 82 => Some(0x2000),
+        _ => None,
+    }
+}
+
+/// The squad's player news of the day (`FUN_005e20fd`, run by
+/// `FUN_005ef8cc` when its roll of a thousand falls under the club's
+/// squad count +0xe2): a man of the squad is drawn, one happening of
+/// `PLAYER_EVENTS` weighed on one roll off the picker's cap — the short
+/// there reads −1 and widens to the raw 16-bit roll — and its key meted
+/// against the events lately met: met lately, the happening is consumed
+/// with nothing told, and a new one goes among them before the switch
+/// reads the man's character bit ([`asked_trait`]) and the case's own
+/// gates. None of the fifty cases is built here yet; every drawn code
+/// ends told with nothing.
+pub fn player_news(records: &Records, club: (u16, u16), recent: &mut Vec<i32>, random: &mut Random) {
+    let Some(man) = drawn_man(records, club, random) else { return };
+    let code = weighed_within(&PLAYER_EVENTS, u32::MAX, random);
+    if code == 0 || !meet(recent, i32::from(code) + HAPPENING_MET) {
+        return;
+    }
+    if asked_trait(code).is_some_and(|bit| records.player(man).is_none_or(|p| p.traits()[1] & bit == 0)) {
+        return;
+    }
+    // `FUN_005e08f1`'s cases come in their parts; the happening ends
+    // consumed. (`FUN_006c6380`, the frame's five-byte no-op, stands.)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The happenings table weighs four hundred seventy three over its
+    /// fifty codes, and the picker rolls once off its short cap (the
+    /// stored −1 widened to the raw short): the walk lands on the code
+    /// its weights carry, and both the silent code and a drawn one show
+    /// among the rolls.
+    #[test]
+    fn the_happenings_weigh_over_one_raw_roll() {
+        assert_eq!(PLAYER_EVENTS.iter().map(|&(weight, _)| weight).sum::<u32>(), 473);
+        let mut silent = false;
+        let mut drawn = false;
+        for seed in 0..10_000u64 {
+            let mut random = Random::new(seed);
+            let mut copy = random.clone();
+            let roll = copy.below(u32::MAX);
+            let code = weighed_within(&PLAYER_EVENTS, u32::MAX, &mut random);
+            assert!(random == copy, "one roll, no more");
+            let mut rest = roll;
+            let mut expected = 0;
+            for &(weight, happening) in &PLAYER_EVENTS {
+                if weight > rest {
+                    expected = happening;
+                    break;
+                }
+                rest -= weight;
+            }
+            assert_eq!(code, expected);
+            silent |= code == 0;
+            drawn |= code != 0;
+            if silent && drawn {
+                return;
+            }
+        }
+        panic!("neither a silent nor a drawn code among 10 000 rolls");
+    }
+
+    /// The squad's roll of a thousand on A: a man drawn below the squad's
+    /// count and one raw roll weighed, no more; the drawn happening's key
+    /// goes among the events lately met even though its case tells nothing
+    /// here — even for a man whose character bit the happening asks is
+    /// clear, since the key stands there before the switch reads it — and
+    /// the same happening met again is consumed without the list moving.
+    /// A roll of 473 and up hands out the silent code and leaves the list
+    /// as it was.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_happenings_roll_draws_a_man_and_metes_its_code() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |codes: &[u16]| {
+            seed(&|random| {
+                random.below(count);
+                codes.contains(&weighed_within(&PLAYER_EVENTS, u32::MAX, random))
+            })
+        };
+
+        // Code 57, one of the switch's default: no bit asked, nothing
+        // told — and the rolls taken are only the man and the weigh.
+        let s = weighed_to(&[57]);
+        let mut expected = Random::new(s);
+        expected.below(count);
+        expected.below(u32::MAX);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&r, club, &mut recent, &mut random);
+        assert!(random == expected, "the man drawn and one raw roll, no more");
+        assert_eq!(recent, [57 + HAPPENING_MET]);
+        // Met again: consumed, the list stands, both rolls still taken.
+        let mut random = Random::new(s);
+        player_news(&r, club, &mut recent, &mut random);
+        assert!(random == expected);
+        assert_eq!(recent, [57 + HAPPENING_MET]);
+
+        // Code 51 asks the star-airs bit; a drawn man without it ends
+        // with nothing told — but the key went among them all the same.
+        let s = weighed_to(&[51]);
+        let at = {
+            let mut random = Random::new(s);
+            random.below(count) as usize
+        };
+        let man = squad[at];
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] &= !STAR_AIRS;
+            p.set_traits(traits);
+        }
+        let mut random = Random::new(s);
+        player_news(&r, club, &mut recent, &mut random);
+        assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
+
+        // The silent code: a roll of 473 and up weighs nothing.
+        let s = seed(&|random| {
+            random.below(count);
+            weighed_within(&PLAYER_EVENTS, u32::MAX, random) == 0
+        });
+        let mut random = Random::new(s);
+        player_news(&r, club, &mut recent, &mut random);
+        assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
+    }
 
     /// The pick takes one draw and walks the table: the roll of save A
     /// on its day 63, 1191, walks nine times 100, then 55, 55, 11 and
