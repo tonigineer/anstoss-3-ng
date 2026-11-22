@@ -630,7 +630,7 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// ([`crate::news::school_days`]), go on when they tell nothing, and so
 /// does 24, the men far from home ([`crate::news::far_from_home`]), when
 /// it pairs two of them; the tale it draws instead ends the day's news,
-/// untold so far. 25 is not built, so another picked category stands for
+/// told on the man it draws. 25 is not built, so another picked category stands for
 /// the day's whole news there.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
@@ -707,7 +707,7 @@ pub fn news(
             21 => crate::news::revolt(records, club, today, units, league, (recent, &mut posted), random),
             22 => crate::news::first_months(records, club, &mut posted, random),
             23 => crate::news::school_days(records, club, &mut posted, random),
-            24 => crate::news::far_from_home(records, club, nation_kinds, random),
+            24 => crate::news::far_from_home(records, club, nation_kinds, tables, &mut posted, random),
             _ => true,
         };
         if told {
