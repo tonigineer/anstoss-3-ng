@@ -1766,6 +1766,7 @@ fn mark_match(
                 });
             if let Some(p) = records.player_mut(id) {
                 p.set_league_matches(p.league_matches().saturating_add(1));
+                p.set_matches_stood(p.matches_stood().saturating_add(1));
                 p.set_matches_in_a_row(p.matches_in_a_row().saturating_add(1));
                 p.set_last_goals(n);
                 p.set_grade(grade);

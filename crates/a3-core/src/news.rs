@@ -4761,6 +4761,12 @@ const MUSTERPROFI: u16 = 0x100;
 /// about — mobbed by girls, missed in training, stalked by an adorer —
 /// the gate of the market-value news, codes 71 to 73.
 const MARKET_VALUE: u16 = 0x1000;
+/// The second trait word's bit (the handle's +0x12, the record's
+/// +0x1ca) that marks a man past keeping in line: the joker telling
+/// his stupid jokes about the manager in the squad and the fringe man
+/// intriguing for a starting place — the gate of the discipline news,
+/// codes 81 and 82.
+const DISCIPLINE: u16 = 0x2000;
 
 /// The bit of the man's second trait word a happening asks — the switch
 /// of `FUN_005e08f1` over `short*(man + 0x12)`; codes 57 to 59 fall in
@@ -4774,7 +4780,7 @@ fn asked_trait(code: u16) -> Option<u16> {
         51..=56 => Some(STAR_AIRS),
         61..=66 => Some(SENSITIVE),
         71..=73 => Some(MARKET_VALUE),
-        81 | 82 => Some(0x2000),
+        81 | 82 => Some(DISCIPLINE),
         _ => None,
     }
 }
@@ -4816,6 +4822,11 @@ const DISCO_OFFENCE: u8 = 2;
 const WALKOFF_OFFENCE: u8 = 2;
 const DRILL_OFFENCE: u8 = 1;
 const CAMP_OFFENCE: u8 = 1;
+/// The offences the discipline news notes before its windows: the
+/// squad jokes about the manager and the intrigue for a starting
+/// place at two.
+const JOKE_OFFENCE: u8 = 2;
+const INTRIGUE_OFFENCE: u8 = 2;
 /// The hobby of chasing women (`FUN_00702c9e`, the handle's +0x28d):
 /// the twelfth of the exe's forty hobby names at 0x8a8c7e, its game
 /// text 3960 "Frauen" — the gay bar's gate.
@@ -4968,7 +4979,19 @@ const WOMEN_HOBBY: u8 = 0xc;
 /// his being with the team (`FUN_00700a6d`, the getter `FUN_00700c42`);
 /// 73 is stalked by an adorer, love letters and waiting in front of his
 /// flat (0x520), five off his distractions (`FUN_00701210`, the getter
-/// `FUN_00701328`). The remaining five codes end consumed too.
+/// `FUN_00701328`). The discipline news, codes 81 and 82, behind the
+/// trait word's bit [`DISCIPLINE`]: 81 asks nothing beyond it — two
+/// noted for the stupid jokes he keeps making about the manager in the
+/// squad (`FUN_00702d95(2)`), ten off the club's mood (`FUN_007147ce`)
+/// and its window posted by name, asking outright (0x521, "Wie
+/// reagieren Sie?"). 82 waits for the league past its twentieth
+/// matchday (`FUN_00692744`), for the man having stood in fewer than
+/// half the matchdays played (the handle's +0xc2,
+/// [`crate::records::Player::matches_stood`]) and for the club's mood
+/// (`FUN_007147ce`'s own byte at +0x9e) under 0x6e: ten off the mood
+/// and two noted for his intrigue for a starting place, told in its
+/// window only (0x522, not posted). Codes 57 to 59 fall in the case
+/// switch's default and end consumed with nothing told.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -5251,6 +5274,36 @@ pub fn player_news(
         // 100: dead drunk in the club's own disco, thrown out (0x6fd);
         // the tone-two window does not ask, nothing posted.
         100 => mark_offence(records, man, DISCO_OFFENCE),
+        // 81: nothing beyond the bit — two noted for the jokes he
+        // keeps making about the manager in the squad
+        // (`FUN_00702d95(2)`), ten off the club's mood
+        // (`FUN_007147ce(-10)`) and the question posted by name,
+        // asking outright (0x521, "Wie reagieren Sie?").
+        81 => {
+            mark_offence(records, man, JOKE_OFFENCE);
+            team_mood(records, club, -10);
+            posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x521, fill: Fill::NumberedOne(man) });
+        }
+        // 82: the intrigue for a starting place (0x522, told in its
+        // window only) exactly while the league stands past its
+        // twentieth matchday (`FUN_00692744`), he has stood in fewer
+        // than half the matchdays played (the handle's +0xc2) and the
+        // club's mood is under 0x6e (`FUN_007147ce`): ten off the
+        // mood, two noted.
+        82 => {
+            let fringe = records
+                .team(club.0, club.1)
+                .is_some_and(|team| {
+                    let played = crate::league::matchdays(records, team);
+                    played > 0x14
+                        && records.player(man).is_some_and(|p| usize::from(p.matches_stood()) < played / 2)
+                        && usize::from(team.mood()) < 0x6e
+                });
+            if fringe {
+                team_mood(records, club, -10);
+                mark_offence(records, man, INTRIGUE_OFFENCE);
+            }
+        }
         _ => {}
     }
 }
@@ -6474,6 +6527,140 @@ mod tests {
         }
         run(&mut r, s, true);
         assert_eq!(r.player(man).unwrap().contentment()[TEAM], 0, "the team part floors at nought");
+    }
+
+    /// The discipline news, codes 81 and 82, behind the [`DISCIPLINE`]
+    /// bit: with the bit off the roll is consumed and nothing moves;
+    /// with it, the squad jokes note level two, knock ten off the
+    /// club's mood and post their question by name at 0x521. The
+    /// intrigue posts nothing and waits for the league past its
+    /// twentieth matchday, for the man having stood in fewer than half
+    /// the matchdays played, and for the club's mood under 0x6e — at
+    /// twenty matchdays, at half exactly stood, or with the mood high
+    /// it notes nothing, and only past all three does it knock ten off
+    /// the mood and note level two.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_discipline_news_jokes_and_intrigues() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_joker = |r: &mut Records, man: u16, on: bool| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                if on {
+                    traits[1] |= DISCIPLINE;
+                } else {
+                    traits[1] &= !DISCIPLINE;
+                }
+                p.set_offences(0);
+                p.set_offence_counts(0);
+                p.set_traits(traits);
+            }
+        };
+        let mood = |r: &Records| r.team(club.0, club.1).unwrap().mood();
+        let set_mood = |r: &mut Records, value: u8| {
+            let mut team = r.team_mut(club.0, club.1).unwrap();
+            team.set_mood(value);
+        };
+        let run = |r: &mut Records, s: u64| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, false, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // 81: with the bit off the happening is met and consumed; with
+        // it, level two on the man, ten off the club's mood and the
+        // question posted by name.
+        let s = weighed_to(81);
+        let man = drawn_by(s);
+        mark_joker(&mut r, man, false);
+        set_mood(&mut r, 100);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [81 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "no bit, no joke");
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        assert_eq!(mood(&r), 100);
+        mark_joker(&mut r, man, true);
+        set_mood(&mut r, 100);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [81 + HAPPENING_MET]);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), JOKE_OFFENCE);
+        assert_eq!(mood(&r), 90);
+        assert_eq!(posted.len(), 1);
+        let one = &posted[0];
+        assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x521));
+        assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
+
+        // 82: the intrigue is met either way and posted nowhere — the
+        // window tells it — and marks only past all three of its
+        // gates: past the twentieth matchday, stood in fewer than
+        // half of them and mood under 0x6e.
+        let s = weighed_to(82);
+        let man = drawn_by(s);
+        mark_joker(&mut r, man, false);
+        set_mood(&mut r, 100);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [82 + HAPPENING_MET]);
+        assert!(posted.is_empty());
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+        assert_eq!(mood(&r), 100, "no bit, no intrigue");
+        let days = crate::league::matchdays(&r, &r.team(club.0, club.1).unwrap());
+        if days > 0x14 {
+            // Stood in half the matchdays to the matchday and mood at
+            // the ceiling: the fringe gate fails and nothing moves.
+            mark_joker(&mut r, man, true);
+            r.player_mut(man).unwrap().set_matches_stood(days as u8);
+            set_mood(&mut r, 0x6e);
+            let (posted, _) = run(&mut r, s);
+            assert!(posted.is_empty(), "the window never posts");
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "never a fringe man");
+            assert_eq!(mood(&r), 0x6e);
+            // Stood one short of half and one below the mood ceiling:
+            // all three stand, and mood and mark follow.
+            mark_joker(&mut r, man, true);
+            r.player_mut(man).unwrap().set_matches_stood(days as u8 / 2 - 1);
+            set_mood(&mut r, 0x6d);
+            let (posted, _) = run(&mut r, s);
+            assert!(posted.is_empty());
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), INTRIGUE_OFFENCE);
+            assert_eq!(mood(&r), 0x6d - 10);
+        } else {
+            // The league not past its twentieth matchday: even a
+            // waiting fringe man at a low mood stays unmarked.
+            mark_joker(&mut r, man, true);
+            r.player_mut(man).unwrap().set_matches_stood(0);
+            set_mood(&mut r, 0);
+            let (posted, _) = run(&mut r, s);
+            assert!(posted.is_empty());
+            assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0, "the league has played {days}");
+            assert_eq!(mood(&r), 0);
+        }
     }
 
     /// The pick takes one draw and walks the table: the roll of save A

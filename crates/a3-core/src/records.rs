@@ -235,6 +235,11 @@ record! {
     /// of the kinds 3–4, 5–10 and 12–15 (the line-up's object +0x54, +0x59,
     /// +0x5f, +0x61).
     0x253 => league_matches, set_league_matches: u8;
+    /// The league matches he stood in — the line-up's object +0xc2,
+    /// which its post-match update (`FUN_00744496`) bumps together with
+    /// +0x54 exactly while he stood; code 82 weighs it against half the
+    /// matchdays played.
+    0x276 => matches_stood, set_matches_stood: u8;
     /// Two counts the cohesion takes from the league matches: the first,
     /// those he came on in as a substitute.
     0x254 => league_less, set_league_less: [u8; 2];
