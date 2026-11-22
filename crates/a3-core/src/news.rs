@@ -4756,6 +4756,11 @@ const SENSITIVE_KNOCK: u16 = 7;
 /// +0x1ca) that makes a man his club's Musterprofi, its model
 /// professional — the one whose say at a squad meeting is heard.
 const MUSTERPROFI: u16 = 0x100;
+/// The second trait word's bit (the handle's +0x12, the record's
+/// +0x1ca) that carries a man's market value: the one whose name is
+/// about — mobbed by girls, missed in training, stalked by an adorer —
+/// the gate of the market-value news, codes 71 to 73.
+const MARKET_VALUE: u16 = 0x1000;
 
 /// The bit of the man's second trait word a happening asks — the switch
 /// of `FUN_005e08f1` over `short*(man + 0x12)`; codes 57 to 59 fall in
@@ -4768,7 +4773,7 @@ fn asked_trait(code: u16) -> Option<u16> {
         31..=47 | 100 => Some(MODEL_TRAIT),
         51..=56 => Some(STAR_AIRS),
         61..=66 => Some(SENSITIVE),
-        71..=73 => Some(0x1000),
+        71..=73 => Some(MARKET_VALUE),
         81 | 82 => Some(0x2000),
         _ => None,
     }
@@ -4953,7 +4958,17 @@ const WOMEN_HOBBY: u8 = 0xc;
 /// pitch (0x51d, told with values) — the manager throws the worst
 /// shouter off the grounds himself, ten more content with his trainer
 /// (`FUN_007007a1`) and ten less with the club (`FUN_00700d27`); neither
-/// 65 nor 66 is posted. The other eight codes end consumed too.
+/// 65 nor 66 is posted. The market-value news, codes 71 to 73 behind the
+/// trait word's bit [`MARKET_VALUE`]: all three wait for training planned
+/// today ([`planned`], `FUN_005ea8cc`) and are told with values
+/// (`FUN_00601043`, the old figure read by the case's getter), not posted
+/// here. 71 is mobbed by teenage girls after training and teased by the
+/// team-mates over it (0x51e) and 72 meets a catastrophic miss in
+/// training, a team-mate telling him off (0x51f) — three, then five, off
+/// his being with the team (`FUN_00700a6d`, the getter `FUN_00700c42`);
+/// 73 is stalked by an adorer, love letters and waiting in front of his
+/// flat (0x520), five off his distractions (`FUN_00701210`, the getter
+/// `FUN_00701328`). The remaining five codes end consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -5207,6 +5222,31 @@ pub fn player_news(
         66 => {
             change(records, man, TRAINER, 10);
             change(records, man, CLUB, -10);
+        }
+        // The market-value news, 71 to 73 — all three told with values
+        // (not posted here) and all three waiting for training planned
+        // today. 71: mobbed by teenage girls after training, teased by
+        // the team-mates over it (0x51e) — three off his being with the
+        // team (`FUN_00700a6d(-3)`, the getter `FUN_00700c42`).
+        71 => {
+            if planned {
+                change(records, man, TEAM, -3);
+            }
+        }
+        // 72: the catastrophic miss in training (0x51f), a team-mate
+        // telling him off — five off the team part as well.
+        72 => {
+            if planned {
+                change(records, man, TEAM, -5);
+            }
+        }
+        // 73: stalked by an adorer, love letters, waiting in front of
+        // his flat (0x520) — five off his distractions
+        // (`FUN_00701210(-5)`, the getter `FUN_00701328`).
+        73 => {
+            if planned {
+                change(records, man, DISTRACTION, -5);
+            }
         }
         // 100: dead drunk in the club's own disco, thrown out (0x6fd);
         // the tone-two window does not ask, nothing posted.
@@ -6318,6 +6358,122 @@ mod tests {
         assert_eq!(recent, [66 + HAPPENING_MET]);
         assert!(posted.is_empty());
         assert_eq!(r.player(man).unwrap().contentment(), [60, 50, 40, 50, 50, 50, 50]);
+    }
+
+    /// The market-value news, codes 71 to 73: behind the [`MARKET_VALUE`]
+    /// bit all three wait for training planned today — with none planned
+    /// nothing moves; with training planned, the mobbing by teenage
+    /// girls takes three off the man's being with the team, the
+    /// catastrophic miss and the team-mate's telling-off five, the
+    /// adorer's letters five off his distractions, each told with values
+    /// and posted nowhere; without the bit even planned training moves
+    /// nothing, and a raw five floors a near-empty team part at nought.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_market_value_news_mobs_a_popular_man() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_valued = |r: &mut Records, man: u16, on: bool| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                if on {
+                    traits[1] |= MARKET_VALUE;
+                } else {
+                    traits[1] &= !MARKET_VALUE;
+                }
+                p.set_traits(traits);
+            }
+        };
+        let run = |r: &mut Records, s: u64, planned: bool| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, planned, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // Ungated by planned training only in one: with none planned,
+        // all three still met their key and moved nothing.
+        for code in [71u16, 72, 73] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_valued(&mut r, man, true);
+            r.player_mut(man).unwrap().set_contentment([50; 7]);
+            let (posted, recent) = run(&mut r, s, false);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert!(posted.is_empty(), "told with values only");
+            assert_eq!(r.player(man).unwrap().contentment(), [50; 7], "{code} wants training planned");
+        }
+
+        // 71 and 72: with training planned the girls' mobbing takes
+        // three off his being with the team, the missed chance five —
+        // each moves that one part only.
+        for (code, off) in [(71u16, 3), (72, 5)] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_valued(&mut r, man, true);
+            r.player_mut(man).unwrap().set_contentment([50; 7]);
+            let (posted, _) = run(&mut r, s, true);
+            assert!(posted.is_empty());
+            let parts = r.player(man).unwrap().contentment();
+            assert_eq!(i32::from(parts[TEAM]), 50 - off, "{code}");
+            assert_eq!(
+                [parts[0], parts[2], parts[3], parts[4], parts[5], parts[6]],
+                [50; 6],
+                "only the team part moves"
+            );
+        }
+
+        // 73: the adorer's letters take five off his distractions.
+        let s = weighed_to(73);
+        let man = drawn_by(s);
+        mark_valued(&mut r, man, true);
+        r.player_mut(man).unwrap().set_contentment([50; 7]);
+        run(&mut r, s, true);
+        assert_eq!(r.player(man).unwrap().contentment(), [50, 50, 50, 50, 50, 45, 50]);
+
+        // Without the bit, planned training moves nothing.
+        let s = weighed_to(72);
+        let man = drawn_by(s);
+        mark_valued(&mut r, man, false);
+        r.player_mut(man).unwrap().set_contentment([50; 7]);
+        run(&mut r, s, true);
+        assert_eq!(r.player(man).unwrap().contentment(), [50; 7], "no market value, no telling-off");
+
+        // What would sink below 1 stands at nought: the raw five off a
+        // team part of two.
+        let s = weighed_to(72);
+        let man = drawn_by(s);
+        mark_valued(&mut r, man, true);
+        if let Some(p) = r.player_mut(man) {
+            p.set_contentment([50, 2, 50, 50, 50, 50, 50]);
+        }
+        run(&mut r, s, true);
+        assert_eq!(r.player(man).unwrap().contentment()[TEAM], 0, "the team part floors at nought");
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
