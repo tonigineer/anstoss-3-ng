@@ -632,7 +632,9 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// it pairs two of them; the tale it draws instead ends the day's news,
 /// told on the man it draws. 25, happenings among the club's own men
 /// ([`crate::news::in_the_team`]), ends the day's news whichever way it
-/// goes, and tells so far only of two team-mates made best friends.
+/// goes, telling of friendships begun and mended and of men fallen
+/// out — over a form crisis, a revenge foul, a sneer, a mocked age, a
+/// snatched ad contract and one sister.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
@@ -709,7 +711,7 @@ pub fn news(
             22 => crate::news::first_months(records, club, &mut posted, random),
             23 => crate::news::school_days(records, club, &mut posted, random),
             24 => crate::news::far_from_home(records, club, nation_kinds, tables, &mut posted, random),
-            25 => crate::news::in_the_team(records, club, tables, &mut posted, random),
+            25 => crate::news::in_the_team(records, club, today, tables, &mut posted, random),
             _ => true,
         };
         if told {

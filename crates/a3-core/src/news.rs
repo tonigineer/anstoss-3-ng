@@ -37,7 +37,9 @@
 //! friendship in the team steadied, shared, renewed or ended — among
 //! foreigners, men wanting the trainer's respect, men of one
 //! character, the young and two not yet acquainted, friendships
-//! begun.
+//! begun — and of men fallen out: over a form crisis, a revenge
+//! foul, an overheard sneer, a mocked age, a snatched advertising
+//! contract and one sister two of them love.
 
 use std::ops::RangeInclusive;
 
@@ -109,6 +111,10 @@ const MILITARY_KEY: i32 = 0x57e4;
 /// The injury the obstacle course leaves (`FUN_00766b92` with kind 10 and
 /// no days: the kind's days of the table at `DAT_008ac341`, no knock).
 const OBSTACLE_INJURY: (u8, i32) = (10, 35);
+/// The injury the revenge foul leaves in the fouled man (`FUN_00766b92`
+/// with kind 0x44 and no days: the kind's 14 of the table at
+/// `DAT_008ac341`, no knock).
+const REVENGE_INJURY: (u8, i32) = (0x44, 14);
 /// The second trait word's star airs (the handle's +0x12, the record's
 /// +0x1ca), which the work in a care home takes away.
 const STAR_AIRS: u16 = 0x800;
@@ -1981,6 +1987,25 @@ const FRIENDS_BY_WIVES_TEXT: u16 = 0x553;
 /// The byte whose low half must stand 0 in both men for a friendship to
 /// come about (`FUN_00706980`).
 const FRIENDLY_BYTE: usize = 0xb6;
+/// The main position (the handle's byte +3, the record's +0x21d) of the
+/// goal keeper, whom the pair 0x17 does not ask, and of the centre
+/// forward, the three of whom happen 0x15 draws.
+const GOALKEEPER: u8 = 1;
+const CENTRE_FORWARD: u8 = 10;
+/// The weakness word's bit 0x200 (the handle's +0xe, the record's
+/// +0x1c6): a man bad at the ball, whom the pair 0x17 draws over — not
+/// one of the trait word's airs.
+const BAD_AT_BALL: u16 = 0x200;
+
+/// The one not yet linked to the other (`FUN_00703e5c`, reading only the
+/// one's lists): not his best friend (+0x204) nor his hated man
+/// (+0x206), nor standing in his friends (+0x1f8) nor his dislikes
+/// (+0x1fe).
+fn not_yet_linked(records: &Records, one: u16, other: u16) -> bool {
+    records.player(one).is_some_and(|p| {
+        p.best_friend() != other && p.hates() != other && !p.friends().contains(&other) && !p.dislikes().contains(&other)
+    })
+}
 
 /// Two team-mates the team's happenings take up (`FUN_005ecc89` with
 /// `FUN_005ecbfd`): five tries at most of two distinct squad slots
@@ -2007,9 +2032,7 @@ fn unlinked_men(records: &Records, club: (u16, u16), random: &mut Random) -> Opt
         if one == 0 || one > LAST_REAL_ID || other == 0 || other > LAST_REAL_ID {
             continue;
         }
-        if records.player(one).is_some_and(|p| {
-            p.best_friend() != other && p.hates() != other && !p.friends().contains(&other) && !p.dislikes().contains(&other)
-        }) {
+        if not_yet_linked(records, one, other) {
             return Some((one, other));
         }
     }
@@ -2281,6 +2304,29 @@ fn add_friend(records: &mut Records, one: u16, other: u16) {
     }
 }
 
+/// `FUN_007033a5`: a man into the first man's dislikes: he is left
+/// there where he already stands before the first empty place; when all
+/// three places are taken the first dislike is dropped first
+/// ([`drop_dislike`], the first man going off his lists in turn); he
+/// stands in the first empty place.
+fn add_dislike(records: &mut Records, one: u16, other: u16) {
+    let Some(p) = records.player(one) else { return };
+    let dislikes = p.dislikes();
+    if dislikes.iter().take_while(|&&f| f != 0).any(|&f| f == other) {
+        return;
+    }
+    if dislikes.iter().all(|&f| f != 0) {
+        drop_dislike(records, one, dislikes[0]);
+    }
+    if let Some(p) = records.player_mut(one) {
+        let mut dislikes = p.dislikes();
+        if let Some(at) = dislikes.iter().position(|&f| f == 0) {
+            dislikes[at] = other;
+            p.set_dislikes(dislikes);
+        }
+    }
+}
+
 /// `FUN_00703cba`: the two let go of their ties — the second man off
 /// the first's best friend with the chain from the second on
 /// ([`drop_best_friend`]), and the friendship ([`drop_friend`]).
@@ -2302,6 +2348,18 @@ fn mend_to_friends(records: &mut Records, one: u16, other: u16) {
     drop_dislike(records, one, other);
     add_friend(records, one, other);
     add_friend(records, other, one);
+}
+
+/// `FUN_00703df4` on the two, while the other is not the one's hated
+/// man: their ties let go ([`break_ties`]) and each man joins the
+/// other's dislikes ([`add_dislike`]).
+fn fall_out(records: &mut Records, one: u16, other: u16) {
+    if records.player(one).is_some_and(|p| p.hates() == other) {
+        return;
+    }
+    break_ties(records, one, other);
+    add_dislike(records, one, other);
+    add_dislike(records, other, one);
 }
 
 /// `FUN_007053bb` on a man: his two most wanting parts of contentment
@@ -2585,6 +2643,121 @@ fn pair_by_youth(records: &Records, club: (u16, u16), random: &mut Random) -> Op
     Some((men[two[0]], men[two[1]]))
 }
 
+/// The pair happening 0x16 draws (`FUN_005ed0ae`): two squad places
+/// drawn one after the other over the club's squad (`FUN_0078a810`,
+/// which under two places draws nought without drawing); an empty
+/// place (0) or a player-manager fails the drawer, and so do the two
+/// places one and the same.
+fn pair_by_slot_draws(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let one = *squad.get(random.below(squad.len() as u32) as usize).filter(|&&id| id != 0 && id <= LAST_REAL_ID)?;
+    let other = *squad.get(random.below(squad.len() as u32) as usize).filter(|&&id| id != 0 && id <= LAST_REAL_ID)?;
+    (one != other).then_some((one, other))
+}
+
+/// The three happening 0x15 draws (`FUN_005ed8a0`): the squad's real
+/// men of the centre forward as main position (+0x21d, the handle's
+/// +0x3) and no injury standing ([`crate::load::days_to`] on +0x1da
+/// zero), 35 at most; fewer than three of them fail the drawer
+/// without a draw, else three are drawn apart (`FUN_00675698`).
+fn trio_by_striker(records: &Records, club: (u16, u16), random: &mut Random) -> Option<[u16; 3]> {
+    let squad = records.team(club.0, club.1)?.players();
+    let men: Vec<u16> = squad
+        .iter()
+        .filter(|&&id| id != 0 && id <= LAST_REAL_ID)
+        .filter(|&&id| {
+            records.player(id).is_some_and(|p| {
+                p.positions()[0] == CENTRE_FORWARD && crate::load::days_to(&records.globals, p.injured_to()) == 0
+            })
+        })
+        .take(PAIRS_MOST)
+        .copied()
+        .collect();
+    if men.len() < 3 {
+        return None;
+    }
+    let three = crate::cup_draw::choose(3, men.len(), random);
+    Some([men[three[0]], men[three[1]], men[three[2]]])
+}
+
+/// The pair happening 0x17 draws (`FUN_005ed9ff`): the squad's real
+/// men not playing goal keeper (the handle's +0x3, the record's
+/// +0x21d) and bad at the ball (the weakness word's bit 0x200 at
+/// +0x1c6, [`BAD_AT_BALL`] — none of the trait word's airs), 35 at
+/// most; fewer than two of them fail the drawer without a draw. The
+/// list is shuffled (`FUN_00675630`, its draws stand though the order
+/// it builds is never read); the first man stands, the other the
+/// first of the rest of another school (+0x280's two low bits,
+/// `FUN_0070060a`) — none when all share his.
+fn pair_by_badness(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let mut men: Vec<u16> = Vec::new();
+    for &id in squad.iter().filter(|&&id| id != 0 && id <= LAST_REAL_ID) {
+        if records.player(id).is_some_and(|p| p.positions()[0] != GOALKEEPER && p.bad() & BAD_AT_BALL != 0)
+            && men.len() < PAIRS_MOST
+        {
+            men.push(id);
+        }
+    }
+    if men.len() < 2 {
+        return None;
+    }
+    random.shuffle(men.len());
+    let school = |id: u16| records.player(id).map_or(0, |p| p.school() & 3);
+    let one = men[0];
+    men[1..].iter().copied().find(|&other| school(one) != school(other)).map(|other| (one, other))
+}
+
+/// The pair happening 0x18 draws (`FUN_005edb77`): the squad's real
+/// men of under 23 years (0x17) and of over 31 (0x1f), [`PAIRS_MOST`]
+/// of each at most; wanting either list fails the drawer without a
+/// draw, else one is drawn from each (`FUN_0078a810` over the list,
+/// drawing nought on a single one). The young man stands first.
+fn pair_of_young_and_old(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let mut young: Vec<u16> = Vec::new();
+    let mut old: Vec<u16> = Vec::new();
+    for &id in squad.iter().filter(|&&id| id != 0 && id <= LAST_REAL_ID) {
+        let Some(p) = records.player(id) else { continue };
+        let age = crate::free_agents::age(records, &p);
+        if age < 0x17 && young.len() < PAIRS_MOST {
+            young.push(id);
+        } else if age > 0x1f && old.len() < PAIRS_MOST {
+            old.push(id);
+        }
+    }
+    if young.is_empty() || old.is_empty() {
+        return None;
+    }
+    let one = young[random.below(young.len() as u32) as usize];
+    let other = old[random.below(old.len() as u32) as usize];
+    Some((one, other))
+}
+
+/// The pair happening 0x1c draws (`FUN_005ed654`): one squad place
+/// drawn over the club's squad (`FUN_0078a810`, which under two
+/// places draws nought without drawing); an empty place (0) or a
+/// player-manager fails the drawer. The other is one of the squad's
+/// real men of the first's own main position (+0x21d, the handle's
+/// +0x3) and not the first — 35 at most — drawn over that list
+/// (`FUN_0078a810` again, drawing nought on a single one).
+fn pair_by_position(records: &Records, club: (u16, u16), random: &mut Random) -> Option<(u16, u16)> {
+    let squad = records.team(club.0, club.1)?.players();
+    let one = *squad.get(random.below(squad.len() as u32) as usize).filter(|&&id| id != 0 && id <= LAST_REAL_ID)?;
+    let post = records.player(one)?.positions()[0];
+    let mut men: Vec<u16> = Vec::new();
+    for &id in squad.iter().filter(|&&id| id != 0 && id <= LAST_REAL_ID && id != one) {
+        if records.player(id).is_some_and(|p| p.positions()[0] == post) && men.len() < PAIRS_MOST {
+            men.push(id);
+        }
+    }
+    if men.is_empty() {
+        return None;
+    }
+    let at = random.below(men.len() as u32) as usize;
+    Some((one, men[at]))
+}
+
 /// Code 8 (`case 8`, text 0x559): [`pair_by_foreign_nation`]; of the
 /// two, not at odds with the school ([`at_cross_purposes`]), they
 /// become best friends ([`become_best_friends`]) and 0x559 tells of
@@ -2665,6 +2838,173 @@ fn strangers_become_friends(
     true
 }
 
+/// Code 0x14 (`case 0x14`, text 0x564): while the club's mood byte
+/// stands 100 (0x64) or below. [`unlinked_men`], not at odds with the
+/// school ([`at_cross_purposes`]); the two sorted by their form of the
+/// day ([`crate::statistics::form_today`], `FUN_006ff037`, asked of
+/// both) so the worse form stands first, and the news ends when even
+/// the better man's form is five or better — no crisis worth
+/// telling, both men are out of it. The better man shut out (the
+/// shown word's bit 0x20000, [`SHUT_OUT`]) or stood in the worse
+/// man's dislikes turns the falling-out into rivalry ([`rivals`]),
+/// else the two fall out ([`fall_out`]). 0x564 tells of the worse man
+/// (`%1`) chirping about the form crisis of the other (`%2`).
+fn talk_of_a_form_crisis(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if records.team(club.0, club.1).is_none_or(|t| t.mood() > 100) {
+        return true;
+    }
+    let Some((one, other)) = unlinked_men(records, club, random) else { return true };
+    if at_cross_purposes(records, one, other) {
+        return true;
+    }
+    let form = |id: u16| records.player(id).map_or(0, |p| crate::statistics::form_today(p));
+    let (one, other) = if form(other) < form(one) { (other, one) } else { (one, other) };
+    if form(other) >= 5 {
+        return true;
+    }
+    let shut_out = records.player(other).is_some_and(|p| p.shown() & SHUT_OUT != 0)
+        || records.player(one).is_some_and(|p| p.dislikes().contains(&other));
+    if shut_out {
+        rivals(records, one, other);
+    } else {
+        fall_out(records, one, other);
+    }
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x564, fill: Fill::Names(one, other) });
+    true
+}
+
+/// Code 0x15 (`case 0x15`, text 0x565): [`trio_by_striker`] — three
+/// of the club's forwards, drawn apart — and the first of the three
+/// takes five off his contentment's second part ([`TEAM`],
+/// `FUN_00700a6d(-5)`): the forwards sulk together. 0x565 rides on
+/// values the original pushes along with the names
+/// (`FUN_006012df`, `CEreignis1Wert`), which the replica does not
+/// push: the sulking stays untold, the happening stands.
+fn strikers_sulk(records: &mut Records, club: (u16, u16), random: &mut Random) -> bool {
+    let Some(men) = trio_by_striker(records, club, random) else { return true };
+    change(records, men[0], TEAM, -5);
+    true
+}
+
+/// Code 0x16 (`case 0x16`, text 0x566): while the club's mood byte
+/// stands under 100 (0x64) — no revenge while the team is at peace —
+/// [`pair_by_slot_draws`], two squad places drawn one after the
+/// other. The second man is fouled on the old grudge: fourteen days
+/// out with [`REVENGE_INJURY`] (`FUN_00766b92(B, 0x44, -1)`, no
+/// knock), the fouling man and the fouled fall out ([`fall_out`])
+/// and 0x566 tells of them, the fouling man in `%1` and his revenge
+/// in `%2`.
+fn revenge_foul(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    if records.team(club.0, club.1).is_none_or(|t| t.mood() >= 100) {
+        return true;
+    }
+    let Some((one, other)) = pair_by_slot_draws(records, club, random) else { return true };
+    crate::training_day::injure(records, other, REVENGE_INJURY.0, REVENGE_INJURY.1, today);
+    fall_out(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x566, fill: Fill::Names(one, other) });
+    true
+}
+
+/// Code 0x17 (`case 0x17`, text 0x567): [`pair_by_badness`] — a man
+/// bad at the ball and one of another school — and while the pair
+/// stands unlinked ([`not_yet_linked`], `FUN_00703e5c` gate) the two
+/// fall out ([`fall_out`]): a sneer about how the other treats the
+/// ball, overheard. 0x567 tells of them, the drawn man in `%1` and
+/// the sneer's listener in `%2`.
+fn sneer_overheard(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = pair_by_badness(records, club, random) else { return true };
+    if !not_yet_linked(records, one, other) {
+        return true;
+    }
+    fall_out(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x567, fill: Fill::Names(one, other) });
+    true
+}
+
+/// Code 0x18 (`case 0x18`, text 0x568): [`pair_of_young_and_old`] —
+/// one of the club's young men and one of its elders — and while the
+/// pair stands unlinked ([`not_yet_linked`], `FUN_00703e5c` gate) the
+/// young man falls out with the elder ([`fall_out`]) over a jest
+/// about his years. 0x568 tells of the mocked elder in `%1` and the
+/// young man who spoke it in `%2`.
+fn old_timer_mocked(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((young, old)) = pair_of_young_and_old(records, club, random) else { return true };
+    if !not_yet_linked(records, young, old) {
+        return true;
+    }
+    fall_out(records, young, old);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x568, fill: Fill::Names(old, young) });
+    true
+}
+
+/// Code 0x19 (`case 0x19`, text 0x569): [`unlinked_men`] and, not at
+/// odds with the school ([`at_cross_purposes`]), the two fall out
+/// ([`fall_out`]) — one has snatched the other's advertising
+/// contract. 0x569 tells of them, the drawn man in `%1` and the
+/// cheated man in `%2`.
+fn ad_contract_snatched(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = unlinked_men(records, club, random) else { return true };
+    if at_cross_purposes(records, one, other) {
+        return true;
+    }
+    fall_out(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x569, fill: Fill::Names(one, other) });
+    true
+}
+
+/// Code 0x1c (`case 0x1c`, text 0x56c): [`pair_by_position`] — two of
+/// one position — and while the pair stands unlinked
+/// ([`not_yet_linked`], `FUN_00703e5c` gate) and the two of one
+/// school do not end the news first (`FUN_00700750`), they fall out
+/// ([`fall_out`]) loving the same sister. 0x56c tells of them — its
+/// text names five, the happening posts the two names alone and
+/// leaves the rest blank, the number place a question mark, the
+/// original's own quirk.
+fn rivals_for_one_sister(
+    records: &mut Records,
+    club: (u16, u16),
+    posted: &mut Vec<Posted>,
+    random: &mut Random,
+) -> bool {
+    let Some((one, other)) = pair_by_position(records, club, random) else { return true };
+    if !not_yet_linked(records, one, other) {
+        return true;
+    }
+    let school = |id: u16| records.player(id).map_or(0, |p| p.school() & 3);
+    if school(one) != 0 && school(one) == school(other) {
+        return true;
+    }
+    fall_out(records, one, other);
+    posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x56c, fill: Fill::Names(one, other) });
+    true
+}
+
 /// The picked category 25 (`FUN_005ffeb7`, label "EreignisImTeam %d"):
 /// one man drawn over the club's squad (`FUN_0078a810` over the club's
 /// +0xe2, which under two men draws nought without drawing); an empty
@@ -2672,11 +3012,13 @@ fn strangers_become_friends(
 /// door: the happening (`FUN_005fedb0`) draws its code over
 /// [`TEAM_HAPPENINGS`] and ends the news on every one of them; code 0
 /// alone — never drawn, the cap raised to the weights' sum — would let
-/// the day's news go on. The debug print (`FUN_006c6380`) is left out
+/// the day's news go on. The day `today` counts for the injury the
+/// revenge foul leaves. The debug print (`FUN_006c6380`) is left out
 /// as everywhere.
 pub fn in_the_team(
     records: &mut Records,
     club: (u16, u16),
+    today: i32,
     tables: &crate::first_season::Tables,
     posted: &mut Vec<Posted>,
     random: &mut Random,
@@ -2702,10 +3044,17 @@ pub fn in_the_team(
         0xb => friends_by_character(records, club, posted, random),
         0xc => young_men_become_best_friends(records, club, posted, random),
         0xe => strangers_become_friends(records, club, posted, random),
+        0x14 => talk_of_a_form_crisis(records, club, posted, random),
+        0x15 => strikers_sulk(records, club, random),
+        0x16 => revenge_foul(records, club, today, posted, random),
+        0x17 => sneer_overheard(records, club, posted, random),
+        0x18 => old_timer_mocked(records, club, posted, random),
+        0x19 => ad_contract_snatched(records, club, posted, random),
+        0x1c => rivals_for_one_sister(records, club, posted, random),
         // Code 0 cannot be drawn; the others end the news: 9, 0xd, 0xf,
         // 0x1a, 0x1b and 0x1d stand untold in the original itself, the
-        // rest (0x10 to 0x19 and 0x1c) until the parts after this one
-        // build them.
+        // rest (0x10 to 0x13) until the parts after this one build
+        // them.
         0 => false,
         _ => true,
     }
@@ -4089,6 +4438,13 @@ pub fn squad_text(text: u16) -> bool {
         || text == 0x3d7
         || (0x54c..=0x54f).contains(&text)
         || text == NEW_HOBBY_TEXT
+}
+
+/// Whether a text is category 25's: the happenings among the club's own
+/// men, 0x550 to 0x55f and 0x564 to 0x56c, which [`in_the_team`] tells —
+/// they fire on any half-week, youth weeks included.
+pub fn team_happening_text(text: u16) -> bool {
+    (0x550..=0x55f).contains(&text) || (0x564..=0x56c).contains(&text)
 }
 
 /// Which of his children [`child`] draws among (`FUN_007021cb`'s first
@@ -6377,7 +6733,8 @@ mod tests {
         });
         let mut posted = Vec::new();
         let mut random = Random::new(friends);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(
             posted,
             [Posted { club, code: PRIVATE_NEWS, text: 0x552, fill: Fill::NamesAndGame(first, second, tables.hobby_text(5)) }]
@@ -6397,17 +6754,20 @@ mod tests {
         r.player_mut(second).unwrap().set_best_friend(0);
         r.player_mut(first).unwrap().put::<u8>(FRIENDLY_BYTE, 1);
         let mut random = Random::new(friends);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(random == expected && posted.len() == 1);
         r.player_mut(first).unwrap().put::<u8>(FRIENDLY_BYTE, 0);
         r.player_mut(first).unwrap().set_school(1);
         r.player_mut(second).unwrap().set_school(2);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut Random::new(friends)));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut Random::new(friends)));
         assert_eq!(posted.len(), 1);
         r.player_mut(first).unwrap().set_school(0);
         r.player_mut(second).unwrap().set_school(0);
         r.player_mut(second).unwrap().set_hobby(0);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut Random::new(friends)));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut Random::new(friends)));
         assert_eq!(posted.len(), 1);
         r.player_mut(second).unwrap().set_hobby(5);
         assert_eq!(r.player(first).unwrap().best_friend(), 0, "untold ways link nothing");
@@ -6424,7 +6784,8 @@ mod tests {
         r.player_mut(first).unwrap().set_partner(WIFE);
         r.player_mut(second).unwrap().set_partner(WIFE);
         let mut random = Random::new(wives);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[1], Posted { club, code: PRIVATE_NEWS, text: 0x553, fill: Fill::Names(first, second) });
         assert_eq!(r.player(first).unwrap().best_friend(), second);
         let mut expected = Random::new(wives);
@@ -6438,7 +6799,8 @@ mod tests {
         r.player_mut(first).unwrap().set_best_friend(0);
         r.player_mut(second).unwrap().set_best_friend(0);
         let mut random = Random::new(wives);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(random == expected && posted.len() == 2);
         r.player_mut(first).unwrap().set_partner(WIFE);
 
@@ -6450,7 +6812,8 @@ mod tests {
             door && (240..270).contains(&sub)
         });
         let mut random = Random::new(untold);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted.len(), 2);
         let mut expected = Random::new(untold);
         expected.below(count as u32);
@@ -6460,7 +6823,8 @@ mod tests {
         // No first team: the door ends the news without a draw.
         r.team_mut(club.0, club.1).unwrap().set_player_count(0);
         let mut random = Random::new(1);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(random == Random::new(1) && posted.len() == 2);
     }
 
@@ -6527,11 +6891,13 @@ mod tests {
         r.player_mut(second).unwrap().set_morale(50);
         r.player_mut(second).unwrap().set_contentment([10, 90, 90, 90, 90, 90, 90]);
         let mut random = Random::new(three);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.is_empty() && random == two_drawn(three), "morale at 100 is not over it");
         r.player_mut(first).unwrap().set_morale(110);
         let mut random = Random::new(three);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted, [told(0x554, first, second)]);
         assert_eq!(r.player(second).unwrap().contentment(), [55, 95, 90, 90, 90, 90, 90]);
         assert_eq!(r.player(second).unwrap().morale(), 50, "the morale stays standing");
@@ -6547,11 +6913,13 @@ mod tests {
         r.player_mut(second).unwrap().set_contentment([50, 60, 70, 70, 70, 70, 70]);
         r.team_mut(club.0, club.1).unwrap().set_mood(40);
         let mut random = Random::new(four);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 1 && random == two_drawn(four), "a bad club mood ends the news at once");
         r.team_mut(club.0, club.1).unwrap().set_mood(120);
         let mut random = Random::new(four);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[1], told(0x555, first, second));
         assert_eq!(r.player(second).unwrap().contentment(), [75, 80, 70, 70, 70, 70, 70]);
         assert_eq!(r.player(first).unwrap().contentment(), [85, 90, 110, 110, 110, 110, 110]);
@@ -6562,11 +6930,13 @@ mod tests {
         // the other's friends instead.
         let five = pair(120, 150);
         let mut random = Random::new(five);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 2 && random == two_drawn(five), "a good club mood keeps the tie");
         r.team_mut(club.0, club.1).unwrap().set_mood(40);
         let mut random = Random::new(five);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[2], told(0x556, first, second));
         assert_eq!(r.player(first).unwrap().best_friend(), 0);
         assert_eq!(r.player(first).unwrap().friends(), [second, 0, 0]);
@@ -6583,11 +6953,13 @@ mod tests {
         r.player_mut(first).unwrap().set_contentment([80, 70, 70, 70, 70, 70, 70]);
         r.player_mut(second).unwrap().set_contentment([100; 7]);
         let mut random = Random::new(six);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 3 && random == two_drawn(six), "at 80 the trainer part is not under it");
         r.player_mut(first).unwrap().set_contentment([50, 70, 70, 70, 70, 70, 70]);
         let mut random = Random::new(six);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[3], told(0x557, first, second));
         assert_eq!(r.player(first).unwrap().friends(), [0, 0, 0], "the friendship is gone");
         assert!(random == two_drawn(six));
@@ -6597,7 +6969,8 @@ mod tests {
         r.player_mut(first).unwrap().set_friends([second, 0, 0]);
         let seven = pair(180, 210);
         let mut random = Random::new(seven);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[4], told(0x558, first, second));
         assert_eq!(r.player(first).unwrap().friends(), [0, 0, 0]);
         assert!(random == two_drawn(seven));
@@ -6677,7 +7050,8 @@ mod tests {
         };
         let mut posted = Vec::new();
         let mut random = Random::new(eight);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted, [told(0x559, first, second)]);
         assert_eq!(r.player(first).unwrap().best_friend(), second);
         assert_eq!(r.player(second).unwrap().best_friend(), first);
@@ -6693,7 +7067,8 @@ mod tests {
         r.player_mut(first).unwrap().set_school(1);
         r.player_mut(second).unwrap().set_school(2);
         let mut random = Random::new(eight);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 1 && random == full, "the school parts them");
         r.player_mut(first).unwrap().set_school(0);
         r.player_mut(second).unwrap().set_school(0);
@@ -6704,7 +7079,8 @@ mod tests {
         }
         r.player_mut(first).unwrap().set_nation(away);
         let mut random = Random::new(eight);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 1 && random == expected(eight, &|_| {}), "one foreign man draws no nation");
 
         // Happening 0xa (270 till 300): the two men of 89 or worse
@@ -6713,7 +7089,8 @@ mod tests {
         r.player_mut(first).unwrap().set_contentment([80, 100, 100, 100, 100, 100, 100]);
         r.player_mut(second).unwrap().set_contentment([50, 100, 100, 100, 100, 100, 100]);
         let mut random = Random::new(ten);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[1], told(0x55b, first, second));
         assert_eq!(r.player(first).unwrap().friends(), [second, 0, 0]);
         assert_eq!(r.player(second).unwrap().friends(), [first, 0, 0]);
@@ -6728,7 +7105,8 @@ mod tests {
         r.player_mut(first).unwrap().set_friends([0; 3]);
         r.player_mut(second).unwrap().set_friends([0; 3]);
         let mut random = Random::new(ten);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 2 && random == expected(ten, &|_| {}));
         r.player_mut(second).unwrap().set_contentment([50, 100, 100, 100, 100, 100, 100]);
 
@@ -6739,7 +7117,8 @@ mod tests {
         r.player_mut(first).unwrap().set_traits([0, 1]);
         r.player_mut(second).unwrap().set_traits([0, 1]);
         let mut random = Random::new(eleven);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[2], told(0x55c, first, second));
         assert_eq!(r.player(first).unwrap().best_friend(), second);
         assert_eq!(r.player(second).unwrap().best_friend(), first);
@@ -6753,11 +7132,13 @@ mod tests {
         // other shares, each end the talk after the place is drawn.
         r.player_mut(first).unwrap().set_traits([0, 0]);
         let mut random = Random::new(eleven);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 3 && random == full);
         r.player_mut(first).unwrap().set_traits([0, 1]);
         r.player_mut(second).unwrap().set_traits([0, 0]);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut Random::new(eleven)));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut Random::new(eleven)));
         assert_eq!(posted.len(), 3);
         r.player_mut(second).unwrap().set_traits([0, 1]);
 
@@ -6768,7 +7149,8 @@ mod tests {
             r.player_mut(id).unwrap().set_birth_year((year - 20) as u16);
         }
         let mut random = Random::new(twelve);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[3], told(0x55d, first, second));
         assert_eq!(r.player(first).unwrap().best_friend(), second);
         assert_eq!(r.player(second).unwrap().best_friend(), first);
@@ -6781,7 +7163,8 @@ mod tests {
         r.player_mut(first).unwrap().set_best_friend(0);
         r.player_mut(second).unwrap().set_best_friend(0);
         let mut random = Random::new(twelve);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert!(posted.len() == 4 && random == expected(twelve, &|_| {}));
         r.player_mut(second).unwrap().set_birth_year((year - 20) as u16);
 
@@ -6793,7 +7176,8 @@ mod tests {
             one_at == i0 && other_at == i1
         });
         let mut random = Random::new(fourteen);
-        assert!(in_the_team(&mut r, club, &tables, &mut posted, &mut random));
+        let today = r.globals.day() as i32;
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
         assert_eq!(posted[4], told(0x55f, first, second));
         assert_eq!(r.player(first).unwrap().friends(), [second, 0, 0]);
         assert_eq!(r.player(second).unwrap().friends(), [first, 0, 0]);
@@ -6803,5 +7187,277 @@ mod tests {
             e.below(over);
         });
         assert!(random == full);
+    }
+
+    /// The picked category 25 from the save, the fallings-out: the
+    /// two worst in form, the worse chirping about the other's crisis
+    /// or, he shut out, turning rival (0x14); three forwards sulking
+    /// untold (0x15); a revenge foul, fourteen days out (0x16); an
+    /// overheard sneer about the ball (0x17); a jest about years
+    /// (0x18); a snatched advertising contract (0x19); and two of one
+    /// position falling out loving the same sister (0x1c).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_25_crises_fouls_and_a_stolen_ad() {
+        use a3_files::an3::Save;
+        use chrono::Datelike;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let tables =
+            crate::first_season::Tables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let count = usize::from(r.team(club.0, club.1).unwrap().player_count());
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let real: Vec<u16> = squad.iter().copied().filter(|&id| id != 0 && id <= LAST_REAL_ID).collect();
+        let (first, second, third) = (real[0], real[1], real[2]);
+        let i0 = squad.iter().position(|&id| id == first).unwrap() as u32;
+        let i1 = squad.iter().position(|&id| id == second).unwrap() as u32;
+        let over = (squad.len() as u32).max(2);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let opens = |rnd: &mut Random| matches!(squad.get(rnd.below(count as u32) as usize), Some(&id) if id != 0 && id <= LAST_REAL_ID);
+        let pair = |lo: u32, hi: u32, drawn: &dyn Fn(&mut Random) -> bool| {
+            seed(&|rnd| {
+                let door = opens(rnd);
+                let sub = rnd.below(692);
+                door && (lo..hi).contains(&sub) && drawn(rnd)
+            })
+        };
+        let told = |text: u16, one: u16, other: u16| Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Names(one, other) };
+        let expected = |seed: u64, draw: &dyn Fn(&mut Random)| {
+            let mut e = Random::new(seed);
+            e.below(count as u32);
+            e.below(692);
+            draw(&mut e);
+            e
+        };
+        let year = crate::free_agents::today(&r).unwrap().year();
+        let today = r.globals.day() as i32;
+        r.team_mut(club.0, club.1).unwrap().set_mood(100);
+        for &id in &real {
+            let p = r.player_mut(id).unwrap();
+            p.set_best_friend(0);
+            p.set_hates(0);
+            p.set_friends([0; 3]);
+            p.set_dislikes([0; 3]);
+            p.set_school(0);
+            p.set_shown(0);
+            p.set_bad(0);
+            p.set_injured_to([0; 2]);
+            p.set_positions([5, 0, 0]);
+            p.set_condition(500);
+            p.set_freshness([300; 3]);
+            p.set_mood(0);
+            p.set_contentment([100; 7]);
+            p.set_birth_day(1);
+            p.set_birth_month(1);
+            p.set_birth_year((year - 25) as u16);
+        }
+
+        // Happening 0x14 (450 till 480): of two team-mates not yet
+        // linked, the worse form chirps about the form crisis of the
+        // better — while even the better one stands under five and
+        // the club's mood byte stands 100 or below.
+        let crisis = pair(450, 480, &|rnd| {
+            let one_at = rnd.below(over);
+            let other_at = rnd.below(over);
+            one_at == i1 && other_at == i0
+        });
+        // A happy team (mood 101) ends the talk before a thing is
+        // drawn.
+        let mut posted = Vec::new();
+        r.team_mut(club.0, club.1).unwrap().set_mood(101);
+        let mut random = Random::new(crisis);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert!(posted.is_empty() && random == expected(crisis, &|_| {}), "no crisis talk in a happy team");
+        r.team_mut(club.0, club.1).unwrap().set_mood(100);
+        // The pair comes drawn as (second, first); the second at form
+        // ten (mood 20) — no crisis worth telling, after the pair
+        // and the school leave.
+        let pair_drawn = expected(crisis, &|e| {
+            e.below(over);
+            e.below(over);
+        });
+        r.player_mut(second).unwrap().set_mood(20);
+        let mut random = Random::new(crisis);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert!(posted.is_empty() && random == pair_drawn, "the better man is not in crisis");
+        // The second at form four as well: the sort puts the worse
+        // form first, so first mocks and second is mocked — 0x564
+        // names them in that order, the pair falling out.
+        r.player_mut(second).unwrap().set_mood(8);
+        let mut random = Random::new(crisis);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted, [told(0x564, first, second)]);
+        assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
+        assert_eq!(r.player(second).unwrap().dislikes(), [first, 0, 0]);
+        assert!(random == pair_drawn, "the sort itself draws not");
+        // The mocked man shut out: the two turn rivals instead.
+        r.player_mut(first).unwrap().set_dislikes([0; 3]);
+        r.player_mut(second).unwrap().set_dislikes([0; 3]);
+        let shown = r.player(second).unwrap().shown();
+        r.player_mut(second).unwrap().set_shown(shown | SHUT_OUT);
+        let mut random = Random::new(crisis);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[1], told(0x564, first, second));
+        assert_eq!(r.player(first).unwrap().hates(), second);
+        assert_eq!(r.player(second).unwrap().hates(), first);
+        r.player_mut(second).unwrap().set_shown(0);
+        r.player_mut(first).unwrap().set_hates(0);
+        r.player_mut(second).unwrap().set_hates(0);
+        r.player_mut(second).unwrap().set_mood(0);
+
+        // Happening 0x15 (480 till 510): three uninjured centre
+        // forwards, drawn apart; the first takes five off his
+        // contentment's second part. The news rides on values the
+        // original pushes and the replica does not: it stays untold.
+        for id in [first, second, third] {
+            r.player_mut(id).unwrap().set_positions([CENTRE_FORWARD, 0, 0]);
+        }
+        let sulk = pair(480, 510, &|rnd| crate::cup_draw::choose(3, 3, rnd) == [0, 1, 2]);
+        let mut random = Random::new(sulk);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(r.player(first).unwrap().contentment()[1], 95);
+        assert_eq!(posted.len(), 2, "the sulking trio tells nothing");
+        let full = expected(sulk, &|e| {
+            crate::cup_draw::choose(3, 3, e);
+        });
+        assert!(random == full);
+        for id in [first, second, third] {
+            r.player_mut(id).unwrap().set_positions([5, 0, 0]);
+        }
+
+        // Happening 0x16 (510 till 540): two squad places drawn one
+        // after the other, and while the club's mood byte stands
+        // under 100 the second man is fouled on the old grudge —
+        // fourteen days out — the two falling out.
+        let foul = pair(510, 540, &|rnd| {
+            rnd.below(count as u32) == i0 && rnd.below(count as u32) == i1
+        });
+        let full = expected(foul, &|e| {
+            e.below(count as u32);
+            e.below(count as u32);
+        });
+        r.team_mut(club.0, club.1).unwrap().set_mood(100);
+        let mut random = Random::new(foul);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 2 && random == expected(foul, &|_| {}), "at peace no revenge");
+        r.team_mut(club.0, club.1).unwrap().set_mood(99);
+        let mut random = Random::new(foul);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[2], told(0x566, first, second));
+        assert_eq!(r.player(second).unwrap().injury_kind(), REVENGE_INJURY.0);
+        assert_eq!(crate::load::days_to(&r.globals, r.player(second).unwrap().injured_to()), 14);
+        assert_eq!(r.player(second).unwrap().injured_on(), today as u16);
+        assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
+        assert!(random == full);
+        r.player_mut(second).unwrap().set_injured_to([0; 2]);
+        r.player_mut(first).unwrap().set_dislikes([0; 3]);
+        r.player_mut(second).unwrap().set_dislikes([0; 3]);
+
+        // Happening 0x17 (540 till 570): a man bad at the ball and
+        // one of another school; the sneer is overheard and the two
+        // fall out. The drawer shuffles its list — the order is never
+        // read, but the draws it took stand.
+        r.player_mut(first).unwrap().set_bad(BAD_AT_BALL);
+        r.player_mut(second).unwrap().set_bad(BAD_AT_BALL);
+        r.player_mut(first).unwrap().set_school(1);
+        r.player_mut(second).unwrap().set_school(2);
+        let sneer = pair(540, 570, &|rnd| {
+            let mut seen = [false; 2];
+            let mut next = 0;
+            while next < 2 {
+                let at = rnd.below(2) as usize;
+                if !seen[at] {
+                    seen[at] = true;
+                    next += 1;
+                }
+            }
+            true
+        });
+        let mut random = Random::new(sneer);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[3], told(0x567, first, second));
+        assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
+        assert_eq!(r.player(second).unwrap().dislikes(), [first, 0, 0]);
+        let full = expected(sneer, &|e| {
+            e.shuffle(2);
+        });
+        assert!(random == full, "the shuffle's draws stand, its order never read");
+        r.player_mut(first).unwrap().set_bad(0);
+        r.player_mut(second).unwrap().set_bad(0);
+        r.player_mut(first).unwrap().set_school(0);
+        r.player_mut(second).unwrap().set_school(0);
+        r.player_mut(first).unwrap().set_dislikes([0; 3]);
+        r.player_mut(second).unwrap().set_dislikes([0; 3]);
+
+        // Happening 0x18 (570 till 600): one young man of twenty and
+        // one elder of forty, each lone in the drawer's list — it
+        // draws not at all; the young man mocks the elder's years and
+        // 0x568 names the elder first.
+        let jest = pair(570, 600, &|_| true);
+        r.player_mut(first).unwrap().set_birth_year((year - 20) as u16);
+        r.player_mut(second).unwrap().set_birth_year((year - 40) as u16);
+        let mut random = Random::new(jest);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[4], told(0x568, second, first));
+        assert_eq!(r.player(second).unwrap().dislikes(), [first, 0, 0]);
+        assert!(random == expected(jest, &|_| {}), "a lone man each side draws not");
+        r.player_mut(first).unwrap().set_birth_year((year - 25) as u16);
+        r.player_mut(second).unwrap().set_birth_year((year - 25) as u16);
+        r.player_mut(first).unwrap().set_dislikes([0; 3]);
+        r.player_mut(second).unwrap().set_dislikes([0; 3]);
+
+        // Happening 0x19 (600 till 620): two team-mates not yet
+        // linked, not at odds with the school — one has snatched the
+        // other's advertising contract and the two fall out.
+        let theft = pair(600, 620, &|rnd| {
+            let one_at = rnd.below(over);
+            let other_at = rnd.below(over);
+            one_at == i0 && other_at == i1
+        });
+        let pair_drawn = expected(theft, &|e| {
+            e.below(over);
+            e.below(over);
+        });
+        r.player_mut(first).unwrap().set_school(1);
+        r.player_mut(second).unwrap().set_school(2);
+        let mut random = Random::new(theft);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 5 && random == pair_drawn, "the school parts them");
+        r.player_mut(first).unwrap().set_school(0);
+        r.player_mut(second).unwrap().set_school(0);
+        let mut random = Random::new(theft);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[5], told(0x569, first, second));
+        assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
+        assert!(random == pair_drawn);
+        r.player_mut(first).unwrap().set_dislikes([0; 3]);
+        r.player_mut(second).unwrap().set_dislikes([0; 3]);
+
+        // Happening 0x1c (680 till 686): two of one position fall out
+        // loving the same sister — the second one lone, so drawn
+        // without a draw — unless they already follow one school.
+        for id in [first, second] {
+            r.player_mut(id).unwrap().set_positions([CENTRE_FORWARD, 0, 0]);
+        }
+        let sisters = pair(680, 686, &|rnd| rnd.below(count as u32) == i0);
+        let drawn = expected(sisters, &|e| {
+            e.below(count as u32);
+        });
+        r.player_mut(first).unwrap().set_school(1);
+        r.player_mut(second).unwrap().set_school(1);
+        let mut random = Random::new(sisters);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert!(posted.len() == 6 && random == drawn, "one school ends the quarrel untold");
+        r.player_mut(first).unwrap().set_school(0);
+        r.player_mut(second).unwrap().set_school(0);
+        let mut random = Random::new(sisters);
+        assert!(in_the_team(&mut r, club, today, &tables, &mut posted, &mut random));
+        assert_eq!(posted[6], told(0x56c, first, second));
+        assert_eq!(r.player(first).unwrap().dislikes(), [second, 0, 0]);
+        assert_eq!(r.player(second).unwrap().dislikes(), [first, 0, 0]);
+        assert!(random == drawn, "the lone man of one position draws not");
     }
 }

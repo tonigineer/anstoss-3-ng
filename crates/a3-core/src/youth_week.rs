@@ -860,7 +860,8 @@ mod tests {
         assert_eq!(liking(&r), up(liking(&a), 2));
 
         // The day's news: on the club's third half week some seed walks
-        // the youth, on the others none (a player's private life aside).
+        // the youth, on the others none (a player's private life and the
+        // happenings among his own men aside).
         let day = i32::from(a.globals.day());
         let slots = [day.rem_euclid(7) as i16];
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
@@ -879,6 +880,7 @@ mod tests {
                             && !crate::news::partner_text(p.text)
                             && !crate::news::squad_text(p.text)
                             && !crate::news::newcomer_text(p.text)
+                            && !crate::news::team_happening_text(p.text)
                     })
             })
         };
