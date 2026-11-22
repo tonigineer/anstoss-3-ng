@@ -1410,6 +1410,7 @@ impl Cycle {
                                 &self.data.rules.first_season,
                                 &self.data.rules.league,
                                 &self.data.rules.discipline.mood,
+                                &self.data.world.nation_kinds,
                                 &|club| crate::training_day::units_today(&season.clubs, &self.data.world, club, today),
                                 (&mut season.reported, &mut news_controls),
                                 &mut season.random,

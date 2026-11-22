@@ -12,8 +12,10 @@
 //! days of save A it stands at 100 or above, so no roll runs before the
 //! pick; the rest gate `FUN_005ef56c` reads two run-time flags beside
 //! the day counter; the player-manager blocks behind the club's bytes
-//! +0x8a and +0x8b; the handlers of categories 24 and 25; and three of
-//! the hobbies of category 19's hobby news (`FUN_005fd59d`).
+//! +0x8a and +0x8b; the handler of category 25, and what category 24's
+//! tale (`far_from_home`) does to the man it draws and the text it is
+//! told with; and three of the hobbies of category 19's hobby news
+//! (`FUN_005fd59d`).
 //!
 //! Category 1, a player's children ([`children`]), category 2, a
 //! player's military or civil service ([`service`]), and categories 3 to
@@ -30,7 +32,9 @@
 //! hobby's day ([`about_a_player`]), 20, the press on a man
 //! ([`press_on_a_player`]), 21, a man against his trainer
 //! ([`revolt`]), 22, a new man's first months ([`first_months`]), and
-//! 23, a schoolboy's days ([`school_days`]).
+//! 23, a schoolboy's days ([`school_days`]), and 24, the men far from
+//! home ([`far_from_home`]) — its walk, its lists and its drawn man, not
+//! the tale told on him.
 
 use std::ops::RangeInclusive;
 
@@ -1546,6 +1550,297 @@ fn schoolboy(
     };
     posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(id) });
     true
+}
+
+/// The bit of a man's +0x216 marking his club's country as taken care of
+/// language-wise (`FUN_00705c54` asks for it, `FUN_00705d4c` sets it and
+/// clears the language part of +0x27f with it); the table at
+/// `DAT_0089dec8` gives the bit to use per country, 117 of them.
+const FOREIGN_SEEN: [u8; 117] = [
+    1, 10, 9, 10, 4, 1, 0, 4, 5, 9, 4, 11, 4, 0, 0, 0,
+    1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1,
+    1, 4, 1, 8, 1, 8, 0, 1, 2, 4, 1, 1, 1, 1, 1, 0,
+    4, 4, 0, 5, 4, 1, 8, 3, 0, 1, 1, 1, 1, 1, 1, 4,
+    1, 1, 1, 1, 1, 1, 4, 1, 4, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+];
+const FOREIGN_SEEN_AT: usize = 0x216;
+/// The interpreter's sum the club's plan carries (club +0x270, the
+/// Spielerbetreuer of KALKULATION.md): a man not marked yet needs no tale
+/// at all on a roll of a hundred under the sum in ten-thousands, plus one.
+const INTERPRETER: usize = 0x270 + crate::finances::CLUB_TO_TEAM;
+const MONEY_UNIT: i32 = 10_000;
+/// The language part of +0x27f (`FUN_00705cc0` reads it, `FUN_00705ce7`
+/// writes it): nought no help, one a Sprachlehrerin, two an interpreter.
+const LANG_CLEAR: u8 = 0xf3;
+/// His bits at +0x1b4: he has been talked about already (`FUN_00707b34`
+/// asks, `FUN_00707b56` sets) and his family has come to him
+/// (`FUN_0070049f` asks, `FUN_007004c1` sets).
+const TALKED: u32 = 0x40_0000;
+const FAMILY_COMES: u32 = 0x10_0000;
+/// His trait at +0x1ca's 0x8000: the talk of the men far from home counts
+/// a man rooted only with it, from 26 years and 0x5b of morale.
+const ROOTED: u16 = 0x8000;
+const ROOTED_AGE: i32 = 0x1a;
+const YOUNG_AGE: i32 = 0x17;
+const MOTHER_AGE: i32 = 0x19;
+const ROOTED_MORALE: u8 = 0x5b;
+/// The tales of one day, and the men of each list at most.
+const TALES_MOST: usize = 100;
+const MEN_KEEP: usize = 5;
+/// A tale still follows a man this many months at the club, and this few
+/// months new he is worth the short ones; his family moved within three,
+/// and had settled by thirteen.
+const TALED_UNTIL: i32 = 0x18;
+const JUST_ARRIVED: i32 = 4;
+const FAMILY_NEW: i32 = 3;
+const FAMILY_SETTLED: i32 = 0xd;
+/// The lands of the cold (`0x32`) and of the crowd (`0x36`) tales.
+const COLD_LANDS: [u8; 5] = [0x0e, 0x10, 0x39, 0x2f, 0x3b];
+const CROWD_LANDS: [u8; 3] = [0x0e, 0x14, 0x10];
+/// The nations a hookah and a crowd come from, and the kind the
+/// language of the land before them is weighed by.
+const COLD_NATION: u8 = 8;
+const CROWD_NATION: u8 = 0x43;
+const KIND_GROUP: u8 = 3;
+/// The young man's company gives the homesick one ten of team mood; one
+/// time in thirty the day pairs men instead of telling a tale.
+const COMPANY: i32 = 10;
+const PAIRING: u32 = 30;
+
+/// The picked category 24 (`FUN_00600098`, 3451 bytes, the label
+/// "EreignisHeimweh"): the men of the club's squad far from home. Over
+/// its real ids in order, a man whose country bit at +0x216 is not set
+/// yet escapes the whole business on a roll of a hundred under what the
+/// club pays its interpreter; he is marked and his language part of
+/// +0x27f cleared. Else, so many months at the club, the tales his
+/// staying and his nation allow ([`tales_of`]) join the day's list, a
+/// hundred at most, and he himself one of two lists of five
+/// ([`list_men`]).
+///
+/// With a list of men empty, or 29 times in thirty, one of the tales is
+/// drawn and its man marked as talked about; the news ends there, as the
+/// original's switch ends it — only the knock the tale gives him and its
+/// text are not built yet, so it stands untold. Else a homesick man and a
+/// young one are drawn: the young much weaker than he and not shut out
+/// nor among the homesick man's three dislikes, ten on the homesick
+/// man's team mood ([`COMPANY`]), and the news goes on.
+pub fn far_from_home(
+    records: &mut Records,
+    club: (u16, u16),
+    nation_kinds: &[u8],
+    random: &mut Random,
+) -> bool {
+    let Some(team) = records.team(club.0, club.1) else { return false };
+    let land = team.country();
+    let played = i32::try_from(crate::league::matchdays(records, team)).unwrap_or(i32::MAX);
+    let squad = team.players();
+    let helper = team.get::<i32>(INTERPRETER);
+    // The original compares the roll unsigned, a nought of the plan's sum
+    // still one man in a hundred.
+    let paid = (helper / MONEY_UNIT + 1) as u32;
+    let seen = u16::try_from(
+        1u32 << (usize::from(FOREIGN_SEEN.get(usize::from(land)).copied().unwrap_or(0)) & 0x1f),
+    )
+    .unwrap_or(0);
+    let mut tales: Vec<(u16, u16)> = Vec::new();
+    let mut homesick: Vec<u16> = Vec::new();
+    let mut young: Vec<u16> = Vec::new();
+    for &id in squad.iter().filter(|&&id| id <= LAST_REAL_ID) {
+        let (group, prev, months, unseen) = match records.player(id) {
+            Some(p) => (
+                nation_kinds.get(usize::from(p.nation())).copied().unwrap_or(0),
+                previous_land(p),
+                months_at_the_club(records, p),
+                p.get::<u16>(FOREIGN_SEEN_AT) & seen == 0,
+            ),
+            None => continue,
+        };
+        if unseen {
+            if random.below(100) < paid {
+                if let Some(p) = records.player_mut(id) {
+                    p.put::<u16>(FOREIGN_SEEN_AT, p.get::<u16>(FOREIGN_SEEN_AT) | seen);
+                    // `FUN_00705d4c`'s 0xf3 and the `FUN_00705ce7(0)`
+                    // after it: no language to speak of.
+                    p.set_problems(p.problems() & LANG_CLEAR);
+                }
+                continue;
+            }
+            if months <= 0 {
+                continue;
+            }
+            if let Some(p) = records.player(id) {
+                for kind in tales_of(records, p, land, group, prev, months, nation_kinds, random) {
+                    if tales.len() < TALES_MOST {
+                        tales.push((id, kind));
+                    }
+                }
+            }
+        }
+        if let Some(p) = records.player(id) {
+            list_men(records, p, id, played, &mut homesick, &mut young);
+        }
+    }
+    if homesick.is_empty() || young.is_empty() || random.below(PAIRING) != 0 {
+        if tales.is_empty() {
+            return false;
+        }
+        let (man, _kind) = tales[random.below(tales.len() as u32) as usize];
+        if let Some(p) = records.player_mut(man) {
+            p.set_shown(p.shown() | TALKED);
+        }
+        // The kind's knock on his contentment and its text (0x6e0 on) are
+        // the second half of this handler, not built yet.
+        true
+    } else {
+        let (old, lad) = (
+            homesick[random.below(homesick.len() as u32) as usize],
+            young[random.below(young.len() as u32) as usize],
+        );
+        let much_weaker = records.player(lad).is_some_and(|y| {
+            records.player(old).is_some_and(|h| i32::from(y.strength()) + 1 < i32::from(h.strength()))
+        });
+        // `FUN_007034de` runs on the homesick man's record (`ecx`), the
+        // young man's id in his three dislikes at +0x1fe, or the young
+        // man's own shut-out mark.
+        let welcome = records.player(lad).is_some_and(|y| {
+            y.shown() & SHUT_OUT == 0
+                && records
+                    .player(old)
+                    .is_some_and(|h| !h.dislikes().contains(&lad))
+        });
+        if much_weaker && welcome {
+            // The young man takes the homesick one along; the hint of it
+            // (0x6dc) is a window post, which is not pushed as news.
+            change(records, old, TEAM, COMPANY);
+        }
+        false
+    }
+}
+
+/// The country of his career's station before the last (`FUN_007044b1`):
+/// the byte at +0x30 plus 0x14 for the station less two, by the count of
+/// them at +0x212. With fewer than two stations the original reads below
+/// the record; the replica keeps nought.
+fn previous_land(p: &crate::records::Player) -> u8 {
+    let stations = i32::from(p.career_count());
+    if stations < 2 {
+        return 0;
+    }
+    p.get::<u8>(0x30 + usize::try_from(stations - 2).unwrap_or(0) * 0x14)
+}
+
+/// The tales a man far from home allows, in the order the original tries
+/// them: his own nation's kind `group` (`DAT_00ae5678`, the replica's
+/// `nation_kinds`) and that of the land before (`prev`), `land` his
+/// club's, and the language part of his +0x27f drawn from it. The kind
+/// numbers stand as the switch's cases; 0x3a is allowed without the
+/// talked-over mark the others want.
+fn tales_of(
+    records: &Records,
+    p: &crate::records::Player,
+    land: u8,
+    group: u8,
+    prev: u8,
+    months: i32,
+    nation_kinds: &[u8],
+    random: &mut Random,
+) -> Vec<u16> {
+    let nation = p.nation();
+    let talked = p.shown() & TALKED != 0;
+    let lang = p.problems() >> 2 & 3;
+    let settled = |land: u8| nation_kinds.get(usize::from(land)).copied().unwrap_or(0);
+    let mut kinds = Vec::new();
+    if !talked && months < TALED_UNTIL {
+        kinds.push(0);
+    }
+    if state(p) == 0 && lang == 1 {
+        kinds.push(1);
+    }
+    if state(p) == 3 && lang != 0 {
+        kinds.push(2);
+    }
+    if lang == 0 {
+        kinds.push(3);
+    }
+    if lang == 1 {
+        kinds.push(4);
+        kinds.push(5);
+    }
+    if lang == 2 {
+        kinds.push(6);
+    }
+    if !talked
+        && prev != 0
+        && nation != land
+        && crate::free_agents::age(records, p) < MOTHER_AGE
+        && months < TALED_UNTIL
+        && prev != land
+    {
+        kinds.push(7);
+    }
+    if !talked && nation != land && p.shown() & FAMILY_COMES == 0 {
+        if months < FAMILY_NEW {
+            kinds.push(8);
+        } else if months < FAMILY_SETTLED {
+            kinds.push(10);
+        }
+        kinds.push(9);
+    }
+    if !talked && (nation == COLD_NATION || group == KIND_GROUP) && months < TALED_UNTIL
+        && COLD_LANDS.contains(&land)
+    {
+        kinds.push(0x32);
+    }
+    if !talked && prev == 0 && nation == 1 && months < JUST_ARRIVED {
+        kinds.push(0x34 + random.below(2) as u16);
+    }
+    if !talked
+        && (group == KIND_GROUP || group == 4 || nation == CROWD_NATION || nation == COLD_NATION)
+        && CROWD_LANDS.contains(&land)
+    {
+        kinds.push(0x36);
+    }
+    if !talked && months < JUST_ARRIVED && settled(prev) == KIND_GROUP {
+        kinds.push(0x38);
+    }
+    if months < JUST_ARRIVED && settled(prev) == KIND_GROUP {
+        kinds.push(0x3a);
+    }
+    if !talked && months < JUST_ARRIVED && crate::mood::parts(p)[TEAM] < 100 {
+        kinds.push(99);
+    }
+    kinds
+}
+
+/// Which of the two lists a man far from home joins (`LAB_006005f4`): a
+/// man from 26, rooted and of 0x5b morale or better stands among the
+/// homesick, five at most. The others may stand among the young — under
+/// 23, not pleased with the team, short of half the league's matchdays
+/// played, and only in a league of more than ten of them — five at most.
+fn list_men(
+    records: &Records,
+    p: &crate::records::Player,
+    id: u16,
+    played: i32,
+    homesick: &mut Vec<u16>,
+    young: &mut Vec<u16>,
+) {
+    let age = crate::free_agents::age(records, p);
+    if age < ROOTED_AGE || p.traits()[1] & ROOTED == 0 || p.morale() < ROOTED_MORALE {
+        if age < YOUNG_AGE
+            && crate::mood::parts(p)[TEAM] < 100
+            && i32::from(p.league_matches()) < played / 2
+            && played > 10
+            && young.len() < MEN_KEEP
+        {
+            young.push(id);
+        }
+    } else if homesick.len() < MEN_KEEP {
+        homesick.push(id);
+    }
 }
 
 /// The picked category 1 (`case 1` with `FUN_005f8ca8`): each man of
@@ -3873,6 +4168,168 @@ mod tests {
         let mut random = Random::new(abitur);
         assert!(!school_days(&mut r, club, &mut posted, &mut random));
         assert!(random == Random::new(abitur));
+    }
+
+    /// Category 24 on A's human club, whose league is made to play 20
+    /// matchdays: with two million at the club's interpreter staff every
+    /// man not marked yet escapes on his roll of a hundred — his land's
+    /// bit at +0x216 set, the language part of +0x27f cleared — and he
+    /// stands in no list, the news going on. With the staff unpaid only
+    /// the nought of the hundred escapes. A man of 30, rooted and of 0x5b
+    /// morale then stands among the homesick, a man of 20, no league
+    /// matchday and far from pleased with the team among the young; 13
+    /// months at the club, of his club's own country and no word of its
+    /// language, two tales stand on the homesick man, and 29 times in
+    /// thirty one of them is drawn and marks him talked about, the news
+    /// ending untold. The thirtieth time the young man, much weaker, not
+    /// shut out and no dislike of him, takes him along: ten on the
+    /// homesick man's contentment with the team, and the news goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn category_24_marks_the_far_from_home_and_pairs_two() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let land = r.team(club.0, club.1).unwrap().country();
+        let real: Vec<u16> = r
+            .team(club.0, club.1)
+            .unwrap()
+            .players()
+            .into_iter()
+            .filter(|&id| id <= LAST_REAL_ID)
+            .collect();
+        let (old, lad) = (real[0], real[1]);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..2_000_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let [_, month, year] = r.globals.date();
+        let bit = 1u16 << (FOREIGN_SEEN[usize::from(land)] & 0x1f);
+
+        // Paid staff: two million, one man in a hundred's roll for every
+        // ten thousand of it, so every man not marked yet is marked.
+        for &id in &real {
+            let p = r.player_mut(id).unwrap();
+            p.put::<u16>(FOREIGN_SEEN_AT, p.get::<u16>(FOREIGN_SEEN_AT) & !bit);
+        }
+        r.team_mut(club.0, club.1).unwrap().put::<i32>(INTERPRETER, 2_000_000);
+        let mut random = Random::new(1);
+        assert!(!far_from_home(&mut r, club, &[], &mut random));
+        for &id in &real {
+            let p = r.player(id).unwrap();
+            assert_eq!(p.get::<u16>(FOREIGN_SEEN_AT) & bit, bit, "man {id} marked");
+            assert_eq!(p.problems() >> 2 & 3, 0, "man {id} speaks the land's language");
+        }
+        let mut expected = Random::new(1);
+        for _ in 0..real.len() {
+            expected.below(100);
+        }
+        assert!(random == expected);
+
+        // Nothing paid: the club's league has played 20 matchdays (the
+        // block at 0x1a09d48, its word +0x16), and every other man stays
+        // out of both lists, without a morale and without a matchday.
+        r.team_mut(club.0, club.1).unwrap().put::<i32>(INTERPRETER, 0);
+        let team = r.team(club.0, club.1).unwrap();
+        let (country, level) = (team.country(), team.get::<u8>(0x12e));
+        let li = r.countries.first_league(usize::from(country)) + i16::from(level);
+        r.block_mut(&format!("0x1a09d48[{li}]")).unwrap()
+            [crate::opponent::LEAGUE_FIELDS + 0x16..][..2]
+            .copy_from_slice(&20i16.to_le_bytes());
+        for &id in real.iter().filter(|&&id| id != old && id != lad) {
+            let p = r.player_mut(id).unwrap();
+            p.set_league_matches(0xff);
+            p.set_morale(0);
+        }
+        // The homesick man: 30, rooted, of good morale, 13 months at the
+        // club on one station, of his club's own country, no word of its
+        // language and nothing he has been talked about.
+        let p = r.player_mut(old).unwrap();
+        p.put::<u16>(FOREIGN_SEEN_AT, p.get::<u16>(FOREIGN_SEEN_AT) & !bit);
+        p.set_flags(0);
+        p.set_birth_day(1);
+        p.set_birth_month(1);
+        p.set_birth_year(year - 30);
+        p.set_career_count(1);
+        p.put::<u8>(0x20, 1);
+        p.put::<u8>(0x21, month as u8);
+        p.put::<u16>(0x22, year - 1);
+        p.set_nation(land);
+        p.set_problems(p.problems() & LANG_CLEAR);
+        p.set_shown(p.shown() & !(TALKED | SHUT_OUT));
+        let mut traits = p.traits();
+        traits[1] |= ROOTED;
+        p.set_traits(traits);
+        p.set_morale(ROOTED_MORALE);
+        p.set_strength(100);
+        p.set_dislikes([0; 3]);
+        // His other parts please him, so the morale the homesick measure
+        // wants still stands after the young man lifts the team part.
+        p.set_contentment([120, 60, 120, 120, 120, 120, 120]);
+        // The young man: 20, no league matchday, far from pleased with
+        // the team, and marked already — so no tale stands on him.
+        let p = r.player_mut(lad).unwrap();
+        p.set_flags(0);
+        p.set_birth_day(1);
+        p.set_birth_month(1);
+        p.set_birth_year(year - 20);
+        p.put::<u16>(FOREIGN_SEEN_AT, p.get::<u16>(FOREIGN_SEEN_AT) | bit);
+        p.set_league_matches(0);
+        p.set_strength(50);
+        p.set_shown(p.shown() & !(TALKED | SHUT_OUT));
+        let mut parts = p.contentment();
+        parts[TEAM] = 20;
+        p.set_contentment(parts);
+        assert_eq!(months_at_the_club(&r, &r.player(old).unwrap()), 13);
+        assert_eq!(crate::league::matchdays(&r, &r.team(club.0, club.1).unwrap()), 20);
+        assert_eq!(tales_of(&r, r.player(old).unwrap(), land, 0, 0, 13, &[], &mut Random::new(1)), [0, 3]);
+
+        // 29 times in thirty one of the two tales is drawn and marks its
+        // man talked about; the news ends, the tale itself untold.
+        let drawn = seed(&|rnd| rnd.below(100) != 0 && rnd.below(30) != 0);
+        let mut random = Random::new(drawn);
+        assert!(far_from_home(&mut r, club, &[], &mut random));
+        assert_ne!(r.player(old).unwrap().shown() & TALKED, 0);
+        let mut expected = Random::new(drawn);
+        expected.below(100);
+        expected.below(30);
+        expected.below(2);
+        assert!(random == expected);
+
+        // The thirtieth time the two lists are paired: the young man much
+        // weaker, not shut out and no dislike of the homesick one.
+        let pair = seed(&|rnd| rnd.below(100) != 0 && rnd.below(30) == 0);
+        let before = crate::mood::parts(r.player(old).unwrap())[TEAM];
+        let mut random = Random::new(pair);
+        assert!(!far_from_home(&mut r, club, &[], &mut random));
+        assert_eq!(crate::mood::parts(r.player(old).unwrap())[TEAM], before + COMPANY);
+        let mut expected = Random::new(pair);
+        expected.below(100);
+        expected.below(30);
+        assert!(random == expected);
+        // A dislike of him, a man shut out, a young man of his own
+        // strength: nothing comes of the pairing.
+        r.player_mut(old).unwrap().set_dislikes([lad, 0, 0]);
+        assert!(!far_from_home(&mut r, club, &[], &mut Random::new(pair)));
+        r.player_mut(old).unwrap().set_dislikes([0; 3]);
+        let shut = r.player(lad).unwrap().shown() | SHUT_OUT;
+        r.player_mut(lad).unwrap().set_shown(shut);
+        assert!(!far_from_home(&mut r, club, &[], &mut Random::new(pair)));
+        let open = r.player(lad).unwrap().shown() & !SHUT_OUT;
+        r.player_mut(lad).unwrap().set_shown(open);
+        r.player_mut(lad).unwrap().set_strength(100);
+        assert!(!far_from_home(&mut r, club, &[], &mut Random::new(pair)));
+        assert_eq!(crate::mood::parts(r.player(old).unwrap())[TEAM], before + COMPANY);
+
+        // The nought of the hundred escapes after all: marked, in no
+        // list, and the news goes on.
+        let escape = seed(&|rnd| rnd.below(100) == 0);
+        let mut random = Random::new(escape);
+        assert!(!far_from_home(&mut r, club, &[], &mut random));
+        assert_eq!(r.player(old).unwrap().get::<u16>(FOREIGN_SEEN_AT) & bit, bit);
+        let mut expected = Random::new(escape);
+        expected.below(100);
+        assert!(random == expected);
     }
 
     /// Category 1 on A's human squad, one married man its only partner:

@@ -626,16 +626,20 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// and 19 for a man with one always end the news; 20, the press on a man
 /// ([`crate::news::press_on_a_player`]), 21, a man against his trainer
 /// ([`crate::news::revolt`]), 22, a new man's first months
-/// ([`crate::news::first_months`]), and 23, a schoolboy's days
-/// ([`crate::news::school_days`]), go on when they tell nothing. The
-/// others (24 and 25) are not built, so another picked category stands
-/// for the day's whole news here.
+/// ([`crate::news::first_months`]) and 23, a schoolboy's days
+/// ([`crate::news::school_days`]), go on when they tell nothing, and so
+/// does 24, the men far from home ([`crate::news::far_from_home`]), when
+/// it pairs two of them; the tale it draws instead ends the day's news,
+/// untold so far. 25 is not built, so another picked category stands for
+/// the day's whole news there.
 /// `recent` are the events lately met
 /// ([`crate::season::Season::recent_events`]), `tables` those a new
 /// girlfriend's name and birthday are drawn from, `league` the goal
 /// classes a father's club is weighed by, `plan` a club's three
 /// sessions of today ([`units_today`]), `mood` what
-/// the team's mood does to its squad, `reported` the humans' doping
+/// the team's mood does to its squad, `nation_kinds` the nations' kinds
+/// a far-from-home tale is weighed by
+/// ([`crate::world::World::nation_kinds`]), `reported` the humans' doping
 /// reports and `controls` where a reported club's positive control goes
 /// (event 0xcb). The group news of a club below 100 of mood
 /// (`FUN_005e3885`, a roll of 400 then a pick over the run-time table at
@@ -649,6 +653,7 @@ pub fn news(
     tables: &crate::first_season::Tables,
     league: &LeagueTables,
     mood: &MoodTables,
+    nation_kinds: &[u8],
     plan: &dyn Fn((u16, u16)) -> [u8; training::SESSIONS],
     (reported, controls): (&mut Reports, &mut Vec<crate::doping_control::Control>),
     random: &mut Random,
@@ -702,6 +707,7 @@ pub fn news(
             21 => crate::news::revolt(records, club, today, units, league, (recent, &mut posted), random),
             22 => crate::news::first_months(records, club, &mut posted, random),
             23 => crate::news::school_days(records, club, &mut posted, random),
+            24 => crate::news::far_from_home(records, club, nation_kinds, random),
             _ => true,
         };
         if told {
