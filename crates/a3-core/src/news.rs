@@ -4762,6 +4762,19 @@ fn asked_trait(code: u16) -> Option<u16> {
     }
 }
 
+/// The offences the private-life happenings note on the man
+/// (`FUN_00702d95` over [`crate::discipline::note_offence`]), before
+/// his question: fury at the manager for not playing him and the rival
+/// fan's kung fu level 3, a fan slapped and the reporter's glasses and
+/// camera level 2.
+const FURY_OFFENCE: u8 = 3;
+const FAN_OFFENCE: u8 = 2;
+const REPORTER_OFFENCE: u8 = 2;
+const KUNGFU_OFFENCE: u8 = 3;
+/// The hobby of martial arts (`FUN_00702c9e`, the handle's +0x28d),
+/// the kung fu's gate.
+const MARTIAL_ARTS: u8 = 0x15;
+
 /// The squad's player news of the day (`FUN_005e20fd`, run by
 /// `FUN_005ef8cc` when its roll of a thousand falls under the club's
 /// squad count +0xe2): a man of the squad is drawn, one happening of
@@ -4770,9 +4783,34 @@ fn asked_trait(code: u16) -> Option<u16> {
 /// against the events lately met: met lately, the happening is consumed
 /// with nothing told, and a new one goes among them before the switch
 /// reads the man's character bit ([`asked_trait`]) and the case's own
-/// gates. None of the fifty cases is built here yet; every drawn code
-/// ends told with nothing.
-pub fn player_news(records: &Records, club: (u16, u16), recent: &mut Vec<i32>, random: &mut Random) {
+/// gates. Here are the private-life happenings, codes 1 to 6 behind the
+/// trait word's bit 2. Every one of their texts goes through
+/// `FUN_005f29bc`'s question to the manager or is told with values
+/// (`FUN_00601043`) — neither is built here (as elsewhere in this
+/// module), so nothing is posted; only the marks stand. 1: furious at
+/// the manager for not playing him last game (0x4e6), an offence noted.
+/// 2: slaps a fan who insulted him (0x4e7) while his club stands more
+/// than two places short of its season's goal (`FUN_00775f0a`,
+/// [`crate::league::goal_missing`]), past its fifth matchday
+/// ([`crate::league::matchdays`]) and with training planned today
+/// (`FUN_005ea8cc`); the offence noted. 3: saws down the neighbour's
+/// trees after a boundary fight (0x4e8, told with values), five less
+/// content with his distractions. 4 and 5: stomps a reporter's glasses
+/// (0x4e9) or destroys his camera (0x4ea) while the club's mood byte
+/// (+0x9e, the team record's Stimmung) stands under 80 and the club
+/// stands in a camp of its trainer's calendar ([`in_camp`]); the
+/// offence noted. 6: a rival fan meets his kung fu (0x4eb) when his
+/// hobby is martial arts ([`MARTIAL_ARTS`]); the offence noted. The
+/// other forty-four codes end consumed, as before.
+pub fn player_news(
+    records: &mut Records,
+    club: (u16, u16),
+    today: i32,
+    planned: bool,
+    league: &crate::league::LeagueTables,
+    recent: &mut Vec<i32>,
+    random: &mut Random,
+) {
     let Some(man) = drawn_man(records, club, random) else { return };
     let code = weighed_within(&PLAYER_EVENTS, u32::MAX, random);
     if code == 0 || !meet(recent, i32::from(code) + HAPPENING_MET) {
@@ -4781,8 +4819,44 @@ pub fn player_news(records: &Records, club: (u16, u16), recent: &mut Vec<i32>, r
     if asked_trait(code).is_some_and(|bit| records.player(man).is_none_or(|p| p.traits()[1] & bit == 0)) {
         return;
     }
-    // `FUN_005e08f1`'s cases come in their parts; the happening ends
-    // consumed. (`FUN_006c6380`, the frame's five-byte no-op, stands.)
+    // (`FUN_006c6380`, the frame's five-byte no-op, stands.)
+    match code {
+        1 => mark_offence(records, man, FURY_OFFENCE),
+        2 => {
+            let behind = records.team(club.0, club.1).is_some_and(|team| {
+                crate::league::goal_missing(records, league, team) > 2
+                    && crate::league::matchdays(records, team) > 5
+            });
+            if behind && planned {
+                mark_offence(records, man, FAN_OFFENCE);
+            }
+        }
+        3 => change(records, man, DISTRACTION, -5),
+        4 | 5 => {
+            let rough = records
+                .team(club.0, club.1)
+                .is_some_and(|team| team.mood() < 0x50)
+                && in_camp(records, club, today);
+            if rough {
+                mark_offence(records, man, REPORTER_OFFENCE);
+            }
+        }
+        6 => {
+            if records.player(man).is_some_and(|p| p.hobby() == MARTIAL_ARTS) {
+                mark_offence(records, man, KUNGFU_OFFENCE);
+            }
+        }
+        // The rest of `FUN_005e08f1`'s cases come in their parts.
+        _ => {}
+    }
+}
+
+/// Notes an offence of `level` on the drawn man (`FUN_00702d95`, meted
+/// before the manager is asked).
+fn mark_offence(records: &mut Records, id: u16, level: u8) {
+    if let Some(p) = records.player_mut(id) {
+        crate::discipline::note_offence(p, level);
+    }
 }
 
 #[cfg(test)]
@@ -4844,6 +4918,8 @@ mod tests {
         let team = r.team(club.0, club.1).unwrap();
         let squad = team.players().to_vec();
         let count = u32::from(team.player_count());
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let today = i32::from(r.globals.day());
         let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
         let weighed_to = |codes: &[u16]| {
             seed(&|random| {
@@ -4860,12 +4936,12 @@ mod tests {
         expected.below(u32::MAX);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&r, club, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
         assert!(random == expected, "the man drawn and one raw roll, no more");
         assert_eq!(recent, [57 + HAPPENING_MET]);
         // Met again: consumed, the list stands, both rolls still taken.
         let mut random = Random::new(s);
-        player_news(&r, club, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
         assert!(random == expected);
         assert_eq!(recent, [57 + HAPPENING_MET]);
 
@@ -4883,7 +4959,7 @@ mod tests {
             p.set_traits(traits);
         }
         let mut random = Random::new(s);
-        player_news(&r, club, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
         assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
 
         // The silent code: a roll of 473 and up weighs nothing.
@@ -4892,8 +4968,126 @@ mod tests {
             weighed_within(&PLAYER_EVENTS, u32::MAX, random) == 0
         });
         let mut random = Random::new(s);
-        player_news(&r, club, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
         assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
+    }
+
+    /// The private-life happenings on A's human squad: with the trait
+    /// word's bit 2 clear the drawn happening ends consumed; set, fury at
+    /// the manager notes an offence of level three, and the kung fu does
+    /// the same only while his hobby is martial arts — the trees never
+    /// note anything and leave him five less content with his
+    /// distractions. Nothing is posted; the rolls are the man and the
+    /// weigh only.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_private_happenings_leave_their_marks() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+
+        // Code 1 with the bit clear: the key goes among them, the man
+        // keeps his record clean.
+        let s = weighed_to(1);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] &= !0x2;
+            p.set_traits(traits);
+            p.set_offences(0);
+            p.set_offence_counts(0);
+        }
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+        assert_eq!(recent, [1 + HAPPENING_MET]);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
+
+        // The bit set: the fury notes level three, once.
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] |= 0x2;
+            p.set_traits(traits);
+        }
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert_eq!(recent, [1 + HAPPENING_MET]);
+        let p = r.player(man).unwrap();
+        assert_eq!(crate::discipline::offence(p), FURY_OFFENCE);
+        assert_eq!(p.offences(), 0x10 << (FURY_OFFENCE - 1));
+        assert_eq!(p.offence_counts(), 1 << (2 * (FURY_OFFENCE - 1)));
+
+        // Code 3: the trees, five less content with his distractions,
+        // no offence noted.
+        let s = weighed_to(3);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] |= 0x2;
+            p.set_traits(traits);
+            p.set_offences(0);
+            p.set_offence_counts(0);
+        }
+        let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+        assert_eq!(recent, [3 + HAPPENING_MET]);
+        let p = r.player(man).unwrap();
+        assert_eq!(i32::from(p.contentment()[DISTRACTION]), (before - 5).max(0));
+        assert_eq!(crate::discipline::offence(p), 0);
+
+        // Code 6: the kung fu notes level three only while his hobby is
+        // martial arts.
+        let s = weighed_to(6);
+        let man = drawn_by(s);
+        if let Some(p) = r.player_mut(man) {
+            let mut traits = p.traits();
+            traits[1] |= 0x2;
+            p.set_traits(traits);
+            p.set_hobby(MARTIAL_ARTS);
+            p.set_offences(0);
+            p.set_offence_counts(0);
+        }
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert_eq!(recent, [6 + HAPPENING_MET]);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), KUNGFU_OFFENCE);
+        if let Some(p) = r.player_mut(man) {
+            p.set_hobby(0);
+            p.set_offences(0);
+            p.set_offence_counts(0);
+        }
+        let mut recent = Vec::new();
+        let mut random = Random::new(s);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
