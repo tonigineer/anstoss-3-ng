@@ -127,9 +127,11 @@ const STAR_AIRS: u16 = 0x800;
 const PARTING_STATE: u8 = 3;
 
 /// The parts of his contentment the news of his private life moves: his
-/// being with the team (+0x290, `FUN_00700a6d`), his being with the club
-/// (+0x291, `FUN_00700d27`), his private life (+0x293, `FUN_007010d9`)
-/// and his distractions (+0x294, `FUN_00701210`).
+/// contentment with the trainer (+0x28f, `FUN_007007a1`), his being with
+/// the team (+0x290, `FUN_00700a6d`), his being with the club (+0x291,
+/// `FUN_00700d27`), his private life (+0x293, `FUN_007010d9`) and his
+/// distractions (+0x294, `FUN_00701210`).
+const TRAINER: usize = 0;
 const CLUB: usize = 2;
 const PRIVATE: usize = 4;
 const DISTRACTION: usize = 5;
@@ -4745,6 +4747,11 @@ const PLAYER_EVENTS: [(u32, u16); 50] = [
 /// not there yet).
 const HAPPENING_MET: i32 = 24_500;
 
+/// The days the press and popularity news leave the sensitive man
+/// knocked about (`FUN_00766af9`, the handle's +0x2f, kept at the
+/// record's +0x1de — [`crate::training_day::knock_for`]).
+const SENSITIVE_KNOCK: u16 = 7;
+
 /// The second trait word's bit (the handle's +0x12, the record's
 /// +0x1ca) that makes a man his club's Musterprofi, its model
 /// professional — the one whose say at a squad meeting is heard.
@@ -4926,8 +4933,27 @@ const WOMEN_HOBBY: u8 = 0xc;
 /// married (`FUN_006ffb14`, the partner kind at wife) and the two's
 /// state stands at nought (`FUN_00702c12`, [`state`]); [`CAMP_OFFENCE`]
 /// noted. None of these four windows asks outright, so none goes
-/// posted; 55 and 56 ask the bit and do nothing — consumed. The other
-/// sixteen codes end consumed too.
+/// posted; 55 and 56 ask the bit and do nothing — consumed. The press
+/// and popularity news, codes 61 to 66 behind the trait word's bit
+/// [`SENSITIVE`]: 61 has a man take to heart that a certain football
+/// manager rated him only strength 3 (0x518, told by name) exactly while
+/// his own strength (the handle's +0x02, the record's +0x21c) stands
+/// above 3 and he stands unhurt ([`crate::load::days_to`] off +0x1da);
+/// 62 has that manager's game brand him a "Sensibelchen" (0x519) and 63
+/// a local paper print a critical article after weaker games (0x51a) —
+/// neither gated; 64 has the press knock him down after the last game
+/// (0x51b, told by name) while his grade in it ([`crate::records::Player::grade`]'s
+/// low four bits, `FUN_00705e9b`) stands at 9 or over — a grade the
+/// original weighs before the bit. Each of these four leaves him seven
+/// days knocked about (`FUN_00766af9`, [`crate::training_day::knock_for`]).
+/// 65: an autograph session only very few fans came to (0x51c, told with
+/// the old and the new figure) while the club stands off its season's
+/// goal, past its tenth matchday, and his own strength stands under 10 —
+/// three off his distractions. 66: training kibitzers cry him out on the
+/// pitch (0x51d, told with values) — the manager throws the worst
+/// shouter off the grounds himself, ten more content with his trainer
+/// (`FUN_007007a1`) and ten less with the club (`FUN_00700d27`); neither
+/// 65 nor 66 is posted. The other eight codes end consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -5124,6 +5150,64 @@ pub fn player_news(
         }
         // 55 and 56: the bit asked, the case's own body empty.
         55 | 56 => {}
+        // The press and popularity news, 61 to 66 — the four first tell
+        // by name and leave him seven days knocked about (`FUN_00766af9`,
+        // the handle's +0x2f). 61: a certain football manager rated him
+        // only strength 3 (0x518) — told while his own strength (the
+        // handle's +0x02, the record's +0x21c) stands above 3 and he
+        // stands unhurt (`*(short*)(man + 0x2c)`, [`crate::load::days_to`]
+        // off +0x1da).
+        61 => {
+            let able = records.player(man).is_some_and(|p| {
+                p.strength() > 3 && crate::load::days_to(&records.globals, p.injured_to()) == 0
+            });
+            if able {
+                crate::training_day::knock_for(records, man, SENSITIVE_KNOCK, today);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x518, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 62 and 63: that game brands him a "Sensibelchen" (0x519) and a
+        // local paper prints a critical article after weaker games
+        // (0x51a) — no further gate.
+        62 | 63 => {
+            crate::training_day::knock_for(records, man, SENSITIVE_KNOCK, today);
+            let text: u16 = if code == 62 { 0x519 } else { 0x51a };
+            posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) });
+        }
+        // 64: the press knocked him down after the last game (0x51b)
+        // while his grade in it (the record's +0x273's low four bits,
+        // `FUN_00705e9b`) stands at 9 or over — the original weighs the
+        // grade before the bit, where here the bit is asked first.
+        64 => {
+            let flopped = records.player(man).is_some_and(|p| p.grade() & 0xf >= 9);
+            if flopped {
+                crate::training_day::knock_for(records, man, SENSITIVE_KNOCK, today);
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x51b, fill: Fill::NumberedOne(man) });
+            }
+        }
+        // 65: an autograph session only very few fans came to (0x51c,
+        // told with the old and the new figure — not posted here) while
+        // the club stands off its season's goal, past its tenth
+        // matchday, and his own strength stands under 10; three off his
+        // distractions.
+        65 => {
+            let thin = records.team(club.0, club.1).is_some_and(|team| {
+                crate::league::goal_missing(records, league, team) > 0
+                    && crate::league::matchdays(records, team) > 10
+            }) && records.player(man).is_some_and(|p| p.strength() < 10);
+            if thin {
+                change(records, man, DISTRACTION, -3);
+            }
+        }
+        // 66: training kibitzers cry him out on the pitch (0x51d, told
+        // with values, not posted here): the manager throws the worst
+        // shouter off the grounds himself — ten more content with his
+        // trainer (`FUN_007007a1`) and ten less with the club
+        // (`FUN_00700d27`).
+        66 => {
+            change(records, man, TRAINER, 10);
+            change(records, man, CLUB, -10);
+        }
         // 100: dead drunk in the club's own disco, thrown out (0x6fd);
         // the tone-two window does not ask, nothing posted.
         100 => mark_offence(records, man, DISCO_OFFENCE),
@@ -6075,6 +6159,165 @@ mod tests {
             assert_eq!(crate::discipline::offence(p), 0);
             assert_eq!(p.contentment(), [50; 7]);
         }
+    }
+
+    /// The press and popularity news, codes 61 to 66: the football
+    /// manager's rating of strength 3 is told by name exactly while his
+    /// own strength stands above 3 and he stands unhurt; the
+    /// "Sensibelchen" brand and the paper's article ungated; the
+    /// press's knock-down after the last game behind a grade of 9 or
+    /// over — each of the four leaves him seven days knocked about. The
+    /// thin autograph session takes three off his distractions behind
+    /// 42's goal and matchday gates and strength under 10; the training
+    /// kibitzers leave him ten more content with his trainer and ten
+    /// less with the club; the two value-told ones post nothing.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_press_news_takes_a_sensitive_man_to_heart() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let today = i32::from(r.globals.day());
+        let missing = crate::league::goal_missing(&r, &league, &team);
+        let days = crate::league::matchdays(&r, &team);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let mark_sens = |r: &mut Records, man: u16| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                traits[1] |= SENSITIVE;
+                p.set_traits(traits);
+                p.put::<u16>(0x1de, 0);
+            }
+        };
+        let run = |r: &mut Records, s: u64| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, false, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // 61: at his own strength of 3 the complaint tells nothing and
+        // leaves no knock; hurt it stays quiet too; strength 4, fit, the
+        // tale goes by name and he is knocked about to day seven.
+        let s = weighed_to(61);
+        let man = drawn_by(s);
+        mark_sens(&mut r, man);
+        if let Some(p) = r.player_mut(man) {
+            p.set_strength(3);
+            p.set_injured_to([0, 0]);
+        }
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [61 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "strength 3 is his own, no complaint");
+        assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), 0, "no knock without the tale");
+        mark_sens(&mut r, man);
+        let hurt = crate::medical::date_in(&r.globals, 7);
+        if let Some(p) = r.player_mut(man) {
+            p.set_strength(4);
+            p.set_injured_to(hurt);
+        }
+        let (posted, _) = run(&mut r, s);
+        assert!(posted.is_empty(), "the hurt man never read the rating");
+        mark_sens(&mut r, man);
+        r.player_mut(man).unwrap().set_injured_to([0, 0]);
+        let (posted, _) = run(&mut r, s);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x518, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), (today + 7) as u16, "seven days knocked about");
+
+        // 62 and 63: no gate beyond the bit — knocked about and told by
+        // name, the brand of a "Sensibelchen" and the paper's article.
+        for code in [62u16, 63] {
+            let s = weighed_to(code);
+            let man = drawn_by(s);
+            mark_sens(&mut r, man);
+            let (posted, recent) = run(&mut r, s);
+            assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
+            assert_eq!(
+                posted,
+                [Posted { club, code: PRIVATE_NEWS, text: if code == 62 { 0x519 } else { 0x51a }, fill: Fill::NumberedOne(man) }]
+            );
+            assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), (today + 7) as u16, "{code}");
+        }
+
+        // 64: a grade of 8 in the last match is bearable and tells
+        // nothing; at 10 the press's knock-down goes by name with the
+        // knock as well.
+        let s = weighed_to(64);
+        let man = drawn_by(s);
+        mark_sens(&mut r, man);
+        r.player_mut(man).unwrap().set_grade(0x08);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [64 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "grade 8 is no knock-down");
+        mark_sens(&mut r, man);
+        r.player_mut(man).unwrap().set_grade(0x0a);
+        let (posted, _) = run(&mut r, s);
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x51b, fill: Fill::NumberedOne(man) }]);
+        assert_eq!(r.player(man).unwrap().get::<u16>(0x1de), (today + 7) as u16);
+
+        // 65: the autograph session is told with values only — kept A
+        // stands {missing} short of its goal, day {days}; of strength 5
+        // and past A's tenth matchday three off his distractions, of 10
+        // nothing moves.
+        let s = weighed_to(65);
+        let man = drawn_by(s);
+        mark_sens(&mut r, man);
+        if let Some(p) = r.player_mut(man) {
+            p.set_strength(5);
+            p.set_contentment([50; 7]);
+        }
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [65 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "told with the old and the new figure only");
+        let thin = missing > 0 && days > 10;
+        let off: i32 = if thin { -3 } else { 0 };
+        assert_eq!(
+            i32::from(r.player(man).unwrap().contentment()[DISTRACTION]),
+            50 + off,
+            "{missing} short, day {days}"
+        );
+        assert_eq!(r.player(man).unwrap().contentment()[..DISTRACTION], [50; 5], "only one part moves");
+        mark_sens(&mut r, man);
+        if let Some(p) = r.player_mut(man) {
+            p.set_strength(10);
+            p.set_contentment([50; 7]);
+        }
+        run(&mut r, s);
+        assert_eq!(r.player(man).unwrap().contentment(), [50; 7], "strength 10 still signs enough");
+
+        // 66: no gate — ten more content with the trainer who threw the
+        // worst shouter off the grounds, ten less with the club that let
+        // them come; told with values, posted nowhere.
+        let s = weighed_to(66);
+        let man = drawn_by(s);
+        mark_sens(&mut r, man);
+        r.player_mut(man).unwrap().set_contentment([50; 7]);
+        let (posted, recent) = run(&mut r, s);
+        assert_eq!(recent, [66 + HAPPENING_MET]);
+        assert!(posted.is_empty());
+        assert_eq!(r.player(man).unwrap().contentment(), [60, 50, 40, 50, 50, 50, 50]);
     }
 
     /// The pick takes one draw and walks the table: the roll of save A
