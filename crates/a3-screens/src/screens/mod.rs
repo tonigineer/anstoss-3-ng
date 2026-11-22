@@ -307,7 +307,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(season_terms::SeasonTerms::default()),
         Box::new(season_start::SeasonStart::default()),
         Box::new(cup_results::CupResults::default()),
-        Box::new(event_text::EventText),
+        Box::<event_text::EventText>::default(),
         Box::new(render::Render::default()),
         Box::new(prematch::Prematch),
         Box::new(halftime::Halftime),

@@ -2125,8 +2125,10 @@ fn player_event(
 /// it took place. Its text goes to `posted` where the original builds it
 /// of its texts and names alone ([`crate::event_text`]; `FUN_005f1e86`,
 /// `FUN_005ee5c0`, `FUN_005ee619`, none of them drawing); those with
-/// values (`FUN_00601043`) or a second part (`FUN_005f2114`) are not
-/// posted. Here are:
+/// values (`FUN_00601043`) are not posted — the four with a second part
+/// (`FUN_005f2114`, [`Fill::Headbutt`], [`Fill::Bomb`] and
+/// [`Fill::NamedThen`]) post the first half with the second in tow.
+/// Here are:
 /// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 8, with a
 /// human manager standing below ten (`FUN_006a61e5`) and his record's
 /// `unrest_count` (+0x180, the manager object's +0x94) at four or more:
@@ -2149,12 +2151,16 @@ fn player_event(
 /// row allows it ([`UNIT_GATES`], `FUN_00748f29`), 24, two men who keep
 /// no goal drawn and a roll of four — both +0x2f at 1, or the first
 /// injured (kind 0x1c for five days, kind 0x32 for seven;
-/// `FUN_00766b92`); 28, a keeper and a man drawn, and on a three-roll's
-/// 2 the keeper's +0x2f at 5; 30, with a human trainer half the time a
+/// `FUN_00766b92`), told in 0x22's two surnames with the roll's second
+/// text behind it (0x26 names the second man while the first goes out);
+/// 28, a keeper and a man drawn, and on a three-roll's 2 the keeper's
+/// +0x2f at 5, the bomb of 0x2a with the keeper's save of 0x2c behind
+/// it; 30, with a human trainer half the time a
 /// man drawn, without one always, and the mood five up; 36, two men
 /// drawn and the second's +0x2f at 1 unless he is out; 39 and 40, up to
 /// three draws of a man over thirty (`FUN_005eb3b5`) for one with the
-/// first ability bit 2 or 4, which he loses; 34, a man under 23 drawn
+/// first ability bit 2 or 4, which he loses, told of in 0x3a and 0x3c
+/// with 0x3b and 0x3d behind; 34, a man under 23 drawn
 /// (`FUN_005eb2c0`) and one over 30, men standing away from the club
 /// for none in either draw, the young one taking the reason 0x800 and
 /// the two falling out (`FUN_00703df4`): a standing friendship undone,
@@ -2403,15 +2409,25 @@ fn run_player_event(
             if one == other {
                 return false;
             }
-            match random.below(4) {
-                0 => {}
+            let (part, named) = match random.below(4) {
+                0 => (0x23, 0),
                 1 => {
                     knock(records, one, 1);
                     knock(records, other, 1);
+                    (0x24, 0)
                 }
-                2 => injure(records, one, 0x1c, 5, today),
-                _ => injure(records, one, 0x32, 7, today),
-            }
+                2 => {
+                    injure(records, one, 0x1c, 5, today);
+                    (0x25, one)
+                }
+                // The original names the second man's concussion and
+                // still sends the first out for seven days.
+                _ => {
+                    injure(records, one, 0x32, 7, today);
+                    (0x26, other)
+                }
+            };
+            post(0x22, Fill::Headbutt(one, other, part, named));
             true
         }
         26 => {
@@ -2473,9 +2489,14 @@ fn run_player_event(
             if keeper == other {
                 return false;
             }
-            if 2 <= random.below(3) {
+            let tail = if random.below(3) < 2 {
+                0x2d
+            } else {
                 knock(records, keeper, 5);
-            }
+                0x2e
+            };
+            // 0x2a names the shooter, the keeper comes behind in 0x2c.
+            post(0x2a, Fill::Bomb(keeper, other, tail));
             true
         }
         29 if gate => {
@@ -2626,6 +2647,10 @@ fn run_player_event(
             if let Some(p) = records.player_mut(id) {
                 p.set_good(p.good() & !bit);
             }
+            post(
+                if code == 39 { 0x3a } else { 0x3c },
+                Fill::NamedThen(id, if code == 39 { 0x3b } else { 0x3d }),
+            );
             true
         }
         41 => {
@@ -3594,6 +3619,78 @@ mod tests {
             assert_eq!(records.player(*id).map_or(0, |p| p.condition()), want, "man {id}");
         }
         assert_eq!(records.player(hurt).unwrap().condition(), held_hurt, "the injured man stands out of the rolls");
+    }
+
+    /// The two-part events (`FUN_005f2114`) post their first half with
+    /// the second in tow: code 24's head-duel of 0x22 names both drawn
+    /// men and sends one of 0x23 to 0x26 behind — 0x26 naming the second
+    /// man while the first goes out —, code 28's bomb of 0x2a names the
+    /// shooter with the keeper's save of 0x2c and 0x2d or 0x2e behind,
+    /// and 39 and 40 tell of an over-thirty man in 0x3a and 0x3c with
+    /// 0x3b and 0x3d behind.
+    #[test]
+    #[ignore = "reads the oracle's kept saves beside $ANSTOSS3_DIR"]
+    fn the_two_part_events_post_their_second_half() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = a3_files::an3::Save::read(&dir.parent().unwrap().join("saves-kept/A.an3")).unwrap();
+        let mut records = Records::from_save(save).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let club = (u16::from(country), number as u16);
+        let squad = records.team(club.0, club.1).unwrap().players();
+        let trainable: Vec<u16> =
+            squad.iter().copied().filter(|&id| records.player(id).is_some_and(|p| days_out(&records, p) < 7)).collect();
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let (tables, league_tables) = (MoodTables::load(&exe).unwrap(), LeagueTables::load(&exe).unwrap());
+        let date = NaiveDate::from_ymd_opt(2025, 9, 9).unwrap();
+        let mut posted = Vec::new();
+        // A seed that lands the event (unit 0, whose row opens it) —
+        // a lost draw or two men equal leave the records untouched.
+        let mut seed = 6424_i64;
+        let event = |records: &mut Records, code: u32, seed: i64, posted: &mut Vec<Posted>| {
+            let mut random = Random::from_state(seed, seed ^ 0x5ad9);
+            posted.clear();
+            run_player_event(records, club, &trainable, (&tables, &league_tables), code, 0, [0, 0, 0], (64, date), posted, &mut random)
+        };
+        loop {
+            if event(&mut records, 24, seed, &mut posted) {
+                break;
+            }
+            seed += 1;
+            assert!(seed < 6500, "code 24 never came off");
+        }
+        let [post] = posted.as_slice() else { panic!("{posted:?}") };
+        assert_eq!((post.club, post.code, post.text), (club, PLAYER_EVENT, 0x22));
+        let Fill::Headbutt(one, other, part, named) = post.fill else { panic!("{:?}", post.fill) };
+        assert_ne!(one, other);
+        assert!([0x23, 0x24, 0x25, 0x26].contains(&part));
+        assert_eq!(named, if part == 0x25 { one } else if part == 0x26 { other } else { 0 });
+        assert!(event(&mut records, 28, seed, &mut posted), "seed {seed} draws the bomb");
+        let [post] = posted.as_slice() else { panic!("{posted:?}") };
+        assert_eq!((post.club, post.code, post.text), (club, PLAYER_EVENT, 0x2a));
+        let Fill::Bomb(keeper, shooter, tail) = post.fill else { panic!("{:?}", post.fill) };
+        assert_ne!(keeper, shooter);
+        assert!([0x2d, 0x2e].contains(&tail));
+        // Codes 39 and 40: over-thirty men, all of them with the bits.
+        let elders: Vec<u16> = trainable
+            .iter()
+            .copied()
+            .filter(|&id| records.player(id).is_some_and(|p| p.get::<u8>(0x21d) != 1 && 30 < statistics::age_on(p, date)))
+            .collect();
+        assert!(!elders.is_empty(), "A trains over-thirty men");
+        for &id in &elders {
+            if let Some(p) = records.player_mut(id) {
+                p.set_good(p.good() | 6);
+            }
+        }
+        for (code, first, second, bit) in [(39u32, 0x3a_u16, 0x3b_u16, 2u16), (40, 0x3c, 0x3d, 4)] {
+            assert!(event(&mut records, code, seed, &mut posted), "seed {seed} finds a man");
+            let [post] = posted.as_slice() else { panic!("{posted:?}") };
+            assert_eq!((post.club, post.code, post.text), (club, PLAYER_EVENT, first));
+            let Fill::NamedThen(who, tail) = post.fill else { panic!("{:?}", post.fill) };
+            assert!(elders.contains(&who));
+            assert_eq!(tail, second);
+            assert_eq!(records.player(who).unwrap().good() & bit, 0, "bit {bit} of man {who}");
+        }
     }
 
     /// Event 102's code 20: the offside trap — the club's byte +0xa0,

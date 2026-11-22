@@ -7,6 +7,12 @@
 //! its "i" (control 1453, the frames listed at `0x89f2f4`, every 200 ms).
 //! OK closes (`OnClicked_IDOK`). What posts the events is
 //! [`a3_core::event_text`].
+//!
+//! A two-part event stands its second part (`DAT_00a2f8f4`) behind a
+//! pause: the window's thread (`FUN_00498139`) waits the 2000 ms of
+//! `DAT_00a2f6ea` and then puts "%s\n%s" of both halves into the text
+//! (`OnUserC000_004981e9`) — OK before that closes the window and loses
+//! the second half (the thread's flag `+0xd18`).
 
 use std::collections::HashMap;
 
@@ -24,6 +30,9 @@ const TEXT: u16 = 1451;
 const BALL: u16 = 1453;
 /// The ball's frames (`0x89f2f4`, up to its 0).
 const BALL_FRAMES: std::ops::RangeInclusive<u16> = 1762..=1773;
+/// The pause before the second part, in seconds (`FUN_005f2114` writes
+/// 2000 into `DAT_00a2f6ea`; `FUN_00498139` waits it out).
+const PAUSE: f32 = 2.0;
 
 /// The windows keep their title to themselves; the caption bar takes it.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
@@ -35,7 +44,11 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
 }
 
 #[derive(Default)]
-pub struct EventText;
+pub struct EventText {
+    /// Both halves of a two-part event while the pause runs out.
+    pending: Option<(String, String)>,
+    waited: f32,
+}
 
 impl Screen for EventText {
     fn ids(&self) -> &[u16] {
@@ -67,6 +80,8 @@ impl Screen for EventText {
             let club = cx.game.club_name(Some(records), event.club.0, event.club.1 as i16);
             who = if who.is_empty() { club } else { format!("{who} ({club})") };
         }
+        self.pending = event.second.take().map(|second| (event.text.clone(), second));
+        self.waited = 0.0;
         set(view, dialog, CAPTION_ID, format!("{} {who}", dialog.title));
         set(view, dialog, TEXT, event.text);
         if let Some(ball) = control(dialog, BALL).and_then(|b| view.anim_mut(b)) {
@@ -84,5 +99,20 @@ impl Screen for EventText {
             Target::Button(c) if control(cx.dialog, OK) == Some(c) => Outcome::Close(Reply::Ok),
             _ => Outcome::Stay,
         }
+    }
+
+    fn tick(&mut self, cx: &mut Cx, view: &mut View, seconds: f32) -> Outcome {
+        if self.pending.is_none() {
+            return Outcome::Stay;
+        }
+        self.waited += seconds;
+        if self.waited < PAUSE {
+            return Outcome::Stay;
+        }
+        // `OnUserC000_004981e9`'s "%s\n%s" of both halves.
+        if let Some((first, second)) = self.pending.take() {
+            set(view, cx.dialog, TEXT, format!("{first}\n{second}"));
+        }
+        Outcome::Stay
     }
 }

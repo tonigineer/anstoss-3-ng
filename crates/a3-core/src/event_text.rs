@@ -7,14 +7,23 @@
 //! its byte +0x8a, `FUN_005ef826`) and the text (`DAT_00a2f700`). The
 //! window is "Ereignis" up to 200 characters (dialog 51, `CEreignistext`),
 //! the larger one beyond (dialog 435, `CEreignisTextMittel` up to 400,
-//! `CEreignisTextGross` after). The post waits until the window is closed,
-//! so the events come up in the middle of the day, as they happen.
+//! `CEreignisTextGross` after) — and it is the first part alone that
+//! sizes it, `FUN_005f2234` reading `strlen` of `DAT_00a2f700`. The post
+//! waits until the window is closed, so the events come up in the middle
+//! of the day, as they happen.
+//!
+//! The two-part events (`FUN_005f2114`, player events 24, 28, 39 and 40)
+//! stand the second text in a second buffer (`DAT_00a2f8f4`) and put 2000
+//! into the pause word `DAT_00a2f6ea`, which `FUN_005ef45d` clears again
+//! with every reset. The window's thread (`FUN_00498139`) waits out the
+//! pause and, unless OK closed the window before it (`+0xd18`), puts
+//! "%s\n%s" of both buffers into the text (`OnUserC000_004981e9`).
 //!
 //! Posted here: the training day's events ([`crate::training_day`]) whose
 //! texts the original builds of its texts alone or with the names of the
-//! men concerned. Not here: the two-part events whose second part comes
-//! after a pause (`FUN_005f2114`, player events 24, 28, 39 and 40), the
-//! events with values beside the text (`FUN_005f1f42`, window
+//! men concerned, the two-part ones with their second part in tow
+//! ([`Fill::Headbutt`], [`Fill::Bomb`], [`Fill::NamedThen`]). Not here:
+//! the events with values beside the text (`FUN_005f1f42`, window
 //! `CEreignis1Wert`: player events 10 to 14 and 16), the training's
 //! ability and trait events (105 to 107) and the events of the day's news
 //! and the rest of the game.
@@ -108,6 +117,22 @@ pub enum Fill {
     /// its id, 0 none (`sprintf` with `FUN_006feb4d` and `FUN_007335e0`,
     /// as `FUN_005fd4ae` tells a man's new hobby).
     NamedGame(u16, u16),
+    /// The two-part head-duel (`FUN_005f2114`, player event 24): the
+    /// text's `%s` `%s` two men's surnames (`FUN_006fea7c`), the second
+    /// part `part`'s text (0x23 to 0x26), its `%s` one man's surname
+    /// when `named` is not 0. The last roll names the second man while
+    /// the first goes out, as the original does.
+    Headbutt(u16, u16, u16, u16),
+    /// The two-part bomb of the training (`FUN_005f2114`, player event
+    /// 28): `%s` the shooter's full name (`FUN_006feb4d`) with `"\n"`
+    /// (`DAT_008900d2`) and the text 0x2b behind it; the second part
+    /// 0x2c's `%s` the keeper's full name with `"\n"` and the text
+    /// `tail` (0x2d or 0x2e) behind.
+    Bomb(u16, u16, u16),
+    /// Two-part (`FUN_005f2114`, player events 39 and 40): `%s` a man's
+    /// full name (`FUN_006feb4d`), the second part the text `second`
+    /// (0x3b or 0x3d) as it stands.
+    NamedThen(u16, u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,10 +168,15 @@ pub struct Event {
     /// The club's human manager, counted from 1; 0 for none.
     pub manager: u16,
     pub text: String,
+    /// The second part of a two-part event (`DAT_00a2f8f4`), which the
+    /// window joins behind the text after the pause; `None` for the
+    /// one-part events.
+    pub second: Option<String>,
 }
 
 impl Event {
-    /// The window the text fits (`FUN_005f2234`).
+    /// The window the text fits (`FUN_005f2234`); the first part alone
+    /// sizes it, the second may run the window over.
     pub fn dialog(&self) -> u16 {
         if self.text.chars().count() <= SMALL_MOST {
             EVENT_TEXT
@@ -173,8 +203,10 @@ pub fn make(
     first_names: &[String],
     posted: &Posted,
 ) -> Event {
-    let text = |id: u16| texts.get(usize::from(id)).unwrap_or_default();
+    let saq = |id: u16| texts.get(usize::from(id)).unwrap_or_default();
     let name = |id: u16| records.known_as(id).unwrap_or_default();
+    // His last name (`FUN_006fea7c`, the names at +0x1c0).
+    let last = |id: u16| records.player(id).map(|p| records.name(p.last_name())).unwrap_or_default();
     // `FUN_0067503a(nation, number)` over the table `DAT_00b9f048`.
     let first_name = |id: u16, at: usize| {
         records
@@ -185,7 +217,7 @@ pub fn make(
     };
     // The partner's (+0x283), the affair's (+0x284), the ex's (+0x285).
     let partner = |id: u16| first_name(id, 0x283);
-    let body = text(posted.text);
+    let body = saq(posted.text);
     let text = match posted.fill {
         Fill::GameNamed(id) => game(posted.text).replacen("%s", &name(id), 1),
         Fill::Plain | Fill::Club => body.to_owned(),
@@ -213,25 +245,38 @@ pub fn make(
         Fill::Names(one, other) => numbered(body, &[name(one), name(other), String::new(), String::new()]),
         Fill::PartnerAndEx(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x285), String::new()]),
         Fill::AffairAndWife(id) => numbered(body, &[name(id), first_name(id, 0x284), partner(id), String::new()]),
-        Fill::WifeByName(id) => {
-            // His last name (`FUN_006fea7c`, the names at +0x1c0).
-            let last = records.player(id).map(|p| records.name(p.last_name())).unwrap_or_default();
-            numbered(body, &[name(id), format!("{} {last}", partner(id)), partner(id), String::new()])
-        }
+        Fill::WifeByName(id) => numbered(body, &[name(id), format!("{} {}", partner(id), last(id)), partner(id), String::new()]),
         Fill::Affair(id) => numbered(body, &[name(id), first_name(id, 0x284)]),
         Fill::PartnerAndAffair(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x284), String::new()]),
         Fill::Child(id, k) => numbered(body, &[name(id), first_name(id, 0x288 + usize::from(k))]),
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),
-                Lead::Text(id) => text(id).to_owned(),
+                Lead::Text(id) => saq(id).to_owned(),
             };
             format!("{lead} {body}")
         }
+        Fill::Headbutt(one, other, ..) => body.replacen("%s", &last(one), 1).replacen("%s", &last(other), 1),
+        // The first half names the shooter, the keeper comes in the
+        // second (`FUN_0060d1bf` case 0x18).
+        Fill::Bomb(_, shooter, _) => format!("{}\n{}", body.replacen("%s", &name(shooter), 1), saq(0x2b)),
+        Fill::NamedThen(id, _) => body.replacen("%s", &name(id), 1),
+    };
+    // The second part of the two-part events (`DAT_00a2f8f4`).
+    let second = match posted.fill {
+        Fill::Headbutt(_, _, part, named) => {
+            let words = saq(part);
+            Some(if named == 0 { words.to_owned() } else { words.replacen("%s", &last(named), 1) })
+        }
+        Fill::Bomb(keeper, _, tail) => {
+            Some(format!("{}\n{}", saq(0x2c).replacen("%s", &name(keeper), 1), saq(tail)))
+        }
+        Fill::NamedThen(_, part) => Some(saq(part).to_owned()),
+        _ => None,
     };
     let (country, number) = posted.club;
     let manager = records.team(country, number).map_or(0, |t| u16::from(t.human()));
-    Event { code: posted.code, club: (country as u8, number), manager, text }
+    Event { code: posted.code, club: (country as u8, number), manager, text, second }
 }
 
 /// `%1` … `%99` replaced by `args` (`FUN_005eee7f`): one or two digits,
@@ -283,7 +328,8 @@ mod tests {
 
     #[test]
     fn a_text_past_two_hundred_takes_the_large_window() {
-        let event = |n: usize| Event { code: 99, club: (1, 1), manager: 1, text: "x".repeat(n) };
+        let event =
+            |n: usize| Event { code: 99, club: (1, 1), manager: 1, text: "x".repeat(n), second: None };
         assert_eq!(event(200).dialog(), EVENT_TEXT);
         assert_eq!(event(201).dialog(), EVENT_TEXT_LARGE);
     }
