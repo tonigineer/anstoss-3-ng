@@ -247,14 +247,23 @@ pub fn operate(records: &mut Records, squad: &[(u16, i32)]) -> Vec<(u16, i32)> {
 /// Puts a player out for `days` from today: the year and day of the year he
 /// is fit again.
 pub(crate) fn injure_for(records: &mut Records, id: u16, days: i32) {
-    let [_, _, year] = records.globals.date();
-    let year_days = i32::from(records.globals.year_days());
-    let end = i32::from(records.globals.day_of_year()) + days;
-    let to =
-        if end < year_days { [year, end as u16] } else { [year + 1, (end - year_days) as u16] };
+    let to = date_in(&records.globals, days);
     if let Some(r) = records.players.get_mut(usize::from(id)) {
         r.set_injured_to(to);
     }
+}
+
+/// The year and day of the year `days` from today, the years after this
+/// one counted at 365 days as [`crate::load::days_to`] reads them back.
+pub(crate) fn date_in(globals: &crate::records::Globals, days: i32) -> [u16; 2] {
+    let [_, _, year] = globals.date();
+    let year_days = i32::from(globals.year_days());
+    let end = i32::from(globals.day_of_year()) + days;
+    if end < year_days {
+        return [year, end as u16];
+    }
+    let rest = end - year_days;
+    [year + 1 + (rest / 365) as u16, (rest % 365) as u16]
 }
 
 #[cfg(test)]

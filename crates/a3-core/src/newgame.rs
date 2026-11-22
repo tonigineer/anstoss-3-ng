@@ -1,12 +1,19 @@
 //! A new game as its screens take it in — the countries, the career, the
-//! players with their clubs, abilities and birthdays — and the calculation
-//! of the first season from it; the player of a network game.
+//! players with their clubs, abilities and birthdays — and the records it
+//! is calculated into; the player of a network game.
+
+use std::io;
 
 use tracing::info;
 
 use crate::data::Data;
+use crate::land_clubs::{Counters, NATIONS, managers_as_players, read_countries, read_head};
+use crate::land_managers::create;
+use crate::land_pool::read_pool;
+use crate::land_start::{Settings, apply};
 use crate::random::Random;
-use crate::season::{NewManager, Season};
+use crate::records::{MANAGERS, Records};
+use crate::settlement::open_season_with;
 use crate::world::{SLOTS, World};
 
 /// The fixed game lengths in years, by slider position.
@@ -29,8 +36,6 @@ const POINTS_PER_LEVEL: i32 = 7;
 pub const DEFAULT_BIRTHDAY: [i32; 3] = [1, 1, 1970];
 /// The default position as player-manager: striker.
 pub const DEFAULT_POSITION: usize = 9;
-/// The first ability is negotiating skill.
-const NEGOTIATING: usize = 0;
 
 /// How the start menu set out to begin a game.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -199,23 +204,70 @@ impl Player {
     }
 }
 
-/// The calculation of the first season from a finished setup.
-pub fn calculate(data: &Data, setup: &Setup, seed: u64) -> Season {
-    let managers = setup
-        .trainers
-        .iter()
-        .map(|t| NewManager {
-            first_name: t.first_name.clone(),
-            last_name: t.last_name.clone(),
-            club: t.club,
-            national_team: t.national_team,
-            level: t.level,
-            difficulty: t.difficulty,
-            negotiating: t.abilities[NEGOTIATING],
-        })
-        .collect();
-    let countries = setup.countries().collect();
-    Season::first(&data.world, &data.rules, countries, setup.main, managers, Random::new(seed))
+/// The word the generator's second half stands at when the original's
+/// new game begins drawing (`DAT_0089dcc4`); the first half is `rand()`'s
+/// first after the setup's seed (`CDiLoad.c:925`), and the seed here is
+/// the value the original's `srand` takes (`A3PROBE_SRAND`).
+const GENERATOR_TAIL: u32 = 815_730_420;
+
+/// The first `rand()` after `srand(seed)`, as the MSVC runtime draws it:
+/// the seed into 214013 times the seed plus 2531011, bits 16 to 30.
+fn first_rand(seed: u64) -> u32 {
+    let x = seed.wrapping_mul(214013).wrapping_add(2531011);
+    ((x >> 16) & 0x7fff) as u32
+}
+
+/// The new game's records after its calculation: the setup of the screens
+/// written into fresh records (`FUN_007875b1`), the files read into them
+/// and the first season opened over them — the game then stands as a
+/// loaded one, and [`crate::load`] reads its season from them.
+///
+/// The records' globals take the countries as nation bytes, the season
+/// before the first (`settlement::roll_globals` counts it up), the career
+/// as the mode and no manager yet. Then, in the original's order:
+/// [`read_head`] (Kleinig's ranking and names), [`create`] per trainer
+/// (`FUN_006a3f6a`), [`read_countries`] with the countries' players,
+/// teams, persons and leagues (`FUN_00686684`), [`read_pool`] with the
+/// referees and free players (`FUN_0068716b`), [`managers_as_players`]
+/// (`FUN_006a3fc7`) and [`apply`] with the start settings dialog's
+/// choices at their defaults (`FUN_006a4fc5` and the rest) — and with
+/// that the calculation, the walk that opens the season
+/// (`settlement::open_season_with`, the game cycle's case 99/0). What it
+/// still leaves apart from the original's first turn is the matter of
+/// `new-game-exact-start-calc-preseason-bookings-fields` and
+/// `new-game-exact-start-calc-offers`. The generator is returned with
+/// them: the season plays on from its state.
+pub fn start(data: &Data, setup: &Setup, seed: u64) -> io::Result<(Records, Random)> {
+    let dir = data.dir.join("Data.a3");
+    let nation = |slot: usize| NATIONS.get(slot).copied().unwrap_or(0);
+    let mut records = Records::blank();
+    records.globals.set_main_country(i16::from(nation(setup.main)));
+    let extra: Vec<i16> =
+        setup.countries().skip(1).map(|slot| i16::from(nation(slot))).take(4).collect();
+    records.globals.set_more_count(i16::try_from(extra.len()).unwrap_or(i16::MAX));
+    let mut more_countries = [0i16; 4];
+    for (k, country) in extra.iter().enumerate() {
+        more_countries[k] = *country;
+    }
+    records.globals.set_more_countries(more_countries);
+    records.globals.set_start_year(
+        u16::try_from(data.world.start_year - 1).expect("a world to start its first season in"),
+    );
+    records.globals.set_mode(i16::try_from(setup.career).unwrap_or(i16::MAX));
+    records.globals.set_order([-1; MANAGERS]);
+    let mut random = Random::from_state(i64::from(first_rand(seed)), i64::from(GENERATOR_TAIL));
+    read_head(&mut records, &dir)?;
+    for trainer in &setup.trainers {
+        create(&mut records, &data.rules, trainer, &mut random);
+    }
+    let mut counters = Counters { persons: 1, players: 1, free: 0 };
+    read_countries(&mut records, &dir, setup.main, &mut counters, &mut random)?;
+    let (mut next_player, mut free_entry) = (counters.players, counters.free);
+    read_pool(&mut records, &dir, &mut next_player, &mut free_entry, &mut random)?;
+    managers_as_players(&mut records, nation(setup.main), i16::try_from(setup.career).unwrap_or(0));
+    apply(&mut records, &Settings::default(), &mut random);
+    open_season_with(&mut records, &mut random, Some(&data.rules));
+    Ok((records, random))
 }
 
 /// What a finished setup hands to the season calculation.

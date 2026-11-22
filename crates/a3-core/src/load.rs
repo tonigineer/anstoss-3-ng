@@ -74,12 +74,19 @@ pub fn season(records: &Records, data: &Data, random: Random) -> Season {
         clubs,
         planner_message: None,
         day_talks: Default::default(),
+        fee_talk: None,
+        interview: None,
+        interview_recent: Default::default(),
+        prematch: Vec::new(),
+        halftime: Vec::new(),
+        halftime_at: 0,
         // A game saved in the middle of a matchday goes on with the turns
         // before its matches.
         before_match: records.globals.resume() == MATCHES_RESUMED,
         random,
         donations: Vec::new(),
         job_notes: Vec::new(),
+        development: Vec::new(),
         statement: false,
         // The game stands freshly loaded: its load's hold (`CDiLoad`)
         // keeps the first week end from rolling the market.
@@ -200,6 +207,34 @@ pub(crate) fn club_state(records: &Records, team: &Team, data: &Data) -> ClubSta
     club
 }
 
+/// A followed club as the day left its records. The original keeps no
+/// copy of its human clubs beside the records: the day's round
+/// (`FUN_006504b6` → `FUN_007845aa`) moves the players' freshness and
+/// condition there, the training and its events their condition, morale
+/// and injuries, the sales the season tickets (team +0x710), and every
+/// absence is a date the screens count the days to from the date the
+/// day just stepped. So each player the club follows by id stands again
+/// as a load reads him, and its tickets as the team has them; the
+/// line-up and the plans the screens set stay.
+pub fn follow(records: &Records, data: &Data, (slot, index): (usize, usize), club: &mut ClubState) {
+    let medical = &data.rules.medical;
+    for (p, kept) in club.status.iter_mut().enumerate() {
+        let Some(record) = records.player(kept.id).filter(|_| kept.id != 0) else { continue };
+        if let Some(f) = club.fitness.get_mut(p) {
+            *f = fitness(record);
+        }
+        *kept = status(records, medical, record);
+    }
+    let team = data
+        .world
+        .country(slot)
+        .zip(u16::try_from(index).ok())
+        .and_then(|(country, number)| records.team(country.nation, number));
+    if let Some(team) = team {
+        club.tickets = team.tickets().into();
+    }
+}
+
 /// The tactics' players, by their ids: the own two in the squad, the
 /// opponent's two in the next opponent's.
 fn picks(
@@ -234,7 +269,7 @@ const MATCHES_RESUMED: u16 = 0x3e6;
 const GERMANY: usize = 14;
 
 /// A player record as the world has the players of the data files.
-fn player(records: &Records, record: &records::Player) -> Player {
+pub(crate) fn player(records: &Records, record: &records::Player) -> Player {
     Player {
         last_name: records.name(record.last_name()).to_owned(),
         first_name: records.name(record.first_name()).to_owned(),
@@ -281,7 +316,7 @@ const STRENGTH_UNKNOWN: u8 = 0x20;
 /// The top two bits of `picks` at 1 or 3 (`FUN_00706acd`).
 const STRENGTH_HIDDEN: u8 = 0x40;
 
-fn status(records: &Records, medical: &MedicalTables, record: &records::Player) -> Status {
+pub(crate) fn status(records: &Records, medical: &MedicalTables, record: &records::Player) -> Status {
     let globals = &records.globals;
     Status {
         last_form: Some(record.last_form().into()),

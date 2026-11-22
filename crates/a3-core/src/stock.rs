@@ -529,6 +529,237 @@ pub fn roll_week(records: &mut Records, day: i32, random: &mut Random) {
 /// the mean of the prices it stands on, the change on the week before in
 /// percent, and the run of those changes.
 const INDEX: usize = 0x4;
+
+/// The index names' table (`0xbdeea0`, saved in the block `0xbdee80`):
+/// 0xc9 names of 0x16 each with the word at +0x14 (`DAT_00bdeeb4`) that
+/// says how the entry trades — nought for every name of the original's
+/// table. The market never lists the first name.
+const NAMES_AT: &str = "0xbdee80";
+const NAME_ENTRY: usize = 0x16;
+const NAME_FLAG: usize = 0x14;
+const NAMES: usize = 0xc9;
+/// The shares an index entry goes on with (`DAT_00989680` at the first
+/// trade) and the most rows the market ever takes.
+const INDEX_SHARES: i32 = 10_000_000;
+const MARKET_MOST: usize = 0x1d4;
+/// The club's bit of having shares out at all (`FUN_0069d71d`, the legal
+/// form at club +0x924), and the countries the market walks with their
+/// clubs' count (`0xae5e06`).
+const LEGAL_FORM: usize = 0x924;
+const COUNTRIES: i16 = 0x75;
+
+/// A name of the table or of a market row: up to the next nought, never
+/// past its place.
+fn row_name(b: &[u8], at: usize) -> Vec<u8> {
+    match b.get(at..at + NAME_ENTRY) {
+        Some(field) => field.iter().copied().take_while(|&c| c != 0).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The word that says how the table entry trades.
+fn name_flag(names: &[u8], entry: usize) -> i16 {
+    names
+        .get(entry * NAME_ENTRY + NAME_FLAG..entry * NAME_ENTRY + NAME_FLAG + 2)
+        .map_or(0, |w| i16::from_le_bytes([w[0], w[1]]))
+}
+
+/// The shares an index entry offers for the new week (`FUN_00405024`'s
+/// week off the weekday, table entries only): five thousand to eight
+/// thousand by the first trade, fifteen to thirty-five thousand by the
+/// second, forty to a hundred thousand by the third. The entry is the
+/// row's number — one past its place in the table — so the neighbour's
+/// word is read, as the original reads the number and not the place.
+fn index_had(names: &[u8], entry: usize, random: &mut Random) -> i32 {
+    match name_flag(names, entry) {
+        0 => random.below(0x33) as i32 * 100 + 5000,
+        1 => random.below(0x15) as i32 * 1000 + 15000,
+        _ => random.below(0x3d) as i32 * 1000 + 40000,
+    }
+}
+
+/// One market row's price for the new week (`FUN_00405024` called on the
+/// row): the club's own while its country keeps its clubs, the ring's
+/// walk off the weekday else. An index entry re-rolls its shares by the
+/// table's trade word; a club of a country that keeps no clubs re-rolls
+/// them raw — without the tenfold the club's own price puts on them, as
+/// the original leaves them here.
+fn row_price(
+    records: &Records,
+    market: &mut [u8],
+    e: usize,
+    day: i32,
+    names: &[u8],
+    random: &mut Random,
+) -> f32 {
+    let (country, number) = (word(&market[e..], CLUB_COUNTRY), word(&market[e..], CLUB_NUMBER));
+    if country >= 0 && records.countries.keeps_club(usize::from(country as u8), number) {
+        match records.team(
+            u16::try_from(country).unwrap_or(0),
+            u16::try_from(number).unwrap_or(0),
+        ) {
+            Some(team) => first_price(records, team, market, e, random),
+            None => {
+                let price = index_price(market, e, day, random);
+                priced(records, market, e, country, number, price)
+            }
+        }
+    } else {
+        let price = index_price(market, e, day, random);
+        if country >= 0 {
+            let to_be_had = random.below(0x97) + random.below(0x47) + 0x5a + random.below(0x1f);
+            put_long(market, e + TO_BE_HAD, to_be_had as i32);
+        } else {
+            let entry = usize::try_from(number).unwrap_or(0);
+            put_long(market, e + TO_BE_HAD, index_had(names, entry, random));
+        }
+        priced(records, market, e, country, number, price)
+    }
+}
+
+/// Opening the market at the new game (`FUN_00405f2f`, its first half of
+/// `FUN_0065e659`'s first season): every club of a played country that
+/// has shares out goes on with its first price fixed at one euro
+/// (`FUN_00404dcd` — `FUN_00482531` counts the club's worth into shares,
+/// but its two constants live only in the game's memory, so the shares
+/// stand at nought here; they are never below one at a new game, which
+/// is why the three spare draws of a share-less club are not missed);
+/// then every index name the market does not carry yet goes on
+/// (`FUN_00404ed8`, the name looked for only among the index rows — the
+/// club rows are never compared, the search starting where they end).
+/// Fifty-two weekly prices then walk the mean, the change on the week
+/// before and the run into the index line; the entries' bonuses are not
+/// zeroed here. `FUN_007cfb99` and `FUN_007cff0c`, around the whole,
+/// only lock and unlock the object. What is missing: `FUN_0063a317`'s
+/// news of a club left without a row and the news of entries pushed to
+/// the floor of five euros (`FUN_00406917`), neither drawing anything.
+pub fn open(records: &mut Records, random: &mut Random) {
+    let Some(mut market) = records.block(&format!("{MARKET_AT:#x}")).map(<[u8]>::to_vec) else {
+        return;
+    };
+    let names = records
+        .block(NAMES_AT)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    market.fill(0);
+    let day = i32::from(records.globals.start_year()) - 0x7ca;
+    let mut mean = 0.0f32;
+    let mut count = 0usize;
+    for country in 1..COUNTRIES {
+        if !records.globals.played(country) {
+            continue;
+        }
+        let teams = records.countries.team_count(usize::from(country as u16)).max(0);
+        for number in 0..teams {
+            // `FUN_0063e793` finds no row of this club yet: the market
+            // stands cleared.
+            let Some(team) = records.team(u16::from(country as u16), u16::try_from(number).unwrap_or(0))
+            else {
+                continue;
+            };
+            if team.get::<u8>(LEGAL_FORM) & 1 == 0 {
+                continue;
+            }
+            let e = MARKET_FIRST + count * MARKET_ENTRY;
+            if market.len() < e + MARKET_ENTRY {
+                break;
+            }
+            let name: Vec<u8> = team.bytes().iter().copied().take_while(|&b| b != 0).collect();
+            {
+                let entry = &mut market[e..e + MARKET_ENTRY];
+                put_word(entry, CLUB_WEEK, NEW_WEEK);
+                put_long(entry, CLUB_SHARES, NO_SHARES);
+                put_word(entry, CLUB_COUNTRY, country);
+                put_word(entry, CLUB_NUMBER, number);
+                put_long(entry, NAME_END, 0);
+                // The name goes in as `strcpy` puts it, over what follows.
+                let end = (name.len() + 1).min(MARKET_ENTRY);
+                entry[..end].copy_from_slice(&[&name[..], &[0]].concat()[..end]);
+                put_long(entry, CLUB_SHARES, 0);
+            }
+            row_price(records, &mut market, e, day, &names, random);
+            // `FUN_00404dcd` fixes the first price at one euro: it stands
+            // in the week the row's price left, high and low with it,
+            // and the euro it returns moves the mean.
+            let week = word(&market[e..], CLUB_WEEK);
+            let ring = PRICES_AT + usize::try_from(week).unwrap_or(0) % PRICES * 4;
+            let entry = &mut market[e..e + MARKET_ENTRY];
+            for at in [ring, HIGH, LOW] {
+                entry[at..at + 4].copy_from_slice(&1.0f32.to_le_bytes());
+            }
+            mean += 1.0;
+            count += 1;
+        }
+    }
+    let clubs = count;
+    for k in 1..NAMES {
+        if count >= MARKET_MOST {
+            break;
+        }
+        let wanted = row_name(&names, k * NAME_ENTRY);
+        // The market's own clubs are not looked at (`sVar1` stands at
+        // their count), only the index rows made so far.
+        if (clubs..count).any(|j| row_name(&market, MARKET_FIRST + j * MARKET_ENTRY) == wanted) {
+            continue;
+        }
+        let e = MARKET_FIRST + count * MARKET_ENTRY;
+        if market.len() < e + MARKET_ENTRY {
+            break;
+        }
+        let shares = match name_flag(&names, k) {
+            0 => INDEX_SHARES + random.below(0xb) as i32 * 1_000_000,
+            // The second trade names a second base (`DAT_01c9c380`, a
+            // constant of the game's memory) with a draw below 31 in
+            // millions — no name of the original's table carries it.
+            1 => random.below(0x1f) as i32 * 1_000_000,
+            _ => random.below(0x65) as i32 * 1_000_000 + 100_000_000,
+        };
+        {
+            let entry = &mut market[e..e + MARKET_ENTRY];
+            put_word(entry, CLUB_WEEK, NEW_WEEK);
+            put_long(entry, CLUB_SHARES, NO_SHARES);
+            put_word(entry, CLUB_COUNTRY, -1);
+            put_word(entry, CLUB_NUMBER, k as i16 + 1);
+            put_long(entry, NAME_END, 1);
+            let end = (wanted.len() + 1).min(MARKET_ENTRY);
+            entry[..end].copy_from_slice(&[&wanted[..], &[0]].concat()[..end]);
+            put_long(entry, CLUB_SHARES, shares);
+            // The first price goes straight into the open week's place of
+            // the ring, high and low with it (`FUN_00404ed8`);
+            // `_DAT_008913a4` multiplies it by one.
+            let price = (f64::from(random.below(0xc351)) / 100.0 + 200.0) as f32;
+            let ring = PRICES_AT + usize::from(NEW_WEEK as u16) * 4;
+            for at in [ring, HIGH, LOW] {
+                entry[at..at + 4].copy_from_slice(&price.to_le_bytes());
+            }
+        }
+        mean += row_price(records, &mut market, e, day, &names, random);
+        count += 1;
+    }
+    if count > 0 {
+        put_float(&mut market, PREV_MEAN, mean / count as f32);
+        for _ in 0..PRICES {
+            let mut week = 0.0f32;
+            for k in 0..count {
+                let e = MARKET_FIRST + k * MARKET_ENTRY;
+                week += row_price(records, &mut market, e, day, &names, random);
+            }
+            let week = week / count as f32;
+            let before = float(&market, PREV_MEAN);
+            let change = ((week - before) * 100.0) / before;
+            let run = float(&market, RUN) + change / 100.0;
+            put_float(&mut market, RUN, run);
+            put_float(&mut market, CHANGE_ON, change);
+            put_float(&mut market, PREV_MEAN, week);
+        }
+        let run = float(&market, RUN);
+        put_float(&mut market, INDEX, run * 5000.0 + 5000.0);
+    }
+    put_long(&mut market, MARKET_COUNT, count as i32);
+    if let Some(block) = records.block_mut(&format!("{MARKET_AT:#x}")) {
+        block.copy_from_slice(&market);
+    }
+}
 const PREV_MEAN: usize = 0x8;
 const CHANGE_ON: usize = 0xc;
 const RUN: usize = 0x10;

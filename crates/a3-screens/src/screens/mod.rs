@@ -11,11 +11,18 @@ pub mod calendar;
 pub mod camp;
 pub mod comparison;
 pub mod contacts;
+pub mod court;
+pub mod cup_results;
 pub mod discipline;
 pub mod donations;
 pub mod doping;
+pub mod doping_control;
 pub mod doping_report;
 pub mod duties;
+pub mod european_ranking;
+pub mod event_text;
+pub mod development;
+pub mod farewells;
 pub mod finances;
 pub mod formations;
 pub mod friendly;
@@ -23,9 +30,13 @@ pub mod grounds;
 pub mod help;
 pub mod honours;
 pub mod illegal;
+pub mod interview;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
+pub mod match_report;
+pub mod prematch;
+pub mod halftime;
 pub mod licence;
 pub mod konfig3d;
 pub mod market;
@@ -34,6 +45,7 @@ pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
 pub mod national;
+pub mod national_offer;
 pub mod notepad;
 pub mod nutzung;
 pub mod office;
@@ -43,14 +55,19 @@ pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
 pub mod poaching;
+pub mod render;
+pub mod fee;
 pub mod popups;
 pub mod save;
 pub mod search;
+pub mod season_start;
+pub mod season_terms;
 pub mod special;
 pub mod squad;
 pub mod stadium;
 pub mod start;
 pub mod statistics;
+pub mod tables_after;
 pub mod tactics;
 pub mod talk;
 pub mod tournament;
@@ -205,6 +222,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(national::NationalTalks::default()),
         Box::new(national::NationalFriendlies::default()),
         Box::new(national::NationalTeamInfo::default()),
+        Box::new(national_offer::NationalOffer::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),
@@ -276,7 +294,23 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(talk::TalkScreen::default()),
         Box::new(talk::PlayerChoice::default()),
         Box::new(poaching::PoachingTalk::default()),
+        Box::new(fee::FeeTalkScreen::default()),
         Box::new(tactics::TacticsScreen::default()),
+        Box::new(tables_after::TablesAfter::default()),
+        Box::new(interview::InterviewScreen::default()),
+        Box::new(match_report::MatchReport::default()),
+        Box::new(doping_control::DopingControl),
+        Box::new(farewells::Farewells::default()),
+        Box::new(development::Development::default()),
+        Box::new(european_ranking::EuropeanRanking),
+        Box::new(court::Court),
+        Box::new(season_terms::SeasonTerms::default()),
+        Box::new(season_start::SeasonStart::default()),
+        Box::new(cup_results::CupResults::default()),
+        Box::new(event_text::EventText),
+        Box::new(render::Render::default()),
+        Box::new(prematch::Prematch),
+        Box::new(halftime::Halftime),
         Box::new(comparison::Comparison::default()),
         Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),
@@ -316,6 +350,7 @@ pub fn compose(game: &mut Game) {
     hub::compose(&mut game.dialogs, &game.data.rules);
     formations::compose(&mut game.dialogs, &game.data.rules);
     special::compose(&mut game.dialogs);
+    fee::compose(&mut game.dialogs);
     duties::compose(&mut game.dialogs);
     medical::compose(&mut game.dialogs);
     medical::compose_visit(&mut game.dialogs);
@@ -350,8 +385,22 @@ pub fn compose(game: &mut Game) {
     nutzung::compose(&mut game.dialogs);
     save::compose(&mut game.dialogs);
     youth_tables::compose(&mut game.dialogs);
+    tables_after::compose(&mut game.dialogs);
+    prematch::compose(&mut game.dialogs);
+    halftime::compose(&mut game.dialogs, &game.data.rules);
     doping::compose(&mut game.dialogs);
     doping_report::compose(&mut game.dialogs);
+    doping_control::compose(&mut game.dialogs);
+    farewells::compose(&mut game.dialogs);
+    development::compose(&mut game.dialogs);
+    european_ranking::compose(&mut game.dialogs);
+    court::compose(&mut game.dialogs);
+    season_terms::compose(&mut game.dialogs);
+    national_offer::compose(&mut game.dialogs);
+    season_start::compose(&mut game.dialogs);
+    cup_results::compose(&mut game.dialogs);
+    event_text::compose(&mut game.dialogs);
+    render::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);

@@ -474,8 +474,7 @@ impl Screen for NationalSquad {
             }
             // The position group (`FUN_0051c948`): its chosen item plus
             // one, nothing chosen read as 0, is what the bests re-fill
-            // takes — the group stands on the control, and the list is
-            // empty whichever it is; only its table is unported.
+            // takes — the group stands on the control.
             Target::Option { control: c, .. } if id(c) == Some(POSITIONS) => {
                 self.fill_bests(cx, view);
                 Outcome::Stay
@@ -525,20 +524,58 @@ impl NationalSquad {
         }
     }
 
-    /// The bests list (`FUN_0051c33f`) stays empty: the group's number —
-    /// `+0x4348`, the position control's chosen item plus one, what the
-    /// handlers pass every re-fill — picks the block from a copy of the
-    /// coach's own `0x9c0` bytes at `DAT_00a55e76`, 1 to 4 any other
-    /// value zeroing that copy (`FUN_0069d359`); the table itself is
-    /// filled by a process the replica does not have, so every value
-    /// leaves the list empty and the click only moves the highlight.
+    /// The bests list (`FUN_0051c33f`): the group's number — `+0x4348`,
+    /// the position control's chosen item plus one, nothing chosen 0 —
+    /// picks the position's list out of the coach's record (copied once,
+    /// `FUN_0069d359`; none for a coach his team does not name).  Of its
+    /// first ten entries every one not barred from the national team
+    /// (`+0xb3` or `+0xb6` bit 1) counts his strength on his main
+    /// position today (`FUN_006a144e`); the exchange sort puts the
+    /// strongest first, and each row reads "%s\t%1.1f" (`0x885814`): his
+    /// full name and that strength, red while he stands in the squad
+    /// (`FUN_006968c4`), his abilities' icons as the squad list draws
+    /// them.
     fn fill_bests(&self, cx: &Cx, view: &mut View) {
-        let Some(c) = control(cx.dialog, BESTS_LIST) else { return };
+        let (game, dialog) = (cx.game, cx.dialog);
+        let Some(c) = control(dialog, BESTS_LIST) else { return };
+        let group = control(dialog, POSITIONS).map_or(0, |p| match view.chosen(p) {
+            NONE => 0,
+            item => item as i32 + 1,
+        });
+        let slots = crate::controls::list::icon_slots(&dialog.controls[c]);
+        let pitch = &game.rules.pitch;
+        let mut found = Vec::new();
+        if let Some(records) = cx.state.records.as_ref() {
+            for best in national::bests(records, self.nation as i16, group).iter().take(national::BESTS_SHOWN) {
+                let barred = records.player(best.id).is_none_or(|r| r.retiring() & 2 != 0 || r.picks() & 2 != 0);
+                if best.id == 0 || barred {
+                    continue;
+                }
+                let Some((player, fitness, _)) = load::any_player(records, &game.data, best.id) else { continue };
+                let strength = pitch.strength_at(&player, fitness, player.positions[0]) as i16;
+                found.push((best.id, strength, player));
+            }
+            for i in 0..found.len() {
+                for j in i + 1..found.len() {
+                    if found[i].1 < found[j].1 {
+                        found.swap(i, j);
+                    }
+                }
+            }
+        }
+        let records = cx.state.records.as_ref();
         if let Some(list) = view.list_mut(c) {
-            list.rows.clear();
-            list.inks.clear();
-            list.row_icons.clear();
-            list.keys.clear();
+            list.rows = found
+                .iter()
+                .map(|(id, strength, _)| {
+                    let name = records.and_then(|r| r.known_as(*id)).unwrap_or_default();
+                    format!("{name}\t{}", hub::tenths(i32::from(*strength)))
+                })
+                .collect();
+            list.inks = found.iter().map(|(id, ..)| Some(if self.squad.contains(id) { RED } else { BLACK })).collect();
+            list.row_icons =
+                found.iter().map(|(.., player)| slots.iter().copied().zip(pitch.ability_icons(player)).collect()).collect();
+            list.keys = found.iter().map(|(id, ..)| usize::from(*id)).collect();
             list.selected = None;
             list.scroll = 0;
         }

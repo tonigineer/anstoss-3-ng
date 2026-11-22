@@ -38,11 +38,15 @@ impl Data {
     pub fn load(dir: &Path) -> io::Result<Self> {
         let world = World::load(&dir.join("Data.a3"))?;
         let exe = Exe::open(&dir.join("anstoss3.exe"))?;
+        let mut rules = Rules::load(&exe)?;
+        if let Ok(texts) = a3_files::rch::load_texts(&dir.join("deb/ListeDerTexte.rh")) {
+            rules.training.name_originals(&texts);
+        }
         Ok(Self {
             dir: dir.to_owned(),
             saves: dir.join("saves"),
             calendar: Calendar::load(&exe, &world)?,
-            rules: Rules::load(&exe)?,
+            rules,
             presale: PresaleTables::load(&exe)?,
             nation_flags: crate::national::flag_names(&exe)?,
             world,

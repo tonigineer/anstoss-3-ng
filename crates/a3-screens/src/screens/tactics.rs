@@ -56,7 +56,8 @@ const BONUS_SPIN: u16 = 5519;
 const STRENGTH: u16 = 3741;
 /// A picture of how the club fares against the opponent.
 const RECORD: u16 = 3770;
-/// The OK, whose place the bar takes.
+/// The OK, whose place the bar takes but from the office or the text
+/// menu.
 const OK: u16 = 1;
 
 /// Texts of the game.
@@ -78,10 +79,9 @@ const RECORD_MARGIN: i32 = 3;
 const PLAIN_KINDS: [u8; 2] = [0xa, 0xe];
 const LEAGUE: u8 = 2;
 
-/// The bar takes the OK's place.
+/// The bar beside the OK; the screen shows one of them.
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
     let Some(dialog) = dialogs.get_mut(&TACTICS) else { return };
-    dialog.controls.retain(|c| c.id != Some(OK));
     hub::add_bar(dialog, rules);
 }
 
@@ -91,6 +91,9 @@ pub struct TacticsScreen {
     rows: [Vec<Pick>; PICKS],
     /// Whether the whistle asks.
     whistle: bool,
+    /// Whether the screen came from the office or the text menu, without
+    /// the bar and with its OK (request byte 0 nought).
+    with_ok: bool,
 }
 
 /// The club's next match: its opponent, whether at home, its kind and
@@ -107,9 +110,19 @@ impl Screen for TacticsScreen {
         &[TACTICS]
     }
 
-    fn open(&mut self, cx: &mut Cx, view: &mut View, _: Args) {
+    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
         let (game, dialog) = (cx.game, cx.dialog);
         hub::open_bar(cx, view, TACTICS_SYMBOL);
+        // The bar along the bottom, its OK hidden; from the office or the
+        // text menu no bar, and the OK in the season's look
+        // (`FUN_0058b2c2` step 3, `FUN_0043ff5f` at 0x58b78e).
+        self.with_ok = args == Args::FromMenu;
+        if self.with_ok {
+            hub::hide_bar(view, dialog);
+            super::seasonal_buttons(cx, view);
+        } else if let Some(c) = control(dialog, OK) {
+            view.controls[c].hidden = true;
+        }
         let Some(club) = own(cx) else { return };
         let tactics = club.tactics;
         let tables = &game.rules.tactics;
@@ -189,6 +202,15 @@ impl Screen for TacticsScreen {
             }
             self.whistle = matches!(outcome, Outcome::Popup(_));
             return outcome;
+        }
+        // The OK keeps the stepping buttons and leaves with code 1
+        // (`FUN_0058c6cd`), back to the menu it came from.
+        if let Target::Button(c) = target
+            && id(c) == OK
+            && self.with_ok
+        {
+            keep_buttons(cx, view);
+            return Outcome::Close(Reply::Ok);
         }
         match target {
             // A stepping button: on with the left button, back with the

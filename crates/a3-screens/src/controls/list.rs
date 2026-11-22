@@ -86,6 +86,9 @@ pub struct ListState {
     /// Rows the screen gives one column of their own across the row
     /// (`FUN_007a94db`).
     pub spans: Vec<bool>,
+    /// Where such a row starts from the list's left edge, where its own
+    /// first column is set further in (`FUN_007a94db`'s tabs); else 0.
+    pub span_left: Vec<f32>,
     /// What each row stands for, for the screen to look up: a player's
     /// place in the squad, say.
     pub keys: Vec<usize>,
@@ -128,6 +131,7 @@ impl Default for ListState {
             marked: Vec::new(),
             row_boxes: Vec::new(),
             spans: Vec::new(),
+            span_left: Vec::new(),
             keys: Vec::new(),
             by_column: false,
             bars: Vec::new(),
@@ -292,7 +296,8 @@ impl ListState {
             if self.spans.get(self.scroll + row).copied().unwrap_or(false) {
                 // A row of one column of its own, from the left edge across
                 // the row, another pixel up (`FUN_007a7d9c`'s other branch).
-                font.draw_clipped(frame, x, top - 2, line, color, false, right);
+                let left = self.span_left.get(self.scroll + row).copied().unwrap_or(0.0) as i32;
+                font.draw_clipped(frame, x + left, top - 2, line, color, false, right);
             } else {
                 columns(font, frame, at, cells, &self.tabs, &self.aligns, color, right, LIST_GAP);
             }

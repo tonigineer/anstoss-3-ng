@@ -122,6 +122,44 @@ pub fn title(records: &mut Records, slot: usize, country: u16, number: u16, kind
     }
 }
 
+/// The most national stations a career keeps (`FUN_006fdb68`'s 0x14);
+/// the count of national jobs at +0x1c0.
+const NATIONAL_STATIONS_MOST: usize = 0x14;
+const NATIONAL_JOBS: usize = 0x1c0;
+
+/// The human in `slot` becomes coach of `nation` (`FUN_006fdb68`): with
+/// the window full its oldest station goes; the free entry is cleared.
+/// Where his last station is that nation's and closed this year it opens
+/// again (its end date nought); else a new one starts today, the team
+/// 200 and the mark 3, and his national jobs count one more.
+pub fn joined_national_team(records: &mut Records, slot: usize, nation: u8) {
+    let [day, month, year] = records.globals.date();
+    let Some(car) = records.career_mut(slot) else { return };
+    if usize::from(car[NATIONAL_STATIONS]) == NATIONAL_STATIONS_MOST {
+        car.copy_within(NATIONALS_AT + STATION..NATIONALS_AT + NATIONAL_STATIONS_MOST * STATION, NATIONALS_AT);
+        car[NATIONAL_STATIONS] -= 1;
+    }
+    let count = usize::from(car[NATIONAL_STATIONS]);
+    car[NATIONALS_AT + count * STATION..][..STATION].fill(0);
+    if let Some(last) = count.checked_sub(1) {
+        let row = &mut car[NATIONALS_AT + last * STATION..][..STATION];
+        if row[0] == nation && u16::from_le_bytes([row[0xa], row[0xb]]) == year as u16 {
+            row[8..0xc].fill(0);
+            return;
+        }
+    }
+    let row = &mut car[NATIONALS_AT + count * STATION..][..STATION];
+    row[0] = nation;
+    row[2..4].copy_from_slice(&200u16.to_le_bytes());
+    row[4] = day as u8;
+    row[5] = month as u8;
+    row[6..8].copy_from_slice(&(year as u16).to_le_bytes());
+    row[0xd] = 3;
+    car[NATIONAL_STATIONS] += 1;
+    let jobs = u16::from_le_bytes([car[NATIONAL_JOBS], car[NATIONAL_JOBS + 1]]).wrapping_add(1);
+    car[NATIONAL_JOBS..NATIONAL_JOBS + 2].copy_from_slice(&jobs.to_le_bytes());
+}
+
 /// The human in `slot` leaves his national team for `reason`
 /// (`FUN_006fdf90`): his last national station gets today's date and the
 /// reason, its three figures nought. Without a station nothing happens.
@@ -260,6 +298,7 @@ pub fn release_club(
             p.set_morale(crate::mood::morale(p));
         }
     }
+    // Sent back without a word (`FUN_0074d27f`).
     crate::youth::end_club_trials(records, clubs, world, country, number, true);
 }
 
@@ -385,6 +424,21 @@ pub fn post_vacancy(notes: &mut Vec<JobNote>, slot: usize, club: (u8, u16), kind
     notes.push(JobNote { first: 0, second: -((slot + 1) as i16), kind, club, told: false, live: false });
 }
 
+/// The ticker's told entries go (`FUN_00751180` → `FUN_007580f0` on
+/// `CGefaehrdeteJobs` at 0xa2e420, its list at +0x13c compacted by
+/// `FUN_005df9ab`): every entry whose dword at +0xc is still nought moves
+/// up in its order, the told ones drop out, the count follows. The
+/// original runs it at the new season (`FUN_006da3a9` case 0) and at each
+/// week's turn past the season's first half week (case 1, `DAT_00b5cbd2 !=
+/// 0`). Beside it the object's two blocks of 0x11a bytes at +0x20 and
+/// +0x528 are zeroed, which nothing here keeps; and `FUN_0074f3da`, the
+/// humans past 21 years at their clubs weighed (`FUN_006fe28c`,
+/// `FUN_0074fb09`), posts only between days 0x78 and 0x140, never at the
+/// season's turn (its week posts are not built).
+pub fn drop_told(notes: &mut Vec<JobNote>) {
+    notes.retain(|n| !n.told);
+}
+
 /// The humans' promotions at the season's turn (`FUN_006b4e2f` walking
 /// the humans by the count at `DAT_00b5cbce`): each one whose club carries
 /// the season's promoted flag — team +0x110's bit 4, `FUN_0069a1e1` —
@@ -413,6 +467,66 @@ pub fn promotions(records: &mut Records) {
             title(records, slot, country, number, crate::honours::PROMOTION);
         }
     }
+}
+
+/// What the season's turn tells a human of his contract (message 0x10b,
+/// `CMyStartDialog::FUN_0066aa06`): his club stayed in its league and he
+/// hears of the season's new goal (`CVertragskonditionenSaisonwechsel`),
+/// or it went up or down and his contract's sums moved with it
+/// (`CVertragskonditionenNeu`, its flag 1 on a promotion, 0 on a
+/// relegation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeasonTerms {
+    Goal,
+    Promoted,
+    Relegated,
+}
+
+/// The sums a contract's fixed pay and pay per point move to
+/// (`FUN_0066aa06`): a relegation (`FUN_0069a221`, team +0x110's bit 8)
+/// weighs before a promotion (`FUN_0069a1e1`, bit 4) — four fifths of
+/// either sum, else six fifths —, each down to tens (`FUN_0067575a` by
+/// `DAT_00a3b420`); neither leaves them standing.
+pub fn season_sums(flags: u16, fixed: i32, point: i32) -> (SeasonTerms, i32, i32) {
+    const TENS: i32 = 10;
+    let (terms, fifths) = if flags & crate::promotion::RELEGATED != 0 {
+        (SeasonTerms::Relegated, 4)
+    } else if flags & crate::promotion::PROMOTED != 0 {
+        (SeasonTerms::Promoted, 6)
+    } else {
+        return (SeasonTerms::Goal, fixed, point);
+    };
+    let moved = |v: i32| v.wrapping_mul(fifths) / 5 / TENS * TENS;
+    (terms, moved(fixed), moved(point))
+}
+
+/// The humans the season's turn tells of their contract (`FUN_0066a946`
+/// in the new-season block, posting message 0x10b for each): every one
+/// with a club whose count at record +0x180 (the manager object's +0x94)
+/// stands above one, in the order of the slots. Each one's contract sums
+/// move as [`season_sums`] has them, which the original does as his
+/// dialog opens; the dialog itself is not built.
+pub fn season_terms(records: &mut Records) -> Vec<(usize, SeasonTerms)> {
+    let mut told = Vec::new();
+    for (slot, held) in records.globals.slots().iter().copied().enumerate() {
+        if held == 0 {
+            continue;
+        }
+        let (country, number, count) = {
+            let m = &records.managers[slot];
+            (m.country(), m.team(), m.unrest_count())
+        };
+        if country == 0 || count <= 1 {
+            continue;
+        }
+        let flags = records.team(country, number).map_or(0, |t| t.get::<u16>(0x110));
+        let m = &mut records.managers[slot];
+        let (terms, fixed, point) = season_sums(flags, m.pay_fixed(), m.pay_point());
+        m.set_pay_fixed(fixed);
+        m.set_pay_point(point);
+        told.push((slot, terms));
+    }
+    told
 }
 
 /// One more on the station the manager stands at — its last row, since
@@ -447,9 +561,131 @@ fn bump(car: &mut [u8], at: usize) {
     store(car, at, word(car, at).wrapping_add(1));
 }
 
+/// The seasons' pay behind a human (record +0x18a8, the object's
+/// +0x1758) and twenty slots of it from +0x18ac; the byte the season
+/// clears in the career block (+0x19bf, the object's +0x17cf); a club he
+/// is bound for (+0x130 its country, +0x132 its number, the object's
+/// +0x46 and +0x48); the flag a clubless contract runs under (+0x156,
+/// the object's +0x4a).
+const PAY_SEASONS: usize = 0x18a8;
+const PAY_SLOTS: usize = 0x18ac;
+const PAY_KEPT: i16 = 20;
+const SEASON_BYTE: usize = 0x19ac + 0x13;
+const BOUND_COUNTRY: usize = 0x130;
+const BOUND_NUMBER: usize = 0x132;
+const CLUBLESS: usize = 0x156;
+/// What staying a year longer gives: marks, the confidence held at the
+/// least, and from the third year the club's will (`FUN_00714605(club, 1)`).
+const STAY_MARKS: i32 = 5;
+const STAY_CONFIDENCE: i16 = 60;
+const STAY_WILL: i32 = 60;
+
+/// The level a club plays at in its country (`FUN_0068588b`): the index
+/// of the country's league that holds its number, ten when none does.
+fn league_level(records: &Records, country: i16, number: i16) -> i16 {
+    let Ok(c) = u16::try_from(country) else { return 10 };
+    let leagues = records.countries.leagues(usize::from(c));
+    (0..leagues)
+        .find(|&level| {
+            u8::try_from(level)
+                .ok()
+                .and_then(|l| crate::opponent::League::of(records, c, l))
+                .is_some_and(|league| (0..league.teams()).any(|p| league.team(p) == number))
+        })
+        .unwrap_or(10)
+}
+
+/// The level a contract counts with: a club of a country played besides
+/// the main one (`FUN_00676c5d`) stands at ten below its first league.
+fn counted_level(records: &Records, country: i16, number: i16) -> i16 {
+    let level = league_level(records, country, number);
+    let g = &records.globals;
+    let n = usize::try_from(g.more_count()).unwrap_or(0);
+    if level > 0 && g.more_countries().iter().take(n).any(|&c| c == country) { 10 } else { level }
+}
+
+/// The humans' year turns at the season's end (`FUN_00624ad4` behind its
+/// fold and season points, [`crate::evaluation::close_season`]): one more
+/// season in his pay (at twenty the oldest drops out and nineteen stay),
+/// the career block's season byte cleared. Without a club a contract
+/// under the clubless flag counts a year down and the flag goes at
+/// nought. With one whose contract runs on — at least two years left, his
+/// club in a league played, no club in a league played he is bound for —
+/// a year comes off it, the years at the club count one more, five marks
+/// go to his standing's history, the board's confidence stands at sixty at
+/// the least, and from the third year his club's will rises by sixty less
+/// a quarter of its mood. (The contract's end there, `FUN_005e0163` with
+/// its job offers and its eighty marks off when his club left the leagues
+/// played, is not built.)
+pub fn turn_years(records: &mut Records) {
+    for n in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get_mut(n) else { continue };
+        let seasons = m.get::<i16>(PAY_SEASONS).wrapping_add(1);
+        if seasons == PAY_KEPT {
+            for k in 1..usize::from(PAY_KEPT.unsigned_abs()) {
+                let pay = m.get::<i32>(PAY_SLOTS + 4 * k);
+                m.put(PAY_SLOTS + 4 * (k - 1), pay);
+            }
+            m.put(PAY_SLOTS + 4 * 19, 0i32);
+            m.put(PAY_SEASONS, PAY_KEPT - 1);
+        } else {
+            m.put(PAY_SEASONS, seasons);
+        }
+        m.put(SEASON_BYTE, 0u8);
+        let (country, number) = (m.country() as i16, m.team() as i16);
+        if country < 1 {
+            if m.get::<u8>(CLUBLESS) != 0 {
+                let years = m.contract_years().wrapping_sub(1);
+                m.set_contract_years(years);
+                if years < 1 {
+                    m.put(CLUBLESS, 0u8);
+                }
+            }
+            continue;
+        }
+        let (bound, bound_number) = (m.get::<u8>(BOUND_COUNTRY), m.get::<i16>(BOUND_NUMBER));
+        let level = counted_level(records, country, number);
+        let bound_level = if bound != 0 { counted_level(records, i16::from(bound), bound_number) } else { 10 };
+        let m = &mut records.managers[n];
+        if bound_level < 10 || m.contract_years() < 2 || level > 9 {
+            continue;
+        }
+        m.set_contract_years(m.contract_years() - 1);
+        m.set_unrest_count(m.unrest_count().wrapping_add(1));
+        m.set_standing_marks(m.standing_marks().wrapping_add(STAY_MARKS));
+        if m.confidence() < STAY_CONFIDENCE {
+            m.set_confidence(STAY_CONFIDENCE);
+        }
+        if m.unrest_count() > 2 {
+            let Some(t) = records.team_mut(country as u16, number as u16) else { continue };
+            let by = STAY_WILL - i32::from(t.mood() >> 2);
+            t.set_will_to_win((i32::from(t.will_to_win()) + by).clamp(-200, 200) as i16);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relegation takes four fifths of the sums, a promotion gives six,
+    /// each down to tens; relegated and promoted at once counts as down.
+    #[test]
+    fn the_turn_moves_the_contract_sums_with_the_league() {
+        assert_eq!(season_sums(0x1, 12_345, 678), (SeasonTerms::Goal, 12_345, 678));
+        assert_eq!(season_sums(0x4, 12_345, 678), (SeasonTerms::Promoted, 14_810, 810));
+        assert_eq!(season_sums(0x8, 12_345, 678), (SeasonTerms::Relegated, 9_870, 540));
+        assert_eq!(season_sums(0xc, 100_000, 5), (SeasonTerms::Relegated, 80_000, 0));
+    }
+
+    /// The turn drops the told entries and keeps the rest in their order.
+    #[test]
+    fn the_turn_drops_the_told_notes() {
+        let note = |kind, told| JobNote { first: 0, second: -1, kind, club: (3, 7), told, live: false };
+        let mut notes = vec![note(1, true), note(3, false), note(2, true), note(4, false)];
+        drop_told(&mut notes);
+        assert_eq!(notes, [note(3, false), note(4, false)]);
+    }
 
     /// A career's end puts the club on the ticker of jobs, the manager's
     /// number negated; a full ticker takes nothing more.
@@ -757,5 +993,35 @@ mod tests {
         for (i, (a, b)) in before.iter().zip(after).enumerate() {
             assert!(a == b || touched.iter().any(|r| r.contains(&i)), "byte {i:#x} moved, {a:#x} → {b:#x}");
         }
+    }
+
+    /// The original's turn from SeasonEnd364 to NewSeason000: the human's
+    /// contract runs on, so a year comes off it, his years at the club
+    /// count one more, one more season stands in his pay and the career
+    /// block's season byte is clear and five marks go to his standing's
+    /// history, as NewSeason000 has them (its confidence moves again as
+    /// the new season opens).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_turns_the_human_s_contract_a_year_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        if !keeps.join("SeasonEnd364.an3").exists() || !keeps.join("NewSeason000.an3").exists() {
+            eprintln!("no SeasonEnd364 or NewSeason000 among the saves");
+            return;
+        }
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"));
+        turn_years(&mut ours);
+        let (x, y) = (&ours.managers[0], &theirs.managers[0]);
+        assert_eq!(
+            (x.contract_years(), x.unrest_count(), x.get::<i16>(PAY_SEASONS), x.get::<u8>(SEASON_BYTE)),
+            (y.contract_years(), y.unrest_count(), y.get::<i16>(PAY_SEASONS), y.get::<u8>(SEASON_BYTE))
+        );
+        assert_eq!((x.contract_years(), x.unrest_count(), x.standing_marks()), (1, 2, 5));
+        assert_eq!(x.standing_marks(), y.standing_marks(), "five marks for the year stayed");
     }
 }

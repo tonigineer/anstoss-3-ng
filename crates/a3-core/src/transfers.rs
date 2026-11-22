@@ -380,6 +380,95 @@ pub fn book(
     true
 }
 
+/// A computer club's new appointment (`FUN_0076215b`): the kind, the day,
+/// two clubs, the player; the seller's dword at +8 and as the first club
+/// (its status and weight bytes left as the place held them), the buyer
+/// second with its status and weight, the terms cleared; only while
+/// there is room and the day has not gone by. (The seller's second byte is
+/// the original's stale stack, written here as nought.)
+pub(crate) fn book_bid(
+    records: &mut Records,
+    kind: i16,
+    day: i16,
+    player: u16,
+    seller: Side,
+    buyer: Side,
+    status: u8,
+    weight: u8,
+) -> bool {
+    let today = records.globals.day() as i16;
+    let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return false };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0);
+    let e = TALKS_FIRST + count * TALK;
+    if count >= MOST_TALKS || day < today || b.len() < e + TALK {
+        return false;
+    }
+    put16(b, e + TALK_KIND, kind);
+    put16(b, e + TALK_DAY, day);
+    put16(b, e + TALK_CLUBS, 2);
+    put16(b, e + TALK_PLAYER, player as i16);
+    for at in [e + TALK_HIS_CLUB, e + CLUB_AT] {
+        b[at] = seller.0;
+        b[at + 1] = 0;
+        put16(b, at + 2, seller.1);
+    }
+    let at = e + CLUB_AT + CLUB;
+    b[at] = buyer.0;
+    put16(b, at + 2, i16::from(buyer.1 as u8));
+    b[at + 4] = status;
+    b[at + 5] = weight;
+    b[e + TALK_TERMS..e + TALK_TERMS + TERMS].fill(0);
+    put16(b, 0, count as i16 + 1);
+    true
+}
+
+/// A computer club joins the player's appointment (`FUN_00762246`): not
+/// a full table (seven), not twice; behind the last, or before those
+/// from the third on who weigh less, with its status and weight. Whether
+/// it joined.
+pub(crate) fn join_bid(records: &mut Records, player: u16, buyer: Side, status: u8, weight: u8) -> bool {
+    let Some(b) = records.block_mut(&format!("{TALKS_AT:#x}")) else { return false };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0);
+    let Some(e) = (0..count)
+        .map(|k| TALKS_FIRST + k * TALK)
+        .find(|&e| word(b, e + TALK_PLAYER) as u16 == player)
+    else {
+        return false;
+    };
+    let n = word(b, e + TALK_CLUBS);
+    if n >= MOST_JOINED as i16 {
+        return false;
+    }
+    let seated = usize::try_from(n).unwrap_or(0);
+    if (0..seated).any(|k| side(b, e, k) == (buyer.0, i16::from(buyer.1 as u8))) {
+        return false;
+    }
+    let mut k: isize = if n == 1 { 0 } else { n as isize - 1 };
+    if n != 1 {
+        while k > 1 && b[e + CLUB_AT + k as usize * CLUB + 5] < weight {
+            let at = e + CLUB_AT + k as usize * CLUB;
+            b.copy_within(at..at + CLUB, at + CLUB);
+            k -= 1;
+        }
+    }
+    let at = e + CLUB_AT + (k + 1) as usize * CLUB;
+    b[at] = buyer.0;
+    put16(b, at + 2, i16::from(buyer.1 as u8));
+    b[at + 4] = status;
+    b[at + 5] = weight;
+    put16(b, e + TALK_CLUBS, n + 1);
+    true
+}
+
+/// The transfer list's entries as they stand (0x1c bytes each).
+pub(crate) fn list_entries(records: &Records) -> Vec<[u8; LIST_ENTRY]> {
+    let Some(b) = records.block(&list_name()) else { return Vec::new() };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(LIST_SIZE);
+    (0..count)
+        .filter_map(|k| b.get(LIST_FIRST + k * LIST_ENTRY..)?.get(..LIST_ENTRY)?.try_into().ok())
+        .collect()
+}
+
 /// Our club joins the player's appointment (`FUN_00762691`): not a full
 /// table, not twice; after the second club, before those weighing less
 /// than a human. Whether it joined.
@@ -709,12 +798,25 @@ fn purchase_day(records: &Records, random: &mut crate::random::Random, his: Side
     if next_week_full(records, buyer) || next_week_full(records, his) {
         return 0;
     }
+    free_day(records, random, his, buyer, records.globals.week_start() + 7).unwrap_or(0)
+}
+
+/// The day of this week, from its first, for a purchase talk a computer
+/// club seeks with a man's club (`FUN_007585c6`): none when either has
+/// three talks this week (`FUN_00764a25`); else the first of a drawn row
+/// free for both.
+pub(crate) fn this_week_day(records: &Records, random: &mut crate::random::Random, his: Side, buyer: Side) -> Option<i16> {
     let start = records.globals.week_start();
+    if talks_from(records, buyer, start) >= 3 || talks_from(records, his, start) >= 3 {
+        return None;
+    }
+    free_day(records, random, his, buyer, start)
+}
+
+/// The first day of a drawn row from `start` neither club is busy on.
+fn free_day(records: &Records, random: &mut crate::random::Random, his: Side, buyer: Side, start: i16) -> Option<i16> {
     let row = random.below(3) as usize;
-    PURCHASE_DAYS[row]
-        .into_iter()
-        .find(|&d| !busy(records, his, start + d + 7) && !busy(records, buyer, start + d + 7))
-        .unwrap_or(0)
+    PURCHASE_DAYS[row].into_iter().find(|&d| !busy(records, his, start + d) && !busy(records, buyer, start + d))
 }
 
 /// After the day's talks, a manager's agreed poaching talk
@@ -864,6 +966,22 @@ pub struct PurchaseTalk {
     /// frame's mood (`DAT_01c5c1e8`, 1 before any).
     pub winner: Option<usize>,
     pub best: i32,
+    /// The talk over the fee with the bidder he took (from asm 0x7694cc),
+    /// while a human seller still answers it.
+    pub fee: Option<crate::fee_talk::FeeTalk>,
+    /// What computer clubs alone settled on (`FUN_0076d021`).
+    pub settled: Option<Settled>,
+}
+
+/// A purchase talk settled between computer clubs: who takes the player,
+/// for what fee, on what contract, and whether at once or for the
+/// season's end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Settled {
+    pub buyer: Side,
+    pub fee: u32,
+    pub terms: [u8; TERMS],
+    pub at_once: bool,
 }
 
 /// A club's frame in a purchase talk (`0x1c5bf60` + 0x5c per club, the
@@ -949,6 +1067,12 @@ const WANTED: i32 = 0x78;
 /// The squad beyond which each man takes a fiftieth off.
 const SQUAD_EASE: i32 = 0x12;
 
+/// Whether the pick values him above 120 (`FUN_00708b80`: the pick's
+/// percent weighed by his form), for which a club pays more.
+pub(crate) fn wanted(values: &crate::value::ValueTables, p: &crate::records::Player) -> bool {
+    values.pick_value(p) > WANTED
+}
+
 /// How much more or less a club pays him than his own (`FUN_0076e55c`'s
 /// factor): 1 at his own club; else by the seller's money (0.85 deep in
 /// debt, 0.95 in debt), more for a man the pick values above 120, for a
@@ -975,11 +1099,8 @@ fn bargain_factor(
     } else {
         1.0
     };
-    // FUN_00708b80: the pick's percent weighed by his form.
     let position = p.positions()[0];
-    let percent = tables.1.pick_percent(p.good(), p.traits(), position == 1);
-    let share = (f64::from(crate::statistics::form_today(p)) * 1.5 + 85.0) / 100.0;
-    if (f64::from(percent + 100) * share) as i32 > WANTED {
+    if wanted(tables.1, p) {
         f += 0.1;
     }
     // Club +0xbf0[position]: his position's men in the buyer's squad.
@@ -1260,48 +1381,91 @@ const RELEASE_UNIT: i64 = 50_000;
 /// (`FUN_0075827a`: `DAT_00b5cbd4` > 0xd8).
 const LATE_SEASON: i16 = 0xd8;
 
-/// The day's purchase talks (`FUN_0076cb3e`'s last loop: kind 3 →
-/// `FUN_00768638`, the entry removed either way). The talk ends at once
-/// when the player has left the selling club (`FUN_006968c4`) or the
-/// transfer list (`FUN_0075974f`); else each other club of the
-/// appointment drops out when the player's release fee (L+0x8e, R+0x156,
-/// in 50 000s) is set, the season is not past day 216 and the club can
-/// invest less (`FUN_00767b6a`, a human told by `FUN_00768497`), or when
-/// its squad is full (`FUN_00767c78`, told by `FUN_0076851f`); the
-/// seller is skipped (`FUN_006782aa`); before them the seller's frame,
-/// and each bidder left gets his own ([`Asking`]) with his remark and
-/// mood; then the bidders bargain his contract ([`PurchaseTalk::winner`]).
-/// The fee talk that follows (from asm 0x7693f9) is not built.
-/// Afterwards a listing whose terms read
-/// [`POACHED`] (E+0xd = 3) leaves the transfer list (`FUN_0075a71f`).
-pub fn purchase_talk_day(
+/// The next of the day's purchase talks (`FUN_0076cb3e`'s last loop:
+/// kind 3 → `FUN_00768638`), `None` when none is left; the player and the
+/// talk as far as it got, its fee talk still to answer by a human seller
+/// ([`PurchaseTalk::fee`]), and [`close_purchase_talk`] after it. The
+/// talk ends at once when the player has left the selling club
+/// (`FUN_006968c4`) or the transfer list (`FUN_0075974f`); else each other
+/// club of the appointment drops out when the player's release fee
+/// (L+0x8e, R+0x156, in 50 000s) is set, the season is not past day 216
+/// and the club can invest less (`FUN_00767b6a`, a human told by
+/// `FUN_00768497`), or when its squad is full (`FUN_00767c78`, told by
+/// `FUN_0076851f`); the seller is skipped (`FUN_006782aa`); before them
+/// the seller's frame, and each bidder left gets his own ([`Asking`]) with
+/// his remark and mood; then the bidders bargain his contract
+/// ([`PurchaseTalk::winner`]) and, a bidder's taken, the clubs his fee.
+#[allow(clippy::too_many_arguments)]
+pub fn next_purchase_talk(
     records: &mut Records,
     random: &mut crate::random::Random,
     tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    medical: &crate::medical::MedicalTables,
     nation_kinds: &[u8],
     day: i16,
     told: &mut Vec<Dropout>,
-) -> Vec<PurchaseTalk> {
-    let mut talks = Vec::new();
-    while let Some(t) =
-        appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)
-    {
-        if let Some(talk) = purchase_bidders(records, random, tables, nation_kinds, &t, day, told) {
-            talks.push(talk);
-        }
-        if listings(records).iter().any(|l| l.id == t.player && l.terms == POACHED) {
-            take_off(records, t.player);
-        }
-        cancel_talk(records, t.player);
+) -> Option<(u16, Option<PurchaseTalk>)> {
+    let t = appointments(records).into_iter().find(|t| t.day == day && t.kind == PURCHASE)?;
+    let talk = purchase_bidders(records, random, tables, medical, nation_kinds, &t, day, told);
+    Some((t.player, talk))
+}
+
+/// A purchase talk's end: a listing whose terms read [`POACHED`] (E+0xd =
+/// 3) leaves the transfer list (`FUN_0075a71f`), and the appointment goes
+/// (`FUN_0076cb3e`). (The move after a fee agreed with a human club —
+/// `FUN_0070ca69` — and the talk's messages 0x96 are not built.)
+pub fn close_purchase_talk(records: &mut Records, player: u16) {
+    if listings(records).iter().any(|l| l.id == player && l.terms == POACHED) {
+        take_off(records, player);
     }
-    talks
+    cancel_talk(records, player);
+}
+
+/// The fee talk after the bidders' rounds (`FUN_00768638` asm
+/// 0x7694cc–0x7698d1), for a bidder taken (the seller's own taken is his
+/// contract's renewal, not built). No fee is talked over for a man listed
+/// "ablösefrei" (E+0xd 2), one whose contract runs out — no year left, or
+/// its last and the bid not "ab sofort" (+0x3a 0x20, which day 216 past
+/// clears, `FUN_0075827a`) —, nor between clubs of a country (the youth's
+/// and amateurs' compensation, `FUN_0069d8b2` … `FUN_00708836`), and a
+/// release fee is paid as it stands; those moves are not built. Of the
+/// rest a human seller's is talked over ([`crate::fee_talk::FeeTalk`]); two
+/// computer clubs settle on the bidder's most, and a computer seller's
+/// turns with a human bidder (`FUN_0076e018`) are not built.
+fn fee_opening(
+    records: &Records,
+    random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    medical: &crate::medical::MedicalTables,
+    talk: &PurchaseTalk,
+    day: i16,
+) -> Option<crate::fee_talk::FeeTalk> {
+    let k = talk.winner.filter(|&k| k > 0)?;
+    let offer = talk.offers.get(k - 1)?;
+    let buyer = *talk.bidders.get(k - 1)?;
+    let p = records.player(talk.player)?;
+    let years = i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year());
+    let at_once = offer.flags() & ASKING_AT_ONCE != 0 && day <= LATE_SEASON;
+    if listed_terms(records, talk.player) == Some(FREE_TRANSFER) || years < 1 || (years == 1 && !at_once) {
+        return None;
+    }
+    if buyer.0 == talk.seller.0 || p.fixed_fee() > 0 {
+        return None;
+    }
+    let managers = [talk.asking.manager, offer.manager];
+    let mut fee =
+        crate::fee_talk::FeeTalk::open(records, random, tables, medical, talk.player, talk.seller, buyer, managers)?;
+    fee.at_once = at_once;
+    (managers[0] != 0).then_some(fee)
 }
 
 /// `FUN_00768638` up to its bargaining: who still bids.
+#[allow(clippy::too_many_arguments)]
 fn purchase_bidders(
     records: &mut Records,
     random: &mut crate::random::Random,
     tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    medical: &crate::medical::MedicalTables,
     nation_kinds: &[u8],
     t: &Appointment,
     day: i16,
@@ -1339,9 +1503,106 @@ fn purchase_bidders(
     if bidders.is_empty() {
         return None;
     }
-    let mut talk = PurchaseTalk { player: t.player, seller, bidders, opening, asking, offers, winner: None, best: 1 };
+    let mut talk = PurchaseTalk {
+        player: t.player,
+        seller,
+        bidders,
+        opening,
+        asking,
+        offers,
+        winner: None,
+        best: 1,
+        fee: None,
+        settled: None,
+    };
+    if talk.asking.manager == 0 && talk.offers.iter().all(|f| f.manager == 0) {
+        talk.settled = computer_settlement(records, random, tables, medical, t, &talk, day);
+        return Some(talk);
+    }
     contract_rounds(records, random, tables, &mut talk, day);
+    talk.fee = fee_opening(records, random, tables, medical, &talk, day);
     Some(talk)
+}
+
+/// What a club of the second league down pays one of the first or the
+/// second for a man whose contract ran out, in Germany (`DAT_00a3b37c`,
+/// `DAT_00a3b394`).
+const RUN_OUT_FEES: [u32; 2] = [100_000, 40_000];
+const GERMANY: u8 = 0xe;
+
+/// A purchase talk of computer clubs alone (`FUN_0076d021`, from
+/// `FUN_00768638` asm 0x76914d), unless the appointment names one club
+/// only. Of its other clubs that are no human's and have squad room
+/// (`FUN_00767c78`) the one of the highest weight (+0x11 + 6k), the first
+/// on a tie, takes him on fresh terms (`FUN_00709fb6`) of two years at
+/// least — at once when the frame at its place in the appointment bids
+/// "ab sofort" (+0x3a 0x20; the frames stand closed up, so after a
+/// dropout it is another club's or none) and day 216 is not past
+/// (`FUN_0075827a`). With no year of his contract left, or its last and
+/// not at once, there is no fee but the German one above. Else
+/// `FUN_0076d60e` sets the bounds — the talk's winner (+0x2b4) still
+/// nought, so the seller's own club stands in for the bidder — and the
+/// fee is the bidder's most, or his release fee when the seller's least
+/// reaches it. Then the move (`FUN_0070ca69`).
+#[allow(clippy::too_many_arguments)]
+fn computer_settlement(
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    medical: &crate::medical::MedicalTables,
+    t: &Appointment,
+    talk: &PurchaseTalk,
+    day: i16,
+) -> Option<Settled> {
+    if t.clubs.len() == 1 {
+        return None;
+    }
+    let seller = talk.seller;
+    let mut best: Option<(u8, usize)> = None;
+    for (k, &club) in t.clubs.iter().enumerate().skip(1) {
+        let Some(team) = records.team(u16::from(club.0), club.1 as u16) else { continue };
+        if team.human() != 0 || team.player_count() >= FULL_SQUAD {
+            continue;
+        }
+        let weight = t.weights.get(k).copied().unwrap_or(0);
+        if best.is_none_or(|(w, _)| weight > w) {
+            best = Some((weight, k));
+        }
+    }
+    let (_, k) = best?;
+    let buyer = t.clubs[k];
+    let levels = [seller, buyer].map(|c| records.team(u16::from(c.0), c.1 as u16).map_or(0, |team| team.level()));
+    let mut terms = crate::free_agents::fresh_contract(records, t.player, levels[1], tables, random)?;
+    if (terms[12] as i8) < 2 {
+        terms[12] = 2;
+    }
+    let frame = if k == 0 { Some(&talk.asking) } else { talk.offers.get(k - 1) };
+    let at_once = frame.is_some_and(|f| f.flags() & ASKING_AT_ONCE != 0) && day <= LATE_SEASON;
+    let p = records.player(t.player)?;
+    let years = (i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year())) as i8;
+    let fixed = i64::from(p.fixed_fee()) * RELEASE_UNIT;
+    let fee = if years < 1 || (years == 1 && !at_once) {
+        if seller.0 == GERMANY && levels[0] > 1 && buyer.0 == GERMANY {
+            RUN_OUT_FEES.get(usize::from(levels[1])).copied().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        let managers = [talk.asking.manager; 2];
+        let bounds =
+            crate::fee_talk::FeeTalk::open(records, random, tables, medical, t.player, seller, seller, managers)?;
+        if fixed == 0 || i64::from(bounds.least as u32) * 1000 < fixed {
+            (bounds.most as u32).wrapping_mul(1000)
+        } else {
+            fixed as u32
+        }
+    };
+    if at_once {
+        crate::deals::move_now(records, random, t.player, seller, buyer, fee, &terms);
+    } else {
+        crate::deals::agree(records, random, t.player, seller, buyer, fee, &terms);
+    }
+    Some(Settled { buyer, fee, terms, at_once })
 }
 
 /// A bidder's remark and mood (`FUN_00768638` asm 0x768da1–0x7690f3),
@@ -1484,8 +1745,8 @@ fn among_the_best(records: &Records, team: &crate::records::Team, p: &crate::rec
 
 /// The bidders' rounds over the player's contract (`FUN_00768638` asm
 /// 0x7690f8–0x7693f9). Only with a human manager among the frames
-/// (-0x14; a talk of computer clubs alone goes to `FUN_0076d021`, not
-/// built) and unless the first pre-season stands still (`FUN_005ef56c`).
+/// (-0x14; a talk of computer clubs alone is [`computer_settlement`]'s)
+/// and unless the first pre-season stands still (`FUN_005ef56c`).
 /// A human party hears of it (message 0x9a by `FUN_00768366`,
 /// `FUN_0076a49a`, the remark by `FUN_0076a4ee`; not built). Then each
 /// frame still in, from the first bidder on and from the seller's on
@@ -1564,7 +1825,7 @@ fn computer_bid(
 }
 
 /// What terms are worth to the player at a club (`FUN_00709c52`).
-fn offer_worth(
+pub(crate) fn offer_worth(
     records: &Records,
     tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
     p: &crate::records::Player,
@@ -1711,6 +1972,58 @@ const RAISE: f64 = 1.05;
 mod tests {
     use super::*;
 
+    /// The day's purchase talks played as the cycle plays them, a human
+    /// seller holding to his asking at its step each round ("choose 4095
+    /// 0"); each talk as its fee talk ended.
+    fn purchase_talk_day(
+        records: &mut Records,
+        random: &mut crate::random::Random,
+        rules: &crate::season::Rules,
+        day: i16,
+        told: &mut Vec<Dropout>,
+    ) -> Vec<PurchaseTalk> {
+        let mut talks = Vec::new();
+        let tables = (&rules.contract, &rules.value);
+        while let Some((player, talk)) = next_purchase_talk(records, random, tables, &rules.medical, &[], day, told) {
+            if let Some(mut talk) = talk {
+                if let Some(fee) = talk.fee.as_mut() {
+                    loop {
+                        fee.ask(crate::fee_talk::amount(crate::fee_talk::step(fee.demand)), fee.pressing());
+                        if fee.after_seller().or_else(|| fee.bidder_turn(random)).is_some() {
+                            break;
+                        }
+                    }
+                }
+                talks.push(talk);
+            }
+            close_purchase_talk(records, player);
+        }
+        talks
+    }
+
+    /// Nsoki's fee talk on A, day 64: Union's human manager sells, 59/3
+    /// bids; the bounds the original's talk held at its first dialog 308
+    /// (a man listed for a fee: nine months' worth, 2 070 000), the
+    /// asking at its step (10 000) each round, and the bidder's offer
+    /// rising from 80 less a draw in 21 and its manager's skill hundredths
+    /// of its most till its patience runs out — no fee agreed.
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_day_64_fee_talk_runs_out() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let rules = crate::season::Rules::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let mut random = crate::random::Random::from_state(12345, 67890);
+        let talks = purchase_talk_day(&mut records, &mut random, &rules, 64, &mut Vec::new());
+        let fee = talks.iter().find(|t| t.player == 3262).and_then(|t| t.fee.clone()).unwrap();
+        assert_eq!((fee.seller, fee.buyer, fee.value), ((14, 84), (59, 3), 2_070_000));
+        assert_eq!((fee.asking, fee.least, fee.most), (10_350, 2_070, 2_459));
+        assert_eq!(fee.demand, 10_000);
+        assert!(fee.out[1] && !fee.out[0] && fee.offer <= fee.most);
+    }
+
     /// The two purchase talks save A books for day 64 open as
     /// `FUN_00768638`'s first block has them: Nsoki (3262) and Young
     /// (2168), each partner's stance written back to R+0x27f and the
@@ -1800,7 +2113,7 @@ mod tests {
         let booked: Vec<_> =
             appointments(&records).into_iter().filter(|t| t.day == 64 && t.kind == PURCHASE).collect();
         let mut random = crate::random::Random::from_state(7, 9);
-        let talks = purchase_talk_day(&mut records, &mut random, (&rules.contract, &rules.value), &[], 64, &mut Vec::new());
+        let talks = purchase_talk_day(&mut records, &mut random, &rules, 64, &mut Vec::new());
         assert!(talks.iter().any(|t| !t.offers.is_empty()));
         let mut lowered = 0;
         for talk in &talks {
@@ -1824,9 +2137,9 @@ mod tests {
     /// he takes them — worth more than the share to him, its salary
     /// within what it would pay and above what it opened on; a club of a
     /// country not played counts 18 matchdays for his bonuses. Young's,
-    /// computer clubs only, is not bargained here, and its bidder 14/20
-    /// keeps the remark of a man it has no place for: four years and a
-    /// regular place.
+    /// computer clubs only, is not bargained: its bidder 14/20 keeps the
+    /// remark of a man it has no place for — four years and a regular
+    /// place — and takes him at once, on fresh terms.
     #[test]
     #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
     fn the_day_64_bidders_bargain_the_contract() {
@@ -1838,7 +2151,7 @@ mod tests {
         let tables = (&rules.contract, &rules.value);
         let before = Records::from_save(Save::read(&save).unwrap()).unwrap();
         let mut random = crate::random::Random::from_state(12345, 67890);
-        let talks = purchase_talk_day(&mut records, &mut random, tables, &[], 64, &mut Vec::new());
+        let talks = purchase_talk_day(&mut records, &mut random, &rules, 64, &mut Vec::new());
         let nsoki = talks.iter().find(|t| t.player == 3262).unwrap();
         assert_eq!(nsoki.bidders, [(59, 3)]);
         assert_eq!(nsoki.winner, Some(1));
@@ -1851,6 +2164,16 @@ mod tests {
         assert_eq!(offer_worth(&before, tables, p, team, &offer.terms).unwrap() + i32::from(offer.mood), nsoki.best);
         let young = talks.iter().find(|t| t.player == 2168).unwrap();
         assert_eq!(young.winner, None);
+        let settled = young.settled.unwrap();
+        assert_eq!((settled.buyer, settled.at_once), ((14, 20), true));
+        assert!(settled.fee > 0 && settled.terms[12] >= 2);
+        let moved = records.player(2168).unwrap();
+        assert_eq!(moved.club(), [14, 20]);
+        assert_eq!(moved.get::<u32>(0x158), settled.fee / 1000);
+        assert_eq!(moved.salary(), u16::from_le_bytes([settled.terms[0], settled.terms[1]]));
+        assert!(records.team(14, 20).unwrap().players().contains(&2168));
+        assert!(!records.team(14, 43).unwrap().players().contains(&2168));
+        assert_eq!(nsoki.settled, None);
         let offer = &young.offers[0];
         assert_eq!((offer.remark, offer.years()), (0x5d6, 4));
         assert_ne!(offer.flags() & crate::contract::REGULAR_PLACE, 0);
@@ -2034,7 +2357,7 @@ mod tests {
             let today = before.iter().filter(|t| t.day == day && t.kind == PURCHASE).count();
             let mut told = Vec::new();
             let mut random = crate::random::Random::from_state(1, 1);
-            let talks = purchase_talk_day(&mut records, &mut random, (&rules.contract, &rules.value), &[], day, &mut told);
+            let talks = purchase_talk_day(&mut records, &mut random, &rules, day, &mut told);
             let after = appointments(&records);
             assert_eq!(after.len(), before.len() - today);
             assert!(!after.iter().any(|t| t.day == day && t.kind == PURCHASE));

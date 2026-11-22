@@ -70,7 +70,9 @@ pub const BUYER_WAGE: i32 = 120_000;
 pub const MARKETING_WAGE: i32 = 240_000;
 
 /// A kind of article; one of the first four, which every range keeps,
-/// is fixed (+0x10 is 1).
+/// is fixed (+0x10 is 1). The high bit of the word at +0x14
+/// (`DAT_00890194`) marks the kinds whose weeks never change: seven of
+/// them in the original's table, and they stand at one week.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kind {
     pub name: u16,
@@ -78,6 +80,7 @@ pub struct Kind {
     pub bought_at: i32,
     pub sold_at: i32,
     pub fixed: u16,
+    pub weeks_fixed: bool,
 }
 
 pub struct MerchandiseTables {
@@ -95,6 +98,7 @@ impl MerchandiseTables {
                 bought_at: k[2] as i32,
                 sold_at: k[3] as i32,
                 fixed: k[4] as u16,
+                weeks_fixed: k[5] & 0x8000_0000 != 0,
             })
             .collect();
         Ok(Self { kinds })
@@ -108,6 +112,28 @@ pub fn delivery_weeks(records: &Records) -> Vec<i16> {
         .block("local_a8")
         .map(|b| b.chunks_exact(2).map(|w| i16::from_le_bytes([w[0], w[1]])).collect())
         .unwrap_or_default()
+}
+
+/// The new season's weeks of delivery (`FUN_00613f70`): every kind gets
+/// one to four weeks by a draw below 4 — sixty-two of them, the seven
+/// whose table word at +0x14 carries the high bit (`DAT_00890194`)
+/// standing at one week without a draw. `FUN_00614477`, `FUN_006753f4`
+/// and `FUN_006815cf`, which follow in the original, draw nothing.
+pub fn open_weeks(records: &mut Records, tables: &MerchandiseTables, random: &mut crate::random::Random) {
+    let weeks: Vec<i16> = tables
+        .kinds
+        .iter()
+        .take(KINDS)
+        .map(|k| if k.weeks_fixed { 1 } else { random.below(4) as i16 + 1 })
+        .collect();
+    let Some(block) = records.block_mut("local_a8") else { return };
+    for (n, w) in weeks.into_iter().enumerate() {
+        let at = n * 2;
+        if at + 2 > block.len() {
+            break;
+        }
+        block[at..at + 2].copy_from_slice(&w.to_le_bytes());
+    }
 }
 
 /// A copy of a human club's range.

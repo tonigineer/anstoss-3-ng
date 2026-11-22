@@ -72,7 +72,7 @@ const PLAYER_SHIRT: usize = 28;
 /// The files number positions differently from the game: their 6 and 8,
 /// defensive and right midfield, are the other way round (a table in the
 /// game).
-const POSITION_CODES: [u8; 11] = [0, 1, 2, 3, 4, 5, 8, 7, 6, 9, 10];
+pub(crate) const POSITION_CODES: [u8; 11] = [0, 1, 2, 3, 4, 5, 8, 7, 6, 9, 10];
 /// A player shows at most this many abilities, the good ones first.
 const MOST_ABILITIES: u32 = 3;
 /// Positions run from 1, the goalkeeper, to 10, the striker; players with
@@ -84,7 +84,7 @@ pub const STRIKER: u8 = 10;
 const BONUS_CLUBS: usize = 1;
 const BONUS_FLAGS: usize = 3;
 
-const LAND_FILES: [&str; SLOTS] = [
+pub(crate) const LAND_FILES: [&str; SLOTS] = [
     "LandDeut.sav",
     "LandEngl.sav",
     "LandFran.sav",
@@ -98,7 +98,7 @@ const LAND_FILES: [&str; SLOTS] = [
     "LandTuer.sav",
     "Bonus1.sav",
 ];
-const LEAGUE_FILES: [&[&str]; SLOTS] = [
+pub(crate) const LEAGUE_FILES: [&[&str]; SLOTS] = [
     &[
         "Liga1Deu.sav",
         "Liga2Deu.sav",
@@ -375,7 +375,7 @@ fn positions([main, second, third]: [i64; 3]) -> [u8; 3] {
 
 /// The abilities a player shows: the files keep them shifted by a bit, the
 /// bad ones only where the player is not good; three at most, bit by bit.
-fn abilities(good: i64, bad: i64) -> [u16; 2] {
+pub(crate) fn abilities(good: i64, bad: i64) -> [u16; 2] {
     let good = (good >> 1) as u16;
     let bad = (bad >> 1) as u16 & !good;
     let mut kept = [0, 0];
@@ -439,7 +439,7 @@ fn capacity(stadium: &Section) -> i64 {
 }
 
 /// A file in `dir` by name, ignoring case as Windows does.
-fn find(dir: &Path, name: &str) -> io::Result<std::path::PathBuf> {
+pub(crate) fn find(dir: &Path, name: &str) -> io::Result<std::path::PathBuf> {
     let exact = dir.join(name);
     if exact.is_file() {
         return Ok(exact);

@@ -9,6 +9,7 @@ pub mod bitmap_font;
 pub mod cpr;
 pub mod exe;
 pub mod help;
+pub mod interview;
 pub mod jpeg;
 pub mod rch;
 pub mod saq;

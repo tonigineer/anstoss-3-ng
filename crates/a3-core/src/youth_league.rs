@@ -602,6 +602,23 @@ pub(crate) fn open_season(records: &mut Records, country: u16) {
     }
 }
 
+/// A club's youth classed by its support at the new season
+/// (`FUN_00774a99`, through the stages' copy `FUN_0066fae0` and its
+/// write-back `FUN_0066fb1e`): the stage block's bytes 3 to 8 of the club
+/// — two for each age group — take the class (1 rich, 2 middling, 3
+/// poor), bytes 9 to 11, whether each age group has played, fall to
+/// nought; the stage bytes 0 to 2 stay.
+pub(crate) fn class_youth(records: &mut Records, country: u16, club: usize, class: u8) {
+    let slot = records.countries.slot(country.into());
+    let Some(block) = records.block_mut(&format!("{OBJECT:#x}[{slot}]")) else { return };
+    let at = STAGES_AT + club * CLUB_STAGES;
+    if club >= STAGE_CLUBS || block.len() < at + CLUB_STAGES {
+        return;
+    }
+    block[at + 3..at + 9].fill(class);
+    block[at + 9..at + CLUB_STAGES].fill(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

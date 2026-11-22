@@ -461,7 +461,7 @@ fn years_text(cx: &Cx, years: i8) -> String {
 
 /// How long his contract runs (`FUN_00732b5c`): none, expiring before
 /// July, the years left; and then the season it ends.
-fn contract_text(cx: &Cx, years: i8, today: chrono::NaiveDate) -> String {
+pub(crate) fn contract_text(cx: &Cx, years: i8, today: chrono::NaiveDate) -> String {
     use chrono::Datelike;
     let game = cx.game;
     let spring = today.month() < 7;

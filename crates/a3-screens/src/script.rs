@@ -729,7 +729,11 @@ mod tests {
     /// A game loaded mid-week turns on its saved day and then walks only
     /// the rest of its week: the traced original of save "Toni" (day 62,
     /// its week from 56, 7 Nov) showed dialog 147 again at day 63, with
-    /// the week's wait 381 just before it — not seven days on at 69.
+    /// the week's wait 381 just before it — not seven days on at 69 — and
+    /// between them the window of the record the save holds, which the
+    /// turn before the match leaves alone. Behind that turn the saved day's
+    /// own matches are played (A, the same game a day on, holds Wolfsburg
+    /// against Union), their dialogs before the day moves on.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_load_mid_week_turns_again_at_its_weeks_boundary() {
@@ -746,6 +750,14 @@ mod tests {
              on 461 ok
              on 270 ok
              on 381 wait
+             on 477 ok
+             on 96 ok
+             on 93 press 1943
+             on 499 ok
+             on 41 ok
+             on 332 ok
+             on 269 ok
+             on 383 click at 460 210
              until day 64",
         )
         .unwrap();
@@ -758,6 +770,7 @@ mod tests {
         assert_eq!(season.day, 64, "{}", runner.log.join("\n"));
         assert_eq!(seen(&runner, 147), 2, "{}", runner.log.join("\n"));
         assert_eq!(seen(&runner, 381), 1, "{}", runner.log.join("\n"));
+        assert_eq!(seen(&runner, 477), 1, "{}", runner.log.join("\n"));
         // The saved week's start (56) stood through the saved day's turn;
         // the planner counts from 63 only since the new week opened.
         assert_eq!(records.globals.week_start(), 63);
@@ -773,6 +786,13 @@ mod tests {
             let script =
                 Script::parse(&LOAD.replace("row 5144 0", &format!("row 5144 {row}"))).unwrap();
             let (runner, result) = Runner::play(&game, &script);
+            // A first manager without a club opens his turn in the
+            // dressing room (S2), one who chose it in his office or text
+            // menu (Office), not on a line-up.
+            use a3_core::cycle::dialogs::{DRESSING_ROOM, GRAND_OFFICE, OFFICE, TEXT_MENU};
+            if [DRESSING_ROOM, OFFICE, GRAND_OFFICE, TEXT_MENU].contains(&runner.host.view().id) {
+                continue;
+            }
             result.unwrap_or_else(|err| panic!("{}: {err}\n{}", save.name, runner.log.join("\n")));
             let view = runner.host.view();
             assert_eq!(view.id, 147, "{}", save.name);
@@ -3452,8 +3472,8 @@ mod tests {
         let root = patched(&dir, "A", "league-days", |_| {});
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+        let play = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\non 383 click at 460 210\nrepeat 10 days";
         // The save as copied, to reckon the players' figures against.
         let bytes = std::fs::read(root.join("saves/league-days.an3")).unwrap();
         let before = a3_core::records::Records::from_save(a3_files::an3::Save::parse(&bytes).unwrap())
@@ -3468,25 +3488,25 @@ mod tests {
                     .unwrap_or_default()
             })
             .collect();
-        let apps = |recs: &a3_core::records::Records| {
+        let apps = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_matches())))
                 .sum::<usize>()
         };
-        let goals = |recs: &a3_core::records::Records| {
+        let goals = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.goals()[0])))
                 .sum::<usize>()
         };
-        let lesss = |recs: &a3_core::records::Records| {
+        let lesss = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| usize::from(recs.player(id).map_or(0, |p| p.league_less()[0])))
                 .sum::<usize>()
         };
-        let carded = |recs: &a3_core::records::Records| {
+        let carded = |recs: &a3_core::records::Records, squad: &[u16]| {
             squad
                 .iter()
                 .map(|&id| {
@@ -3498,8 +3518,6 @@ mod tests {
                 })
                 .sum::<usize>()
         };
-        let (apps_before, goals_before, less_before, carded_before) =
-            (apps(&before), goals(&before), lesss(&before), carded(&before));
         let tor_before: usize = statistics::torjaeger(&before, home_nation, 0)
             .iter()
             .map(|r| usize::from(r.values[0]))
@@ -3509,6 +3527,15 @@ mod tests {
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
         let nation = u16::try_from(records.globals.main_country()).unwrap();
         let league = opponent::League::of(records, nation, 0).expect("the first league");
+        // A man sold on in these days leaves his season's counts and rows
+        // behind (`FUN_00707bbf`): the players' figures are reckoned over
+        // those still at their club.
+        let squad: Vec<u16> = squad
+            .into_iter()
+            .filter(|&id| before.player(id).map(|p| p.club()) == records.player(id).map(|p| p.club()))
+            .collect();
+        let (apps_before, goals_before, less_before, carded_before) =
+            (apps(&before, &squad), goals(&before, &squad), lesss(&before, &squad), carded(&before, &squad));
         // The save opened on three played matchdays, and the days since
         // each pair meet once a week at least.
         assert!(league.played() > 3, "still only {} matchdays played", league.played());
@@ -3635,11 +3662,11 @@ mod tests {
             })
             .sum();
         assert!(
-            apps(records) >= apps_before + 20 * new_games,
+            apps(records, &squad) >= apps_before + 20 * new_games,
             "apps {apps_before} → {}, {new_games} games",
-            apps(records)
+            apps(records, &squad)
         );
-        assert_eq!(goals(records), goals_before + new_goals, "scorers' goals");
+        assert_eq!(goals(records, &squad), goals_before + new_goals, "scorers' goals");
         let tor_after: usize = statistics::torjaeger(records, nation, 0)
             .iter()
             .map(|r| usize::from(r.values[0]))
@@ -3699,9 +3726,9 @@ mod tests {
                 nibbled += usize::from(nibbles[md] >> 4);
             }
         }
-        assert_eq!(apps(records), apps_before + row_apps, "the rows and the appearance counts");
-        assert_eq!(lesss(records), less_before + came_ons, "the coming-ons at +0x254");
-        assert_eq!(carded(records), carded_before + row_cards, "the rows' cards and the counters");
+        assert_eq!(apps(records, &squad), apps_before + row_apps, "the rows and the appearance counts");
+        assert_eq!(lesss(records, &squad), less_before + came_ons, "the coming-ons at +0x254");
+        assert_eq!(carded(records, &squad), carded_before + row_cards, "the rows' cards and the counters");
         assert_eq!(nibbled, new_goals, "the matchday goal nibbles");
         // The grade of the last match stands at +0x273 as the row shows it.
         let last = league.played() - 1;
@@ -3897,7 +3924,7 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 10 days";
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok\nrepeat 10 days";
         let Some(runner) = on_save(&game, "cup-days", play) else { return };
         let state = runner.host.state();
         let (season, records) = (state.season.as_ref().unwrap(), state.records.as_ref().unwrap());
@@ -8001,7 +8028,7 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_week_walks_to_its_dial() {
         let game = game();
-        let load = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\n";
+        let load = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\non 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\n";
         let walk = format!("{load}until dialog 2");
         let dialled = format!("{walk}\nnow press 9932\nnow press 9932\nuntil dialog 2");
         let Some(plain) = on_save(&game, "A", &walk) else { return };
@@ -8392,7 +8419,7 @@ mod tests {
     fn a_joined_turnier_shows_its_draw_and_results() {
         let game = game();
         let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
-                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 419 ok\non 477 ok\n\
                     on 380 press 4731\non 381 wait\non 2 wait\non 384 press 4741\non 99 press 2\non 423 ok";
         let draw = format!(
             "now click bar 6\nuntil dialog 348\nnow drag at 540 253 to 180 222\nuntil dialog 296\n\
@@ -8554,10 +8581,10 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn a_hosted_hall_shows_its_results() {
         let game = game();
-        let ways = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
                     on 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\non 477 ok\n\
                     on 380 press 4731\non 270 press 3734\non 499 ok\non 381 wait\non 2 wait\n\
-                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 308 choose 4095 0\non 332 ok\non 269 ok\n\
                     on 93 press 1943\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\n\
                     on 310 click at 320 240\non 331 press 4303\non 65 click at 165 330\non 423 ok\n\
                     on 1 click at 320 357\non 375 click at 617 182; press 4715";
@@ -9347,9 +9374,9 @@ mod tests {
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
         // As in the tax test up to the statement, then OK.
-        let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\non 356 press 4542\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
-                    until dialog 417\nnow press 1";
+                    until dialog 417\nnow press 1\nuntil dialog 356\nnow press 4542";
         let Some(mut runner) = on_save(&game, "season-open", then) else { return };
         // The cycle opens the new season behind the press: wait for its
         // next screen before reading the state.
@@ -9406,15 +9433,16 @@ mod tests {
                         on 364 ok\n\
                         on 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 147 click bar 18\non 302 click bar 18\n\
-                        on 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\non 99 press 2\n\
+                        on 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\non 99 press 2\n\
                         on 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
                         on 375 click at 617 182; press 4715\non 461 ok\non 384 press 4741\non 2 wait\n\
-                        on 381 wait\n";
+                        on 381 wait\non 356 press 4542\non 22 press 1306\non 152 press 2594\n\
+                        on 379 ok\non 314 ok\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(5);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
-             now press 1\n{turns}until day 30"
+             now press 1\n{turns}until dialog 301\nnow ok\nuntil day 30"
         );
         let Some(mut runner) = on_save(&game, "seasons-on", &then) else { return };
         let _ = runner.settle();
@@ -9503,7 +9531,7 @@ mod tests {
         compose(&mut game);
         let then = "on 384 press 4741\non 2 wait\non 381 wait\n\
                     now click bar 9\nuntil dialog 417\nnow click bar 18\n\
-                    until dialog 417\nnow press 1";
+                    until dialog 417\nnow press 1\nuntil dialog 301\nnow ok";
         let Some(mut runner) = on_save(&game, "season-kept", then) else { return };
         let _ = runner.settle();
         let log = runner.log.join("\n");
@@ -9902,8 +9930,8 @@ mod tests {
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn home_gates_fill_the_black_cash_box() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
-        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok\nrepeat 14 days";
+        let play = "on 89 press 1875\non 41 ok\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 383 click at 460 210\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok\nrepeat 14 days";
         let figures = |runner: &Runner| {
             let state = runner.host.state();
             let records = state.records.as_ref().unwrap();
@@ -9946,8 +9974,8 @@ mod tests {
         let root = patched(&dir, "A", "ability-book", |_| {});
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let walk = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 25 ok\non 270 ok";
+        let walk = "on 89 press 1875\non 41 ok\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 161 ok\non 270 ok";
         let row = game.save_games().iter().position(|s| s.name == "ability-book").unwrap();
         let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
         let icon = |keeper: bool, good: bool, at: usize| {
@@ -10380,8 +10408,8 @@ mod tests {
                 if grade == 0 { "-".to_owned() } else { format!("{:.1}", (5 * grade) as f32 / 10.0) }
             );
         }
-        // The position group stands chosen while the bests list — whose
-        // table the replica does not have — stays empty.
+        // The position group stands chosen while the bests list stays
+        // empty: the team block names no coach whose record it reads.
         let positions = crate::screens::control(dialog, 4775).unwrap();
         let bests = crate::screens::control(dialog, 4558).unwrap();
         let runner = on_save(&game, "nationalpick", &format!("{open}\nnow choose 4775 1")).unwrap();
@@ -10963,8 +10991,8 @@ mod tests {
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let week = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
-                    on 384 press 4741\non 2 wait\non 381 wait\non 270 ok\non 417 ok\n\
+        let week = "on 89 press 1875\non 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 270 ok\non 417 ok\non 41 ok\n\
                     until dialog 25";
         let runner = on_save(&game, "week-start-talks", week).unwrap();
         let list = control(&game.dialogs[&25], 1313).unwrap();
@@ -11201,18 +11229,19 @@ mod tests {
         });
         let mut game = Game::load(&root).unwrap();
         compose(&mut game);
-        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
                         on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
                         on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
-                        on 302 click bar 18\non 308 choose 4095 0\non 93 press 1943\non 383 click at 460 210\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\non 41 ok\non 383 click at 460 210\n\
                         on 99 press 2\non 307 click at 320 240\non 310 click at 320 240\non 331 press 4303\n\
                         on 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
-                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n\
+                        on 356 press 4542\non 379 ok\non 314 ok\n";
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let turns = "until dialog 417\nnow press 1\n".repeat(TURNS);
         let then = format!(
             "{handlers}now click bar 9\nuntil dialog 417\nnow click bar 18\nuntil dialog 417\n\
-             now press 1\n{turns}until day 30"
+             now press 1\n{turns}until dialog 422\nuntil day 30"
         );
         let play = || {
             let mut runner = on_save(&game, "hot-seat", &then).unwrap();
@@ -11325,7 +11354,8 @@ mod tests {
         drop(runner);
         let week = format!(
             "{ask}\non 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 2 wait\n\
-             on 461 ok\non 270 ok\non 381 wait\nuntil dialog 99"
+             on 461 ok\non 270 ok\non 381 wait\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\n\
+             on 332 ok\non 269 ok\non 383 click at 460 210\nuntil dialog 99"
         );
         let runner = on_save(&game, "Toni", &week).unwrap();
         let first_level = {
@@ -11357,5 +11387,1781 @@ mod tests {
         assert!(season.clubs.contains_key(&club));
         let records = state.records.as_ref().unwrap();
         assert_eq!(records.managers[records.human_slot(1).unwrap()].status(), 3);
+    }
+
+    /// Nsoki's fee talk on A, day 64, as the original holds it at its
+    /// first dialog 308 (seeds poked before the week): 59/3 offers 1 868
+    /// thousands, shown at its step (1.85 Mio), Union asks 10 350, shown
+    /// at 10 Mio; holding to it five rounds, the bidder runs out of
+    /// patience and Nsoki stays.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_seller_talks_over_the_fee_in_dialog_308() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 308")) else { return };
+        let text = |id: u16| runner.host.view().text(control(&game.dialogs[&308], id).unwrap()).to_owned();
+        assert_eq!(text(4070), "Stanley Nsoki");
+        assert_eq!(text(4078), "1.FC Union Berlin");
+        assert_eq!(text(4086), "1.85 Mio €");
+        assert_eq!(text(4088), "10.00 Mio €");
+        {
+            let state = runner.host.state();
+            let fee = state.season.as_ref().unwrap().fee_talk.clone().unwrap();
+            assert_eq!((fee.buyer, fee.offer, fee.demand, fee.most), ((59, 3), 1868, 10_350, 2459));
+        }
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")).unwrap();
+        assert_eq!(runner.log.iter().filter(|l| l.as_str() == "screen 308").count(), 5, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert!(state.season.as_ref().unwrap().fee_talk.is_none());
+        let nsoki = state.records.as_ref().unwrap().player(3262).unwrap();
+        assert_eq!((nsoki.club()[0], nsoki.club()[1]), (14, 84));
+    }
+
+    /// Young's purchase talk on A, day 64, computer clubs only (seeds
+    /// poked before the week, the fee talk before it held to its asking):
+    /// as the original's records stand after it, 14/20 has taken him from
+    /// 14/43 at once for 548 000 — a weaker man by the step, on fresh
+    /// terms of 60 and 3 till 2029 with his option, moved in the season
+    /// and out of the European cups, with the number 25, a second station
+    /// from 8 September, off the transfer list; the fee stands in both
+    /// clubs' books.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn computer_clubs_settle_a_purchase_talk_and_the_player_moves() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(before) = on_save(&game, "A", "") else { return };
+        let runner = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")).unwrap();
+        const YOUNG: u16 = 2168;
+        let books = |runner: &Runner, number: u16| {
+            let state = runner.host.state();
+            let team = state.records.as_ref().unwrap().team(14, number).unwrap();
+            // Net, sales and purchases (club +0x258, +0x470, +0x478).
+            (team.players().len(), team.get::<i32>(0x4d0), team.get::<i64>(0x6e8), team.get::<i64>(0x6f0))
+        };
+        let (old, new) = (books(&before, 43), books(&before, 20));
+        assert_eq!(books(&runner, 43), (old.0 - 1, old.1 + 548_000, old.2 + 548_000, old.3));
+        assert_eq!(books(&runner, 20), (new.0 + 1, new.1 - 548_000, new.2, new.3 + 548_000));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let p = records.player(YOUNG).unwrap();
+        assert_eq!((p.club(), p.strength(), p.shirt()), ([14, 20], 4, 25));
+        assert_eq!((p.salary(), p.appearance_bonus(), p.goal_bonus(), p.fixed_fee()), (60, 3, 0, 0));
+        assert_eq!((p.contract(), p.terms(), p.get::<u32>(0x158), p.get::<u8>(0x161)), (2029, 0x1810, 548, 0));
+        assert_eq!((p.retiring(), p.intensity(), p.get::<i16>(0x1f4)), (0, 3, 0));
+        assert_eq!(p.career_count(), 2);
+        let station: [u8; 0x14] = p.get(0x34);
+        assert_eq!(station, [9, 9, 0xe9, 7, 0, 0, 0, 0, 0x24, 2, 0, 0, 0, 0, 0, 0, 14, 20, 1, 4]);
+        assert!(records.team(14, 20).unwrap().players().contains(&YOUNG));
+        assert!(!records.team(14, 43).unwrap().players().contains(&YOUNG));
+        assert!(!a3_core::transfers::listings(records).iter().any(|l| l.id == YOUNG));
+        // Both squads' best by position, their best sixteen's mean and
+        // the sixteenth (team +0x322), as the original left them.
+        let best = |number: u16| records.team(14, number).unwrap().get::<[u8; 16]>(0x322);
+        assert_eq!(best(43)[12..], [67, 0, 62, 0]);
+        assert_eq!(best(20)[12..], [58, 0, 50, 0]);
+    }
+
+    /// The same move on A, day 64: the search plans (team +0x34c) as the
+    /// original's records hold them after it — 14/20 has paid the fee and
+    /// a thousand times the salary out of both budgets and wants a libero
+    /// and a stopper at once and a libero more, all at 6; 14/43 has half
+    /// the fee more and wants a libero for nobody, a keeper short by 2 and
+    /// a forward short by 1, at 7.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn computer_clubs_plan_their_search_anew_after_a_transfer() {
+        let game = game();
+        let ways = "now random 12345 67890\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\n\
+                    on 341 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 93 press 1943\non 499 ok\non 161 ok\non 422 ok\n\
+                    on 419 ok\non 419 ok\non 477 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\non 308 choose 4095 0\nuntil day 65")) else { return };
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let plan = |number: u16| records.team(14, number).unwrap().get::<[u8; 0x28]>(0x34c);
+        let budgets = |b: [u8; 0x28]| (i32::from_le_bytes(b[0..4].try_into().unwrap()), i32::from_le_bytes(b[4..8].try_into().unwrap()));
+        assert_eq!(budgets(plan(20)), (1_892_000, -608_000));
+        assert_eq!(plan(20)[0x12..0x26], [3, 0, 2, 6, 5, 0, 1, 2, 3, 6, 5, 0, 1, 2, 2, 6, 3, 0, 1, 1]);
+        assert_eq!(budgets(plan(43)), (1_922_000, -578_000));
+        assert_eq!(plan(43)[0x12..0x26], [3, 0, 2, 7, 3, 0, 1, 1, 1, 7, 2, 0, 1, 1, 10, 7, 1, 0, 1, 1]);
+    }
+
+    /// A's switch for the tables stands at 1 ("an"): the matchday of day
+    /// 69 played, dialog 269 opens on the one league with a human's club,
+    /// the 1. Bundesliga — its headline, the day's nine games two to a
+    /// line, the eighteen clubs with their home and away figures, Union
+    /// red, each place's box in its colour — and its OK closes it after
+    /// that league; the walk goes on to the next turn.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_table_after_the_matchday_shows_the_human_league() {
+        let game = game();
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok\non 332 ok\non 383 click at 460 210";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 269")) else { return };
+        let dialog = &game.dialogs[&269];
+        let view = runner.host.view();
+        let id = |id: u16| control(dialog, id).unwrap();
+        assert_eq!(view.header(id(3727)).unwrap().text, "1. Bundesliga: Der 4. Spieltag im Überblick");
+        assert!(view.header(id(3730)).unwrap().text.starts_with(r"Pos\tVerein\tSpiele\tGesamt\t"));
+        let results = view.list(id(3728)).unwrap();
+        assert_eq!(results.rows.len(), 5);
+        let first = results.rows[0].split('\t').collect::<Vec<_>>();
+        assert_eq!(first.len(), 12, "{:?}", results.rows[0]);
+        assert!(first[1].starts_with("- ") && first[3].starts_with(':') && first[4].starts_with('('));
+        assert!(results.rows[4].ends_with('\t'), "the ninth game stands alone: {:?}", results.rows[4]);
+        let table = view.list(id(3729)).unwrap();
+        assert_eq!(table.rows.len(), 18);
+        assert_eq!(table.tabs.len(), 19);
+        assert!(table.rows.iter().all(|r| r.split('\t').count() == 19));
+        let union = table.rows.iter().position(|r| r.contains("Union Berlin")).unwrap();
+        assert_eq!(table.inks[union], Some([255, 0, 0]));
+        assert_eq!(table.inks.iter().filter(|i| i.is_some()).count(), 1);
+        assert!(table.rows[0].starts_with("1.\t("));
+        let bar = |row: usize| table.bars[row].map(|b| (b.left, b.width, b.fill.0));
+        assert_eq!(bar(0), Some((5, 15, [255, 255, 0, 255])));
+        assert_eq!(bar(17).map(|b| b.2), Some([255, 160, 160, 255]));
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 332 ok\non 269 ok\nuntil day 70")).unwrap();
+        assert_eq!(seen(&runner, 269), 1, "{}", runner.log.join("\n"));
+    }
+
+    /// A's interviews are on: walking on from A, on the matchday the
+    /// roll draws one for Union, dialog 383 opens behind the table on
+    /// its first question — the reporter's words above, three answers to
+    /// click, no OK. Clicking the first answer's place through it, as
+    /// Toni's walk does, plays it to the reporter's thanks and closes it;
+    /// the walk goes on, the reporter's mood kept in the station's record.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_interview_after_the_match_opens_and_is_answered() {
+        let game = game();
+        if !game.save_games().iter().any(|s| s.name == "A") {
+            eprintln!("no A among the saves; the oracle's copy has it");
+            return;
+        }
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 332 ok\non 269 ok\non 161 ok";
+        let row = game.save_games().iter().position(|s| s.name == "A").unwrap();
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}"));
+        let play = |then: &str| Runner::play(&game, &Script::parse(&format!("{}\n{then}", load.trim_end())).unwrap());
+        // The roll is the game's: the first of a few seeds whose walk
+        // comes to an interview before the season's end.
+        let (seed, runner) = (1..20)
+            .find_map(|s| {
+                let (runner, result) = play(&format!("now random {s} {}\n{ways}\nuntil dialog 383", s * 7 + 3));
+                result.is_ok().then_some((s, runner))
+            })
+            .expect("an interview within the seeds");
+        let dialog = &game.dialogs[&383];
+        let id = |id: u16| control(dialog, id).unwrap();
+        let day = {
+            let state = runner.host.state();
+            let season = state.season.as_ref().unwrap();
+            let interview = season.interview.as_ref().expect("the interview runs");
+            let a3_core::interview::Page::Question { text, answers } = &interview.page else {
+                panic!("{:?}", interview.page)
+            };
+            let view = runner.host.view();
+            assert_eq!(view.text(id(3610)), text);
+            assert!(!text.is_empty());
+            for (k, answer) in answers.iter().enumerate() {
+                assert_eq!(view.text(id([4735, 4736, 4737][k])), answer);
+                assert!(!answer.is_empty());
+            }
+            assert!(view.controls[id(1)].hidden, "OK waits for the thanks");
+            season.day
+        };
+        drop(runner);
+        let (runner, result) = play(&format!("now random {seed} {}\n{ways}\non 383 click at 460 210\nuntil day {}", seed * 7 + 3, day + 1));
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(seen(&runner, 383), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert!(state.season.as_ref().unwrap().interview.is_none());
+        let recent = state.season.as_ref().unwrap().interview_recent;
+        assert!((1..=4).contains(&recent.iter().filter(|&&q| q != 0).count()), "{recent:?}");
+    }
+
+    /// A's Spielbericht switch is on: walking on from A, Union's 4th
+    /// matchday writes its report and dialog 332 opens on it behind the
+    /// match, before the table: both clubs, the league's matchday, the
+    /// score the league block holds with the half's, one goal row for
+    /// every goal with the running score, the crowd and the gate as the
+    /// home club booked them, the sixty minutes of a match without
+    /// stoppages; no other human club, so no crest below. OK goes on to
+    /// the table.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_report_opens_after_the_match() {
+        let game = game();
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\non 41 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 332")) else { return };
+        assert_eq!(seen(&runner, 269), 0, "the report comes before the table");
+        let dialog = &game.dialogs[&332];
+        let view = runner.host.view();
+        let id = |id: u16| control(dialog, id).unwrap();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let union = records.team(14, 84).unwrap();
+        let report = a3_core::statistics::match_report(records, union).expect("Union's report");
+        let [(hc, hn), (ac, an)] = report.sides();
+        assert!((hc, hn) == (14, 84) || (ac, an) == (14, 84), "{:?}", report.sides());
+        assert_eq!(report.competition(), 3, "the 4th matchday, from 0");
+        let league = a3_core::opponent::League::of(records, 14, union.level()).unwrap();
+        let game_of = league.games(3).into_iter().find(|&(h, a, _)| {
+            [league.team(h), league.team(a)].contains(&84)
+        });
+        let [gh, ga, hh, ha] = game_of.and_then(|g| g.2).expect("the match played");
+        assert_eq!(report.goals(), [i16::from(gh), i16::from(ga)]);
+        assert_eq!(view.text(id(4313)), format!("{gh}:{ga} ({hh}:{ha})"));
+        assert_eq!(view.text(id(4309)), game.club_name(Some(records), hc, hn));
+        assert_eq!(view.text(id(4311)), game.club_name(Some(records), ac, an));
+        assert_eq!(view.text(id(4307)), "1. Bundesliga - 4. Spieltag");
+        assert!(view.text(id(4312)).ends_with(". Platz"), "{:?}", view.text(id(4312)));
+        let goals = view.list(id(4335)).unwrap();
+        if gh + ga == 0 {
+            assert_eq!(goals.rows, ["Fehlanzeige"]);
+        } else {
+            assert_eq!(goals.rows.len(), usize::from(gh + ga), "{:?}", goals.rows);
+            let last = goals.rows.last().unwrap().split('\t').collect::<Vec<_>>();
+            assert_eq!((last[0], last[2]), (gh.to_string().as_str(), ga.to_string().as_str()), "{last:?}");
+        }
+        assert_eq!(view.list(id(4337)).unwrap().rows, ["keine"]);
+        assert!(report.attendance() > 0 && report.income() > 0);
+        assert_eq!(view.text(id(4332)), "60 Minuten");
+        assert!(view.text(id(4330)).starts_with("SR "));
+        for k in [4339, 4340, 4341, 4342, 4343, 4344] {
+            assert!(view.controls[id(k)].hidden, "{k}");
+        }
+        drop(state);
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 332 ok\nuntil dialog 269")).unwrap();
+        assert_eq!(seen(&runner, 332), 1, "{}", runner.log.join("\n"));
+    }
+
+    /// Walking on from A, Union's 4th matchday is a human's match after
+    /// the season's 42nd day: before its report dialog 96 opens on one
+    /// page in the middle of the one-page background — the league and
+    /// matchday, both clubs, their places, the strengths, Union's ground
+    /// with the played match's crowd, its visiting fans and pitch — the
+    /// other places' pages hidden with the display's combo. OK goes on to
+    /// the report.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_last_information_shows_before_the_match() {
+        let game = game();
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 41 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 96")) else { return };
+        assert_eq!(seen(&runner, 332), 0, "the information comes before the report");
+        let dialog = &game.dialogs[&96];
+        let page = &game.dialogs[&98];
+        let view = runner.host.view();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.prematch.len(), 1, "{:?}", season.prematch);
+        let shown = &season.prematch[0];
+        assert!(shown.sides.contains(&(14, 84)), "{:?}", shown.sides);
+        // The one-page slot is the first of the ten.
+        let per = page.controls.len();
+        let first = dialog.controls.iter().position(|c| c.id == Some(2025)).unwrap();
+        let at = |id: u16| first + page.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        assert!(view.controls[first..first + per].iter().all(|c| !c.hidden));
+        assert!(view.controls[first + per..first + 10 * per].iter().all(|c| c.hidden));
+        assert_eq!(dialog.controls[at(2025)].rect.min, bevy_math::Vec2::new(174.0, 144.0));
+        assert!(view.text(at(6424)).starts_with("1. Bundesliga "), "{:?}", view.text(at(6424)));
+        assert!(view.text(at(6424)).ends_with(" - 4. Spieltag"), "{:?}", view.text(at(6424)));
+        let [(hc, hn), (ac, an)] = shown.sides;
+        assert_eq!(view.text(at(2027)), game.club_name(Some(records), hc, hn));
+        assert_eq!(view.text(at(2032)), game.club_name(Some(records), ac, an));
+        assert!(view.text(at(2029)).starts_with('(') && view.text(at(2029)).ends_with(".)"));
+        assert_eq!(view.text(at(2028)).chars().count(), 3, "three matchdays played");
+        let strengths = view.text(at(2036)).split(" : ").map(|s| s.parse::<i32>().unwrap()).collect::<Vec<_>>();
+        assert_eq!(strengths.len(), 2);
+        assert!(strengths.iter().all(|&s| s > 0), "{strengths:?}");
+        let report = a3_core::statistics::match_report(records, records.team(14, 84).unwrap()).unwrap();
+        assert_eq!(shown.attendance, report.attendance());
+        let crowd = view.text(at(2037));
+        assert!(crowd == report.attendance().to_string() || crowd.ends_with(" (A)"), "{crowd:?}");
+        assert!(view.text(at(2038)).parse::<i32>().is_ok_and(|f| (0..=shown.attendance).contains(&f)));
+        assert!(!view.text(at(6449)).is_empty());
+        let pitches = [2203, 2204, 2205, 2206, 2207, 2208].map(|id| game.text(id).to_owned());
+        assert!(pitches.contains(&view.text(at(2040)).to_owned()), "{:?}", view.text(at(2040)));
+        let backdrop = dialog.controls.iter().position(|c| c.id == Some(9948)).unwrap();
+        let picture = view.controls[backdrop].state.as_bitmap().unwrap().picture.clone();
+        assert_eq!(picture, Some(crate::controls::bitmap::Picture::graphic(3097)));
+        let combo = dialog.controls.iter().position(|c| c.id == Some(6479)).unwrap();
+        assert!(view.controls[combo].hidden);
+        drop(state);
+        drop(runner);
+        let runner = on_save(&game, "A", &format!("{ways}\non 96 ok\non 93 press 1943\non 499 ok\nuntil dialog 332")).unwrap();
+        assert_eq!(seen(&runner, 96), 1, "{}", runner.log.join("\n"));
+    }
+
+    /// Walking on from A, Union's 4th matchday stops at half time behind
+    /// the last information: dialog 93 opens on Union's match with both
+    /// clubs, the half's score as the report keeps it and the 45th minute
+    /// in its caption, the eleven in their boxes, the bench, three to come
+    /// on and Union's break on its bar. Its OK opens the talk, its twelve
+    /// lines under the club and the half's score; OK keeps the chosen
+    /// line, and the report follows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_stops_at_half_time_for_the_talk() {
+        let game = game();
+        let ways = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 120 ok\n\
+                    on 51 ok\non 392 ok\non 435 ok\non 419 ok\non 380 press 4731\non 381 wait\non 2 wait\n\
+                    on 147 click bar 18\non 302 click bar 18\non 384 press 4741\non 270 ok\non 461 ok\n\
+                    on 308 choose 4095 0\non 96 ok\non 41 ok";
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\nuntil dialog 93")) else { return };
+        assert_eq!(seen(&runner, 96), 1, "the break comes behind the last information");
+        assert_eq!(seen(&runner, 332), 0, "and before the report");
+        let dialog = &game.dialogs[&93];
+        let view = runner.host.view();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let season = state.season.as_ref().unwrap();
+        assert_eq!(season.halftime.len(), 1, "{:?}", season.halftime);
+        let shown = &season.halftime[0];
+        assert_eq!(shown.club, (14, 84));
+        let report = a3_core::statistics::match_report(records, records.team(14, 84).unwrap()).unwrap();
+        assert_eq!(shown.goals, report.half());
+        let at = |id: u16| dialog.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        let [(hc, hn), (ac, an)] = shown.sides;
+        let (home, away) = (game.club_name(Some(records), hc, hn), game.club_name(Some(records), ac, an));
+        let caption = view.text(at(9947));
+        let score = format!("{home} - {away} {} : {} Chancen (0:0)", shown.goals[0], shown.goals[1]);
+        assert!(caption.starts_with(&score), "{caption:?} {score:?}");
+        assert!(caption.ends_with(", 45. Minute"), "{caption:?}");
+        let boxes = (1916..1927).filter_map(|id| view.controls[at(id)].state.as_player()).filter(|b| b.filled).count();
+        assert_eq!(boxes, 11, "the eleven on the pitch");
+        assert!(view.controls[at(1927)].state.as_player().is_some_and(|b| b.filled), "the bench");
+        assert_eq!(view.text(at(1942)), "Ausgewechselt: 3");
+        for id in [2554, 2566] {
+            let age = view.text(at(id)).parse::<f32>().unwrap();
+            assert!((17.0..36.0).contains(&age), "the eleven's average age {age}");
+        }
+        let bar = view.controls[at(6269)].state.as_options().unwrap();
+        let own = shown.own_goals();
+        assert_eq!(bar.labels[0], format!("{} {}:{}", game.club_name(Some(records), 14, 84), own[0], own[1]));
+        assert!(bar.off[1..].iter().all(|&off| off));
+        drop(state);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", &format!("{ways}\non 93 press 1943\nuntil dialog 499")) else { return };
+        let talk = &game.dialogs[&499];
+        let view = runner.host.view();
+        let at = |id: u16| talk.controls.iter().position(|c| c.id == Some(id)).unwrap();
+        let union = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        let caption = view.text(at(9947));
+        assert!(caption.starts_with(&format!("ANSTOSS 3 - Halbzeitansprache - {union} (")), "{caption:?}");
+        let lines = view.controls[at(4767)].state.as_list().unwrap();
+        assert_eq!(lines.rows.len(), 12);
+        assert_eq!(lines.rows[0], game.text(4413));
+        assert_eq!(lines.rows[11], game.text(4423));
+        drop(runner);
+        let then = format!("{ways}\non 93 press 1943\nonce 499 row 4767 2; ok\nuntil dialog 332");
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        assert_eq!(seen(&runner, 499), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().unwrap().halftime[0].talk, 3, "the third line, 'Konzentriert weiter so!'");
+    }
+
+
+    /// Walking on from A, a league matchday's doping control falls on
+    /// Union's match and dialog 41 opens behind the half-time talk, before
+    /// the match report: the club in the caption, two of Union's men by
+    /// name, their A samples negative — nobody in A took anything — and
+    /// nothing behind. With every man of Union's given a dose that can be
+    /// traced in the match's week, the same control finds them out: a
+    /// positive A sample, the B sample's verdict behind it, and a banned
+    /// man's long absence a doping ban, his club's case counted.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_doping_control_reports_after_the_match() {
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 417 press 1\n\
+                        until dialog 41";
+        let game = game();
+        let Some(runner) = on_save(&game, "A", handlers) else { return };
+        let dialog = &game.dialogs[&41];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let union = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            records.team(14, 84).unwrap().players()
+        };
+        let last = |screen: &str| runner.log.iter().rposition(|l| l == screen);
+        assert!(last("screen 332") < last("screen 499"), "the control comes before the report");
+        let club = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        assert_eq!(text(&runner, 9924), dialog.title.replacen("%s", &club, 1));
+        let names: Vec<String> = {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            union.iter().filter_map(|&id| records.known_as(id)).collect()
+        };
+        for (name, a, b, verdict) in [(1380, 1382, 1383, 1384), (1381, 1386, 1387, 1388)] {
+            assert!(names.contains(&text(&runner, name)), "{:?}", text(&runner, name));
+            assert_eq!(text(&runner, a), game.text(1946), "negativ");
+            assert_eq!((text(&runner, b), text(&runner, verdict)), (String::new(), String::new()));
+        }
+        let day = runner.host.state().season.as_ref().unwrap().day;
+        drop(runner);
+        // A dose wears off at the main country's club day, the second
+        // weekday's (`FUN_006ff7ef`): the men take theirs behind the last
+        // one before the match.
+        let dosed = day - (day - 2).rem_euclid(7);
+        let week = handlers.replace("until dialog 41", &format!("until day {dosed}"));
+        let Some(mut runner) = on_save(&game, "A", &week) else { return };
+        {
+            let mut state = runner.host.state();
+            let records = state.records.as_mut().unwrap();
+            for &id in &union {
+                records.player_mut(id).unwrap().set_doping(0x80 | 1 << 2 | 2);
+            }
+        }
+        let result = runner.run(&Script::parse("until dialog 41").unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let state = runner.host.state();
+        assert_eq!(state.season.as_ref().unwrap().day, day, "the same control");
+        let records = state.records.as_ref().unwrap();
+        let rows = [(1380, 1382, 1383, 1384), (1381, 1386, 1387, 1388)].map(|(n, a, b, v)| {
+            [n, a, b, v].map(|id| runner.host.view().text(control(dialog, id).unwrap()).to_owned())
+        });
+        assert!(rows.iter().any(|r| r[1] == game.text(1945)), "{rows:?}");
+        let mut banned = 0;
+        for [name, a, b, verdict] in &rows {
+            let id = union.iter().copied().find(|&id| records.known_as(id).as_ref() == Some(name)).unwrap();
+            let r = records.player(id).unwrap();
+            if *a == game.text(1946) {
+                assert_eq!((b.as_str(), verdict.as_str()), ("", ""));
+            } else if *verdict == game.text(1951) {
+                assert_eq!(*b, game.text(1945), "the B sample positive too");
+                assert_eq!(r.long_unknown(), 0x80, "a doping ban");
+                assert!(r.long_to()[0] >= records.globals.date()[2], "{:?}", r.long_to());
+                banned += 1;
+            } else {
+                assert_eq!(*verdict, game.text(1950));
+                assert!([1947, 1948, 1949].iter().any(|&t| *b == game.text(t)), "{b:?}");
+                assert_eq!(r.long_unknown() & 0x80, 0);
+            }
+        }
+        let cases = records.team(14, 84).unwrap().get::<u8>(0x13e);
+        assert_eq!(cases & 0x80 != 0, banned > 0, "{cases:#x}");
+    }
+
+    /// The cup results open after a cup day, behind the table after the
+    /// matchday: A set back before day 59, the first round of Germany's
+    /// cup and of France's, the first legs of Italy's and Spain's, all of
+    /// which the save holds played, Germany's and France's second rounds
+    /// drawn. The results page steps through the four cups on its bar,
+    /// "Nat. Pokal" with the country's letters beside it, the round in the
+    /// caption and its ties in the list: a blue line of the two sides'
+    /// leagues before each new pair of them, an empty one between, each
+    /// tie with both clubs, their leagues — "Amat." for the amateurs — the
+    /// score and how it was decided, Union's red, a first leg's second
+    /// empty. OK turns to the draw of the two second rounds, their legs
+    /// empty; OK again closes it and the day walks on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_cup_results_open_after_a_cup_day() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "cup-results", |records| {
+            records.globals.set_day(58);
+            if let Some(slot) = records.human_slot(0)
+                && let Some(planner) = records.planners.get_mut(slot)
+            {
+                for day in 58..=60 {
+                    if matches!(planner.entry(day)[0], 0x19 | 0x0b) {
+                        planner.set_entry(day, [0; a3_core::records::PLANNER_ENTRY]);
+                    }
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let play = "on 427 ok\non 218 click bar 0\non 147 click bar 18\non 302 click bar 18\n\
+                    on 384 press 4741\non 308 choose 4095 0\non 96 ok\non 93 press 1943\non 499 ok\n\
+                    on 41 ok\non 332 ok\non 269 ok\non 2 wait\non 381 wait\non 25 ok\non 270 ok\n\
+                    until dialog 161";
+        let dialog = &game.dialogs[&161];
+        let list = control(dialog, 2763).unwrap();
+        let bar = control(dialog, 4778).unwrap();
+        type Row = (String, Option<[u8; 3]>, bool);
+        let shown = |more: &str| -> Option<(String, String, Vec<Row>, (i32, i32))> {
+            let runner = on_save(&game, "cup-results", &format!("{play}\n{more}"))?;
+            let view = runner.host.view();
+            let text = |id: u16| view.text(control(dialog, id).unwrap()).to_owned();
+            let l = view.list(list).unwrap();
+            let rows = (0..l.rows.len()).map(|i| (l.rows[i].clone(), l.inks[i], l.spans[i])).collect();
+            let range = view.value(bar).unwrap().range;
+            Some((text(9924), text(5656), rows, range))
+        };
+        let Some((caption, cup, rows, range)) = shown("") else { return };
+        let title = |page: u16, round: u16, country: u16| {
+            format!("{} {} {} {}", game.text(page), game.text(round), game.text(0xb52), game.world.nation(country))
+        };
+        let label = |letters: &str| format!("{} {letters}", game.text(0x616));
+        assert_eq!(caption, title(0xb4c, 0xb45, 14), "Ergebnisse Runde 1 Nationaler Pokal Deutschland");
+        assert_eq!((cup, range), (label("DEU"), (0, 3)), "four cups");
+        let blue = Some([0, 0, 255]);
+        assert_eq!(rows[0], ("1. Bundesliga gegen 1. Bundesliga".into(), blue, true));
+        let union = "1.FC Union Berlin (1. Liga)\t- 1.FC Köln (1. Liga)\t4\t:1\t\t\t";
+        assert!(rows.contains(&(union.into(), Some([255, 0, 0]), false)));
+        let at = rows.iter().position(|r| r.0 == "1. Bundesliga gegen 2. Bundesliga").unwrap();
+        assert_eq!(rows[at - 1], (String::new(), None, false), "an empty line between");
+        for tie in [
+            "Borussia Dortmund (1. Liga)\t- SV 07 Elversberg (2. Liga)\t0\t:1\t\t\tn.V.",
+            "Bonner SC (Amat.)\t- RB Leipzig (1. Liga)\t0\t:6\t\t\t",
+            "TSV 1860 München (3. Liga)\t- VfL Wolfsburg (1. Liga)\t3\t:5\t\t\tn.E.",
+        ] {
+            assert!(rows.iter().any(|r| r.0 == tie), "{tie:?}");
+        }
+        // The bar's next cup, and its last: a first leg.
+        let Some((caption, cup, ..)) = shown("now slide 4778 1") else { return };
+        assert_eq!((caption, cup), (title(0xb4c, 0xb45, 20), label("FRA")));
+        let Some((caption, _, rows, _)) = shown("now slide 4778 3") else { return };
+        assert_eq!(caption, title(0xb4c, 0xb45, 63));
+        assert!(rows.iter().any(|r| r.0 == "FC Barcelona (1. Liga)\t- CA Osasuna (1. Liga)\t0\t:1\t\t\t"));
+        // OK: the draw of the two second rounds.
+        let Some((caption, cup, rows, range)) = shown("now press 2762") else { return };
+        assert_eq!((caption, cup, range), (title(0xb43, 0xb46, 14), label("DEU"), (0, 1)));
+        let drawn = "Borussia M'gladbach (1. Liga)\t- Hamburger SV (1. Liga)\t\t\t\t\t";
+        assert!(rows.contains(&(drawn.into(), None, false)));
+        let Some((caption, ..)) = shown("now press 2762\nnow slide 4778 1") else { return };
+        assert_eq!(caption, title(0xb43, 0xb46, 20));
+        let on = format!("{play}\nnow press 2762\nnow press 2762\nuntil day 60");
+        let Some(runner) = on_save(&game, "cup-results", &on) else { return };
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 60);
+        assert_eq!(runner.log.iter().filter(|l| *l == "screen 161").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Walking on from A with the generator at 12345/67890, the original
+    /// opens its first event window (dialog 51) on day 64, for a youth
+    /// player grown out of the day's news (text 861) — the replica's
+    /// draws part before it. With the generator at 12344/68173
+    /// (the court's draw of day 67, the men's own training rolls, the
+    /// week end's look at its last day's matches, each matchday's own
+    /// two lists, the resting world's rolls, the condition the
+    /// competition matches leave and the youth's weeks and the players'
+    /// private lives, moods, the squad's own news and the men's hobbies move the replica's later ones) its first
+    /// comes from a
+    /// training: player event 4, the brawl of text 7, in the same window, its caption "Ereignis", Union's manager and the
+    /// club as the original's (the caption bar matched pixel for pixel),
+    /// the ball beside it; OK closes it and the day goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_training_brawl_comes_up_in_the_event_window() {
+        let game = game();
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 392 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
+        let then = format!("now random 12344 68173\n{handlers}until dialog 51");
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        let dialog = &game.dialogs[&51];
+        let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let union = records.team(14, 84).unwrap();
+        let manager = &records.managers[usize::from(union.human()) - 1];
+        let club = game.club_name(Some(records), 14, 84);
+        let caption = format!("{} {} {} ({club})", dialog.title, manager.first_name(), manager.last_name());
+        assert_eq!(caption, "ANSTOSS 3 - Ereignis Toni Lubiniecki (1.FC Union Berlin)");
+        assert_eq!(text(crate::screens::discipline::CAPTION_ID), caption);
+        let texts = a3_files::saq::EventTexts::load(&game.dir).unwrap();
+        assert_eq!(text(1451), texts.get(7).unwrap(), "the brawl");
+        assert!(runner.log.iter().all(|l| l != "screen 435"), "nothing larger before");
+        let day = state.season.as_ref().unwrap().day;
+        assert!(day > 64, "{day}");
+        drop(state);
+        drop(runner);
+        let on = format!("{then}\nnow ok\nuntil dialog 147");
+        let Some(runner) = on_save(&game, "A", &on) else { return };
+        assert!(runner.host.state().season.as_ref().unwrap().day >= day);
+    }
+
+    /// Walking on from A, the court Union's planner booked for day 67
+    /// sits: Diogo Leite's red card waits for its verdict, and dialog 89
+    /// opens on it — the club behind the title, "Die Sperre Ihres
+    /// Spielers Diogo Leite" and the verdict, with Nein hidden and no
+    /// question where the court leaves him under two matches; OK closes
+    /// it, the case cleared and the lawyer's red-card tariff (R4, 30
+    /// thousand) booked. With four matches on his card the court lets the
+    /// club appeal: the question with the lawyers' advice, Nein shown; OK
+    /// files the appeal for the next sitting, Nein does not.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_court_hears_a_red_card_and_asks_to_appeal() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let handlers = "on 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 417 press 1\n\
+                        until dialog 89";
+        const LEITE: u16 = 3261;
+        let game = game();
+        let Some(runner) = on_save(&game, "A", handlers) else { return };
+        let dialog = &game.dialogs[&89];
+        let text = |runner: &Runner, id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[control(dialog, id).unwrap()].hidden;
+        let costs = |runner: &Runner| {
+            let state = runner.host.state();
+            state.records.as_ref().unwrap().team(14, 84).unwrap().get::<i32>(0x2b4 + 0x278)
+        };
+        let club = game.club_name(runner.host.state().records.as_ref(), 14, 84);
+        assert_eq!(text(&runner, 9924), format!("{} {club}", dialog.title));
+        let told = text(&runner, 1876);
+        assert!(told.starts_with("Die Sperre Ihres Spielers Diogo Leite "), "{told:?}");
+        let verdicts = [game.text(2103).to_owned(), game.text(2795).to_owned()];
+        assert!(verdicts.iter().any(|v| told.ends_with(v.as_str())), "{told:?}");
+        assert_eq!(text(&runner, 1878), "");
+        assert!(hidden(&runner, 1877) && !hidden(&runner, 1875));
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 67);
+        let before = costs(&runner);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", &handlers.replace("until dialog 89", "on 89 press 1875\nuntil day 68"))
+        else {
+            return;
+        };
+        assert_eq!(seen(&runner, 89), 1, "{}", runner.log.join("\n"));
+        {
+            let state = runner.host.state();
+            let r = state.records.as_ref().unwrap().player(LEITE).unwrap();
+            assert_eq!(r.get::<u8>(0x22f) & 0xc0, 0, "the verdict is in");
+        }
+        assert_eq!(costs(&runner), before + 30_000);
+        drop(runner);
+        let root = patched(&dir, "A", "court-four", |records| {
+            let r = records.player_mut(LEITE).unwrap();
+            r.put::<u8>(0x22f, 0x84);
+            r.put::<i16>(0x1f2, 90);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let Some(runner) = on_save(&game, "court-four", handlers) else { return };
+        let question = text(&runner, 1878);
+        let advice = [2105, 2106].map(|t| format!("{} {}", game.text(2104), game.text(t)));
+        assert!(advice.contains(&question), "{question:?}");
+        assert!(!hidden(&runner, 1877));
+        let told = text(&runner, 1876);
+        assert!(told.contains(" wird auf ") && told.ends_with(" Spiele festgelegt."), "{told:?}");
+        drop(runner);
+        for (button, appealed) in [(1875, 0x40), (1877, 0)] {
+            let then = handlers.replace("until dialog 89", &format!("on 89 press {button}\nuntil day 68"));
+            let Some(runner) = on_save(&game, "court-four", &then) else { return };
+            let state = runner.host.state();
+            let r = state.records.as_ref().unwrap().player(LEITE).unwrap();
+            assert_eq!(r.get::<u8>(0x22f) & 0xc0, appealed, "{button}");
+            assert!((3..=5).contains(&(r.get::<u8>(0x22f) & 0x1f)));
+        }
+    }
+
+    /// A's turn opens, as the original's, on the window of the record its
+    /// manager broke, the dearest sale: his name in the caption,
+    /// "Herzlichen Glückwunsch" and the record's three lines, cancel gone;
+    /// OK leads on to the line-up, and the record is not shown again
+    /// (`FUN_00650b84`, `CRender`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_broken_record_opens_its_window_before_the_line_up() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "A") else {
+            eprintln!("no A among the saves; the oracle's copy has it");
+            return;
+        };
+        let script = format!("once 9 choose 4771 1; ok\non 424 row 5144 {row}; ok\nuntil dialog 477");
+        let (runner, result) = Runner::play(&game, &Script::parse(&script).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&477];
+        let view = runner.host.view();
+        let shown = |id: u16| {
+            let c = control(dialog, id).unwrap();
+            (!view.controls[c].hidden).then(|| view.text(c).to_owned())
+        };
+        assert_eq!(shown(9924).as_deref(), Some("ANSTOSS 3 - Ereignis für Toni Lubiniecki"));
+        let lines: Vec<String> =
+            (0..5).filter_map(|i| shown(9941 + i).or_else(|| shown(9951 + i))).filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines,
+            [
+                "Herzlichen Glückwunsch",
+                "Sie haben damit den Rekord",
+                "für den teuersten Verkauf",
+                "eines Spielers verbessert!"
+            ]
+        );
+        assert!(control(dialog, 2).is_none() && control(dialog, 1).is_some());
+        drop(view);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", "") else { return };
+        assert_eq!(seen(&runner, 477), 1, "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        assert_eq!(records.managers[records.human_slot(0).unwrap()].render_events(), 0);
+    }
+
+    /// Where a day of the replica's records parts from the original's
+    /// dump of the same day, by what: every player's condition, freshness
+    /// and injury (the game's day it came, the date it lasts to, its kind,
+    /// the knock), the human clubs' squads apart from the others, and the
+    /// human clubs' money as the cash box tells it.
+    fn apart(
+        replica: &a3_core::records::Records,
+        oracle: &a3_core::records::Records,
+    ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+        let mut apart = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+        let human: Vec<_> = oracle
+            .humans()
+            .filter_map(|m| Some((m.country(), m.team(), oracle.team(m.country(), m.team())?)))
+            .filter(|(.., team)| team.humans() != [0, 0])
+            .collect();
+        let squads: std::collections::BTreeSet<u16> = human.iter().flat_map(|(.., team)| team.players()).collect();
+        for (id, (r, o)) in replica.players.iter().zip(&oracle.players).enumerate().skip(1) {
+            let id = id as u16;
+            let human = squads.contains(&id);
+            let mut differ = |what: [&'static str; 2], a: String, b: String| {
+                if a != b {
+                    apart.entry(what[usize::from(human)]).or_default().push(format!("{id}: {a}, not {b}"));
+                }
+            };
+            differ(["condition", "human condition"], r.condition().to_string(), o.condition().to_string());
+            differ(["freshness", "human freshness"], format!("{:?}", r.freshness()), format!("{:?}", o.freshness()));
+            let injury = |p: &a3_core::records::Player| {
+                format!("{} {:?} {} {}", p.injured_on(), p.injured_to(), p.injury_kind(), p.knocked())
+            };
+            differ(["injury", "human injury"], injury(r), injury(o));
+            differ(["abilities", "human abilities"], format!("{:x} {:x}", r.good(), r.bad()), format!("{:x} {:x}", o.good(), o.bad()));
+        }
+        for (country, number, team) in human {
+            let money = a3_core::finances::cash_and_result(team);
+            let ours = replica.team(country, number).map(a3_core::finances::cash_and_result);
+            if ours != Some(money) {
+                apart.entry("money").or_default().push(format!("{country}/{number}: {ours:?}, not {money}"));
+            }
+            // The men's own training as the club's store keeps it, entry
+            // by entry: who, what he works on, how far he got, how hard.
+            let slot = usize::from(team.human()).saturating_sub(1);
+            let own = |records: &a3_core::records::Records| -> Vec<String> {
+                records.individual.get(slot).map_or_else(Vec::new, |store| {
+                    store
+                        .entries()
+                        .iter()
+                        .map(|e| format!("{} {} {:?} {}", e.id, e.ability, e.progress, e.intensity))
+                        .collect()
+                })
+            };
+            for (k, (a, b)) in own(replica).iter().zip(own(oracle)).enumerate() {
+                if *a != b {
+                    apart.entry("human own training").or_default().push(format!("entry {k}: {a}, not {b}"));
+                }
+            }
+        }
+        apart
+    }
+
+    /// What the replica still reckons otherwise than the original over
+    /// Probe1's week, each the matter of a part of its own: the computer
+    /// clubs' injuries breaking out and healing (daily-reckoning-injuries)
+    /// and the condition and freshness their men's matches, friendlies
+    /// and tournament games leave (daily-reckoning-match-wear). The human
+    /// club's money agrees, its season tickets selling day by day.
+    const STILL_APART: [&str; 3] = ["injury", "condition", "freshness"];
+
+    /// What of [`STILL_APART`] parts only where a match did: the men of a
+    /// club that played one that day by the original's dumps, and the men
+    /// whose injury parts. Everywhere else the computer clubs' week, their
+    /// days off and the rest of the world's agree.
+    const MATCH_WEAR: [&str; 2] = ["condition", "freshness"];
+
+    /// The oracle's week from Probe1 (`tools/oracle/check.sh` step 1,
+    /// `tools/oracle/scripts/from-save.txt`, a dump after each day's close)
+    /// against the replica's days from the same save, its random numbers
+    /// set at the line-up to where the original's stood: the loader
+    /// overwrites the state's first half with `rand()` (SAVEGAME.md), and
+    /// the dump of day 35, taken as the turn opens, holds it. Each day
+    /// after starts from the generator the original's dump of the day
+    /// before closed with, so a day's draws are held against the
+    /// original's even where an earlier day's unported ones would have
+    /// moved them, and from its men's condition, freshness and injuries.
+    /// The load agrees in everything compared, and the human club's squad
+    /// and money keep agreeing day by day; what still parts is
+    /// [`STILL_APART`], its fitness only at the clubs that played
+    /// ([`MATCH_WEAR`]).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn probe1s_week_against_the_oracles_dumps() {
+        let script = include_str!("../../../tools/oracle/scripts/from-save.txt");
+        // The supercup's final on day 41 (14/85 at 14/3) wears both squads
+        // by the competition rows; the visitors, who field their saved
+        // eleven the whole match, agree man by man the day after.
+        let agree = [(42, (14, 85))];
+        let Some(seen) = week_against_dumps(script, "runs/check/save-a", "tools/oracle/check.sh", &agree) else { return };
+        // A part that brings its matter into line takes it off the list.
+        for what in STILL_APART {
+            assert!(seen.contains_key(what), "{what} agrees all week now: take it off STILL_APART");
+        }
+    }
+
+    /// Probe1's week again with the manager's first template planned at
+    /// the line-up ("gemischte Woche", `tools/oracle/scripts/training-week.txt`):
+    /// the sessions take the human squad's freshness and bring its
+    /// condition by the units' rows, its men's own training rolls for
+    /// what they work on and learn it, all as the original's dumps have
+    /// it day by day.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_training_week_against_the_oracles_dumps() {
+        let script = include_str!("../../../tools/oracle/scripts/training-week.txt");
+        let how = "the oracle's play.sh of tools/oracle/scripts/training-week.txt on Probe1";
+        let Some(seen) = week_against_dumps(script, "runs/training-week", how, &[]) else { return };
+        assert!(seen.contains_key("condition"), "the computer clubs' condition still parts: {seen:?}");
+        // The week did train: the original's own days part in the human
+        // squad's condition and its men's own training.
+        let dumps = PathBuf::from(std::env::var_os("ANSTOSS3_ORACLE").unwrap()).join("runs/training-week");
+        let dump = |day: u16| {
+            let save = a3_files::an3::Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap();
+            a3_core::records::Records::from_save(save).unwrap()
+        };
+        let moved = apart(&dump(42), &dump(36));
+        assert!(moved.contains_key("human condition") && moved.contains_key("human own training"), "{moved:?}");
+    }
+
+    /// Plays `script` on Probe1 against the oracle's dumps of the same
+    /// script in `run` (of `$ANSTOSS3_ORACLE`), day by day to day 42;
+    /// whatever parts must be among [`STILL_APART`], and what did comes
+    /// back with the number of days it did. The clubs `agree` names by
+    /// day keep no man apart in [`MATCH_WEAR`] that day. None when the
+    /// dumps or the save are missing (`how` writes them).
+    fn week_against_dumps(
+        script: &str,
+        run: &str,
+        how: &str,
+        agree: &[(u16, (u16, u16))],
+    ) -> Option<std::collections::BTreeMap<&'static str, usize>> {
+        use a3_core::records::Records;
+        use a3_files::an3::Save;
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dumps of Probe1's week among the saves: ANSTOSS3_ORACLE is not set");
+            return None;
+        };
+        let dumps = PathBuf::from(oracle).join(run);
+        if !dumps.join("day-042.an3").exists() {
+            eprintln!("no oracle dumps of Probe1's week in {run} among the saves; {how} writes them");
+            return None;
+        }
+        let dump = |day: u16| Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap();
+        let word = |save: &Save, name: &str| {
+            i64::from(i32::from_le_bytes(save.block(name).unwrap().data[..4].try_into().unwrap()))
+        };
+        let first = dump(35);
+        let (s1, s2) = (word(&first, "0x89dcc0"), word(&first, "0x89dcc4"));
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "Probe1") else {
+            eprintln!("no Probe1 among the saves; the oracle's copy has it");
+            return None;
+        };
+        let script: String = script
+            .lines()
+            .filter(|line| !line.starts_with("until"))
+            .map(|line| line.replace("row 5144 0", &format!("row 5144 {row}")) + "\n")
+            .collect();
+        let script = format!("{script}until dialog 147\nnow random {s1} {s2}");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&script).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        {
+            let state = runner.host.state();
+            let loaded = apart(state.records.as_ref().unwrap(), &Records::from_save(first).unwrap());
+            assert!(loaded.is_empty(), "the load parts from the original's: {loaded:?}");
+        }
+        let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+        let id_of = |entry: &String| entry.split(':').next().and_then(|id| id.parse::<u16>().ok()).unwrap();
+        for day in 36..=42u16 {
+            let before = dump(day - 1);
+            let (s1, s2) = (word(&before, "0x89dcc0"), word(&before, "0x89dcc4"));
+            let before = Records::from_save(before).unwrap();
+            // The matters still apart start the day as the original's:
+            // the men's condition, freshness and injuries, so a day's
+            // draws behind a man who is out in one game and not in the
+            // other stay in line, and what parts is the day's own.
+            {
+                let mut state = runner.host.state();
+                let records = state.records.as_mut().unwrap();
+                for (r, o) in records.players.iter_mut().zip(&before.players) {
+                    r.set_condition(o.condition());
+                    r.set_freshness(o.freshness());
+                    r.set_injured_on(o.injured_on());
+                    r.set_injured_to(o.injured_to());
+                    r.set_injury_kind(o.injury_kind());
+                    r.set_knocked(o.knocked());
+                }
+            }
+            let result = runner.run(&Script::parse(&format!("now random {s1} {s2}\nuntil day {day}")).unwrap());
+            result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            let oracle = Records::from_save(dump(day)).unwrap();
+            let state = runner.host.state();
+            let replica = state.records.as_ref().unwrap();
+            assert_eq!(replica.globals.day(), oracle.globals.day());
+            assert!(oracle.humans().any(|m| oracle.team(m.country(), m.team()).is_some_and(|t| t.humans() != [0, 0])));
+            // The clubs that played the day: under a match's wear
+            // (`FUN_006f8b3f`) a man's third freshness word moves to
+            // something not nought, which nothing else of a computer
+            // club's day does — the week's bulk sets it to nought, the
+            // days off move the first word only.
+            let mut played = std::collections::BTreeSet::<(u16, u16)>::new();
+            let mut club_of = std::collections::BTreeMap::<u16, (u16, u16)>::new();
+            for country in 1..0x75u16 {
+                for number in 0..oracle.countries.team_count(usize::from(country)).max(0) as u16 {
+                    let Some(team) = oracle.team(country, number) else { continue };
+                    let worn = |id: &u16| match (before.player(*id), oracle.player(*id)) {
+                        (Some(b), Some(a)) => a.freshness()[2] != 0 && a.freshness()[2] != b.freshness()[2],
+                        _ => false,
+                    };
+                    if team.players().iter().any(worn) {
+                        played.insert((country, number));
+                    }
+                    club_of.extend(team.players().into_iter().map(|id| (id, (country, number))));
+                }
+            }
+            // On the third weekday the clubs of the countries not played
+            // rest up to bounds that each club moves by a roll of ten and
+            // of five (`FUN_0078680a`); those rolls come behind the day's
+            // matches, whose engine draws are not the replica's yet, so
+            // where a man stands near his bound his rest may part.
+            if (day - 1) % 7 == 2 {
+                played.extend(club_of.values().filter(|(country, _)| !oracle.globals.played(*country as i16)));
+            }
+            let parted = apart(replica, &oracle);
+            for &(_, club) in agree.iter().filter(|(on, _)| *on == day) {
+                let off: Vec<&String> = parted
+                    .iter()
+                    .filter(|(what, _)| MATCH_WEAR.contains(what))
+                    .flat_map(|(_, list)| list)
+                    .filter(|entry| club_of.get(&id_of(entry)) == Some(&club))
+                    .collect();
+                assert!(off.is_empty(), "day {day}: the men of {club:?} part, {off:?}");
+            }
+            let injured: std::collections::BTreeSet<u16> = parted.get("injury").into_iter().flatten().map(id_of).collect();
+            for (what, list) in parted {
+                assert!(STILL_APART.contains(&what), "day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
+                if MATCH_WEAR.contains(&what) {
+                    let unplayed: Vec<&String> = list
+                        .iter()
+                        .filter(|entry| {
+                            let id = id_of(entry);
+                            !injured.contains(&id) && !club_of.get(&id).is_some_and(|club| played.contains(club))
+                        })
+                        .collect();
+                    assert!(unplayed.is_empty(), "day {day}, {what}: {} apart whose club played nothing, {:?}", unplayed.len(), &unplayed[..unplayed.len().min(5)]);
+                }
+                eprintln!("day {day}, {what}: {} apart, {:?}", list.len(), &list[..list.len().min(3)]);
+                *seen.entry(what).or_default() += 1;
+            }
+        }
+        Some(seen)
+    }
+
+    /// From the office the tactics come without the bar and with their
+    /// OK, as every hub opens its screens from the office or the text
+    /// menu (request byte 0 nought, `FUN_00652a86` in the turn before a
+    /// match): the OK keeps the stepping buttons for the match — Einsatz
+    /// "Normal" one step on is "120%", the record's value 2 the match's
+    /// wear reads — and leads back to the office.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_tactics_from_the_office_keep_with_their_ok() {
+        use a3_core::cycle::dialogs;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "Toni", "tactics-office", |records| {
+            for m in &mut records.managers {
+                m.set_menu_view(1);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let dialog = &game.dialogs[&dialogs::TACTICS];
+        let to_tactics = LOAD.replace("until dialog 147", "until dialog 483\nnow press 6124\nuntil dialog 271");
+        let (runner, result) = Runner::play(&game, &Script::parse(&to_tactics).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert!(runner.host.state().season.as_ref().unwrap().before_match);
+        let hidden = |runner: &Runner, id: u16| runner.host.view().controls[crate::screens::control(dialog, id).unwrap()].hidden;
+        assert!(!hidden(&runner, 1), "the OK shows");
+        assert!(hidden(&runner, 9930), "no bar");
+        let back = to_tactics.replace("until dialog 271", "until dialog 271\nnow press 3739; press 1\nuntil dialog 483");
+        let (runner, result) = Runner::play(&game, &Script::parse(&back).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, dialogs::OFFICE);
+        let state = runner.host.state();
+        assert_eq!(state.records.as_ref().unwrap().teams[84].effort(), 2);
+    }
+    /// A human whose count at record +0x180 stands above one hears of his
+    /// contract at the season's turn: past A's statement his club stayed
+    /// in its league, so the season's new goal (dialog 379) opens, and OK
+    /// lets the game walk on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_turn_tells_a_human_his_seasons_goal() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-goal", |records| {
+            records.globals.set_day(320);
+            for slot in 0..records.globals.slots().len() {
+                if records.globals.slots()[slot] > 0 {
+                    records.managers[slot].set_unrest_count(2);
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let then = "on 384 press 4741\non 2 wait\non 381 wait\non 356 press 4542\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1\nuntil dialog 379";
+        let Some(mut runner) = on_save(&game, "season-goal", then) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, a3_core::cycle::dialogs::SEASON_GOAL, "{log}");
+        assert_eq!(runner.host.state().season.as_ref().unwrap().year, 2026);
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    /// Past the season's statement each human club's manager has the
+    /// season start's event 0x82 — the negotiations he leads himself
+    /// (dialog 422), then the season's preparation (419) — and the
+    /// overviews of the season's start follow (event 0x130, dialog 420);
+    /// OK closes each, and the game walks on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_turn_brings_the_season_starts_screens() {
+        use crate::screens::season_start::{OVERVIEWS, PREPARATION, TALKS};
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "season-start", |records| {
+            records.globals.set_day(320);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let to = |last: u16| {
+            format!(
+                "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\non 356 press 4542\n\
+                 now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                 until dialog 417\nnow press 1\nuntil dialog {TALKS}{}",
+                match last {
+                    TALKS => String::new(),
+                    PREPARATION => format!("\nnow press 1\nuntil dialog {PREPARATION}"),
+                    _ => format!("\nnow press 1\nuntil dialog {PREPARATION}\nnow press 1\nuntil dialog {OVERVIEWS}"),
+                }
+            )
+        };
+        let Some(runner) = on_save(&game, "season-start", &to(TALKS)) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, TALKS, "{log}");
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 0, "the new season stands");
+        let dialog = &game.dialogs[&TALKS];
+        assert_eq!(dialog.controls[control(dialog, 6044).unwrap()].text, " Fernsehgelder  (bei Teilnahme)");
+        drop(runner);
+        let Some(runner) = on_save(&game, "season-start", &to(PREPARATION)) else { return };
+        assert_eq!(runner.host.view().id, PREPARATION, "{}", runner.log.join("\n"));
+        let money = control(&game.dialogs[&PREPARATION], 5048).unwrap();
+        assert_eq!(runner.host.view().text(money), "", "no sample figure");
+        drop(runner);
+        let Some(mut runner) = on_save(&game, "season-start", &to(OVERVIEWS)) else { return };
+        assert_eq!(runner.host.view().id, OVERVIEWS, "{}", runner.log.join("\n"));
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    /// An even year's turn offers a human standing 9 with the season's
+    /// points past 400 national teams (`FUN_006b9c81`): past A's
+    /// statement into season 2, 2026, dialog 356 lists the nations, the
+    /// caption names him, the first stands chosen with its terms, and OK
+    /// makes him its coach on them before the season start's screens.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn an_even_years_turn_offers_a_human_a_national_team() {
+        use crate::screens::national_offer::NATIONAL_OFFER;
+        use crate::screens::season_start::TALKS;
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let root = patched(&dir, "A", "national-offer", |records| {
+            records.globals.set_day(320);
+            for slot in 0..records.globals.slots().len() {
+                if records.globals.slots()[slot] > 0 {
+                    let m = &mut records.managers[slot];
+                    m.set_level(9);
+                    m.set_level_bits(0);
+                    m.put::<i16>(0x1f74, 6009);
+                }
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "on 384 press 4741\non 2 wait\non 381 wait\non 379 ok\non 314 ok\n\
+                    now click bar 9\nuntil dialog 417\nnow click bar 18\n\
+                    until dialog 417\nnow press 1\nuntil dialog 356";
+        let Some(runner) = on_save(&game, "national-offer", open) else { return };
+        let log = runner.log.join("\n");
+        assert_eq!(runner.host.view().id, NATIONAL_OFFER, "{log}");
+        let dialog = &game.dialogs[&NATIONAL_OFFER];
+        let view = runner.host.view();
+        let list = view.list(control(dialog, 4543).unwrap()).unwrap();
+        assert!(!list.rows.is_empty() && list.rows.len() <= 10, "{:?}", list.rows);
+        assert_eq!(list.selected, Some(0));
+        assert_eq!(view.text(control(dialog, 4551).unwrap()), list.rows[0]);
+        assert!(view.text(control(dialog, 4547).unwrap()).contains('€'));
+        let first = list.rows[0].clone();
+        drop(runner);
+        let Some(mut runner) = on_save(&game, "national-offer", &format!("{open}\nnow press 4546\nuntil dialog {TALKS}"))
+        else {
+            return;
+        };
+        assert_eq!(runner.host.view().id, TALKS, "{}", runner.log.join("\n"));
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let slot = records.human_slot(0).unwrap();
+            let nation = records.managers[slot].national_team();
+            assert!(nation > 0, "he coaches a nation");
+            assert_eq!(game.club_name(Some(records), nation as u8, 200), first);
+            assert_eq!(a3_core::national::coach_number(records, nation), slot as u8 + 1);
+            assert!(records.managers[slot].get::<i32>(0x1f7c) >= 250_000);
+        }
+        let _ = runner.settle();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A youth on trial at Union in his last week (A patched, his weeks at
+    /// 1): the loaded week's end holds its block, the next, at day 70,
+    /// sends him back to the youth and tells the club in the event window,
+    /// "Ihr Jugendspieler %s trainiert ab jetzt wieder in Ihrer A-Jugend!"
+    /// (text 4156, `FUN_0074d2b5`), his name in it.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_trials_end_is_told_to_the_club() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        let mut youth = 0;
+        let root = patched(&dir, "A", "trial-end", |records| {
+            youth = *records.team(14, 84).unwrap().players().last().unwrap();
+            let p = records.player_mut(youth).unwrap();
+            p.set_retiring(p.retiring() | 0x10);
+            p.set_picks(p.picks() & 0x30 | 1);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 392 ok\non 96 ok\non 161 ok\non 419 ok\non 435 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\non 338 ok\n";
+        let Some(mut runner) = on_save(&game, "trial-end", &format!("{handlers}until dialog 51")) else { return };
+        let dialog = &game.dialogs[&51];
+        let name = runner.host.state().records.as_ref().unwrap().known_as(youth).unwrap();
+        let told = game.text(4156).replacen("%s", &name, 1);
+        assert_eq!(told, format!("Ihr Jugendspieler {name} trainiert ab jetzt wieder in Ihrer A-Jugend!"));
+        for _ in 0..40 {
+            if runner.host.view().text(control(dialog, 1451).unwrap()) == told {
+                break;
+            }
+            assert!(runner.host.state().season.as_ref().unwrap().day <= 70, "{}", runner.log.join("\n"));
+            runner.run(&Script::parse("now ok\nuntil dialog 51").unwrap()).unwrap();
+        }
+        assert_eq!(runner.host.view().text(control(dialog, 1451).unwrap()), told);
+        {
+            let state = runner.host.state();
+            assert_eq!(state.season.as_ref().unwrap().day, 70);
+            let records = state.records.as_ref().unwrap();
+            assert!(!records.team(14, 84).unwrap().players().contains(&youth));
+            assert_eq!(records.player(youth).unwrap().retiring() & 0x10, 0);
+        }
+        runner.run(&Script::parse("now ok\nuntil dialog 147").unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364 patched so that twelve of Union's men end their
+    /// careers: the season's end tells them first (dialog 152, the
+    /// original's shot of the same save matching but for strengths its
+    /// own development drew) — the club in the caption, "Saison 2025/26"
+    /// over the first ten, "Name, F.", position, strength, age — and OK,
+    /// the last page, goes on to the statement while they are gone from
+    /// the squad.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_says_goodbye_to_the_leaving_men() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if !dir.join("saves/SeasonEnd364.an3").exists() && !dir.parent().unwrap().join("saves-kept/SeasonEnd364.an3").exists() {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        }
+        let mut leaving = Vec::new();
+        let root = patched(&dir, "SeasonEnd364", "farewells", |records| {
+            let (country, number) = a3_core::statistics::human_clubs(records)[0];
+            let squad = records.team(country.into(), number as u16).unwrap().players();
+            leaving = squad[squad.len() - 12..].to_vec();
+            for &id in &leaving {
+                let p = records.player_mut(id).unwrap();
+                p.set_retiring(p.retiring() | 0x80);
+            }
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        // The loaded game's turn reaches the season's end at once.
+        let row = game.save_games().iter().position(|s| s.name == "farewells").unwrap();
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", "until dialog 152");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&152];
+        assert_eq!(runner.host.view().text(control(dialog, 2593).unwrap()), "Saison 2025/26");
+        assert_eq!(
+            runner.host.view().text(control(dialog, 9924).unwrap()),
+            "ANSTOSS 3 - Spieler des 1.FC Union Berlin, die ihre Karriere beenden..."
+        );
+        let rows = runner.host.view().list(control(dialog, 2595).unwrap()).unwrap().rows.clone();
+        assert_eq!(rows.len(), 10, "ten of twelve");
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let r = records.player(leaving[0]).unwrap();
+            let [day, month, year] = records.globals.date();
+            let today = chrono::NaiveDate::from_ymd_opt(year.into(), month.into(), day.into()).unwrap();
+            let fields: Vec<&str> = rows[0].split('\t').collect();
+            assert_eq!(fields.len(), 4, "{}", rows[0]);
+            assert!(fields[0].contains(", ") || r.shown() & 0x8000_0000 != 0, "{}", rows[0]);
+            assert_eq!(fields[2], r.strength().to_string());
+            assert_eq!(fields[3], a3_core::statistics::age_on(r, today).to_string());
+        }
+        runner.run(&Script::parse("now press 2594\nuntil dialog 417").unwrap()).unwrap();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let (country, number) = a3_core::statistics::human_clubs(records)[0];
+            let squad = records.team(country.into(), number as u16).unwrap().players();
+            assert!(leaving.iter().all(|id| !squad.contains(id)), "the men are gone");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364's turn rolls the European ranking on and tells it
+    /// (dialog 301, event 0xcf) behind the statement, as the original's
+    /// shot of the same save shows it pixel for pixel: the dialog's
+    /// "Pl.", "Land", "Punkte gesamt" and the five seasons up to 2025/26;
+    /// the countries in their new order, each with its place, its total
+    /// and those seasons' points, the one just played the last and the
+    /// new one, at naught, not shown. OK goes on into the new season.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_tells_the_rolled_european_ranking() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD
+            .replace("row 5144 0", &format!("row 5144 {row}"))
+            .replace("on 301 ok\n", "")
+            .replace("until dialog 147", "on 152 press 2594\non 417 ok\nuntil dialog 301");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&301];
+        let header = runner.host.view().header(control(dialog, 4034).unwrap()).unwrap().text.clone();
+        assert_eq!(header, "Pl.\\tLand\\tPunkte gesamt\\t21/22\\t22/23\\t23/24\\t24/25\\t25/26");
+        let rows = runner.host.view().list(control(dialog, 4031).unwrap()).unwrap().rows.clone();
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let ranked = a3_core::statistics::five_years(records);
+            let shown: Vec<_> = ranked.iter().filter(|(country, _)| *country != 0).collect();
+            assert!(shown.len() > 20, "{}", shown.len());
+            assert_eq!(rows.len(), shown.len());
+            assert!(shown.iter().all(|(_, points)| points[6] == 0.0), "the new season at naught");
+            let fields: Vec<&str> = rows[0].split('\t').collect();
+            assert_eq!(fields.len(), 8, "{}", rows[0]);
+            assert_eq!(fields[0], "1.");
+            assert_eq!(fields[1], game.world.nation(shown[0].0));
+            assert_eq!(fields[2], format!("{:.2}", shown[0].1[0]));
+            assert_eq!(fields[7], format!("{:.2}", shown[0].1[5]));
+            let totals: Vec<f64> = rows.iter().map(|r| r.split('\t').nth(2).unwrap().parse().unwrap()).collect();
+            assert!(totals.windows(2).all(|w| w[0] >= w[1]), "{totals:?}");
+        }
+        runner.run(&Script::parse("now press 4032").unwrap()).unwrap();
+        let _ = runner.settle();
+        assert_ne!(runner.host.view().id, 301, "OK closes it");
+        assert_eq!(runner.host.state().records.as_ref().unwrap().globals.start_year(), 2026);
+    }
+
+    /// SeasonEnd364's season end shows the players' development first
+    /// (dialog 22, event 0xca): Union's name in the caption, the plain
+    /// header as its trainer plays at difficulty 0, and a line a man —
+    /// name, position, age, form, season's form, old strength, whether he
+    /// got better or worse, and his new strength as the records now have
+    /// it. OK turns the page, the last goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_end_shows_the_players_development() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD
+            .replace("row 5144 0", &format!("row 5144 {row}"))
+            .replace("on 22 press 1306\n", "")
+            .replace("until dialog 147", "until dialog 22");
+        let (mut runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let dialog = &game.dialogs[&22];
+        assert_eq!(
+            runner.host.view().text(control(dialog, 9924).unwrap()),
+            "ANSTOSS 3 - Auf- und Abwertungen 1.FC Union Berlin"
+        );
+        let header = runner.host.view().header(control(dialog, 1308).unwrap()).unwrap().text.clone();
+        assert_eq!(header, "Name\\tPos\\tAlter\\tForm\\tD-Form\\tAlte Stärke\\tGrund\\t\\tNeue Stärke");
+        let list = runner.host.view().list(control(dialog, 1307).unwrap()).unwrap().clone();
+        let pages = runner.host.state().season.as_ref().unwrap().development.clone();
+        assert!(!pages.is_empty() && pages[0].insight == 0 && !pages[0].rows.is_empty());
+        assert_eq!(list.rows.len(), pages[0].rows.len());
+        {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            for (line, r) in list.rows.iter().zip(&pages[0].rows) {
+                let fields: Vec<&str> = line.split('\t').collect();
+                assert_eq!(fields.len(), 9, "{line}");
+                assert_eq!(fields[2], r.age.to_string());
+                assert_eq!(fields[4], format!("{:.2}", f32::from(r.season_form) / 10.0));
+                assert_eq!(fields[5], r.old.to_string());
+                let said = match r.new.cmp(&r.old) {
+                    std::cmp::Ordering::Greater => "hat sich verbessert",
+                    std::cmp::Ordering::Less => "hat sich verschlechtert",
+                    std::cmp::Ordering::Equal => "",
+                };
+                assert_eq!(fields[6], said, "{line}");
+                assert_eq!(fields[8], r.new.to_string());
+                assert_eq!(records.player(r.player).unwrap().strength(), r.new, "{r:?}");
+            }
+        }
+        for _ in 0..pages.len() {
+            runner.run(&Script::parse("now press 1306").unwrap()).unwrap();
+            let _ = runner.settle();
+        }
+        assert_ne!(runner.host.view().id, 22, "the last page's OK closes it");
+    }
+
+    /// A's human made England's coach, his lists of the best by position
+    /// built from the squads as the week's market builds them: the
+    /// picker's bests list shows the first ten of the chosen position's,
+    /// the strongest today first, each with his full name and strength.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_picker_lists_the_coachs_best_by_position() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").unwrap());
+        if on_save(&game(), "A", "").is_none() {
+            return;
+        }
+        let source = game();
+        let pitch = &source.rules.pitch;
+        let root = patched(&dir, "A", "nationalbests", |records| {
+            let slot = records.human_slot(0).unwrap();
+            a3_core::national::take(records, slot, a3_core::national::Terms { nation: 14, salary: 0, bonus: 0 });
+            let mut bests = a3_core::national::Bests::new(records);
+            for country in (1..0x75u16).filter(|&c| records.countries.kind(usize::from(c)) != 0) {
+                for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                    bests.offer(records, pitch, (country, number));
+                }
+            }
+            bests.store(records);
+        });
+        let mut game = Game::load(&root).unwrap();
+        compose(&mut game);
+        let open = "now click bar 15\nuntil dialog 355\nnow choose 4538 0\nuntil dialog 357";
+        let dialog = &game.dialogs[&357];
+        let bests = crate::screens::control(dialog, 4558).unwrap();
+        // On opening the first position's; the third's once its item
+        // is chosen.
+        for (group, script) in [(1, open.to_owned()), (3, format!("{open}\nnow choose 4775 2"))] {
+            let runner = on_save(&game, "nationalbests", &script).unwrap();
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let list = runner.host.view().list(bests).unwrap();
+            let mut want: Vec<(u16, i32)> = a3_core::national::bests(records, 14, group)
+                .iter()
+                .take(10)
+                .filter(|b| b.id != 0)
+                .map(|b| {
+                    let (p, f, _) = a3_core::load::any_player(records, &game.data, b.id).unwrap();
+                    (b.id, game.rules.pitch.strength_at(&p, f, p.positions[0]))
+                })
+                .collect();
+            for i in 0..want.len() {
+                for j in i + 1..want.len() {
+                    if want[i].1 < want[j].1 {
+                        want.swap(i, j);
+                    }
+                }
+            }
+            assert_eq!(want.len(), 10, "{}", runner.log.join("\n"));
+            assert_eq!(list.keys, want.iter().map(|w| usize::from(w.0)).collect::<Vec<_>>(), "position {group}");
+            for (row, &(id, strength)) in list.rows.iter().zip(&want) {
+                assert_eq!(*row, format!("{}\t{:.1}", records.known_as(id).unwrap(), strength as f32 / 10.0));
+            }
+            assert!(list.row_icons.iter().any(|icons| !icons.is_empty()));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SeasonEnd364's turn reaches the season start's negotiations (dialog
+    /// 422): each box ticked or off as the club's contracts and its place
+    /// in Europe leave it (`CSaisonstartVerhandlungen::FUN_0053b05b`), the
+    /// bonuses' always open, the television's label without its "%s".
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_start_talks_tick_the_open_negotiations() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace(
+            "until dialog 147",
+            "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422",
+        );
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, 422, "{}", runner.log.join("\n"));
+        let dialog = &game.dialogs[&422];
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+        let nation = game.world.country(slot).unwrap().nation;
+        let team = records.team(nation, number as u16).unwrap();
+        let talks = a3_core::finances::season_talks(team, records.globals.preparation());
+        assert!(talks[3].open, "the bonuses' box is always open");
+        for (id, talk) in [0x889u16, 0x88a, 0x88b, 0x88c, 0x179b, 0x179c].into_iter().zip(talks) {
+            let c = control(dialog, id).unwrap();
+            let crate::controls::ControlState::Check(check) = &runner.host.view().controls[c].state else { panic!("{id}") };
+            assert_eq!((check.checked, check.disabled), (talk.ticked, !talk.open), "box {id:#x}");
+        }
+        let c = control(dialog, 0x179c).unwrap();
+        let crate::controls::ControlState::Check(check) = &runner.host.view().controls[c].state else { panic!() };
+        assert_eq!(check.text, " Fernsehgelder  (bei Teilnahme)");
+    }
+
+    /// SeasonEnd364's season start with the main sponsor's box unticked:
+    /// the computer signs what the manager left it (`FUN_006741be`) — the
+    /// main sponsor, and the boards with it, whose own tick the original
+    /// never reads — while the talks kept stay as they were; the
+    /// European television's talks (dialog 475) come up for the club in
+    /// Europe, and the preparation follows.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_start_talks_left_unticked_are_signed() {
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let turn = "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422";
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", turn);
+        let team_of = |runner: &Runner| {
+            let state = runner.host.state();
+            let records = state.records.as_ref().unwrap();
+            let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+            let nation = game.world.country(slot).unwrap().nation;
+            records.team(nation, number as u16).unwrap().clone()
+        };
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let before = team_of(&runner);
+        let talks = a3_core::finances::season_talks(&before, runner.host.state().records.as_ref().unwrap().globals.preparation());
+        drop(runner);
+        let years = |t: &a3_core::records::Team, at: usize| t.get::<u8>(at + a3_core::finances::CLUB_TO_TEAM);
+        let then = format!("{turn}\nnow click 2185\nnow ok\nuntil dialog 419");
+        let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", &then);
+        let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        assert_eq!(runner.host.view().id, 419, "{}", runner.log.join("\n"));
+        // The television's box kept for a club in Europe opens its talks,
+        // as the original does on this save.
+        let tv = talks[5].ticked && a3_core::finances::in_europe(&before);
+        assert_eq!(runner.log.iter().any(|l| l == "screen 475"), tv, "{}", runner.log.join("\n"));
+        assert_eq!(runner.log.iter().any(|l| l == "screen 384"), tv, "its OK asks first");
+        let after = team_of(&runner);
+        for (k, at) in [(0, 0x509), (1, 0x5a1)] {
+            if talks[0].open && talks[k].open {
+                assert_ne!(years(&after, at), 0, "the computer signed {at:#x}");
+            } else {
+                assert_eq!(years(&after, at), years(&before, at), "{at:#x} as it was");
+            }
+        }
+        if talks[0].open {
+            assert_ne!(after.get::<u16>(0x4ea + a3_core::finances::CLUB_TO_TEAM), 0, "the sponsor's number");
+        }
+        for (k, at) in [(2, 0x5b1), (4, 0x5a9)] {
+            if talks[k].ticked {
+                assert_eq!(years(&after, at), years(&before, at), "{at:#x} kept for the manager");
+            }
+        }
+    }
+
+    /// SeasonEnd364's European television talks (dialog 475): the
+    /// country's three stations bid as the original draws them after the
+    /// talks left to the computer (`FUN_005ba500`), a "Verhandeln" raises
+    /// the left one's bid (`FUN_005ba04d`), and "Unterschreiben" on the
+    /// middle one signs its sums into the club after the notice
+    /// (`FUN_005ba88c`), the cycle booking the fixed sum where it does.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_european_tv_talks_bargain_and_sign() {
+        use a3_core::settlement::{TvBid, tv_bargain, tv_bids, tv_terms};
+        let game = game();
+        let Some(row) = game.save_games().iter().position(|s| s.name == "SeasonEnd364") else {
+            eprintln!("no SeasonEnd364 among the saves; the oracle's copy has it");
+            return;
+        };
+        let turn = "on 152 press 2594\non 417 ok\non 301 ok\non 22 ok\non 89 press 1875\non 287 ok\non 321 ok\non 25 ok\non 341 ok\non 364 ok\non 120 ok\non 51 ok\non 392 ok\non 435 ok\non 96 ok\non 161 ok\nuntil dialog 422";
+        let play = |then: &str| {
+            let load = LOAD.replace("row 5144 0", &format!("row 5144 {row}")).replace("until dialog 147", &format!("{turn}{then}"));
+            let (runner, result) = Runner::play(&game, &Script::parse(&load).unwrap());
+            result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+            runner
+        };
+        let club = |runner: &Runner| {
+            let state = runner.host.state();
+            let (slot, number) = state.season.as_ref().unwrap().manager().unwrap().club.unwrap();
+            let nation = game.world.country(slot).unwrap().nation;
+            state.records.as_ref().unwrap().team_index(nation, number as u16).unwrap()
+        };
+        // What the talks draw: the computer's signing of the talks left
+        // unticked first, then the bids, on the season's random.
+        let runner = play("");
+        let i = club(&runner);
+        let (mut random, country, names, before, tv) = {
+            let mut state = runner.host.state();
+            let state = &mut *state;
+            let records = state.records.as_mut().unwrap();
+            let talks = a3_core::finances::season_talks(&records.teams[i], records.globals.preparation());
+            let mut random = state.season.as_ref().unwrap().random.clone();
+            a3_core::settlement::sign_left_talks(records, i, talks.map(|t| t.ticked), &mut random);
+            let tv = talks[5].ticked && a3_core::finances::in_europe(&records.teams[i]);
+            let country = records.teams[i].country();
+            let names: Vec<String> =
+                (0..3).map(|k| a3_core::report::country_station(records, country, k).unwrap()).collect();
+            let at = a3_core::finances::CLUB_TO_TEAM;
+            let before = [0x13c, 0x244].map(|o| records.teams[i].get::<i32>(o + at));
+            (random, country, names, before, tv)
+        };
+        drop(runner);
+        assert!(tv, "SeasonEnd364's club keeps the television's talks in Europe");
+        let mut bids = tv_bids(&mut random);
+        let mut kinds: Vec<u8> = bids.iter().map(|b| u8::from(b.fixed != 0) + 2 * u8::from(b.per_home != 0)).collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, [1, 2, 3], "one fixed sum, one per home match, one both");
+        let money = |v: i32| crate::screens::playerinfo::money(&game, i64::from(v));
+        let words = |b: &TvBid| {
+            let (fixed, per_home) = tv_terms(b);
+            match (fixed, per_home) {
+                (f, 0) => format!("Fixbetrag {}", money(f)),
+                (0, p) => format!("Pro Heimspiel {}", money(p)),
+                (f, p) => format!("Fixbetrag {}, pro Heimspiel {}", money(f), money(p)),
+            }
+        };
+        let dialog = &game.dialogs[&475];
+        let at = |id: u16| crate::screens::control(dialog, id).unwrap();
+        let runner = play("\nnow ok\nuntil dialog 475");
+        let view = runner.host.view();
+        assert_eq!(view.id, 475, "{}", runner.log.join("\n"));
+        for (k, (name, offer)) in [(6051, 6052), (6055, 6056), (6053, 6054)].into_iter().enumerate() {
+            assert_eq!(view.text(at(name)), names[k], "station {k} of {country}");
+            assert_eq!(view.text(at(offer)), words(&bids[k]), "station {k}'s offer");
+        }
+        drop(runner);
+        // One round with the left station: never its last.
+        let was = bids[0];
+        assert!(tv_bargain(&mut bids[0], &mut random));
+        assert!(bids[0].fixed >= was.fixed && bids[0].per_home >= was.per_home);
+        let runner = play("\nnow ok\nuntil dialog 475\nnow choose 6058 0");
+        let view = runner.host.view();
+        assert_eq!(view.text(at(6052)), words(&bids[0]), "the raised offer");
+        assert_eq!(view.chosen(at(6058)), crate::controls::options::NONE, "the item let go");
+        drop(runner);
+        // Signed with the middle one: its notice, then its sums the club's.
+        let runner = play("\nnow ok\nuntil dialog 475\nnow choose 6058 0\nnow choose 6059 1\nuntil dialog 419");
+        assert!(runner.log.iter().any(|l| l == "screen 380"), "{}", runner.log.join("\n"));
+        let state = runner.host.state();
+        let team = &state.records.as_ref().unwrap().teams[i];
+        let at = a3_core::finances::CLUB_TO_TEAM;
+        let (fixed, per_home) = tv_terms(&bids[1]);
+        assert_eq!(team.get::<i32>(0x5ec + at), per_home);
+        assert_eq!(team.get::<u8>(0x5f0 + at), 1);
+        let booked = [0x13c, 0x244].map(|o| team.get::<i32>(o + at));
+        let kept = team.get::<i32>(0x5e8 + at);
+        if kept == 0 {
+            assert_eq!(booked, before.map(|b| b + fixed), "the fixed sum booked");
+        } else {
+            assert_eq!((kept, booked), (fixed, before), "the fixed sum kept");
+        }
+    }
+
+    /// What the replica's new game still sets up otherwise than the
+    /// original's, each the matter of a part of new-game-exact. The
+    /// original's calculation builds the first season's job offers its
+    /// own way; the replica's job market stands in, so Bert signs with
+    /// another club than SSV Ulm and has its squad, its board's
+    /// confidence and its training weeks in place of the original's
+    /// (`new-game-exact-start-calc-offers`, parked on the grounds map's
+    /// generator); in the records, the fields the calculation fills and
+    /// the generator words it leaves behind part as far as
+    /// `new-game-exact-start-calc-preseason-bookings-fields` is parked.
+    /// The managers, their order, views and records stand as the
+    /// original's (`a3_core::land_managers`, `a3_core::land_start`).
+    const NEW_GAME_APART: [&str; 5] =
+        ["blocks", "clubs", "confidence", "squads", "training weeks"];
+
+    /// Where the replica's game at a new game's first turn parts from the
+    /// original's dump of the same turn, by what: the date, the managers
+    /// as a loaded game reads them (`a3_core::load::season`) — names,
+    /// clubs, national teams, levels, confidence, views, formations, week
+    /// templates and plans —, the human clubs' squads by name, and the
+    /// records block by block (`an3::compare`, without the blocks of real
+    /// time and of what the writer left on the stack).
+    fn new_game_apart(
+        state: &a3_core::state::GameState,
+        dump: &a3_files::an3::Save,
+        data: &a3_core::data::Data,
+    ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+        use a3_files::an3;
+        let mut apart = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+        let records = a3_core::records::Records::from_save(dump.clone()).unwrap();
+        let oracle = a3_core::load::season(&records, data, a3_core::random::Random::new(0));
+        let replica = state.season.as_ref().expect("the new game's season");
+        let mut differ = |what: &'static str, a: String, b: String| {
+            if a != b {
+                apart.entry(what).or_default().push(format!("{a}, not {b}"));
+            }
+        };
+        differ("date", replica.date().to_string(), oracle.date().to_string());
+        // The managers by name; the order they take their turns in apart.
+        let order = |season: &a3_core::season::Season| -> Vec<String> {
+            season.managers.iter().map(|m| format!("{} {}", m.first_name, m.last_name)).collect()
+        };
+        differ("order", order(replica).join(", "), order(&oracle).join(", "));
+        let club = |club: Option<(usize, usize)>| {
+            club.and_then(|(slot, c)| Some(data.world.country(slot)?.clubs.get(c)?.name.clone()))
+                .unwrap_or_else(|| "no club".into())
+        };
+        // A list's entries one by one: how many part, and the first.
+        let entries = |a: Vec<String>, b: Vec<String>| -> (String, String) {
+            let parting: Vec<usize> = (0..a.len().max(b.len())).filter(|&i| a.get(i) != b.get(i)).collect();
+            let Some(&i) = parting.first() else { return (String::new(), String::new()) };
+            let at = |list: &[String]| list.get(i).cloned().unwrap_or_else(|| "nothing".into());
+            (format!("{} of {} entries apart, #{i} {}", parting.len(), a.len(), at(&a)), at(&b))
+        };
+        for r in &replica.managers {
+            let name = format!("{} {}", r.first_name, r.last_name);
+            let Some(o) = oracle.managers.iter().find(|o| format!("{} {}", o.first_name, o.last_name) == name) else {
+                differ("names", name, "no such manager".into());
+                continue;
+            };
+            let mut differ = |what, a: String, b: String| {
+                if a != b {
+                    differ(what, format!("{name}: {a}"), b);
+                }
+            };
+            differ("clubs", club(r.club), club(o.club));
+            differ("national teams", format!("{:?}", r.national_team), format!("{:?}", o.national_team));
+            differ("levels", r.level.to_string(), o.level.to_string());
+            differ("confidence", r.confidence.to_string(), o.confidence.to_string());
+            let views = |m: &a3_core::season::Manager| {
+                format!("{} {} {} {} {:?}", m.menu, m.list_view, m.training_pictures, m.individual_rule, m.camp_rules)
+            };
+            differ("views", views(r), views(o));
+            let formations = |m: &a3_core::season::Manager| m.formations.iter().map(|f| format!("{f:?}")).collect();
+            let (a, b) = entries(formations(r), formations(o));
+            differ("formations", a, b);
+            let templates = |m: &a3_core::season::Manager| m.templates.iter().map(|t| format!("{t:?}")).collect();
+            let (a, b) = entries(templates(r), templates(o));
+            differ("templates", a, b);
+            let weeks = |m: &a3_core::season::Manager| m.weeks.iter().map(|w| format!("{w:?}")).collect();
+            let (a, b) = entries(weeks(r), weeks(o));
+            differ("training weeks", a, b);
+        }
+        let names = |players: &[a3_core::world::Player]| -> Vec<String> {
+            players.iter().map(|p| format!("{} {}", p.first_name, p.last_name)).collect()
+        };
+        for (&at, o) in &oracle.clubs {
+            let r = replica.clubs.get(&at).map_or_else(Vec::new, |r| names(&r.players));
+            let (a, b) = entries(r, names(&o.players));
+            differ("squads", if a.is_empty() { a } else { format!("{}: {a}", club(Some(at))) }, b);
+        }
+        match &state.records {
+            None => differ("records", "none".into(), "the dump's".into()),
+            Some(records) => {
+                for d in an3::compare(&records.to_save(), dump).blocks {
+                    if !an3::REAL_TIME.contains(&d.name.as_str()) && !an3::LEFTOVERS.contains(&d.name.as_str()) {
+                        differ("blocks", d.to_string(), String::new());
+                    }
+                }
+            }
+        }
+        apart
+    }
+
+    /// The new game of `scripts/new-game.txt` at its first turn (the
+    /// line-up, dialog 147) against the original's dump of that turn
+    /// (`tools/oracle/new-game.sh`, rand() seeded 1): whatever parts must
+    /// be among [`NEW_GAME_APART`], and each of those must still part, so
+    /// a part that brings its matter into line takes it off the list.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_against_the_oracles_first_turn() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves; tools/oracle/new-game.sh writes it");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let game = game();
+        let script: String = NEW_GAME.lines().filter(|l| !l.starts_with("until")).map(|l| format!("{l}\n")).collect();
+        let (runner, result) = Runner::play(&game, &Script::parse(&format!("{script}until dialog 147")).unwrap());
+        result.unwrap_or_else(|err| panic!("{err}\n{}", runner.log.join("\n")));
+        let state = runner.host.state();
+        let apart = new_game_apart(&state, &dump, &game.data);
+        for (what, list) in &apart {
+            eprintln!("{what}: {} apart, {:?}", list.len(), &list[..list.len().min(5)]);
+        }
+        for what in apart.keys() {
+            assert!(NEW_GAME_APART.contains(what), "{what} parts from the original's new game: {:?}", apart[what]);
+        }
+        for what in NEW_GAME_APART {
+            assert!(apart.contains_key(what), "{what} agrees with the original's new game now: take it off NEW_GAME_APART");
+        }
     }
 }

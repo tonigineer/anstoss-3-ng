@@ -81,6 +81,11 @@ const NATIONS: usize = 0x78;
 /// a `plan\*.Woc` file holds.
 const ORIGINAL_WEEKS_AT: u32 = 0x8aad90;
 const BLOCK: usize = crate::records::TEMPLATES * crate::records::TEMPLATE_SIZE;
+/// The running game's names of its own templates, one text each from
+/// here on (`IDS_TRAIN_WOCHE1` …): they stand in the table where the file
+/// has short ones ("leichtes Kondi", "Frei"), and a new manager's record
+/// has them (first-turn.an3).
+const ORIGINAL_NAMES_TEXT: u16 = 2668;
 const CO_KINDS: usize = 7;
 const CO_TEMPLATES: usize = 14;
 /// Above the odds the co-trainer takes this template.
@@ -361,6 +366,17 @@ pub struct Category {
 }
 
 impl TrainingTables {
+    /// Names the game's own templates as the running game does, from the
+    /// texts `IDS_TRAIN_WOCHE1` to `IDS_TRAIN_WOCHE18`; a text not there
+    /// leaves the table's name.
+    pub fn name_originals(&mut self, texts: &std::collections::HashMap<u16, String>) {
+        for (t, template) in self.originals.iter_mut().enumerate() {
+            if let Some(name) = texts.get(&(ORIGINAL_NAMES_TEXT + t as u16)).filter(|n| !n.is_empty()) {
+                template.name = name.clone();
+            }
+        }
+    }
+
     pub fn load(exe: &Exe) -> io::Result<Self> {
         let u16s = |at: u32, count: usize| -> io::Result<Vec<u16>> {
             Ok(exe.u32s(at, count)?.into_iter().map(|v| v as u16).collect())

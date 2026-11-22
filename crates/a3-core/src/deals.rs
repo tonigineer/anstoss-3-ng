@@ -25,8 +25,11 @@
 //! A player whose sale is called off with his contract running out goes
 //! to the free agents (`FUN_0040e8cc`, [`execute_with`]).
 //!
+//! A deal of two millions or more enters the Supertransfers
+//! (`FUN_0070eccd`, [`supertransfer`]).
+//!
 //! Left out: the human clubs' training plans of a player between them (`FUN_00746ddf`),
-//! the news (`FUN_0070eccd`), the record and the all-time lists
+//! the human clubs' record fees and all-time lists
 //! (`FUN_005dbeb7`, `FUN_005dbefc`, `FUN_006d5931`) and the share market's
 //! note (`FUN_00405bf3`).
 
@@ -68,6 +71,21 @@ const STATIONS_MOST: i16 = 15;
 /// The history's kinds.
 const CAME: u8 = 1;
 const SOLD: u8 = 2;
+/// What his club still owes him, in thousands (R+0x1f0), and where the
+/// club books it paid (club +0x284).
+const OWED: usize = 0x1f0;
+const OWED_PAID: usize = 0x284;
+/// The contract's bits: on loan, moved in the season, not to play in the
+/// European cups.
+const ON_LOAN: u16 = 0x100;
+const MOVED: u16 = 0x800;
+const NO_EUROPE: u16 = 0x10;
+/// The club insures its players itself (club +0x303).
+const INSURES: usize = 0x303;
+/// A sale above this (`DAT_00a3b308`) a human seller keeps in mind: the
+/// player and his strength, in his block `0xa58078` at +0x293a.
+const BIG_SALE: i32 = 3_000_000;
+const BIG_SALE_AT: usize = 0x293a - 0x20;
 
 /// A deal as the list keeps it.
 #[derive(Clone, Copy)]
@@ -223,6 +241,41 @@ fn leave_season(records: &mut Records, id: u16) {
 /// A new station at the club (`FUN_00704109`): today, no end, the fee in
 /// thousands, the club, his strength; fifteen kept, the oldest gone.
 pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee: u32) {
+    open_station_as(records, id, club, fee, 0);
+}
+
+/// A youth's station at his club (`FUN_00707c10`, `FUN_00704109` with
+/// its last argument 1): of `kind`, no fee, his strength with the youth
+/// team's bit.
+pub(crate) fn open_youth_station(records: &mut Records, id: u16, club: (u8, i16), kind: u8) {
+    open_station_as(records, id, club, 0, kind);
+    mark_last_station(records, id, YOUTH_BIT);
+}
+
+/// An amateur's station at his club (`FUN_00707c3f`, `FUN_00704109` with
+/// its last argument 2): no fee, his strength with the amateurs' bit.
+pub(crate) fn open_amateur_station(records: &mut Records, id: u16, club: (u8, i16)) {
+    open_station_as(records, id, club, 0, 0);
+    mark_last_station(records, id, AMATEUR_BIT);
+}
+
+/// The last station's strength byte with `bit` added.
+fn mark_last_station(records: &mut Records, id: u16, bit: u8) {
+    if let Some(p) = records.player_mut(id) {
+        let last = usize::try_from(p.career_count().clamp(1, STATIONS_MOST) - 1).unwrap_or(0);
+        let at = STATIONS + last * STATION + 0x13;
+        p.put::<u8>(at, p.get::<u8>(at).wrapping_add(bit));
+    }
+}
+
+/// A station's strength byte holds this for a youth team's, and this for
+/// an amateur's.
+const YOUTH_BIT: u8 = 0x40;
+const AMATEUR_BIT: u8 = 0x80;
+
+/// The same with the station's kind at +0x12 (`FUN_00704109`'s fourth
+/// argument: 1 for a transfer at once).
+fn open_station_as(records: &mut Records, id: u16, club: (u8, i16), fee: u32, kind: u8) {
     let date = date_bytes(records);
     let Some(p) = records.player_mut(id) else { return };
     let mut count = p.career_count().clamp(0, STATIONS_MOST);
@@ -241,6 +294,7 @@ pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee:
     s[8..12].copy_from_slice(&(fee / THOUSAND).to_le_bytes());
     s[0x10] = club.0;
     s[0x11] = club.1 as u8;
+    s[0x12] = kind;
     s[0x13] = p.strength();
     for (k, b) in s.iter().enumerate() {
         p.put::<u8>(at + k, *b);
@@ -252,6 +306,11 @@ pub(crate) fn open_station(records: &mut Records, id: u16, club: (u8, i16), fee:
 /// year, week 0xff, the kind, his names, the other club, his strength and
 /// position, the fee in thousands.
 fn note(records: &mut Records, club: (u8, i16), id: u16, kind: u8, other: [u8; 4], fee: u32) {
+    note_in(records, club, id, 0xff, kind, other, fee);
+}
+
+/// The same in a week of the season (`FUN_0070e8c4`, the day's seventh).
+fn note_in(records: &mut Records, club: (u8, i16), id: u16, week: u8, kind: u8, other: [u8; 4], fee: u32) {
     let Some(slot) = u16::try_from(club.1)
         .ok()
         .and_then(|n| records.team(u16::from(club.0), n))
@@ -262,7 +321,7 @@ fn note(records: &mut Records, club: (u8, i16), id: u16, kind: u8, other: [u8; 4
     let Some(p) = records.player(id) else { return };
     let mut e = [0u8; 0x14];
     e[0..2].copy_from_slice(&records.globals.start_year().to_le_bytes());
-    e[2] = 0xff;
+    e[2] = week;
     e[3] = kind;
     e[4..6].copy_from_slice(&p.first_name().to_le_bytes());
     e[6..8].copy_from_slice(&p.last_name().to_le_bytes());
@@ -409,6 +468,352 @@ pub(crate) fn bring_in(records: &mut Records, club: (u8, i16), id: u16, fee: u32
     open_station(records, id, club, fee);
 }
 
+/// A club's fields as the deals name them: country, 0, number.
+/// The Supertransfers (fifty of 0x1c bytes at `DAT_00b1b2e8`, the lists
+/// block's +0xfc30, the dearest first).
+const SUPERTRANSFERS: usize = 0xfc30;
+const SUPERTRANSFER: usize = 0x1c;
+const SUPERTRANSFERS_KEPT: usize = 50;
+/// A fee below this never enters them (`DAT_00a3b314`).
+const SUPERTRANSFER_LEAST: i32 = 2_000_000;
+/// They keep fees in ten thousands (`DAT_00a3b3bc`).
+const TEN_THOUSAND: i32 = 10_000;
+
+/// A transfer entered in the Supertransfers (`FUN_0070eccd`, after the
+/// buyer's history, mid-season through `FUN_0070e82e`/`FUN_0070ee57`): a
+/// fee of two millions or more, in ten thousands no less than the
+/// fiftieth's, goes in above every entry it is not below, those moving one
+/// down and the fiftieth falling out. The entry: the player, his first
+/// and last name — none and his nickname when he is known by it (+0x1b4
+/// bit 31) —, the fee, the club he came from (`from`, a free player's
+/// nation and 200), the buyer's country byte and number, his position and
+/// strength; the bytes between (+6, +0x15, +0x1a) stay as the slot held
+/// them.
+pub(crate) fn supertransfer(records: &mut Records, id: u16, from: [u8; 4], buyer: (u8, i16), fee: u32) {
+    let fee = fee as i32;
+    if fee < SUPERTRANSFER_LEAST {
+        return;
+    }
+    let fee = fee / TEN_THOUSAND;
+    let Some(p) = records.player(id) else { return };
+    let names = if p.shown() & 0x8000_0000 != 0 { [0, p.nickname()] } else { [p.first_name(), p.last_name()] };
+    let (position, strength) = (p.positions()[0], p.strength());
+    let Some(b) = records
+        .block_mut(crate::statistics::LISTS)
+        .and_then(|b| b.get_mut(SUPERTRANSFERS..SUPERTRANSFERS + SUPERTRANSFERS_KEPT * SUPERTRANSFER))
+    else {
+        return;
+    };
+    let fee_at = |b: &[u8], k: usize| i32::from_le_bytes(b[k * SUPERTRANSFER + 0xc..k * SUPERTRANSFER + 0x10].try_into().unwrap());
+    if fee_at(b, SUPERTRANSFERS_KEPT - 1) > fee {
+        return;
+    }
+    let mut k = SUPERTRANSFERS_KEPT - 1;
+    while k > 0 && fee_at(b, k - 1) <= fee {
+        b.copy_within((k - 1) * SUPERTRANSFER..k * SUPERTRANSFER, k * SUPERTRANSFER);
+        k -= 1;
+    }
+    let e = &mut b[k * SUPERTRANSFER..(k + 1) * SUPERTRANSFER];
+    e[0..2].copy_from_slice(&id.to_le_bytes());
+    e[2..4].copy_from_slice(&names[0].to_le_bytes());
+    e[4..6].copy_from_slice(&names[1].to_le_bytes());
+    e[0xc..0x10].copy_from_slice(&fee.to_le_bytes());
+    e[0x10..0x14].copy_from_slice(&from);
+    e[0x14] = buyer.0;
+    e[0x16..0x18].copy_from_slice(&u16::from(buyer.1 as u8).to_le_bytes());
+    e[0x18] = position;
+    e[0x19] = strength;
+}
+
+fn side_bytes(club: (u8, i16)) -> [u8; 4] {
+    let mut s = [0u8; 4];
+    s[0] = club.0;
+    s[2..4].copy_from_slice(&club.1.to_le_bytes());
+    s
+}
+
+/// What the selling club still owes him goes with him (`FUN_0070ca69`:
+/// R+0x1f0, in thousands, into the club's +0x284 and his earnings).
+fn settle_owed(records: &mut Records, seller: (u8, i16), id: u16) {
+    let Some(p) = records.player_mut(id) else { return };
+    let owed = i32::from(p.get::<u16>(OWED)) * THOUSAND as i32;
+    p.set_earned(p.earned().wrapping_add(owed));
+    p.put::<u16>(OWED, 0);
+    if let Some(team) = u16::try_from(seller.1).ok().and_then(|n| records.team_mut(u16::from(seller.0), n)) {
+        let at = OWED_PAID + CLUB_TO_TEAM;
+        let v = team.get::<i32>(at).wrapping_add(owed);
+        team.put::<i32>(at, v);
+    }
+}
+
+/// The number a computer club gives him (`FUN_006d98a0`): the first free
+/// of his position's three, else one to forty drawn and the next free
+/// from there.
+fn shirt_at(records: &Records, club: (u8, i16), id: u16, random: &mut Random) -> Option<u8> {
+    let team = records.team(u16::from(club.0), u16::try_from(club.1).ok()?)?;
+    let position = usize::from(records.player(id)?.positions()[0]);
+    let mut worn = [false; 256];
+    for q in team.players() {
+        if let Some(r) = records.player(q) {
+            worn[usize::from(r.shirt())] = true;
+        }
+    }
+    let choices = crate::settlement::SHIRT_CHOICES.get(position.checked_sub(1)? * 3..position * 3)?;
+    if let Some(&n) = choices.iter().find(|&&n| !worn[usize::from(n)]) {
+        return Some(n);
+    }
+    let mut n = random.below(40) as usize + 1;
+    while n < 255 && worn[n] {
+        n += 1;
+    }
+    Some(n as u8)
+}
+
+/// A transfer carried out at once (`FUN_0070ca69`, its last argument
+/// set): each human club's history keeps it in the season's week
+/// (`FUN_0070e8c4`), his season at the old club is left behind, his
+/// strength steps by chance at a computer club (`FUN_0070e588`), the
+/// contract becomes his (`FUN_0070db4b`: no next club, his line-up marks
+/// and intensity fresh; his cards and bans gone with the country, his
+/// season's goals with the country or the league), he changes squads, the
+/// fee is booked at both clubs and kept as what he cost, what the seller
+/// owed him is paid, he leaves the transfer list and is marked as moved
+/// in the season (R+0x15e 0x800); both squads' best by position are
+/// reckoned anew, the clubs' will to win moves, a computer club numbers
+/// him, his old ties end and a new station opens. Outside July and August
+/// he may not play in the European cups (0x10) — within a country, or
+/// between clubs not linked (team +0x872); a club that insures its
+/// players itself (+0x303) insures him by his salary, and a human seller
+/// keeps a sale above three millions in mind.
+///
+/// Left out: the paper's lines for a man of strength 11 up from a first
+/// league (ereignis 0x684, 0x685), the records
+/// (`FUN_006d5931`), a human buyer's strength step and
+/// message (`FUN_0070e6a3`), the human clubs' training plans
+/// (`FUN_00746ddf`) and the list of the week's moves (`FUN_00759eb9`, not
+/// saved). Then both clubs plan their search anew
+/// ([`crate::search_plan::after_transfer`]).
+pub(crate) fn move_now(
+    records: &mut Records,
+    random: &mut Random,
+    id: u16,
+    seller: (u8, i16),
+    buyer: (u8, i16),
+    fee: u32,
+    terms: &[u8; 0x14],
+) {
+    carry_out(records, random, id, seller, buyer, fee, terms);
+    crate::search_plan::after_transfer(records, random, seller, buyer, fee, u16::from_le_bytes([terms[0], terms[1]]));
+}
+
+/// The move itself (`FUN_0070ca69`'s branch for at once).
+fn carry_out(
+    records: &mut Records,
+    random: &mut Random,
+    id: u16,
+    seller: (u8, i16),
+    buyer: (u8, i16),
+    fee: u32,
+    terms: &[u8; 0x14],
+) {
+    let (Ok(seller_n), Ok(buyer_n)) = (u16::try_from(seller.1), u16::try_from(buyer.1)) else { return };
+    let (seller_c, buyer_c) = (u16::from(seller.0), u16::from(buyer.0));
+    let (Some(from), Some(to)) = (records.team(seller_c, seller_n), records.team(buyer_c, buyer_n)) else { return };
+    let levels = [from.level(), to.level()];
+    let linked = [from, to].map(|t| {
+        if records.globals.played(i16::from(t.country())) { i16::from(t.linked()[0]) } else { -1 }
+    });
+    let (human_buyer, numbered) = (to.human() != 0, to.humans()[0] == 0);
+    let insures = to.get::<u8>(INSURES + CLUB_TO_TEAM) != 0;
+    let seller_slot = usize::from(from.human());
+    let week = (records.globals.day() / 7) as u8;
+    let year = i32::from(records.globals.start_year());
+    let month = records.globals.date()[1];
+    note_in(records, seller, id, week, SOLD, side_bytes(buyer), fee);
+    note_in(records, buyer, id, week, CAME, side_bytes(seller), fee);
+    supertransfer(records, id, side_bytes(seller), buyer, fee);
+    leave_season(records, id);
+    let absent = records.player(id).is_some_and(|p| {
+        let [y, d] = p.away_to();
+        let (now, day) = (records.globals.date()[2], records.globals.day_of_year());
+        y > now || (y == now && d > day)
+    });
+    let word = |at: usize| u16::from_le_bytes([terms[at], terms[at + 1]]);
+    let Some(p) = records.player_mut(id) else { return };
+    if !human_buyer {
+        step_strength(p, random);
+    }
+    p.put::<u8>(0x14c, 0);
+    p.put::<u16>(0x14e, 0);
+    p.set_salary(word(0));
+    p.set_appearance_bonus(word(2));
+    p.set_goal_bonus(word(4));
+    p.set_contract((i32::from(terms[0xc] as i8) + year) as u16);
+    p.put::<u8>(0x161, 0);
+    if word(0xe) & ON_LOAN == 0 {
+        p.set_fixed_fee(word(6));
+    } else {
+        p.set_fixed_fee(0);
+    }
+    p.set_terms(word(0xe));
+    p.set_retiring(p.retiring() & 0x3f);
+    p.set_picks(0);
+    p.set_intensity(3);
+    p.set_matches_in_a_row(0);
+    if seller.0 != buyer.0 {
+        for at in [0x22c, 0x22d, 0x22e, 0x22f, 0x230, 0x231, 0x234, 0x23d, 0x253, 0x25e] {
+            p.put::<u8>(at, 0);
+        }
+        p.set_manner(p.manner() & !HOME_GROWN);
+    }
+    if seller.0 != buyer.0 || levels[0] != levels[1] {
+        for at in (0x241..=0x252).chain([0x23c, 0x23d]) {
+            p.put::<u8>(at, 0);
+        }
+    }
+    p.set_flags(0);
+    p.put::<u32>(0x158, fee / THOUSAND);
+    let position = p.positions()[0];
+    // The squads (`FUN_0070df0b`, `FUN_0070e01a`, `FUN_0070d9c5`).
+    let positions: Vec<(u16, u8)> = records
+        .team(buyer_c, buyer_n)
+        .map(|t| t.players().into_iter().map(|q| (q, records.player(q).map_or(0, |r| r.positions()[0]))).collect())
+        .unwrap_or_default();
+    let position_of = |q: u16| positions.iter().find(|e| e.0 == q).map_or(0, |e| e.1);
+    if let Some(team) = records.team_mut(buyer_c, buyer_n) {
+        join_squad(team, &position_of, id, position);
+        add_money(team, PURCHASES, i64::from(fee as i32));
+        add_net(team, (fee as i32).wrapping_neg());
+    }
+    if let Some(p) = records.player_mut(id) {
+        p.set_club([buyer.0, buyer.1 as u8]);
+    }
+    if let Some(team) = records.team_mut(seller_c, seller_n) {
+        let squad: Vec<u16> = team.players().into_iter().filter(|&q| q != id).collect();
+        team.set_players(&squad);
+        let mut lineup = team.lineup();
+        lineup.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_lineup(lineup);
+        let mut bench = team.bench();
+        bench.iter_mut().filter(|s| **s == id).for_each(|s| *s = 0);
+        team.set_bench(bench);
+        add_money(team, SALES, i64::from(fee as i32));
+        add_net(team, fee as i32);
+    }
+    settle_owed(records, seller, id);
+    crate::transfers::take_off(records, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_terms(p.terms() | MOVED);
+    }
+    crate::squad_rank::keep_best(records, seller_c, seller_n);
+    crate::squad_rank::keep_best(records, buyer_c, buyer_n);
+    let age = today(records).and_then(|d| records.player(id).map(|p| crate::statistics::age_on(p, d))).unwrap_or(0);
+    let now = records.player(id).cloned();
+    if let (Some(team), Some(p)) = (records.team_mut(seller_c, seller_n), now.as_ref()) {
+        will_at_leaving(team, p, age);
+    }
+    if let (Some(team), Some(p)) = (records.team_mut(buyer_c, buyer_n), now.as_ref()) {
+        will_at_coming(team, p, age);
+    }
+    crate::transfers::unwatch_at_club(records, buyer, id);
+    if let Some(p) = records.player_mut(id) {
+        p.set_shirt(0);
+    }
+    if numbered
+        && let Some(n) = shirt_at(records, buyer, id, random)
+        && let Some(p) = records.player_mut(id)
+    {
+        p.set_shirt(n);
+    }
+    if let Some(p) = records.player_mut(id) {
+        new_ties(p, absent);
+    }
+    open_station_as(records, id, buyer, fee, 1);
+    let Some(p) = records.player_mut(id) else { return };
+    if !(7..=8).contains(&month)
+        && (seller.0 == buyer.0 || (linked[1] != seller.1 && linked[0] != buyer.1))
+    {
+        p.set_terms(p.terms() | NO_EUROPE);
+    }
+    if insures {
+        let salary = u32::from(p.salary());
+        let premium = match p.traits()[1] {
+            t if t & 8 != 0 => salary / 5,
+            t if t & 4 != 0 => salary * 3 / 20,
+            _ => salary / 10,
+        };
+        p.put::<i16>(0x1f4, premium.max(1) as i16);
+    }
+    if fee as i32 > BIG_SALE
+        && (1..=4).contains(&seller_slot)
+        && let Some(strength) = records.player(id).map(Player::strength)
+        && let Some(b) = records.block_mut(&format!("0xa58078[{}]", seller_slot - 1))
+        && let Some(e) = b.get_mut(BIG_SALE_AT..BIG_SALE_AT + 4)
+    {
+        e[0..2].copy_from_slice(&id.to_le_bytes());
+        e[2..4].copy_from_slice(&u16::from(strength).to_le_bytes());
+    }
+}
+
+/// A transfer agreed for the season's end (`FUN_0070ca69`, its last
+/// argument nought): the deal joins the list (`FUN_0070f717`,
+/// `FUN_0070f25a`: the player, the clubs, the fee, the contract, the
+/// buyer's league less the seller's, each the third at most; the list's
+/// first page of a hundred only), what the seller owed him is paid, the
+/// buyer is his next club, he leaves the transfer list and plays on
+/// (R+0x26f bit 7 cleared). Left out as at once, and the paper's line
+/// for a free man of strength 11 up (ereignis 0x683) and the share
+/// market's note of the buyer (`FUN_00405bf3`); the clubs' counts of
+/// deals and sums (+0xc06, +0xc08, +0x9ec) the save does not hold. Then
+/// both clubs plan their search anew, as at once.
+pub(crate) fn agree(
+    records: &mut Records,
+    random: &mut Random,
+    id: u16,
+    seller: (u8, i16),
+    buyer: (u8, i16),
+    fee: u32,
+    terms: &[u8; 0x14],
+) -> bool {
+    let level = |c: (u8, i16)| {
+        u16::try_from(c.1).ok().and_then(|n| records.team(u16::from(c.0), n)).map_or(0, |t| t.level().min(2))
+    };
+    let step = level(buyer).wrapping_sub(level(seller));
+    let mut booked = false;
+    if let Some(b) = records.block_mut(AGREED)
+        && b.len() >= 4 + PAGE_HEAD
+    {
+        let word = |b: &[u8], at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
+        let (total, page, n) = (word(b, 0), word(b, 2), word(b, 4));
+        let at = 4 + PAGE_HEAD + usize::try_from(n).unwrap_or(PAGE_ENTRIES) * ENTRY;
+        if total >= 0 && page == 0 && (0..PAGE_ENTRIES as i16).contains(&n) && at + ENTRY <= b.len() {
+            let e = &mut b[at..at + ENTRY];
+            e[0..2].copy_from_slice(&1i16.to_le_bytes());
+            e[PLAYER..PLAYER + 2].copy_from_slice(&id.to_le_bytes());
+            e[SELLER] = seller.0;
+            e[SELLER + 2..SELLER + 4].copy_from_slice(&seller.1.to_le_bytes());
+            e[BUYER] = buyer.0;
+            e[BUYER + 2..BUYER + 4].copy_from_slice(&buyer.1.to_le_bytes());
+            e[FEE..FEE + 4].copy_from_slice(&fee.to_le_bytes());
+            e[TERMS..TERMS + 0x14].copy_from_slice(terms);
+            e[0x24] = step;
+            e[LOAN] = 0;
+            b[4..6].copy_from_slice(&(n + 1).to_le_bytes());
+            b[0..2].copy_from_slice(&(total + 1).to_le_bytes());
+            booked = true;
+        }
+    }
+    settle_owed(records, seller, id);
+    crate::transfers::take_off(records, id);
+    if let Some(p) = records.player_mut(id) {
+        p.put::<u8>(0x14c, buyer.0);
+        p.put::<i16>(0x14e, buyer.1);
+        p.set_retiring(p.retiring() & !RETIRING);
+    }
+    crate::search_plan::after_transfer(records, random, seller, buyer, fee, u16::from_le_bytes([terms[0], terms[1]]));
+    booked
+}
+
 /// Carries out the season's agreed transfers (`FUN_0070f7cf`).
 pub fn execute(records: &mut Records, random: &mut Random) {
     let mut agents = Vec::new();
@@ -520,6 +925,7 @@ pub fn execute_with(records: &mut Records, random: &mut Random, agents: &mut Vec
             deal.bytes[SELLER..SELLER + 4].try_into().unwrap()
         };
         note(records, buyer, id, CAME, seller, fee);
+        supertransfer(records, id, seller, buyer, fee);
     }
     // The list stands empty (`FUN_0070f564`).
     if let Some(block) = records.block_mut(AGREED) {
@@ -560,6 +966,41 @@ mod tests {
         // held it (`local_1c`'s unset byte).
         let clean = |e: Option<[u8; 0x14]>| e.map(|mut a| { a[9] = 0; a });
         assert_eq!(clean(entry(&ours)), clean(entry(&theirs)));
+    }
+
+    /// Over the original's season end (SeasonEnd364 to NewSeason000): the
+    /// deals carried out enter the Supertransfers as the original's list
+    /// stands after them, entry for entry and byte for byte.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_ends_deals_enter_the_supertransfers_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("SeasonEnd364.an3"));
+        let list = |r: &Records| {
+            r.block(crate::statistics::LISTS).unwrap()[SUPERTRANSFERS..SUPERTRANSFERS + SUPERTRANSFERS_KEPT * SUPERTRANSFER]
+                .to_vec()
+        };
+        assert_ne!(list(&before), list(&theirs), "the season end changes the list");
+        let mut random = Random::new(3);
+        let mut agents = crate::free_agents::release(&mut ours, &mut random);
+        execute_with(&mut ours, &mut random, &mut agents);
+        // His strength as it stepped by chance at the buyer (`FUN_0070e588`)
+        // aside where the draws part.
+        let mut stepped = 0;
+        for (k, (a, b)) in list(&ours).chunks(SUPERTRANSFER).zip(list(&theirs).chunks(SUPERTRANSFER)).enumerate() {
+            let id = u16::from_le_bytes([a[0], a[1]]);
+            let (mut a, mut b) = (a.to_vec(), b.to_vec());
+            if a != b && ours.player(id).map(|p| p.strength()) != theirs.player(id).map(|p| p.strength()) {
+                (a[0x19], b[0x19]) = (0, 0);
+                stepped += 1;
+            }
+            assert_eq!(a, b, "entry {k}");
+        }
+        assert!(stepped < 5, "{stepped} strengths drawn apart");
     }
 
     use super::*;
@@ -612,5 +1053,43 @@ mod tests {
             assert_eq!(x.matchdays(), y.matchdays(), "player {id}'s matchdays");
         }
         assert!(done > 260, "{done} deals as the original's");
+    }
+
+    /// A sale agreed for the season's end, on A: Young's from 14/43 to
+    /// 14/20 joins the agreed list behind the deals it held — open, no
+    /// loan, with the clubs, the fee, the contract and the buyer's league
+    /// less the seller's; the buyer is his next club, what 14/43 owed him
+    /// is paid, he is off the transfer list and stays in its squad.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_sale_agreed_for_the_seasons_end_joins_the_list() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        const YOUNG: u16 = 2168;
+        assert!(crate::transfers::listings(&records).iter().any(|l| l.id == YOUNG));
+        let held = read(&records).len();
+        let (owed, earned) = records.player(YOUNG).map(|p| (p.get::<u16>(OWED), p.earned())).unwrap();
+        let mut terms = [0u8; 0x14];
+        terms[0..2].copy_from_slice(&60u16.to_le_bytes());
+        terms[0xc] = 3;
+        assert!(agree(&mut records, &mut Random::new(1), YOUNG, (14, 43), (14, 20), 548_000, &terms));
+        let deals = read(&records);
+        assert_eq!(deals.len(), held + 1);
+        let d = deals[held];
+        assert!(d.open && !d.loan());
+        assert_eq!((d.player(), d.seller(), d.buyer(), d.fee()), (YOUNG, (14, 43), (14, 20), 548_000));
+        assert_eq!(d.bytes[TERMS..TERMS + 0x14], terms);
+        let levels = [43, 20].map(|n| records.team(14, n).unwrap().level().min(2));
+        assert_eq!(d.bytes[0x24], levels[1].wrapping_sub(levels[0]));
+        let p = records.player(YOUNG).unwrap();
+        assert_eq!((p.get::<u8>(0x14c), p.get::<i16>(0x14e)), (14, 20));
+        assert_eq!((p.get::<u16>(OWED), p.earned()), (0, earned.wrapping_add(i32::from(owed) * 1000)));
+        assert_eq!(p.club(), [14, 43]);
+        assert!(records.team(14, 43).unwrap().players().contains(&YOUNG));
+        assert!(!crate::transfers::listings(&records).iter().any(|l| l.id == YOUNG));
     }
 }

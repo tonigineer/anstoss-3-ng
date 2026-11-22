@@ -1,5 +1,38 @@
 # Loads the first save of the list — the newest — and stops on the line-up
-# of its first human manager's turn.
+# of its first human manager's turn, past the windows of the records he
+# broke (477). A save at the season's end walks the season end first: its
+# players' development (22), each human's statement (417), the European
+# ranking it rolls (301), an even year's national offers (356, declined),
+# the season's goal of a human whose contract ran on a second year (379),
+# then the new season's start screens up to the first turn — for a club in
+# Europe the television's talks (475), whose OK asks first (384).
 once 9 choose 4771 1; ok
 on 424 row 5144 0; ok
+on 477 ok
+on 22 press 1306
+on 417 ok
+on 301 ok
+on 356 press 4542
+on 379 ok
+on 422 ok
+on 475 ok
+on 384 press 4741
+on 420 ok
+on 421 ok
+on 287 ok
+on 321 ok
+on 25 ok
+on 341 ok
+on 120 ok
+on 51 ok
+on 392 ok
+on 435 ok
+on 96 ok
+on 161 ok
+on 419 ok
+on 93 press 1943
+on 499 ok
+on 380 press 4731
+on 381 wait
+on 2 wait
 until dialog 147

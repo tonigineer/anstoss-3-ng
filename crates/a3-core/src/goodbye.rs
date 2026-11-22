@@ -81,7 +81,7 @@ impl Notices {
 
 /// The day number of a date (`FUN_00675795`, called as
 /// `FUN_00675e49(day, month, year)`): March is the year's first month.
-fn day_number(day: i32, month: i32, year: i32) -> i32 {
+pub(crate) fn day_number(day: i32, month: i32, year: i32) -> i32 {
     let (month, year) = if month < 3 { (month + 9, year - 1) } else { (month - 3, year) };
     (year / 100) * 146_097 / 4 + (year % 100) * 1461 / 4 + 719_469 + day + (month * 153 + 2) / 5
 }

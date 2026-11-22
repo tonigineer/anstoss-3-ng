@@ -5,10 +5,12 @@
 
 use crate::calendar::Calendar;
 use crate::cards;
+use crate::individual::IndividualTables;
 use crate::finances::CLUB_TO_TEAM;
 use crate::opponent::{CUPS_AT, League, PAIRING, PAIRINGS, cup_pairings};
 use crate::random::Random;
 use crate::records::{PLANNER_DAYS, PLANNER_ENTRY, Records, Team};
+use crate::report;
 use crate::season::Season;
 use crate::settlement;
 use crate::statistics::{self, ALL};
@@ -39,9 +41,24 @@ const GOAL_UNITS: i32 = 200;
 /// Play the games of the season's day: for every country the game follows,
 /// every league whose calendar row holds this day as one of its matchdays
 /// and has not played that matchday yet gets its pairs scored, and so does
-/// the country's cup when the day is one of its rounds.
-pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, season: &mut Season) {
+/// the country's cup when the day is one of its rounds. The leagues that
+/// played, by country and level, and the human clubs whose matches left
+/// them a report. `listed` is the day's match list ([`list_day`]) the
+/// original plays (`FUN_00710839` on the buffer at `0x1baf714`): a league
+/// on it has its controlled pairs there, one left off it none.
+pub fn play_day(
+    records: &mut Records,
+    world: &World,
+    calendar: &Calendar,
+    season: &mut Season,
+    individual: &IndividualTables,
+    listed: &[Listed],
+) -> MatchDay {
     let day = season.day;
+    let mut played = Vec::new();
+    let mut faced = Vec::new();
+    let mut controls = Vec::new();
+    let mut cups = Vec::new();
     for slot in 0..world::SLOTS {
         let Some(nation) = world.country(slot).map(|country| country.nation) else {
             continue;
@@ -49,9 +66,9 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
         if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
             continue;
         }
-        cup_day(records, nation, calendar, day, &mut season.random);
+        faced.extend(cup_day(records, nation, calendar, day, individual, &mut season.random, &mut cups));
         supercup_day(records, nation, calendar, day, &mut season.random);
-        league_cup_day(records, nation, calendar, day, &mut season.random);
+        league_cup_day(records, nation, calendar, day, individual, &mut season.random);
         for level in 0..records.countries.leagues(usize::from(nation)) {
             let level = level as u8;
             let Some(row) = calendar.row(nation, usize::from(level)) else {
@@ -64,10 +81,225 @@ pub fn play_day(records: &mut Records, world: &World, calendar: &Calendar, seaso
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                settle(records, nation, level, day, &mut season.random);
+                let picks = listed.iter().find(|(league, _)| *league == (nation, level)).map_or(&[][..], |(_, p)| p);
+                faced.extend(settle(records, nation, level, day, individual, picks, &mut season.random, &mut controls));
+                played.push((nation, level));
             }
         }
     }
+    crate::training_day::refresh_individual(records, &mut season.clubs, world);
+    let reported = faced.iter().map(|f| f.club).collect();
+    MatchDay { leagues: played, reported, faced, controls, cups }
+}
+
+/// A calendar entry's competition, its top bits (`& 0x7f000000`); none
+/// on row 0 lets the leagues list their matchdays.
+const LISTING_KIND: u32 = 0x7f00_0000;
+/// A league matchday's entry runs below this (`FUN_0062a325`'s `< 0x3c`).
+const LISTING_MATCHDAYS: u32 = 0x3c;
+/// The groups of a split league's second phase each list four pairs
+/// (`FUN_00690a9e`'s `FUN_0078a810(4)`).
+const SPLIT_PAIRS: u32 = 4;
+
+/// The draws of the day's match list (`FUN_0062a325` into the buffer at
+/// `0x1baf714`): with no international or European kind on row 0 of the
+/// calendar, the main country's leagues by level (`DAT_00b5cbb0`, its
+/// `0xae60c4` count), then each further country's first league
+/// (`DAT_00b5cbb4`, `DAT_00b5cbae` of them), each whose entry for the
+/// day is a league matchday (1 to 0x3b) lists its pairs and marks one of
+/// them for the doping control (`FUN_00692045` copying the league, no
+/// draw; `FUN_00690a9e`, [`listing_picks`]). The cups' kinds list their
+/// ties without these: the relegation's (0x10000000, `FUN_006d73a3`)
+/// and row 0's world matches (0x02000000, `FUN_00675698`'s shuffle) draw
+/// as well, not here yet. The picks, league by league.
+pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut Random) -> Vec<Listed> {
+    let mut picks = Vec::new();
+    if calendar.entry(0, day) & LISTING_KIND != 0 {
+        return picks;
+    }
+    let globals = &records.globals;
+    let main = u16::try_from(globals.main_country()).unwrap_or(0);
+    let countries = globals.more_countries();
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(countries.len());
+    let mains = (0..records.countries.leagues(usize::from(main)).max(0)).map(|level| (main, level as u8));
+    let firsts = countries[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0));
+    for (country, level) in mains.chain(firsts) {
+        let Some(row) = calendar.row(country, usize::from(level)) else { continue };
+        let entry = calendar.entry(row, day);
+        if entry == 0 || entry >= LISTING_MATCHDAYS {
+            continue;
+        }
+        if let Some(league) = League::of(records, country, level) {
+            picks.push(((country, level), listing_picks(&league, entry as usize, random)));
+        }
+    }
+    picks
+}
+
+/// A league on the day's match list, by country and level, and the pairs
+/// its doping control takes ([`listing_picks`]).
+pub type Listed = ((u16, u8), Vec<u32>);
+
+/// The pair of a league's matchday the doping control takes
+/// (`FUN_00690a9e`, the list's +0x460): one of its `teams / 2`; past the
+/// regular rounds of a league split in two (G+0x1c; `FUN_0068fd13`'s
+/// `teams * 2 - 2`, or `* 4 - 4` with four rounds at G+0x1a) one of four
+/// in each group.
+fn listing_picks(league: &League, matchday: usize, random: &mut Random) -> Vec<u32> {
+    if league.split() == 0 || matchday <= league.regular_matchdays() {
+        vec![random.below(u32::try_from(league.teams() / 2).unwrap_or(0))]
+    } else {
+        vec![random.below(SPLIT_PAIRS), random.below(SPLIT_PAIRS)]
+    }
+}
+
+/// What a day's matches leave for the dialogs behind them: the leagues
+/// that played, by country and level, and of each match a human's club
+/// played, that club (`FUN_00551818`: the home side where it is a
+/// human's, else the away side), in the order of the day's matches, and
+/// the match itself; and the doping controls of the human clubs, for
+/// dialog 41 each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MatchDay {
+    pub leagues: Vec<(u16, u8)>,
+    pub reported: Vec<(u8, i16)>,
+    pub faced: Vec<Faced>,
+    pub controls: Vec<crate::doping_control::Control>,
+    /// The humans' national cup ties, as the interview reads them.
+    pub cups: Vec<crate::interview::Fixture>,
+}
+
+/// A match a human's club played: the club its report is shown for, both
+/// sides, home first, the crowd, and the visiting fans where the replica
+/// draws them (the match record's +0x34 and +0x54, which the original
+/// reckons before the match, `FUN_0078b26c` in `FUN_006ef296`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Faced {
+    pub club: (u8, i16),
+    pub sides: [(u8, i16); 2],
+    pub attendance: i32,
+    pub fans: Option<i32>,
+    /// The half's score, home first (+0x12, +0x13).
+    pub half: [u8; 2],
+}
+
+/// What a match of today is: a league's, on its matchday counted from 1,
+/// or a national cup's tie, by its calendar code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fixture {
+    League { level: u8, matchday: usize },
+    Cup { code: u32 },
+}
+
+/// The matches a human's club plays today, home side first, in the order
+/// [`play_day`] plays them, before any is played: the national cup's ties
+/// and the leagues' matchdays that are due (the day's match records the
+/// original marks at +0x474 in `FUN_006ef296`, `FUN_00677428` over both
+/// sides).
+pub fn human_fixtures(records: &Records, world: &World, calendar: &Calendar, day: usize) -> Vec<([(u8, i16); 2], Fixture)> {
+    let mut fixtures = Vec::new();
+    for slot in 0..world::SLOTS {
+        let Some(nation) = world.country(slot).map(|country| country.nation) else {
+            continue;
+        };
+        if !records.globals.played(i16::try_from(nation).unwrap_or(0)) {
+            continue;
+        }
+        let nat = u8::try_from(nation).unwrap_or(0);
+        if let Some((code, ties)) = cup_ties(records, nation, calendar, day) {
+            let turned = code & CUP_SECOND != 0;
+            let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]) as i16;
+            for (_, p) in ties {
+                let (h, a) = if turned { (4, 0) } else { (0, 4) };
+                fixtures.push(([(p[h], u16_at(&p, h + 2)), (p[a], u16_at(&p, a + 2))], Fixture::Cup { code }));
+            }
+        }
+        for level in 0..records.countries.leagues(usize::from(nation)) {
+            let level = level as u8;
+            let Some(row) = calendar.row(nation, usize::from(level)) else { continue };
+            let Some(matchday) = calendar.matchday(row, day) else { continue };
+            let Some(league) = League::of(records, nation, level) else { continue };
+            if league.played() + 1 != matchday {
+                continue;
+            }
+            for (home, away, _) in league.open_games() {
+                fixtures.push(([(nat, league.team(home)), (nat, league.team(away))], Fixture::League { level, matchday }));
+            }
+        }
+    }
+    fixtures.retain(|&(sides, _)| report::human_side(records, sides).is_some());
+    fixtures
+}
+
+/// The country's cup round of the day, if the day is one: its calendar
+/// code and the ties still to play, by their pairing's index and bytes —
+/// a first game finds its pairing open, a second leg or a replay its first
+/// game played and nothing decided yet.
+fn cup_ties(records: &Records, nation: u16, calendar: &Calendar, day: usize) -> Option<(u32, Vec<(usize, [u8; PAIRING])>)> {
+    let row = calendar.row(nation, 0)?;
+    let entry = calendar.entry(row, day);
+    if entry & 0x7f00_0000 != CUP_CODE {
+        return None;
+    }
+    let round = usize::try_from(entry & 0xffff).unwrap_or(0);
+    let slot = records.countries.slot(usize::from(nation));
+    let cup = records.block(&format!("{CUPS_AT:#x}[{slot}]"))?;
+    let mode = usize::from(*cup.get(0x24 - 0x20)?).min(5);
+    let (start, count) = cup_pairings(mode, round)?;
+    let turned = entry & CUP_SECOND != 0;
+    let ties = (start..start + count)
+        .filter_map(|q| {
+            let p = cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING)?;
+            let open = if turned {
+                p[0xc] & CUP_RESULT != 0 && p[0xc] & (CUP_PLAYED | CUP_SECOND_PLAYED) == 0
+            } else {
+                p[0xc] & CUP_RESULT == 0
+            };
+            (p[0] != 0 && p[4] != 0 && open).then(|| Some((q, p.try_into().ok()?)))?
+        })
+        .collect();
+    Some((entry, ties))
+}
+
+/// The game's switch for the table after the matchday (byte 0x08 of the
+/// switches at `0xb5d13c`, `DAT_00b5d144`): 0 off, 1 the leagues with a
+/// human's club, 2 all.
+const TABLES_SWITCH: usize = 0x08;
+const ALL_TABLES: u8 = 2;
+/// The most leagues its list holds (`FUN_0072c650`, 0x16 at 0x1c2eff2).
+pub const TABLES_MOST: usize = 22;
+
+/// The leagues the table after the matchday shows, in its order
+/// (`FUN_00729216`, at the matchday's end in `FUN_007108d3`): of the
+/// leagues that played today, the main country's by their levels, then
+/// each further country's first league — with the switch at 2 all of
+/// them, else those a human's club plays in (`FUN_006774f5`); none with
+/// it off, as the dialog then does not open (`FUN_00729370`, event 200).
+pub fn tables_after(records: &Records, played: &[(u16, u8)]) -> Vec<(u16, u8)> {
+    let switch = records.globals.game_options()[TABLES_SWITCH];
+    if switch != 1 && switch != ALL_TABLES {
+        return Vec::new();
+    }
+    let humans = statistics::human_clubs(records);
+    let shown = |country: u16, level: u8| {
+        played.contains(&(country, level))
+            && (switch == ALL_TABLES
+                || humans.iter().any(|&(c, club)| {
+                    u16::from(c) == country
+                        && u16::try_from(club)
+                            .ok()
+                            .and_then(|n| records.team(country, n))
+                            .is_some_and(|t| t.level() == level)
+                }))
+    };
+    let globals = &records.globals;
+    let main = u16::try_from(globals.main_country()).unwrap_or(0);
+    let more = usize::try_from(globals.more_count()).unwrap_or(0).min(globals.more_countries().len());
+    let leagues = records.countries.leagues(usize::from(main)).clamp(0, 0xff) as u8;
+    let mains = (0..leagues).map(|level| (main, level));
+    let countries = globals.more_countries();
+    let firsts = countries[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0));
+    mains.chain(firsts).filter(|&(c, l)| shown(c, l)).take(TABLES_MOST).collect()
 }
 
 /// The cup's days sit on the country's first league row, coded 0x40 in the
@@ -127,23 +359,27 @@ const YEAR_CUP: u8 = 0x08;
 /// its season's cup takings (club +0x234). The human's year calendar keeps
 /// its entries: the played round fills its score into the day's entry, the
 /// new drawing names his next tie there — and drops it once he is out.
-fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
-    let Some(row) = calendar.row(nation, 0) else {
-        return;
+fn cup_day(
+    records: &mut Records,
+    nation: u16,
+    calendar: &Calendar,
+    day: usize,
+    individual: &IndividualTables,
+    random: &mut Random,
+    cups: &mut Vec<crate::interview::Fixture>,
+) -> Vec<Faced> {
+    let Some((entry, ties)) = cup_ties(records, nation, calendar, day) else {
+        return Vec::new();
     };
-    let entry = calendar.entry(row, day);
-    if entry & 0x7f00_0000 != CUP_CODE {
-        return;
-    }
     let round = usize::try_from(entry & 0xffff).unwrap_or(0);
     let slot = records.countries.slot(usize::from(nation));
     let name = format!("{CUPS_AT:#x}[{slot}]");
     let Some(mode) = records.block(&name).and_then(|cup| cup.get(0x24 - 0x20)).copied() else {
-        return;
+        return Vec::new();
     };
     let mode = usize::from(mode).min(5);
-    let Some((start, count)) = cup_pairings(mode, round) else {
-        return;
+    let (Some((start, count)), Some(row)) = (cup_pairings(mode, round), calendar.row(nation, 0)) else {
+        return Vec::new();
     };
     let u16_at = |p: &[u8], at: usize| u16::from_le_bytes([p[at], p[at + 1]]);
     // The scores drawn before the block is written, as in the leagues, the
@@ -157,18 +393,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     let mut through: Vec<(u8, u16)> = Vec::new();
     let mut beaten: Vec<(u8, u16)> = Vec::new();
-    for q in start..start + count {
-        // A first game finds its pairing open; a second leg or a replay
-        // its first game played and nothing decided yet.
-        let Some(p) = records
-            .block(&name)
-            .and_then(|cup| cup.get(PAIRINGS + q * PAIRING..PAIRINGS + (q + 1) * PAIRING))
-            .filter(|p| p[0] != 0 && p[4] != 0)
-            .filter(|p| if turned { p[0xc] & CUP_RESULT != 0 && p[0xc] & (CUP_PLAYED | CUP_SECOND_PLAYED) == 0 } else { p[0xc] & CUP_RESULT == 0 })
-        else {
-            continue;
-        };
-        let mut tie: [u8; PAIRING] = p.try_into().unwrap_or([0; PAIRING]);
+    let mut reports: Vec<report::Played> = Vec::new();
+    for (q, open) in ties {
+        let p: &[u8] = &open;
+        let mut tie = open;
         let held = |country: u8, at: usize| {
             records
                 .team(u16::from(country), u16_at(p, at))
@@ -180,8 +408,8 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         // tie's away side at home.
         let (h, a) = if turned { (4, 0) } else { (0, 4) };
         let (home, away) = (held(p[h], h + 2), held(p[a], a + 2));
-        let (mut hg, _) = goals(home, away, HOME_EDGE, random);
-        let (mut ag, _) = goals(away, home, -HOME_EDGE, random);
+        let (mut hg, hh) = goals(home, away, HOME_EDGE, random);
+        let (mut ag, ah) = goals(away, home, -HOME_EDGE, random);
         // The result as `FUN_006cc255` stores it, in the tie's own sides:
         // a first leg only stands, a game that decides names the winner —
         // two legs by their sum, then the away goals (`FUN_00677ed4`); a
@@ -252,6 +480,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         let (country, number) = (p[h], u16_at(p, h + 2));
         let (an, away_id) = (p[a], u16_at(p, a + 2));
         let mut crowd = 0;
+        let mut takings = 0;
         if let Some(t) = records.team(u16::from(country), number) {
             let cap = capacity(records, u16::from(country), number);
             let att = attendance(t, cap, random);
@@ -260,8 +489,24 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
                 gates.push((country, number, an, away_id, money));
             }
             crowd = att;
+            takings = money;
         }
         book_tie_crowd(records, (country, number), (an, away_id), [hg, ag], crowd);
+        // The match as its record would keep it for the report: a second
+        // leg with the first's goals as the tie keeps them, the away
+        // side's first (+0x08, +0x09), and the extra time and penalties.
+        let leg = turned && !replay;
+        reports.push(report::Played {
+            sides: [(country, number as i16), (an, away_id as i16)],
+            goals: [hg, ag],
+            half: [hh, ah],
+            kind: entry,
+            flags: (flags & (CUP_EXTRA | CUP_SHOOT)) | if leg { CUP_SECOND_PLAYED } else { 0 },
+            leg: if leg { [tie[8], tie[9]] } else { [0, 0] },
+            attendance: crowd,
+            gate: takings,
+            scorers: Default::default(),
+        });
     }
     if let Some(cup) = records.block_mut(&name) {
         for (q, tie) in scored {
@@ -283,9 +528,24 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         }
     }
     book_cup_gates(records, &gates, entry);
-    // What the ties leave on the men who played them.
-    for &(hc, hn, ac, an, hg, ag) in &marks {
-        mark_cup(records, hc, hn, ac, an, hg, ag, random);
+    // What the ties leave on the men who played them, and the human
+    // clubs' reports of their ties (`FUN_00550f29`).
+    let mut reported = Vec::new();
+    for (&(hc, hn, ac, an, hg, ag), mut played) in marks.iter().zip(reports) {
+        let extra = played.flags & CUP_EXTRA != 0;
+        let scorers = mark_cup(records, hc, hn, ac, an, hg, ag, extra, individual, random);
+        if let Some(club) = report::human_side(records, played.sides) {
+            played.scorers = scorers;
+            cups.push(crate::interview::Fixture {
+                sides: played.sides,
+                goals: played.goals.map(i16::from),
+                kind: played.kind,
+                leg: played.leg.map(i16::from),
+                engine: false,
+            });
+            report::write(records, &played, random);
+            reported.push(Faced { club, sides: played.sides, attendance: played.attendance, fans: None, half: played.half });
+        }
     }
     // Every club that came through its tie gets what the round pays: the
     // trainer's premium for reaching the round and the main sponsor's cup
@@ -333,7 +593,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
     // The round is through when its every drawn pairing stands played; the
     // final's winner needs no drawing on.
     if round >= 6 {
-        return;
+        return reported;
     }
     let mut winners: Vec<(u8, u16)> = Vec::new();
     let drawn = records.block(&name).is_some_and(|cup| {
@@ -353,10 +613,10 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         true
     });
     let Some((next, pairs)) = drawn.then(|| cup_pairings(mode, round + 1)).flatten() else {
-        return;
+        return reported;
     };
     if winners.len() != 2 * pairs {
-        return;
+        return reported;
     }
     for i in (1..winners.len()).rev() {
         let j = usize::try_from(random.below(i as u32 + 1)).unwrap_or(i);
@@ -392,7 +652,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
         .filter(|&(_, entry)| entry & 0x7f00_0000 == CUP_CODE && entry & CUP_REPLAY == 0 && usize::try_from(entry & 0xffff).unwrap_or(0) == round + 1)
         .collect();
     if next_days.is_empty() {
-        return;
+        return reported;
     }
     let mut ties: Vec<(usize, (u8, u16, u8, u16))> = Vec::new();
     for j in 0..pairs {
@@ -440,6 +700,7 @@ fn cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, 
             cal.set_entry(next_day, e);
         }
     }
+    reported
 }
 
 /// The calendar slot of a cup club's human manager, if it has one.
@@ -472,7 +733,10 @@ const LAST_FINAL_DAY: usize = 0xb5df90;
 /// year calendar takes the score and his next tie, and the final decided
 /// goes into the country's list of finals. The supercup's gate books
 /// nothing on the clubs: `FUN_0078b26c`'s branch for its code 0x30 only
-/// fills the match's record. (The players' marks are not built.)
+/// fills the match's record. Its men keep the match's wear, and nothing
+/// of the cup's marks: its branch of the settlement calls no
+/// `FUN_00744a32`, only `FUN_00744173`, which carries the engine's cards
+/// into the league's counts (not built, the replica draws none here).
 fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
     use crate::supercup::{FINAL_TIE, SIX, TIE, TIES};
     let Some(row) = calendar.row(nation, 0) else { return };
@@ -546,6 +810,21 @@ fn supercup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: us
         winner = Some(u8::from(won == std::cmp::Ordering::Less));
     }
     book_tie_crowd(records, sides[0], sides[1], [hg, ag], crowd);
+    // What the match leaves on both squads' fitness (`FUN_006f86e1`,
+    // [`crate::sim::competition_wear`]): each side's eleven — the saved
+    // formation where its record stands one, as the engine walk reads it
+    // (`sim::saved_eleven`), else its strongest fit men — stand the ninety
+    // minutes, extra time's hundred and twenty where it went there; the
+    // rest lose a condition step.
+    let extra = flags & CUP_EXTRA != 0;
+    for (country, number) in sides {
+        let Some(team) = records.team(u16::from(country), number) else { continue };
+        let lineup = team.lineup();
+        let men = if lineup.iter().all(|&id| id != 0) { lineup.to_vec() } else { eleven(&team.players(), records) };
+        let full = if extra { 120 } else { 90 };
+        let minutes: Vec<(u16, i32)> = men.into_iter().map(|id| (id, full)).collect();
+        crate::sim::competition_wear(records, (country, number), &minutes, extra);
+    }
     let (own_first, own_second) = if home_first { (hg, ag) } else { (ag, hg) };
     if let Some(b) = records.block_mut(&name) {
         if let Some(t) = b.get_mut(tie_at..tie_at + TIE) {
@@ -666,9 +945,14 @@ const ENGLAND: u16 = 0x10;
 /// winners and the entrants the next round takes in beside them are
 /// shuffled and paired anew there, the home side drawn too, and the
 /// block's last drawn round follows. The home clubs book their gates as
-/// the cup's ([`book_cup_gates`]). (The players' marks and the premiums
-/// are not built.)
-fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, random: &mut Random) {
+/// the cup's ([`book_cup_gates`]), and its men take the cup's marks
+/// ([`mark_cup`]): the settlement (`FUN_007108d3`) walks the league
+/// cup's code 0x01 as the cup's 0x40, the same `FUN_00744a32` on both
+/// sides. It pays no premium: its call of `FUN_006ce00e` passes 1 as the
+/// last argument, which skips the block of the trainer's premium, the
+/// sponsor's extras and the titles (`FUN_006cebcd`, `FUN_006cec7f`,
+/// `FUN_006b50a4`) the cup's 0 runs.
+fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: usize, individual: &IndividualTables, random: &mut Random) {
     use crate::cup_draw::{ENTRANTS_AT, LEAGUE_CUP, joining};
     if nation != ENGLAND {
         return;
@@ -691,6 +975,7 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     let mut results: Vec<(usize, [u8; PAIRING])> = Vec::new();
     let mut gates: Vec<(u8, u16, u8, u16, i32)> = Vec::new();
     let mut crowds = Vec::new();
+    let mut marks: Vec<(u8, u16, u8, u16, u8, u8, bool)> = Vec::new();
     for q in start..start + count {
         let at = PAIRINGS + q * PAIRING;
         let Some(tie) = block.get(at..at + PAIRING) else { continue };
@@ -744,6 +1029,9 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
             }
             winner = u8::from(won == std::cmp::Ordering::Less);
         }
+        // The game's sides' goals, extra time's with them, for the marks.
+        let (home_goals, away_goals) = if turned { (second, first) } else { (first, second) };
+        marks.push((hc, hn, ac, an, home_goals, away_goals, flags & CUP_EXTRA != 0));
         if turned {
             tie[0xa] = first;
             tie[0xb] = second;
@@ -762,6 +1050,9 @@ fn league_cup_day(records: &mut Records, nation: u16, calendar: &Calendar, day: 
     book_cup_gates(records, &gates, code);
     for (home, away, score, att) in crowds {
         book_tie_crowd(records, home, away, score, att);
+    }
+    for (hc, hn, ac, an, hg, ag, extra) in marks {
+        mark_cup(records, hc, hn, ac, an, hg, ag, extra, individual, random);
     }
     let Some(b) = records.block_mut(LEAGUE_CUP) else { return };
     for (q, tie) in &results {
@@ -876,9 +1167,12 @@ fn mark_cup(
     an: u16,
     full: u8,
     a_full: u8,
+    extra: bool,
+    individual: &IndividualTables,
     random: &mut Random,
-) {
-    for (country, team, goals) in [(hc, hn, full), (ac, an, a_full)] {
+) -> [Vec<u16>; 2] {
+    let mut scorers: [Vec<u16>; 2] = Default::default();
+    for (side, (country, team, goals)) in [(hc, hn, full), (ac, an, a_full)].into_iter().enumerate() {
         let nation = u16::from(country);
         let squad = records
             .team(nation, team)
@@ -906,6 +1200,10 @@ fn mark_cup(
                 break;
             };
             scored[k] = scored[k].saturating_add(1);
+            scorers[side].push(eleven[k]);
+            // Every goal teaches its scorer (`FUN_00740aad`); the
+            // replica's draw names no kind, so only Torinstinkt.
+            crate::training_day::goal_lessons(records, individual, (nation, team), eleven[k], -1);
         }
         // A fresh card's suspension of this round's marking stands over
         // the serving of the last; the men who wore one into the tie sat
@@ -958,6 +1256,17 @@ fn mark_cup(
                 }
             }
         }
+        // What the tie leaves on the squad's fitness (`FUN_006f86e1`): the
+        // eleven stand the whole tie, extra time's hundred and twenty
+        // where it went there, the rest lose a condition step.
+        let full = if extra { 120 } else { 90 };
+        let minutes: Vec<(u16, i32)> = eleven.iter().map(|&id| (id, full)).collect();
+        crate::sim::competition_wear(records, (country, team), &minutes, extra);
+        // The men who stood leave the youth round (`FUN_007471bd`),
+        // in the squad's order as the graded pass walks them.
+        for &id in squad.iter().filter(|id| eleven.contains(id)) {
+            crate::training_day::leave_youth_round(records, (nation, team), id);
+        }
         for id in squad {
             if carded.contains(&id) {
                 continue;
@@ -967,6 +1276,7 @@ fn mark_cup(
             }
         }
     }
+    scorers
 }
 
 /// Score a league's next matchday and write it to its block: the four goal
@@ -982,12 +1292,21 @@ fn mark_cup(
 /// the visiting fans, the away club the travelling gate of the game. The
 /// human's year calendar fills the day's fixture with the new score, its
 /// flag saying the result stands.
-fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mut Random) {
+fn settle(
+    records: &mut Records,
+    nation: u16,
+    level: u8,
+    day: usize,
+    individual: &IndividualTables,
+    picks: &[u32],
+    random: &mut Random,
+    controls: &mut Vec<crate::doping_control::Control>,
+) -> Vec<Faced> {
     let Some(league) = League::of(records, nation, level) else {
-        return;
+        return Vec::new();
     };
     let Some(name) = League::block_name(records, nation, level) else {
-        return;
+        return Vec::new();
     };
     let games = league.open_games();
     // The byte where each place writes its place after this matchday, and
@@ -1058,6 +1377,8 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         }
     }
     let nat = u8::try_from(nation).unwrap_or(0);
+    let takings: Vec<(i32, i32)> = booked.iter().map(|&(att, money, _)| (att, money)).collect();
+    let mut visiting = Vec::with_capacity(games.len());
     for ((((home, _, _), (&team, (att, money, cap))), &away), &result) in
         games.iter().zip(homes.iter().zip(booked)).zip(&aways).zip(&scored)
     {
@@ -1071,6 +1392,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
         let luck = 8 + i32::try_from(random.below(7)).unwrap_or(8);
         let fans = plan.max(0).wrapping_mul(luck) / 100;
         let fans = fans.clamp(0, att.max(0));
+        visiting.push(fans);
         // The home club: its gate held among its gates, the money booked,
         // and — where it has a human's extra block — the visiting fans and
         // the gate's income of this home game, as the statistics pages
@@ -1159,9 +1481,44 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
             },
         );
     }
-    // What the goals leave on the players of both sides.
-    for ((&home, &away), result) in homes.iter().zip(&aways).zip(&scored) {
-        mark_match(records, nation, level, md, home, away, result[0], result[1], random);
+    // What the goals leave on the players of both sides, and the human
+    // clubs' reports of their matches (`FUN_00550f29`), the matchday from
+    // 0 their kind.
+    let mut reported = Vec::new();
+    for ((((&home, &away), result), &(attendance, gate)), &fans) in
+        homes.iter().zip(&aways).zip(&scored).zip(&takings).zip(&visiting)
+    {
+        let scorers =
+            mark_match(records, nation, level, md, home, away, result[0], result[1], individual, random);
+        let sides = [(nat, home as i16), (nat, away as i16)];
+        if let Some(club) = report::human_side(records, sides) {
+            let played = report::Played {
+                sides,
+                goals: [result[0], result[1]],
+                half: [result[2], result[3]],
+                kind: md as u32,
+                attendance,
+                gate,
+                scorers,
+                ..Default::default()
+            };
+            report::write(records, &played, random);
+            reported.push(Faced { club, sides, attendance, fans: Some(fans), half: [result[2], result[3]] });
+        }
+    }
+    // The matchday's doping control: the pair the day's list marked
+    // (+0x460, drawn in `FUN_00690a9e`; in a split league's second phase
+    // one in each group of four), both sides' men picked (`FUN_005dad80`,
+    // home first) and those of a human's club tested (`FUN_00741aef` →
+    // `FUN_005dae5f`).
+    for (group, &pick) in picks.iter().enumerate() {
+        let at = group * SPLIT_PAIRS as usize + pick as usize;
+        if let (Some(&home), Some(&away)) = (homes.get(at), aways.get(at)) {
+            let picked = [home, away].map(|n| (n, crate::doping_control::pick(records, nation, n, random)));
+            for (n, men) in picked {
+                controls.extend(crate::doping_control::test(records, nation, n, &men, random));
+            }
+        }
     }
     // Every offered Toto match keeps its result, wherever it stands in
     // the offer, so the settlement can pay the tips (`FUN_0078017d`).
@@ -1219,7 +1576,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
     // The table as it stands after the matchday, and the places its rows
     // write into the blocks' history.
     let Some(league) = League::of(records, nation, level) else {
-        return;
+        return reported;
     };
     let rows = statistics::table(records, &league, ALL);
     if let Some(block) = records.block_mut(&name) {
@@ -1247,6 +1604,7 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
             team.set_table_place(rank as u8 + 1);
         }
     }
+    reported
 }
 
 /// Weights a goal is drawn by, over the position: nought for the keeper,
@@ -1254,6 +1612,14 @@ fn settle(records: &mut Records, nation: u16, level: u8, day: usize, random: &mu
 /// strength. The positions run 1 to 10, keeper to striker; the special
 /// kinds from 11 on (the exe's table at 0x89e23c) count among the attack.
 const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
+
+/// The minute the replica's substitutions take place at: the original
+/// substitutes inside its engine (`FUN_006f8dc7` reading the minute at
+/// the man's +0x58), which the league matches do not walk yet; Probe1's
+/// first league day (the oracle's day 42) took its three men off between
+/// the sixtieth and the eightieth minute and brought two of them on for
+/// less than thirty.
+const SUB_MINUTE: i32 = 70;
 
 /// What a scored match leaves on its players: the eleven each side puts
 /// on the pitch stand for their league match (+0x253) and their run of
@@ -1267,7 +1633,8 @@ const KIND_WEIGHTS: [u32; 11] = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6];
 /// the matchday (+0x319: starter, substitution touched, grade, card) with
 /// his goals of it in +0x2eb; one to three substitutions a side, grades,
 /// cards and the suspensions they bring are the replica's own, held to
-/// what the saves read. The fitness wear follows another step.
+/// what the saves read. The fitness its men keep follows the graded
+/// pass ([`crate::sim::competition_wear`]).
 fn mark_match(
     records: &mut Records,
     nation: u16,
@@ -1277,8 +1644,10 @@ fn mark_match(
     away: u16,
     full: u8,
     a_full: u8,
+    individual: &IndividualTables,
     random: &mut Random,
-) {
+) -> [Vec<u16>; 2] {
+    let mut scorers: [Vec<u16>; 2] = Default::default();
     for (team, goals, at_home) in [(home, full, true), (away, a_full, false)] {
         let squad = records
             .team(nation, team)
@@ -1300,6 +1669,10 @@ fn mark_match(
             };
             scored[k] = scored[k].saturating_add(1);
             let id = eleven[k];
+            scorers[usize::from(!at_home)].push(id);
+            // Every goal teaches its scorer (`FUN_00740aad`); the
+            // replica's draw names no kind, so only Torinstinkt.
+            crate::training_day::goal_lessons(records, individual, (nation, team), id, -1);
             let names = records.player(id).map(|p| (p.first_name(), p.last_name()));
             if let Some((first, last)) = names {
                 statistics::book_goal(
@@ -1437,6 +1810,19 @@ fn mark_match(
                 }
             }
         }
+        // What the match leaves on the squad's fitness (`FUN_006f86e1`,
+        // [`crate::sim::competition_wear`]): the eleven stand the ninety
+        // minutes, the men the replica's substitutions touch split them at
+        // [`SUB_MINUTE`], and the rest lose a condition step.
+        let mut minutes: Vec<(u16, i32)> =
+            eleven.iter().map(|&id| (id, if outs.contains(&id) { SUB_MINUTE } else { 90 })).collect();
+        minutes.extend(ins.iter().map(|&id| (id, 90 - SUB_MINUTE)));
+        crate::sim::competition_wear(records, (u8::try_from(nation).unwrap_or(0), team), &minutes, false);
+        // The men who stood leave the youth round (`FUN_007471bd`),
+        // in the squad's order as the graded pass walks them.
+        for &id in squad.iter().filter(|id| eleven.contains(id) || ins.contains(id)) {
+            crate::training_day::leave_youth_round(records, (nation, team), id);
+        }
         for &id in squad
             .iter()
             .filter(|&id| !eleven.contains(&id) && !ins.contains(&id))
@@ -1458,6 +1844,7 @@ fn mark_match(
             }
         }
     }
+    scorers
 }
 
 /// Whether the player stands fit and free for his club's match: no
@@ -1689,14 +2076,56 @@ mod supercup_tests {
             records.teams.iter().filter(|t| u16::from(t.country()) == ENGLAND).map(|t| i64::from(t.get::<i32>(BOOKED_CUP + CLUB_TO_TEAM))).sum()
         };
         let before = booked(&records);
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
+        // The men's cup appearances and the managers' money before; the
+        // men a side can stand, its fit eleven (lower clubs keep no squad).
+        let apps = |records: &Records| -> u32 {
+            records.players.iter().map(|p| u32::from(p.career_cup_appearances()[0])).sum()
+        };
+        let stands = |records: &Records, country: u8, number: u16| -> u32 {
+            let squad = records.team(u16::from(country), number).map(|t| t.players()).unwrap_or_default();
+            let fit: Vec<u16> = squad
+                .into_iter()
+                .filter(|&id| records.player(id).is_some_and(|p| available(records, id) && p.cup_ban() == 0))
+                .collect();
+            eleven(&fit, records).len() as u32
+        };
+        let mut men = 0;
+        let apps_before = apps(&records);
+        let cash: Vec<i32> = records.managers.iter().map(|m| m.cash()).collect();
+        let mut games = 0;
         for &d in &days {
             let was = booked(&records);
-            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+            let open = records.block(LEAGUE_CUP).map(<[u8]>::to_vec).unwrap();
+            let sides_men: Vec<(usize, u32)> = (0..open.len().saturating_sub(PAIRINGS) / PAIRING)
+                .map(|q| PAIRINGS + q * PAIRING)
+                .filter(|&at| open[at] != 0 && open[at + 4] != 0)
+                .map(|at| {
+                    let side = |k: usize| stands(&records, open[at + k], u16::from_le_bytes([open[at + k + 2], open[at + k + 3]]));
+                    (at, side(0) + side(4))
+                })
+                .collect();
+            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &tables, &mut random);
+            let now = records.block(LEAGUE_CUP).unwrap();
+            let played: Vec<usize> = (0..now.len().saturating_sub(PAIRINGS) / PAIRING)
+                .map(|q| PAIRINGS + q * PAIRING)
+                .filter(|&at| now[at..at + 0xd] != open[at..at + 0xd] && now[at + 0xc] & CUP_RESULT != 0)
+                .collect();
+            games += played.len();
+            men += sides_men[..].iter().filter(|(at, _)| played.contains(at)).map(|(_, n)| n).sum::<u32>();
             if data.calendar.entry(row, d) & 0x3f != 0 {
                 assert!(booked(&records) > was, "day {d} books its gates on the cup takings");
             }
         }
         assert!(booked(&records) > before);
+        // Every game stands in its 22 men's cup appearances (`FUN_00744a32`
+        // as at the cup), and no premium reaches a manager: the league
+        // cup's `FUN_006ce00e` skips its premiums.
+        assert!(games > 0);
+        assert_eq!(apps(&records) - apps_before, men, "{games} games");
+        let now: Vec<i32> = records.managers.iter().map(|m| m.cash()).collect();
+        assert_eq!(now, cash, "the league cup pays no premium");
         let b = records.block(LEAGUE_CUP).unwrap();
         let mode = usize::from(u16::from_le_bytes([b[4], b[5]]));
         for round in 1..=6 {
@@ -1744,8 +2173,10 @@ mod crowd_tests {
         // An emptied international list, so every crowd ranks in.
         records.block_mut("0xaf723c").unwrap().fill(0);
         let today = usize::from(records.globals.day());
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
         for d in (today..364).filter(|&d| data.calendar.entry(row, d) & 0x7f00_0000 == LEAGUE_CUP_CODE) {
-            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &mut random);
+            league_cup_day(&mut records, ENGLAND, &data.calendar, d, &tables, &mut random);
         }
         let after = statistics::international_crowds(&records);
         let atts: Vec<u32> = after.iter().map(|c| c.attendance).collect();
@@ -1784,7 +2215,9 @@ mod crowd_tests {
         let weakest = before.iter().rev().find(|c| c.attendance != 0).map_or(0, |c| c.attendance);
         let mut random = Random::new(7);
         let day = usize::from(records.globals.day());
-        settle(&mut records, 14, 0, day, &mut random);
+        let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
+        let tables = IndividualTables::load(&exe).unwrap();
+        settle(&mut records, 14, 0, day, &tables, &[], &mut random, &mut Vec::new());
         let gates: Vec<i32> = held
             .iter()
             .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
@@ -1849,11 +2282,11 @@ mod two_legs_tests {
         };
         let drawn = ties(&records);
         assert!(!drawn.is_empty(), "the first round drawn");
-        cup_day(&mut records, ITALY, &data.calendar, days[0], &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[0], &data.rules.individual, &mut random, &mut Vec::new());
         for p in ties(&records) {
             assert_eq!(p[0xc] & (CUP_RESULT | CUP_PLAYED | CUP_SECOND_PLAYED), CUP_RESULT, "the first leg only stands");
         }
-        cup_day(&mut records, ITALY, &data.calendar, days[1], &mut random);
+        cup_day(&mut records, ITALY, &data.calendar, days[1], &data.rules.individual, &mut random, &mut Vec::new());
         for p in ties(&records) {
             assert_eq!(p[0xc] & 0x38, 0x38, "the second leg decides");
             if p[0xc] & CUP_EXTRA != 0 {
@@ -1867,5 +2300,73 @@ mod two_legs_tests {
         }
         let b = records.block(&name).unwrap();
         assert_eq!(b[0x28 - 0x20], 2, "the second round drawn");
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    /// The week's end on A looks at day 69, its last day: eight leagues
+    /// play then — the probe's eight draws of 9 or 10 that the traced
+    /// original made at the load, before the turn's screen — each drawing
+    /// its doping pair out of its teams' half, nothing else drawn; the
+    /// turn's own day 63 lists no league match.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_week_end_lists_its_last_days_matches() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let mut random = Random::from_state(12345, 67890);
+        assert!(list_day(&records, &data.calendar, 63, &mut random).is_empty());
+        let picks = list_day(&records, &data.calendar, 69, &mut random);
+        let ranges: Vec<u32> = picks
+            .iter()
+            .map(|&((country, level), _)| (League::of(&records, country, level).unwrap().teams() / 2) as u32)
+            .collect();
+        assert_eq!(ranges.len(), 8);
+        assert!(ranges.iter().all(|&n| n == 9 || n == 10), "{ranges:?}");
+        let mut replay = Random::from_state(12345, 67890);
+        for ((_, drawn), &n) in picks.iter().zip(&ranges) {
+            assert_eq!(drawn, &vec![replay.below(n)]);
+        }
+        assert_eq!(random, replay);
+    }
+
+    /// The doping control takes the pair the day's list marked: on A's
+    /// human league, marking the human club's own pair tests his men
+    /// (dialog 41's control), marking the next pair leaves him alone, and
+    /// a league off the list draws no control at all.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_control_takes_the_lists_pair() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let load = || Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let records = load();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let nation = u16::from(country);
+        let level = records.team(nation, number as u16).unwrap().level();
+        let league = League::of(&records, nation, level).unwrap();
+        let games = league.open_games();
+        let own = games
+            .iter()
+            .position(|&(h, a, _)| [h, a].iter().any(|&p| league.team(p) == number))
+            .unwrap();
+        let controlled = |picks: &[u32]| {
+            let mut records = load();
+            let mut controls = Vec::new();
+            let mut random = Random::from_state(4711, 815);
+            settle(&mut records, nation, level, 69, &data.rules.individual, picks, &mut random, &mut controls);
+            controls.iter().map(|c| c.club).collect::<Vec<_>>()
+        };
+        assert_eq!(controlled(&[own as u32]), [(country, number)]);
+        assert!(controlled(&[((own + 1) % games.len()) as u32]).is_empty());
+        assert!(controlled(&[]).is_empty());
     }
 }

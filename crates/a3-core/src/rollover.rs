@@ -38,14 +38,20 @@
 //!
 //! The thin clubs' new players come from [`crate::newplayer`].
 //!
-//! Left out: the national legends (`FUN_0066df9e`), the stadium byte the season's
+//! The national legends a career's end would note (`FUN_0066df9e`, the
+//! saved tables at `0x8e0f78` and `0x8e1d88`) stay empty in the original:
+//! it notes a man only when his nickname's text (`FUN_006feb05`) is no
+//! pointer at all, which it always is — so the replica notes none.
+//!
+//! Left out: the stadium byte the season's
 //! end clears (`FUN_00638335`'s object +0x68); for the countries
-//! played the contracts that run out (`FUN_006b3f92`), the amateurs'
-//! retirements and the computer clubs' new youth and strength.
+//! played the computer clubs' contract renewals and their old men's
+//! retirements (`FUN_004288d5`). (The contracts that run out are
+//! [`crate::free_agents`].)
 //! The original draws with its own generator, so the men
 //! who grow are others than the original's.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 
 use crate::random::Random;
 use crate::records::{Player, Records};
@@ -192,8 +198,9 @@ pub fn count_first_seasons(records: &mut Records) {
 /// no reserve team clears its two season words and closes every player's
 /// season (`FUN_0070665a`), and its reserve team, if it has one
 /// (team +0x873), does the same, each with its staff standing run
-/// down ([`close_staff`]). (The retirements from a club's amateurs,
-/// `FUN_00407ecd`, are not built.)
+/// down ([`close_staff`]). A club with no reserve team lets its old
+/// amateurs go ([`retire_amateurs`]); then its youths close their season
+/// ([`close_youths`]).
 pub fn close_played(records: &mut Records, random: &mut Random) {
     let year = i32::from(records.globals.start_year());
     for country in crate::opponent::played_nations(records) {
@@ -217,10 +224,83 @@ pub fn close_played(records: &mut Records, random: &mut Random) {
                     }
                 }
             }
+            if reserve < 0 {
+                retire_amateurs(records, country as u8, number, random);
+            }
+            close_youths(records, country as u8, number);
         }
         // The country's youth leagues move their teams up and down
         // after its clubs (`FUN_006b44cb`'s `FUN_00670ac5`).
         crate::youth_league::close_season(records, country);
+    }
+}
+
+/// An amateur this many years older than his strength ends his career
+/// at the season's end, and past this age one draw in three
+/// (`FUN_006b4727`); ids from this on are left alone.
+const AMATEUR_YEARS_OVER: i32 = 0x1d;
+const AMATEUR_OLD: i32 = 0x1e;
+const AMATEUR_CHECKED_BELOW: u16 = 17000;
+
+/// A club with no reserve team lets its old amateurs end their careers
+/// (`FUN_006b4727` over the pool's amateurs, `FUN_00407ecd` and
+/// `FUN_00408036`): one whose age (`FUN_006ff01b`) is above his strength
+/// and 29, or one past 30 with a draw of three at nought, goes into the
+/// pool (`FUN_0066d975`); the others close up in their order. (The note
+/// `FUN_005dbeb7` makes is left out.)
+fn retire_amateurs(records: &mut Records, country: u8, number: u16, random: &mut Random) {
+    let Some(today) = crate::free_agents::today(records) else { return };
+    let [up, amateurs] = crate::youth::pool(records, country, number);
+    let mut kept = Vec::with_capacity(amateurs.len());
+    for id in amateurs {
+        let Some(p) = records.player(id).filter(|_| id < AMATEUR_CHECKED_BELOW) else {
+            kept.push(id);
+            continue;
+        };
+        let age = crate::statistics::age_on(p, today);
+        if i32::from(p.strength()) + AMATEUR_YEARS_OVER < age || age > AMATEUR_OLD && random.below(3) == 0 {
+            end_career(records, id, random);
+        } else {
+            kept.push(id);
+        }
+    }
+    crate::youth::store_pool(records, country, number, &[up, kept]);
+}
+
+/// R+0x26f's bits a youth keeps into the next season (`FUN_006b4727`).
+const YOUTH_BITS_KEPT: u8 = 0xf3;
+
+/// A club's youths close their season (`FUN_006b4727`'s youth pass, the
+/// year counted one on): each loses R+0x26f's bits 2 and 3 and his youth
+/// goals (`FUN_00706cb1`), and of those supported (R+0x1b4 bit 30,
+/// `FUN_00706ba6`) each class of next season (`FUN_0066b0c1`) keeps one:
+/// the strongest, of equals the later in the list (`FUN_00706bc8`). The
+/// club has made no youth of the new season yet (the youth team's +0x2c).
+fn close_youths(records: &mut Records, country: u8, number: u16) {
+    let next = i32::from(records.globals.start_year()) + 1;
+    let (ids, _) = crate::youth::youths(records, country, number);
+    crate::youth::set_made(records, country, number, 0);
+    let mut holder: [Option<u16>; 3] = [None; 3];
+    for id in ids {
+        let Some(p) = records.player_mut(id) else { continue };
+        p.set_retiring(p.retiring() & YOUTH_BITS_KEPT);
+        crate::youth::clear_goals(p);
+        if p.shown() & crate::youth::SUPPORTED == 0 {
+            continue;
+        }
+        let strength = p.strength();
+        let class = crate::youth::class_in(records, id, next);
+        let drop = match holder[class] {
+            None => None,
+            Some(h) if records.player(h).is_some_and(|q| q.strength() > strength) => Some(id),
+            Some(h) => Some(h),
+        };
+        if drop != Some(id) {
+            holder[class] = Some(id);
+        }
+        if let Some(p) = drop.and_then(|d| records.player_mut(d)) {
+            p.set_shown(p.shown() & !crate::youth::SUPPORTED);
+        }
     }
 }
 
@@ -351,10 +431,12 @@ pub fn open_player(player: &mut Player, year: i32) {
 /// when the tables are at hand ([`crate::newplayer::fill_played_club`]), a
 /// weak one lifted ([`crate::development::lift_weak`]), then each player
 /// opened, his last form and his form of the season — one week of it —
-/// his form today; and with the tables at hand the overdraft the bank
-/// allows by the squad's worth (club +0x4f0, `FUN_00622e08`). (The
-/// computer clubs' line-ups and the rest of `FUN_0077655c` are not
-/// built.)
+/// his form today; in the first season only the club's renewal with new
+/// youths and a spare amateur
+/// ([`crate::newplayer::renew_club`]); and with the tables at hand the
+/// overdraft the bank allows by the squad's worth (club +0x4f0,
+/// `FUN_00622e08`). (The computer clubs' line-ups and the rest of
+/// `FUN_0077655c` are not built.)
 pub fn open_played(
     records: &mut Records,
     tables: Option<(&crate::contract::ContractTables, &crate::value::ValueTables)>,
@@ -377,13 +459,19 @@ pub fn open_played(
                 player.set_season_form(i16::from(form as u8));
                 player.set_season_form_weeks(1);
             }
+            // The new game's first day gives the club two new youths and a
+            // spare amateur (`FUN_0066bb26`, only while the season is the
+            // first — `DAT_00b5cbc8`).
+            if records.globals.seasons() == 1 {
+                crate::newplayer::renew_club(records, (country as u8, number), random);
+            }
             // The overdraft the bank allows by the squad's worth, a tenth
-            // of it in 100.000s — the stars of last season gone by then
-            // (`FUN_0065e659` clears them first; their new ones are not
-            // drawn here).
+            // of it in 100.000s — with the stars standing in the records:
+            // a rollover has cleared them (`FUN_0065e659`) before it gets
+            // here, while the new game's pick stands and weighs a fifth.
             if let (Some((_, values)), Some(today)) = (tables, today) {
                 let Some(team) = records.team(country, number) else { continue };
-                let worth = crate::value::squad_worth(records, team, values, today, [0; 11]);
+                let worth = crate::value::squad_worth(records, team, values, today, records.globals.stars());
                 if let Some(team) = records.team_mut(country, number) {
                     team.set_overdraft((worth / 10 / OVERDRAFT_UNIT) as i16);
                 }
@@ -605,8 +693,9 @@ fn pool(records: &mut Records, id: u16, random: &mut Random) {
 /// A player ends his career at his club (`FUN_0070de6c`): out of its
 /// squad and its line-up (`FUN_0070e01a`, `FUN_0070d9c5`), off the
 /// transfer list and the watch lists, his retiring bits gone, and into
-/// the pool (`FUN_0066d975`). (His national legends, `FUN_0066df9e`, and
-/// the other lists he is taken from are not built.)
+/// the pool (`FUN_0066d975`). (His national legends, `FUN_0066df9e`, the
+/// original never notes; the other lists he is taken from are not
+/// built.)
 pub fn retire(records: &mut Records, country: u16, number: u16, id: u16, random: &mut Random) {
     if let Some(team) = records.team_mut(country, number) {
         let squad: Vec<u16> = team.players().into_iter().filter(|&p| p != id).collect();
@@ -670,11 +759,56 @@ pub(crate) fn push_history(extra: &mut crate::records::Extra, entry: [u8; HISTOR
     extra.put(HISTORY_COUNT, count + 1);
 }
 
+/// How many of a club's leaving players the notice names (`FUN_0066d435`
+/// keeps ten of each club at `0xa32206`).
+pub const FAREWELLS_SHOWN: usize = 10;
+/// The human clubs the notice has pages for.
+pub const FAREWELL_CLUBS: usize = 4;
+
+/// The human clubs' players who end their careers with the season, as
+/// its notice names them (`FUN_0066d435`'s first walk into the block at
+/// `0xa321f4` that dialog 152 copies, event 0xcd): each human club with
+/// any man retiring (R+0x26f's bit 7), by country and number, and the
+/// first ten of them in its squad's order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Farewells {
+    pub clubs: [(u8, i16); FAREWELL_CLUBS],
+    pub players: [[u16; FAREWELLS_SHOWN]; FAREWELL_CLUBS],
+    pub count: u8,
+}
+
+/// The notice of the careers the season's end will close, before they
+/// close (`FUN_0066d435` posts event 0xcd ahead of its retirements); none
+/// when no human club loses a man.
+pub fn farewells(records: &Records) -> Option<Farewells> {
+    let mut notice = Farewells::default();
+    for (country, number) in crate::statistics::human_clubs(records) {
+        let k = usize::from(notice.count);
+        if k == FAREWELL_CLUBS {
+            break;
+        }
+        let Ok(team) = u16::try_from(number) else { continue };
+        let leaving: Vec<u16> = squad(records, u16::from(country), team)
+            .into_iter()
+            .filter(|&id| records.player(id).is_some_and(|p| p.retiring() & RETIRES != 0))
+            .collect();
+        if leaving.is_empty() {
+            continue;
+        }
+        notice.clubs[k] = (country, number);
+        for (slot, &id) in notice.players[k].iter_mut().zip(&leaving) {
+            *slot = id;
+        }
+        notice.count += 1;
+    }
+    (notice.count > 0).then_some(notice)
+}
+
 /// The season's end retires the players who said they would end their
 /// careers (R+0x26f's bit 7; `FUN_0066d435`): the human clubs' first,
 /// each into his club's history, then every club's of the countries
 /// played (`FUN_0066d815`). (The human's notice of them, event 0xcd, is
-/// not built.)
+/// [`farewells`], taken before.)
 pub fn retire_announced(records: &mut Records, random: &mut Random) {
     let retiring = |records: &Records, country: u16, number: u16| -> Vec<u16> {
         squad(records, country, number)
@@ -777,6 +911,66 @@ pub fn open_kept(
         }
     }
 }
+
+/// A new game's first contracts (`FUN_0065e429`, `FUN_0065e659` in the
+/// first season only): every club of every country, its players in their
+/// squad's order, takes the salary its man would ask (`FUN_00708012`, in
+/// thousands of `DAT_00a3b3e4`) and 10 to 49 hundredths of it more by a
+/// draw in 40; an eighth of it for playing, a tenth for a striker's goal
+/// and a twentieth for a midfielder's (others keep theirs), no fixed fee,
+/// no terms. A draw in 100 sets the years: below 20 one for a man of
+/// strength below 10, else two; below 40 two, below 80 three, else four —
+/// a country not played (`FUN_00676c03`) never below 20.
+pub fn first_contracts(
+    records: &mut Records,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    random: &mut Random,
+) {
+    let year = records.globals.start_year();
+    let today = {
+        let [day, month, y] = records.globals.date();
+        NaiveDate::from_ymd_opt(i32::from(y), u32::from(month), u32::from(day))
+    };
+    let played = crate::opponent::played_nations(records);
+    for country in 1..COUNTRIES {
+        let kept = !played.contains(&(country as u16));
+        for number in 0..records.countries.team_count(country).max(0) {
+            for id in squad(records, country as u16, number as u16) {
+                let Some(p) = records.player(id) else { continue };
+                let age = today.map_or(0, |t| crate::statistics::age_on(p, t));
+                let form = crate::statistics::form_today(p);
+                let signee = crate::contract::Signee::of(p, age, form, tables.1, false, year);
+                let asked = (tables.0.demand(&signee) as u32 / SALARY_UNIT) as u16;
+                let more = (random.below(40) + 10) * u32::from(asked) / 100;
+                let salary = asked.wrapping_add(more as u16);
+                let mut draw = random.below(100);
+                if kept && draw < 20 {
+                    draw = 20;
+                }
+                let Some(p) = records.player_mut(id) else { continue };
+                let years = match draw {
+                    ..20 if p.strength() < 10 => 1,
+                    ..40 => 2,
+                    ..80 => 3,
+                    _ => 4,
+                };
+                p.set_salary(salary);
+                p.set_appearance_bonus(salary >> 3);
+                match p.positions()[0] {
+                    10 => p.set_goal_bonus(salary / 10),
+                    9 => p.set_goal_bonus(salary / 20),
+                    _ => {}
+                }
+                p.set_fixed_fee(0);
+                p.set_terms(0);
+                p.set_contract(year + years);
+            }
+        }
+    }
+}
+
+/// The unit the salaries are kept in (`DAT_00a3b3e4`).
+const SALARY_UNIT: u32 = 1000;
 
 /// A kept club this thin takes two keepers when it has fewer than two, this
 /// short one man for each position under its least (`DAT_008773e0`).
@@ -899,9 +1093,141 @@ pub(crate) fn note_strength(player: &mut Player, strength: u8) {
     player.put::<u8>(HISTORY + k, b);
 }
 
+/// The humans' appointment lists (`DAT_01b9ffc8`, one of 0x11a bytes per
+/// slot: a count, then 20 entries of 14 bytes — day, month, year, kind,
+/// a value, the player).
+pub(crate) const APPOINTMENTS: &str = "0x1b9ffc8";
+pub(crate) const APPOINTMENT_LIST: usize = 0x11a;
+pub(crate) const APPOINTMENT: usize = 14;
+const APPOINTMENTS_MOST: usize = 20;
+/// A child's birthday among the player's (record +0x174, four bytes each).
+const CHILDREN_BIRTHDAYS: usize = 0x174;
+
+/// An appointment into a human's list by its date (`FUN_006a6a37`): before
+/// the first not earlier (`FUN_004379d0`), the later ones moved up one —
+/// from the second last, so the last one is lost as in the original — and
+/// the count up to 20 at most; none with the list's first 20 earlier.
+fn add_appointment(list: &mut [u8], entry: [u8; APPOINTMENT]) {
+    let count = usize::from(u16::from_le_bytes([list[0], list[1]])).min(APPOINTMENTS_MOST);
+    let at = |i: usize| 2 + i * APPOINTMENT;
+    let key = |e: &[u8]| (u16::from_le_bytes([e[2], e[3]]), e[1], e[0]);
+    let mut i = 0;
+    while i < count && key(&entry) > key(&list[at(i)..at(i) + APPOINTMENT]) {
+        i += 1;
+    }
+    if i >= APPOINTMENTS_MOST {
+        return;
+    }
+    let mut j = count as isize - 2;
+    while j >= i as isize {
+        let j0 = j as usize;
+        list.copy_within(at(j0)..at(j0) + APPOINTMENT, at(j0 + 1));
+        j -= 1;
+    }
+    list[at(i)..at(i) + APPOINTMENT].copy_from_slice(&entry);
+    let count = (count + 1).min(APPOINTMENTS_MOST) as u16;
+    list[..2].copy_from_slice(&count.to_le_bytes());
+}
+
+/// An appointment into the list of a club's human slot, 1 to 4 (club
+/// +0x11de, the team's +0xb5): `FUN_006a694b` reads the list,
+/// [`add_appointment`] puts it in, `FUN_006a69a6` writes it back — for any
+/// other club nothing.
+pub(crate) fn book_appointment(records: &mut Records, human: u8, entry: [u8; APPOINTMENT]) {
+    let Some(slot) = usize::from(human).checked_sub(1).filter(|&s| s < 4) else { return };
+    if let Some(block) = records.block_mut(APPOINTMENTS)
+        && let Some(list) = block.get_mut(slot * APPOINTMENT_LIST..(slot + 1) * APPOINTMENT_LIST)
+    {
+        add_appointment(list, entry);
+    }
+}
+
+pub(crate) fn appointment(day: u8, month: u8, year: u16, kind: u16, value: u16, id: u16) -> [u8; APPOINTMENT] {
+    let mut e = [0; APPOINTMENT];
+    e[0] = day;
+    e[1] = month;
+    e[2..4].copy_from_slice(&year.to_le_bytes());
+    e[4..6].copy_from_slice(&kind.to_le_bytes());
+    e[6..8].copy_from_slice(&value.to_le_bytes());
+    e[8..10].copy_from_slice(&id.to_le_bytes());
+    e
+}
+
+/// The players' appointments at the season's turn (`FUN_006a8371`, last
+/// in the new season's block): for each human with a club, every squad
+/// player (`FUN_006a810a`): a German 19-year-old at a German club is called
+/// up two times in three (kind 0x66 on 14.7., kind 0x67 of 0x50 on 1.5.
+/// next year); any other has his birthday one time in 40 (kind 100, not in
+/// July and August of the first pre-season with the option `DAT_00b5d19a`
+/// set), and a father one time in 100 a child's (kind 0x68, a child drawn,
+/// unless the first pre-season stands still, `FUN_005ef56c`) — each in
+/// this year still to come, else in the next.
+pub fn appointments(records: &mut Records, random: &mut Random) {
+    const GERMANY: u8 = 0xe;
+    let year = records.globals.start_year();
+    // The new season's first day (`FUN_00676992`); the year its
+    // `DAT_00b5cbde`, as NewSeason000 has both.
+    let today = crate::calendar::date(i32::from(year), 0);
+    let (day, month) = (today.day() as u8, today.month() as u8);
+    let option = records.globals.get::<i16>(0xb5d19a);
+    for (slot, held) in records.globals.slots().iter().copied().enumerate() {
+        if held == 0 || slot >= 4 {
+            continue;
+        }
+        let (country, number) = (records.managers[slot].country(), records.managers[slot].team());
+        if country == 0 {
+            continue;
+        }
+        let quiet = crate::event_text::quiet(records);
+        let mut entries = Vec::new();
+        for id in squad(records, country, number) {
+            let Some(p) = records.player(id).filter(|_| id < 0x4269) else { continue };
+            // `FUN_006a8410`: still to come this year (by day and month).
+            let when = |(d, m): (u8, u8)| if (m, d) >= (month, day) { year } else { year + 1 };
+            if country as u8 == GERMANY && p.nation() == GERMANY && crate::statistics::age_on(p, today) == 19 {
+                if random.below(3) < 2 {
+                    entries.push(appointment(14, 7, year, 0x66, 0, id));
+                    entries.push(appointment(1, 5, year + 1, 0x67, 0x50, id));
+                }
+                continue;
+            }
+            if random.below(0x28) == 0 {
+                let (d, m) = (p.birth_day(), p.birth_month());
+                if option != 1 || !(7..=8).contains(&m) {
+                    entries.push(appointment(d, m, when((d, m)), 100, 0, id));
+                }
+            }
+            let children = p.children();
+            if children > 0 && random.below(100) == 0 && !quiet {
+                let at = CHILDREN_BIRTHDAYS + 4 * random.below(children as u32) as usize;
+                let (d, m): (u8, u8) = (p.get(at), p.get(at + 1));
+                entries.push(appointment(d, m, when((d, m)), 0x68, 0, id));
+            }
+        }
+        if let Some(block) = records.block_mut(APPOINTMENTS) {
+            let list = &mut block[slot * APPOINTMENT_LIST..(slot + 1) * APPOINTMENT_LIST];
+            for e in entries {
+                add_appointment(list, e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_appointment_goes_in_by_its_date_and_drops_the_last() {
+        let mut list = [0u8; APPOINTMENT_LIST];
+        add_appointment(&mut list, appointment(1, 9, 2000, 100, 0, 1));
+        add_appointment(&mut list, appointment(1, 10, 2000, 100, 0, 2));
+        add_appointment(&mut list, appointment(1, 8, 2000, 100, 0, 3));
+        let ids: Vec<u16> = (0..3).map(|i| u16::from_le_bytes([list[2 + i * 14 + 8], list[2 + i * 14 + 9]])).collect();
+        // Before 1 and 2, 1 moved onto 2's place, 2 lost, the third stale.
+        assert_eq!(list[0], 3);
+        assert_eq!(ids, [3, 1, 0]);
+    }
 
     /// On the original's NewSeason000 every played club's overdraft is a
     /// tenth of its squad's worth in 100.000s, reckoned on the season's
@@ -1137,9 +1463,9 @@ mod tests {
     /// the bytes that pair does not show: of SeasonEnd364's played clubs
     /// only team 14 84 has staff, and both its men stood spent — the club
     /// lets the co-trainer and the second coach go, and the original's
-    /// staff market at the season's opening (`FUN_00409a3f`, not built)
-    /// draws 261 and 16 to stand in NewSeason000 where the replica's
-    /// slots stand empty. Set on the same save, a man with a liking to
+    /// staff market at the season's opening (`FUN_00409a3f`, built in
+    /// [`crate::staff_market`]) draws 261 and 16 to stand in NewSeason000
+    /// where these slots stand empty. Set on the same save, a man with a liking to
     /// spare keeps his id, one point shorter; one at his last point, and
     /// an id outside the tables, leave the club.
     #[test]
@@ -1273,6 +1599,52 @@ mod tests {
         }
     }
 
+    /// The notice names the human clubs' leaving men before they go, ten
+    /// of a club at most, in its squad's order; the original's legends
+    /// stay empty across its season end, and so do the replica's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_notice_names_the_human_clubs_leaving_men() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        assert_eq!(farewells(&ours), None, "SeasonEnd364's human club loses no man");
+        // Twelve of the human club's men say they will go, the last of
+        // the squad first.
+        let humans = crate::statistics::human_clubs(&ours);
+        let (country, number) = humans[0];
+        let men = squad(&ours, country.into(), number as u16);
+        for &id in men.iter().rev().take(12) {
+            let p = ours.player_mut(id).unwrap();
+            p.set_retiring(p.retiring() | RETIRES);
+        }
+        let notice = farewells(&ours).expect("the human club loses men");
+        assert_eq!((notice.count, notice.clubs[0]), (1, (country, number)));
+        assert_eq!(notice.players[0].to_vec(), men[men.len() - 12..men.len() - 2].to_vec(), "the first ten");
+        for k in 0..usize::from(notice.count) {
+            let (country, number) = notice.clubs[k];
+            assert!(humans.contains(&(country, number)));
+            let leaving: Vec<u16> = squad(&ours, country.into(), number as u16)
+                .into_iter()
+                .filter(|&id| ours.player(id).unwrap().retiring() & RETIRES != 0)
+                .take(FAREWELLS_SHOWN)
+                .collect();
+            let named: Vec<u16> = notice.players[k].iter().copied().filter(|&id| id != 0).collect();
+            assert_eq!(named, leaving, "club {country}/{number}");
+            assert!(!named.is_empty());
+        }
+        retire_announced(&mut ours, &mut Random::new(3));
+        assert_eq!(farewells(&ours), None, "nobody left to name");
+        for legends in ["0x8e0f78", "0x8e1d88"] {
+            assert!(theirs.block(legends).unwrap().iter().all(|&b| b == 0), "the original's {legends}");
+            assert!(ours.block(legends).unwrap().iter().all(|&b| b == 0), "ours {legends}");
+        }
+    }
+
     #[test]
     fn a_career_end_goes_into_the_human_clubs_history() {
         let mut p = player();
@@ -1292,5 +1664,144 @@ mod tests {
         let e: [u8; 0x14] = extra.get(0xde0 + 99 * 0x14);
         assert_eq!((i16::from_le_bytes([e[0], e[1]]), e[2], e[3]), (2026, 7, CAREER_END));
         assert_eq!((u16::from_le_bytes([e[4], e[5]]), u16::from_le_bytes([e[6], e[7]]), e[0xc], e[0xd]), (11, 22, 7, 4));
+    }
+
+    /// The played countries' amateurs and youths over the original's
+    /// pair: of the clubs with no reserve team every amateur older than
+    /// his strength and 29 is gone from the pool in both, every one of 30
+    /// or younger stays in ours, and the youths still at their club stand
+    /// with no youth goals, no bits 2 and 3, and the original's supported
+    /// flags — one a class at most.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_played_countries_amateurs_and_youths_close_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs, before) =
+            (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
+        let mut random = Random::new(7);
+        crate::free_agents::release(&mut ours, &mut random);
+        close_played(&mut ours, &mut random);
+        let today = crate::free_agents::today(&before).unwrap();
+        let (mut gone, mut stayed, mut youths, mut supported) = (0, 0, 0, 0);
+        let mut old = [0; 3];
+        for country in crate::opponent::played_nations(&before) {
+            for number in 0..before.countries.team_count(usize::from(country)) as u16 {
+                let [first, reserve] = before.team(country, number).unwrap().linked();
+                if first >= 0 {
+                    continue;
+                }
+                let c = country as u8;
+                let (x, y) = (crate::youth::pool(&ours, c, number)[1].clone(), crate::youth::pool(&theirs, c, number)[1].clone());
+                for id in crate::youth::pool(&before, c, number)[1].clone() {
+                    let p = before.player(id).unwrap();
+                    let age = crate::statistics::age_on(p, today);
+                    if reserve >= 0 || id >= AMATEUR_CHECKED_BELOW {
+                        continue;
+                    }
+                    if age > i32::from(p.strength()) + AMATEUR_YEARS_OVER {
+                        assert!(!x.contains(&id) && !y.contains(&id), "amateur {id} of {age} stays");
+                        gone += 1;
+                    } else if age <= AMATEUR_OLD {
+                        assert!(x.contains(&id), "amateur {id} of {age} gone");
+                        stayed += 1;
+                    } else {
+                        old[0] += 1;
+                        old[1] += i32::from(!x.contains(&id));
+                        old[2] += i32::from(!y.contains(&id));
+                    }
+                }
+                let (now, _) = crate::youth::youths(&theirs, c, number);
+                let mut classes = [0; 3];
+                for id in crate::youth::youths(&ours, c, number).0.into_iter().filter(|id| now.contains(id)) {
+                    let (o, t) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    youths += 1;
+                    assert_eq!(crate::youth::goals(o), 0, "youth {id}");
+                    assert_eq!(o.retiring() & !YOUTH_BITS_KEPT, 0, "youth {id}");
+                    assert_eq!(o.shown() & crate::youth::SUPPORTED, t.shown() & crate::youth::SUPPORTED, "youth {id}");
+                    if o.shown() & crate::youth::SUPPORTED != 0 {
+                        supported += 1;
+                        classes[crate::youth::class_in(&ours, id, i32::from(ours.globals.start_year()) + 1)] += 1;
+                    }
+                }
+                assert!(classes.iter().all(|&n| n <= 1), "{country}/{number}: {classes:?}");
+                assert_eq!(crate::youth::made(&ours, c, number), crate::youth::made(&theirs, c, number), "{country}/{number}");
+            }
+        }
+        // The pair holds no amateur past 30 (they are drawn 20 to 29), so
+        // an old one is made: the first of a club's two goes into the
+        // pool, the second closes up.
+        assert_eq!((gone, old[0]), (0, 0));
+        assert!(stayed > 200 && youths > 500 && supported > 0, "{stayed} {youths} {supported}");
+        let mut ours = read("SeasonEnd364.an3");
+        let (c, number, [a, b]) = crate::opponent::played_nations(&ours)
+            .into_iter()
+            .flat_map(|c| (0..ours.countries.team_count(usize::from(c)) as u16).map(move |n| (c as u8, n)))
+            .find_map(|(c, n)| {
+                let linked = ours.team(c.into(), n)?.linked();
+                let list = &crate::youth::pool(&ours, c, n)[1];
+                (linked == [-1, -1] && list.len() >= 2 && list[1] < AMATEUR_CHECKED_BELOW).then(|| (c, n, [list[0], list[1]]))
+            })
+            .expect("a club with two amateurs");
+        let year = ours.globals.start_year();
+        ours.player_mut(a).unwrap().set_birth_year(year - 45);
+        ours.player_mut(b).unwrap().set_birth_year(year - 25);
+        close_played(&mut ours, &mut random);
+        let list = &crate::youth::pool(&ours, c, number)[1];
+        assert_eq!(list.first(), Some(&b), "{list:?}");
+        assert!(!list.contains(&a));
+        let block = ours.block(POOL).unwrap();
+        let pooled = |id: u16| (0..POOL_SIZE).any(|k| u16::from_le_bytes([block[POOL_ENTRIES + 4 * k], block[POOL_ENTRIES + 4 * k + 1]]) == id);
+        assert!(pooled(a) && !pooled(b));
+    }
+
+    /// A new game's first contracts as the original's (the oracle's new
+    /// game, its first-turn dump): from the generator as it stood before
+    /// `FUN_0065e429` there (trace index 33565), its 9,569 players take
+    /// their 19,138 draws in order and every kept country's man the
+    /// dump's salary, bonuses and contract; of the country played all but
+    /// the 23 whose contract the later walks renewed (a later year).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE and an installed game from $ANSTOSS3_DIR"]
+    fn a_new_game_signs_its_first_contracts_as_the_original() {
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let exe = a3_files::exe::Exe::open(&std::path::PathBuf::from(dir).join("anstoss3.exe")).unwrap();
+        let rules = crate::season::Rules::load(&exe).unwrap();
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        assert_eq!(ours.globals.seasons(), 1);
+        let mut random = Random::from_state(239_039_057, 876_019_106);
+        first_contracts(&mut ours, (&rules.contract, &rules.value), &mut random);
+        assert_eq!(random, Random::from_state(13_345_274, 1_134_676_826));
+        let played = crate::opponent::played_nations(&ours);
+        let (mut players, mut renewed) = (0, 0);
+        for country in 1..COUNTRIES {
+            for number in 0..ours.countries.team_count(country).max(0) {
+                for id in squad(&ours, country as u16, number as u16) {
+                    players += 1;
+                    let (a, b) = (ours.player(id).unwrap(), theirs.player(id).unwrap());
+                    let terms = |p: &Player| (p.salary(), p.appearance_bonus(), p.goal_bonus(), p.contract());
+                    if terms(a) == terms(b) {
+                        continue;
+                    }
+                    assert!(played.contains(&(country as u16)), "{id} of {country}: {:?} {:?}", terms(a), terms(b));
+                    assert!(b.contract() > a.contract(), "{id}: {:?} {:?}", terms(a), terms(b));
+                    renewed += 1;
+                }
+            }
+        }
+        assert_eq!((players, renewed), (9569, 23));
     }
 }

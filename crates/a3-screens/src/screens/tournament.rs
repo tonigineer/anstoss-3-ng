@@ -425,7 +425,7 @@ impl OwnTournament {
 
 /// A club's league as the list writes it (`FUN_00635968` with
 /// `FUN_0063e388`): its name in a played country, else "%d. Liga".
-fn league(game: &Game, records: &Records, (country, number): (u8, i16)) -> String {
+pub(crate) fn league(game: &Game, records: &Records, (country, number): (u8, i16)) -> String {
     let Some(team) = u16::try_from(number).ok().and_then(|n| records.team(country.into(), n)) else {
         return game.text(NTH_LEAGUE).replacen("%d", "1", 1);
     };

@@ -19,7 +19,7 @@ use crate::duties;
 use crate::jobs::Offer;
 use crate::lineup::{self, FIELD, FULL_MORALE, Lineup, NEUTRAL_MOOD, Tables};
 use crate::random::Random;
-use crate::world::{GOALKEEPER, Player, STRIKER, World};
+use crate::world::{Player, World};
 
 /// A new manager's board starts at 65 to 68 %, plus half the level and three
 /// times what the club's file says of its board, up to 100 %.
@@ -63,8 +63,9 @@ const BAR_SYMBOLS_AT: u32 = 0x8a364c;
 const BAR_TIPS_AT: u32 = 0x8a3560;
 const BAR_WITHOUT_CLUB_AT: u32 = 0x8a3600;
 pub const BAR_SYMBOLS: usize = 19;
-/// A training camp's conditions as a manager starts: in the middle
-/// (`FUN_0074d622`).
+/// A training camp's conditions as a manager takes a club: in the middle
+/// (`FUN_0074d622`, the plan's reset `FUN_006fd390` calls); nought
+/// before (`FUN_006a3b61`).
 const CAMP_RULE: u8 = 2;
 /// Season goals by number: 0 the championship … 10 staying up.
 const PROMOTED_GOAL: usize = 10;
@@ -72,10 +73,6 @@ const PROMOTED_GOAL: usize = 10;
 /// of 17 in 102 for every step it is short of 6.
 const AMBITION: u32 = 17;
 const AMBITION_DIE: u32 = 102;
-/// Squad rating: the best two goalkeepers, six defenders, five midfielders
-/// and three strikers.
-const RATED: [(u8, u8, usize); 4] =
-    [(GOALKEEPER, GOALKEEPER, 2), (2, 5, 6), (6, 9, 5), (STRIKER, STRIKER, 3)];
 /// How last season ended, in a club's file.
 const LAST_SEASON_RESULT: i64 = 7;
 pub const PROMOTED: i64 = 4;
@@ -132,6 +129,8 @@ pub struct Rules {
     pub forecast: crate::forecast::ForecastTables,
     /// What players ask and make of their contracts.
     pub contract: crate::contract::ContractTables,
+    /// What a new game's first season opens its played clubs' men with.
+    pub first_season: crate::first_season::Tables,
     /// Alerts the game writes itself, not from its texts: by where they
     /// are in the program.
     pub messages: std::collections::HashMap<u32, String>,
@@ -145,6 +144,8 @@ pub struct Rules {
     pub stadium: crate::stadium::StadiumTables,
     /// The kinds of merchandise a club may sell.
     pub merchandise: crate::merchandise::MerchandiseTables,
+    /// The interview after the match: its facts' cases and its texts.
+    pub interview: crate::interview::Tables,
 }
 
 impl Rules {
@@ -179,6 +180,7 @@ impl Rules {
                 .map(|off| off != 0)
                 .collect(),
             value: crate::value::ValueTables::load(exe)?,
+            first_season: crate::first_season::Tables::load(exe)?,
             words: crate::words::Words::load(exe)?,
             discipline: crate::discipline::DisciplineTables::load(exe)?,
             market: crate::market::MarketTables::load(exe)?,
@@ -196,6 +198,7 @@ impl Rules {
             noracsa: crate::noracsa::NoracsaTables::load(exe)?,
             stadium: crate::stadium::StadiumTables::load(exe)?,
             merchandise: crate::merchandise::MerchandiseTables::load(exe)?,
+            interview: crate::interview::Tables::load(exe)?,
             messages: crate::youth::MESSAGES
                 .into_iter()
                 .map(|at| (at, exe.text_at(at).unwrap_or_default()))
@@ -419,6 +422,22 @@ pub struct Season {
     pub planner_message: Option<(u16, String)>,
     /// The human managers' talks of the day, by slot (`0x1c5b9e8`).
     pub day_talks: [crate::transfers::DayTalk; 4],
+    /// The fee talk a human seller is answering (`0x1c5bf38`), while it
+    /// runs.
+    pub fee_talk: Option<crate::fee_talk::FeeTalk>,
+    /// The interview after the match while it runs (`FUN_00660895`), and
+    /// the last thirty questions asked in this run of the game, which no
+    /// save keeps (`DAT_00b621d8`).
+    pub interview: Option<crate::interview::Interview>,
+    pub interview_recent: crate::interview::Recent,
+    /// The last information before the day's human matches while dialog
+    /// 96 shows it, a page a match (`CInfoseiteHaupt`'s copy of the list
+    /// at `0x1bdd7b8`, `FUN_006fa703`).
+    pub prematch: Vec<crate::prematch::Page>,
+    /// The day's breaks at half time of the human sides' matches, and the
+    /// one dialogs 93 and 499 show (`FUN_0064987a`'s blocks).
+    pub halftime: Vec<crate::halftime::Break>,
+    pub halftime_at: usize,
     /// Whether the turns are the ones before the clubs' matches, which close
     /// the money's and the club's screens (`FUN_00652a86`).
     pub before_match: bool,
@@ -429,6 +448,9 @@ pub struct Season {
     /// The ticker of jobs come free and lost (`CGefaehrdeteJobs`' list at
     /// `DAT_00a2e55c`, at most fifty entries).
     pub job_notes: Vec<crate::career::JobNote>,
+    /// The players' development as dialog 22 shows it, from the last
+    /// time they developed (`DAT_008e2cb4`, which no save keeps).
+    pub development: crate::development::Report,
     /// Whether the season's statement — dialog 417 as the season end
     /// posts it — has come up in this game.
     pub statement: bool,
@@ -800,86 +822,16 @@ fn new_manager(m: NewManager, confidence: i32, rules: &Rules) -> Manager {
         menu: 0,
         list_view: false,
         formations: rules.pitch.new_formations(),
-        templates: Vec::new(),
+        // The game's own eighteen (`FUN_0074bfa8`).
+        templates: rules.training.originals.clone(),
         weeks: vec![Default::default(); crate::records::WEEKS],
         individual_rule: 0,
-        camp_rules: [CAMP_RULE; 3],
+        camp_rules: if m.club.is_some() { [CAMP_RULE; 3] } else { [0; 3] },
         training_pictures: false,
     }
 }
 
 impl Season {
-    /// The calculation of the first season.
-    pub fn first(
-        world: &World,
-        rules: &Rules,
-        countries: Vec<usize>,
-        main: usize,
-        managers: Vec<NewManager>,
-        mut random: Random,
-    ) -> Self {
-        let mut expected = BTreeMap::new();
-        for &slot in &countries {
-            let Some(country) = world.country(slot) else { continue };
-            for league in world.leagues_in_play(slot, main) {
-                let mut ranked: Vec<usize> = league.clubs.clone();
-                ranked.sort_by_key(|&c| std::cmp::Reverse(rating(&country.clubs[c].players)));
-                for (rank, &c) in ranked.iter().enumerate() {
-                    let club = &country.clubs[c];
-                    let goal = rules.club_goal(
-                        league.clubs.len(),
-                        rank,
-                        club.last_season,
-                        club.board,
-                        &mut random,
-                    );
-                    expected.insert((slot, c), (rank, goal));
-                }
-            }
-        }
-        let managers = managers
-            .into_iter()
-            .map(|m| {
-                let confidence = m.club.map_or(0, |club| {
-                    let taken = taking_confidence(world, club, m.level, &mut random);
-                    season_start_confidence(world, club, taken)
-                });
-                new_manager(m, confidence, rules)
-            })
-            .collect();
-        let mut season = Self {
-            year: world.start_year,
-            day: 0,
-            managers,
-            current: 0,
-            main,
-            expected,
-            clubs: BTreeMap::new(),
-            planner_message: None,
-            day_talks: Default::default(),
-            before_match: false,
-            random,
-            donations: Vec::new(),
-            job_notes: Vec::new(),
-            statement: false,
-            week_hold: false,
-            opponents: Default::default(),
-            tournament_screens: Vec::new(),
-            halls: Vec::new(),
-            recent_events: Vec::new(),
-            reported: Default::default(),
-            headlines: Default::default(),
-            notices: Default::default(),
-        };
-        for m in 0..season.managers.len() {
-            if let Some(club) = season.managers[m].club {
-                season.follow(world, rules, m, club);
-            }
-        }
-        crate::jobs::offer_jobs(&mut season, world, rules);
-        season
-    }
-
     /// Starts following a human club: its season tickets and its players'
     /// fitness, which the game rolls for every player as it loads a new
     /// game, and which the easiest difficulty raises when a manager takes
@@ -952,8 +904,20 @@ impl Season {
         self.clubs.insert((slot, index), state);
     }
 
-    /// A day passes for the followed clubs: season tickets sell before the
-    /// league starts, fitness recovers — there is no training to wear it.
+    /// A day of a game held in records passed for the followed clubs:
+    /// each stands as the day left its records ([`crate::load::follow`]),
+    /// and the week's record takes the team's condition and freshness.
+    /// Nothing is drawn here — the original's day drew all it draws.
+    pub fn follow_records(&mut self, records: &crate::records::Records, data: &crate::data::Data) {
+        for (&key, state) in &mut self.clubs {
+            crate::load::follow(records, data, key, state);
+            state.week.push(team_fitness(&state.lineup, &state.fitness));
+        }
+    }
+
+    /// A day passes for the followed clubs of a new game, which keeps no
+    /// records yet: season tickets sell before the league starts, fitness
+    /// recovers — there is no training to wear it.
     pub fn pass_day(&mut self) {
         let preseason = self.day < PRESEASON_DAYS;
         let difficulties: BTreeMap<(usize, usize), usize> =
@@ -1029,6 +993,7 @@ impl Season {
         m.club = Some(club);
         m.confidence = season_start_confidence(world, club, confidence);
         m.offers.clear();
+        m.camp_rules = [CAMP_RULE; 3];
         self.follow(world, rules, manager, club);
     }
 
@@ -1145,22 +1110,6 @@ fn team_fitness(lineup: &Lineup, fitness: &[Fitness]) -> (i32, i32) {
     ((condition / n + 1).min(100), (freshness / n + 1).min(100))
 }
 
-/// How good a squad is on paper: its best players by position, ten points
-/// for every point of strength, averaged.
-fn rating(players: &[Player]) -> i32 {
-    let mut values = Vec::new();
-    for (from, to, wanted) in RATED {
-        let mut fitting: Vec<i32> = players
-            .iter()
-            .filter(|p| (from..=to).contains(&p.positions[0]))
-            .map(|p| i32::from(p.strength) * 10)
-            .collect();
-        fitting.sort_unstable_by(|a, b| b.cmp(a));
-        values.extend(fitting.into_iter().take(wanted));
-    }
-    if values.is_empty() { 0 } else { values.iter().sum::<i32>() * 10 / values.len() as i32 }
-}
-
 #[cfg(test)]
 mod form_tests {
     /// From the original's SeasonEnd364 every played club's verdict on its
@@ -1248,6 +1197,54 @@ mod form_tests {
             assert_eq!(clubs[&key].status[i].last_form, Some(form));
         }
     }
+
+    /// A day of the kept saves' worlds: the round takes fifty of every
+    /// human player's condition in the records and the date steps. Each
+    /// club the season follows then stands as a load of the day reads it
+    /// — fitness, the injuries a day shorter, the season tickets — and
+    /// following it draws nothing, where the replica's own day drew for
+    /// the tickets.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_loaded_games_clubs_follow_the_days_records() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (mut healing, mut followed) = (0, 0);
+        for name in ["A", "A2", "Probe1", "S2", "S2c", "S2late", "S2late3"] {
+            let path = keeps.join(format!("{name}.an3"));
+            let mut records = crate::records::Records::from_save(Save::read(&path).unwrap()).unwrap();
+            let mut season = crate::load::season(&records, &data, Random::from_state(12345, 67890));
+            followed += season.clubs.len();
+            season.start_week();
+            let before: BTreeMap<(usize, usize), Vec<(i32, i32)>> = season
+                .clubs
+                .iter()
+                .map(|(&key, club)| (key, club.fitness.iter().zip(&club.status).map(|(f, s)| (f.condition, s.injured)).collect()))
+                .collect();
+            let mut dice = Random::from_state(1, 2);
+            let weekday = i32::from(records.globals.day()) % 7;
+            crate::world_day::day(&mut records, weekday, &mut dice);
+            let held = season.random.clone();
+            season.follow_records(&records, &data);
+            assert!(season.random == held, "{name}: following the records draws nothing");
+            for (&key, club) in &season.clubs {
+                let read = crate::load::club(&records, &data, key).unwrap();
+                assert_eq!(club.fitness, read.fitness, "{name}");
+                assert_eq!(club.status, read.status, "{name}");
+                assert_eq!(club.tickets, read.tickets, "{name}");
+                for (&(condition, injured), (f, s)) in before[&key].iter().zip(club.fitness.iter().zip(&club.status)) {
+                    assert_eq!(f.condition, (condition - 50).max(0), "{name}: player {}", s.id);
+                    assert_eq!(s.injured, (injured - 1).max(0), "{name}: player {}", s.id);
+                    healing += usize::from(injured > 0);
+                }
+                assert_eq!(club.week.len(), 2);
+                assert_eq!(club.week[1], team_fitness(&club.lineup, &club.fitness));
+            }
+        }
+        assert!(followed >= 3 && healing > 0, "{followed} clubs followed, {healing} injured");
+    }
 }
 
 #[cfg(test)]
@@ -1256,32 +1253,35 @@ mod tests {
 
     use super::*;
 
+    /// Four managers as a new game writes them into its records, three of
+    /// them taking a club; the seed runs the records' reading and the
+    /// clubs' follow.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_same_seed_gives_the_same_week() {
         let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let world = World::load(&dir.join("Data.a3")).unwrap();
-        let rules = Rules::load(&Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let world = &data.world;
         let germany = world.country(0).unwrap();
         let club = |name: &str| germany.clubs.iter().position(|c| c.name == name).map(|c| (0, c));
-        let manager = |club, difficulty| NewManager {
-            first_name: "A".into(),
+        let trainer = |name: &str| crate::newgame::Trainer {
+            first_name: name.into(),
             last_name: "Test".into(),
-            club,
-            national_team: None,
-            level: 2,
-            difficulty,
-            negotiating: 2,
+            ..crate::newgame::Trainer::default()
         };
         // Several followed clubs, so that the order they are passed in counts.
         let week = |seed| {
-            let managers = vec![
-                manager(club("FC Bayern München"), 0),
-                manager(club("SpVgg Unterhaching"), 2),
-                manager(club("Hamburger SV"), 4),
-                manager(None, 1),
-            ];
-            let mut season = Season::first(&world, &rules, vec![0], 0, managers, Random::new(seed));
+            let mut records = crate::records::Records::blank();
+            let mut random = Random::new(seed);
+            for name in ["A", "B", "C", "D"] {
+                crate::land_managers::create(&mut records, &data.rules, &trainer(name), &mut random)
+                    .unwrap();
+            }
+            let mut season = crate::load::season(&records, &data, random);
+            season.managers.iter_mut().zip([0, 2, 4, 1]).for_each(|(m, d)| m.difficulty = d);
+            for (m, name) in (0..3).zip(["FC Bayern München", "SpVgg Unterhaching", "Hamburger SV"]) {
+                season.take_club(world, &data.rules, m, club(name).unwrap());
+            }
             assert_eq!(season.clubs.len(), 3);
             season.start_week();
             for _ in 0..7 {

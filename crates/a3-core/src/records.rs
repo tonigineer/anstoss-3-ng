@@ -123,6 +123,15 @@ pub(crate) fn text(bytes: &[u8], len: usize) -> String {
     cp1252(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
 }
 
+/// Writes text into a record's field as Windows-1252, NUL-padded, the
+/// last byte kept for the NUL.
+fn put_text(field: &mut [u8], name: &str) {
+    let bytes: Vec<u8> = name.chars().map(|c| a3_files::bitmap_font::to_cp1252(c).unwrap_or(b'?')).collect();
+    let n = bytes.len().min(field.len().saturating_sub(1));
+    field[..n].copy_from_slice(&bytes[..n]);
+    field[n..].fill(0);
+}
+
 /// Players: ids 0 to 17005, 0 none; a thousand to a block of the save.
 pub const PLAYERS: usize = 17006;
 const PLAYERS_PER_BLOCK: usize = 1000;
@@ -329,6 +338,11 @@ record! {
     /// Problems: gambled away at the president's (low two bits), with the
     /// language (bits 2 and 3).
     0x27f => problems, set_problems: u8;
+    /// His standing with the school, bits 3 and 4 (`FUN_00706523`): 0 at
+    /// school, 1 with a teacher who hates football, 2 with one who backs
+    /// him, 3 the school done (`FUN_007064f6`); only 1 and 2 are set, by
+    /// `FUN_0070654a` in the schoolboy's news.
+    0x280 => school, set_school: u8;
     /// Names, from the first names of the nation at +0x286: his partner's,
     /// an affair's, his children's.
     0x283 => partner_name, set_partner_name: u8;
@@ -973,6 +987,9 @@ record! {
     0x2e => birth_day, set_birth_day: u8;
     0x2f => birth_month, set_birth_month: u8;
     0x30 => birth_year, set_birth_year: u16;
+    /// His position as a player, the main one of the player standing for
+    /// him (`FUN_006a3fc7` copies it to his player's +0x21d).
+    0x32 => position, set_position: u8;
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
@@ -1012,8 +1029,10 @@ record! {
     /// events act at code 8 once it stands at four and the manager's
     /// standing (`FUN_006a61e5`) below ten — the club's fit men then
     /// lose condition.  What lifts the count is not followed (meaning
-    /// not traced further); the word behind it, 0x182, is unported.
+    /// not traced further). The word behind it (+0x96) the interview's
+    /// facts read under ten and at nought (meaning not traced).
     0x180 => unrest_count, set_unrest_count: i16;
+    0x182 => second_count, set_second_count: i16;
     /// The national team he manages, by country number, 0 when he manages
     /// none: the manager object's +0x17e6, whose name the honours page
     /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
@@ -1083,6 +1102,11 @@ record! {
     /// Two running figures the stations' rows carry when he leaves a club
     /// (the manager object's +0xe0 and +0xe2, `FUN_006fddfe`), never shown.
     0x214 => station_figures, set_station_figures: [i16; 2];
+    /// What the hub shows him over a 3D picture at his next turn, by bit:
+    /// bits 0 to 20 the records he broke, 0x4000000, 0x8000000 and
+    /// 0x10000000 three more events; cleared at that turn (the manager
+    /// object's +0xe4, [`crate::render`]).
+    0x218 => render_events, set_render_events: u32;
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
@@ -1150,6 +1174,22 @@ impl Manager {
                 (name, spots.map(|[x, y]| (x, y)))
             })
             .collect()
+    }
+
+    /// Writes one of his formations whole, its name and spots, as a new
+    /// manager gets the game's own (`FUN_00696d87`).
+    pub fn set_formation(&mut self, formation: usize, name: &str, spots: [(i16, i16); 11]) {
+        let at = FORMATIONS_AT + formation * FORMATION_SIZE;
+        put_text(&mut self.0[at..at + FORMATION_NAME], name);
+        self.set_formation_spots(formation, spots);
+    }
+
+    /// Writes one of his week templates, its name and sessions, as a new
+    /// manager gets the game's own (`FUN_0074bfa8`).
+    pub fn set_template(&mut self, template: usize, name: &str, week: [u8; 21]) {
+        let at = TEMPLATES_AT + template * TEMPLATE_SIZE;
+        put_text(&mut self.0[at..at + TEMPLATE_NAME], name);
+        self.put(at + TEMPLATE_NAME, week);
     }
 
     /// Keeps where the eleven stand in one of his formations.
@@ -1529,9 +1569,9 @@ record! {
     0xb5cbe0 => day_of_year, set_day_of_year: u16;
     /// Days in this year.
     0xb5cca4 => year_days, set_year_days: u16;
-    /// The European ranking: fifteen countries, a row of 0x24 bytes each
-    /// starting with the country (`DAT_00b5d1a8`).
-    0xb5d1a8 => ranking, set_ranking: [u8; 15 * 0x24];
+    /// The European ranking: 0x25 countries, a row of 0x24 bytes each
+    /// starting with the country (`DAT_00b5d1a8`, `memset` 0x534).
+    0xb5d1a8 => ranking, set_ranking: [u8; 37 * 0x24];
     /// A player for each position whose market value counts a fifth more,
     /// by id.
     0xb5dfd0 => stars, set_stars: [u16; 11];
@@ -1883,6 +1923,13 @@ impl Records {
         })
     }
 
+    /// The records a new game starts from, before `FUN_00686684` and
+    /// `FUN_0068716b` read the data files into them: every block of the
+    /// save blank ([`Save::blank`]).
+    pub fn blank() -> Self {
+        Self::from_save(Save::blank()).expect("a blank save has every block the records read")
+    }
+
     /// The save with the records written back into their blocks.
     pub fn to_save(&self) -> Save {
         let mut save = self.save.clone();
@@ -2037,6 +2084,13 @@ impl Records {
         Some((self.name(name), *bytes.get(5)?, *bytes.get(6)?))
     }
 
+    /// A referee's country (his record's +4, `FUN_0063161e`), the foreign
+    /// men's own.
+    pub fn referee_country(&self, id: i16) -> Option<u8> {
+        let id = usize::try_from(id).ok().filter(|id| (1..=REFEREES).contains(id))?;
+        self.block(&format!("{REFEREE_AT:#x}[{id}]"))?.get(4).copied()
+    }
+
     /// Whether a referee takes money (his record's +8, which the black
     /// cash box asks, `FUN_004c8823`).
     pub fn referee_corruptible(&self, id: i16) -> bool {
@@ -2184,7 +2238,7 @@ impl Records {
     }
 
     fn book(book: &mut Vec<WeekAbility>, id: u16, gained: bool, ability: u16) {
-        let bit = 1u16 << (ability & 0x1f);
+        let bit = (1u32 << (ability & 0x1f)) as u16;
         match book.iter().position(|e| e.id == id) {
             Some(at) if gained => book[at].gained |= bit,
             Some(at) => book[at].lost |= bit,
@@ -2222,6 +2276,15 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn a_new_games_records_start_blank() {
+        let records = Records::blank();
+        assert_eq!((records.players.len(), records.teams.len(), records.managers.len()), (PLAYERS, TEAMS, MANAGERS));
+        assert!(records.players.iter().all(|player| player.bytes().iter().all(|&b| b == 0)));
+        assert!(records.teams.iter().all(|team| team.name().is_empty()));
+        assert!(a3_files::an3::compare(&records.to_save(), &Save::blank()).blocks.is_empty());
+    }
 
     #[test]
     fn fields_read_and_write_little_endian() {

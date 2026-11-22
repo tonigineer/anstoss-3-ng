@@ -38,6 +38,8 @@ use crate::cpr::{inflate, invalid};
 
 /// The oldest version the original loads.
 const OLDEST: u16 = 50;
+/// The version the original writes.
+const WRITTEN: u16 = 50;
 
 /// Blocks that hold real time rather than the game's: field 1 of a timer
 /// at 0xae6e30, seconds of `clock()` (`FUN_00788410`). Two runs of the same
@@ -172,6 +174,22 @@ impl Save {
     /// The block of this name (the first, if the loader reads it twice).
     pub fn block(&self, name: &str) -> Option<&Block> {
         self.blocks.iter().find(|block| block.name == name)
+    }
+
+    /// A save of nothing yet, where a new game's records start: every
+    /// block the loader reads, at the size the original's object or global
+    /// has — the same in every save —, zeroed. The pool of names and the
+    /// list at 0x1be0b40 are empty, the pointer list has no entries, and
+    /// as the flags at 0x8ef338 are nought no flagged object follows them.
+    /// The header has the version the original writes and no date.
+    pub fn blank() -> Self {
+        let mut file = Blank { blocks: Vec::new() };
+        for i in 0..4 {
+            file.raw(format!("{:#x}[{i}]", 0x1b990d8), 120);
+        }
+        file.steps(LAYOUT, &mut Vec::new());
+        let header = Header { value: 0, flag: 0, date: (0, 0, 0), version: WRITTEN, extra: 0 };
+        Self { header, blocks: file.blocks, source: Source(Vec::new()) }
     }
 }
 
@@ -546,6 +564,42 @@ const LAYOUT: &[Step] = &[
     object(0x1c1e4c8),
 ];
 
+/// The size of each memory object's data the layout reads, by its base
+/// address: what the object's header says at run time, the same for every
+/// round of a loop and in every save.
+const OBJECT_SIZES: &[(u32, usize)] = &[
+    (0x8be408, 0x1e2b4), (0x8dc6e0, 0x354), (0x8dd4c8, 0x14), (0x8e2490, 0x7c),
+    (0x8e27a0, 0x7c), (0x8e7c88, 0xc94), (0x8e8940, 0x880), (0x8e91e0, 0xf4c),
+    (0x8eabe8, 0x1f8), (0x8ed3e0, 0x400), (0x8ef338, 0x28), (0xa2e0d8, 0xdc),
+    (0xa2e420, 0x624), (0xa32860, 0xd34), (0xa3b640, 0x1c20), (0xa4d0f8, 0x338),
+    (0xa4de58, 0x854), (0xa50028, 0x780), (0xa51ea8, 0x190), (0xa52568, 0x614),
+    (0xa53e38, 0x614), (0xa55708, 0x7c), (0xa55978, 0x9a0), (0xa58078, 0x2920),
+    (0xa62578, 0x2138), (0xa6d348, 0x8600), (0xa75968, 0x68b4), (0xa7c240, 0x5418),
+    (0xa81678, 0x3b4), (0xa9d660, 0x970), (0xae5b18, 0x129c), (0xae6e50, 0x120),
+    (0xae7b98, 0x120), (0xae88e0, 0x90), (0xae9088, 0x90), (0xae9830, 0xc0),
+    (0xaea1b8, 0xc0), (0xaeab40, 0xc0), (0xaeb4c8, 0x120), (0xaec210, 0x90),
+    (0xaec9b8, 0xc0), (0xaed340, 0x180), (0xaee380, 0xf0), (0xaeeee8, 0xf0),
+    (0xaefa50, 0x120), (0xaf0798, 0xc0), (0xaf1120, 0xc0), (0xaf1aa8, 0x140),
+    (0xaf2868, 0x140), (0xaf2fac, 0x1b8), (0xaf3948, 0x140), (0xaf408c, 0x140),
+    (0xaf47d0, 0x140), (0xaf4f14, 0x2c0), (0xaf5d74, 0x1e0), (0xaf723c, 0x1e0),
+    (0xaf7450, 0x348), (0xaf85bc, 0x320), (0xaf9660, 0x870), (0xafc130, 0x21c0),
+    (0xb06a90, 0xf0), (0xb06bb4, 0xf0), (0xb06cd8, 0x860), (0xb07558, 0xa78),
+    (0xb07ff0, 0xc8), (0xb080d8, 0x258), (0xb08364, 0x5a0), (0xb0a088, 0xf54),
+    (0xb0affc, 0x8c), (0xb5cb68, 0x1590), (0xb71b48, 0x34), (0xb77338, 0x190),
+    (0xb77500, 0x7edc), (0xb9f028, 0x640), (0xb9f8f8, 0x57c), (0xbde1a8, 0xbb8),
+    (0xbe17f8, 0x34), (0xbe3920, 0x34), (0x19f4ed8, 0x14), (0x19f7fd0, 0x2cb8),
+    (0x1a06008, 0x600), (0x1a09d48, 0x1a68), (0x1a1a698, 0x108), (0x1a28dd8, 0x11c),
+    (0x1a2c2f8, 0xd0), (0x1a3af38, 0xd0), (0x1a48138, 0x270), (0x1a72ff8, 0x970),
+    (0x1ba0438, 0x11c), (0x1ba07c0, 0x3a74), (0x1ba4b68, 0x100), (0x1ba5148, 0x54),
+    (0x1ba5390, 0x678), (0x1ba7488, 0x678), (0x1ba7b28, 0x8c4), (0x1baa1e0, 0x1224),
+    (0x1baf6f0, 0x2df04), (0x1bdd618, 0x8), (0x1c1e4c8, 0x780), (0x1c26dd8, 0x2038),
+    (0x1c2f030, 0x295c), (0x1c39620, 0x295c), (0x1c44370, 0x348), (0x1c44700, 0x2d4),
+    (0x1c449f8, 0xe1c), (0x1c45838, 0xe1c), (0x1c46f48, 0x3e8), (0x1c49278, 0x2bc8),
+    (0x1c4be78, 0x5aa4), (0x1c51940, 0x20d4), (0x1c53a48, 0x11c), (0x1c53b88, 0x11c),
+    (0x1c53d98, 0x130), (0x1c53ee8, 0xf4), (0x1c54000, 0x3b64), (0x1c5c468, 0x438),
+    (0x1c645d8, 0x188c), (0x1c65e88, 0x1e38), (0x1c67ce0, 0x1bc), (0x1c68450, 0x2664),
+];
+
 /// The players: 17000 and 6 records of 0x354 bytes.
 const PLAYERS: usize = 17006;
 const PLAYER: usize = 0x354;
@@ -692,6 +746,57 @@ impl Reader<'_> {
     }
 }
 
+/// Lays out a blank save's blocks in the order of the layout, zeroed.
+struct Blank {
+    blocks: Vec<Block>,
+}
+
+impl Blank {
+    fn raw(&mut self, name: String, len: usize) {
+        self.blocks.push(Block { name, offset: 0, size: 0, form: Form::Raw, data: vec![0; len] });
+    }
+
+    fn packed(&mut self, name: String, len: usize) {
+        self.blocks.push(Block { name, offset: 0, size: 0, form: Form::Stored, data: vec![0; len] });
+    }
+
+    fn steps(&mut self, steps: &[Step], rounds: &mut Vec<usize>) {
+        for step in steps {
+            match *step {
+                Object { at, strides } => {
+                    let size = OBJECT_SIZES.iter().find(|&&(base, _)| base == at).map(|&(_, size)| size);
+                    self.packed(name(at, strides, rounds), size.expect("every object's size"));
+                }
+                Global { at, size } => self.packed(format!("{at:#x}"), size),
+                Local { name, size } => self.packed(name.into(), size),
+                Raw { at, strides, size } => self.raw(name(at, strides, rounds), size),
+                RawGlobal { at, size } => self.raw(format!("{at:#x}"), size),
+                Repeat { count, steps } => {
+                    for round in 0..count {
+                        rounds.push(round);
+                        self.steps(steps, rounds);
+                        rounds.pop();
+                    }
+                }
+                Players => {
+                    for block in 0..PLAYERS.div_ceil(PLAYERS_PER_BLOCK) {
+                        let count = PLAYERS_PER_BLOCK.min(PLAYERS - block * PLAYERS_PER_BLOCK);
+                        self.packed(format!("players[{block}]"), count * PLAYER);
+                    }
+                }
+                Names => {
+                    self.packed("names.count".into(), 4);
+                    self.packed("names.size".into(), 4);
+                    self.packed("names".into(), 0);
+                }
+                // A u16 count and a u16 last index, both nought.
+                List { at } => self.raw(format!("{at:#x}"), 4),
+                PtrList { .. } | Flagged { .. } => {}
+            }
+        }
+    }
+}
+
 /// Writes a save's blocks in the order of the layout, as [`Reader`] reads
 /// them.
 struct Writer<'a> {
@@ -823,6 +928,50 @@ fn name(at: u32, strides: &[u32], rounds: &[usize]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_save_writes_and_reads_back() {
+        let blank = Save::blank();
+        let read = Save::parse(&blank.to_bytes().unwrap()).unwrap();
+        assert_eq!(read.header, blank.header);
+        let shape = |save: &Save| -> Vec<(String, usize)> {
+            save.blocks.iter().map(|block| (block.name.clone(), block.data.len())).collect()
+        };
+        assert_eq!(shape(&read), shape(&blank));
+        assert!(compare(&read, &blank).blocks.is_empty());
+        assert!(read.blocks.iter().all(|block| block.data.iter().all(|&b| b == 0)));
+    }
+
+    /// A blank save has every block of every save in $ANSTOSS3_DIR/saves,
+    /// in the same order and of the same size, but for those whose number
+    /// or size the save's data decides: the pool of names, the list at
+    /// 0x1be0b40, the pointer list's entries and the flagged objects.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_blank_save_has_every_saves_blocks() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let shape = |save: &Save| -> Vec<(String, usize)> {
+            let decided = |name: &str| {
+                name == "names" || name == "0x1be0b40" || name.starts_with("0x8eb8b0[") || name.starts_with("0x8ef380[")
+            };
+            save.blocks.iter().filter(|b| !decided(&b.name)).map(|b| (b.name.clone(), b.data.len())).collect()
+        };
+        let blank = shape(&Save::blank());
+        let mut read = 0;
+        for entry in std::fs::read_dir(dir.join("saves")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("an3")) {
+                continue;
+            }
+            let save = Save::read(&path).unwrap();
+            assert_eq!(save.header.version, WRITTEN, "{}", path.display());
+            let shape = shape(&save);
+            let apart = shape.iter().zip(&blank).find(|(a, b)| a != b);
+            assert!(apart.is_none() && shape.len() == blank.len(), "{}: {apart:?}", path.display());
+            read += 1;
+        }
+        assert!(read > 0, "no saves in {}", dir.display());
+    }
 
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]

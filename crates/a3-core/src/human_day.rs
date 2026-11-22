@@ -1,6 +1,8 @@
 //! The human clubs' day (`FUN_0064f981`), as far as it is ported: the
-//! draws that decide who may meet an event today, and the day's advance
-//! ticket sales ([`crate::presale::day`]). The game draws everything from
+//! draws that decide who may meet an event today, the day's advance
+//! ticket sales ([`crate::presale::day`]) and, over the first six weeks,
+//! the season tickets' ([`crate::tickets::season_ticket_day`]) and the
+//! perimeter boards' ([`let_boards`]). The game draws everything from
 //! one generator, so the replica draws these in the original's order even
 //! where what follows them is not built yet.
 //!
@@ -16,10 +18,11 @@
 //! rest of the day after the day's news picked its category.
 
 use crate::random::Random;
+use crate::records::Records;
 
 /// No event slot for a human today.
 pub const NONE: i16 = -1;
-const HUMANS: usize = 4;
+pub(crate) const HUMANS: usize = 4;
 
 /// The event gates of the day (`FUN_0064f981` from its first draw): one
 /// chance in twenty that nobody gets an event, else one in a hundred for
@@ -31,6 +34,50 @@ pub fn event_slots(random: &mut Random, weekday: i16) -> [i16; HUMANS] {
     }
     let _rare = random.below(100) == 0;
     std::array::from_fn(|_| if random.below(3) == 0 { NONE } else { weekday })
+}
+
+/// The perimeter boards a human club has let, those it can let, what one
+/// brings, and the sponsors' money they book into (club +0x304, +0x4ec,
+/// +0x504, +0x2f4).
+const BOARDS_LET: usize = 0x304;
+const BOARDS: usize = 0x4ec;
+const BOARD_RATE: usize = 0x504;
+const SPONSOR_MONEY: usize = 0x2f4;
+
+/// The perimeter boards let over the first six weeks (`FUN_0064f981`
+/// after the season tickets' sales): at each human club the boards let
+/// grow with the days towards all it can let — over the first two weeks
+/// by the day's share of 28 with up to two more drawn, then by its share
+/// of 35 with up to five, all of them from the 35th day —, never falling
+/// back nor passing the boards there are; each new one books its rate.
+pub fn let_boards(records: &mut Records, today: i32, random: &mut Random) {
+    let at = |club: usize| club + crate::finances::CLUB_TO_TEAM;
+    for (country, number) in crate::statistics::human_clubs(records) {
+        let Some(team) = records.team_mut(u16::from(country), number as u16) else { continue };
+        let old = team.get::<i16>(at(BOARDS_LET));
+        let boards = team.get::<i32>(at(BOARDS));
+        let mut now = if today < 14 {
+            let drawn = random.below(3) as i16;
+            (boards.wrapping_mul(today) / 28) as i16 + drawn
+        } else if today < 35 {
+            let drawn = random.below(6) as i16;
+            (today.wrapping_mul(boards) / 35) as i16 + drawn
+        } else {
+            boards as i16
+        };
+        if today < 35 && now < old {
+            now = old;
+        }
+        if boards < i32::from(now) {
+            now = boards as i16;
+        }
+        if old < now {
+            let money = team.get::<i32>(at(SPONSOR_MONEY));
+            let rate = team.get::<i32>(at(BOARD_RATE));
+            team.put::<i32>(at(SPONSOR_MONEY), (i32::from(now) - i32::from(old)).wrapping_mul(rate).wrapping_add(money));
+        }
+        team.put::<i16>(at(BOARDS_LET), now);
+    }
 }
 
 #[cfg(test)]

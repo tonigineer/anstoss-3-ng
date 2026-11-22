@@ -166,15 +166,23 @@ pub fn honour(records: &mut Records, country: u16, number: u16, kind: u8) {
 /// - its history (the object `0xa6d348`, 0x80 a club) counts one title
 ///   more at +0 and keeps the calendar year among the last five after it
 ///   (`FUN_0064089e`, `FUN_00640d8b`);
+/// - a club a human runs books his champions' party fifteen days ahead,
+///   kind 0x6a in his appointments (`FUN_006a6c20` in `FUN_0071d2d0`: the
+///   day counter `DAT_00b5cbd4` + 15 as its date, `FUN_006769bb`; its
+///   other words left as the stack holds them, here 0);
 /// - and it takes the title ([`title`]).
 ///
-/// (The human's event 0x6a and country 0x3b's play-off, `FUN_006d8bb0`,
-/// are not built.)
+/// (The party itself when it falls due, `FUN_006a700a` case 0x6a, and
+/// country 0x3b's play-off, `FUN_006d8bb0`, are not built.)
 const CHAMPION_MARK: u8 = 0x80;
 const HISTORY: &str = "0xa6d348";
 const HISTORY_CLUB: usize = 0x80;
 const HISTORY_YEARS_END: usize = 0xc;
 const TEAM_HONOURS: usize = 0x8ea;
+/// The champions' party among a human's appointments, and how many days
+/// after the champions' day it falls (`FUN_006a6c20`, case 0x6a).
+const PARTY: u16 = 0x6a;
+const PARTY_DAYS: i16 = 0xf;
 const CHAMPION_ENTRY: usize = 0xc;
 
 /// The Herbstmeister (`FUN_0071d175` on the half weeks 0x2f to 0x38,
@@ -353,6 +361,12 @@ pub fn champions_day(records: &mut Records) {
                 h[0] = h[0].wrapping_add(1);
                 p.set_honours(h);
             }
+        }
+        let human = records.team(country, number).map_or(0, |t| t.human());
+        if let Some(date) = records.globals.date_of(records.globals.day() as i16 + PARTY_DAYS) {
+            use chrono::Datelike;
+            let entry = crate::rollover::appointment(date.day() as u8, date.month() as u8, date.year() as u16, PARTY, 0, 0);
+            crate::rollover::book_appointment(records, human, entry);
         }
         title(records, country, number, CHAMPIONSHIP);
     }
@@ -587,5 +601,52 @@ mod tests {
             assert!(crowned.len() > kings[k] || crowned.len() >= 3 * 19, "{country}'s kings: {} after {}", crowned.len(), kings[k]);
             assert_eq!(crowned[0].year, late.globals.start_year() as i16, "{country}'s newest kings");
         }
+    }
+
+    /// A human's champions book their party: on the kept day-63 save made
+    /// the leader of the first played league a human's (slot 2), the
+    /// champions' day puts kind 0x6a into that human's appointments,
+    /// dated fifteen days on, in date order; the other humans' lists stay
+    /// as they were.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_human_champion_books_the_party_fifteen_days_on() {
+        use a3_files::an3::Save;
+        use crate::rollover::{APPOINTMENT, APPOINTMENTS, APPOINTMENT_LIST};
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let country = crate::opponent::played_nations(&records)[0];
+        let league = crate::opponent::League::of(&records, country, 0).unwrap();
+        let leader = crate::statistics::table(&records, &league, crate::statistics::ALL)[0].team as u16;
+        for t in records.teams.iter_mut() {
+            if t.human() == 2 {
+                t.set_human(0);
+            }
+        }
+        records.team_mut(country, leader).unwrap().set_human(2);
+        let before = records.block(APPOINTMENTS).unwrap().to_vec();
+        champions_day(&mut records);
+        let after = records.block(APPOINTMENTS).unwrap();
+        for slot in [0, 2, 3] {
+            let r = slot * APPOINTMENT_LIST..(slot + 1) * APPOINTMENT_LIST;
+            assert_eq!(after[r.clone()], before[r], "slot {}'s list", slot + 1);
+        }
+        let list = &after[APPOINTMENT_LIST..2 * APPOINTMENT_LIST];
+        let count = usize::from(u16::from_le_bytes([list[0], list[1]]));
+        let old = usize::from(u16::from_le_bytes([before[APPOINTMENT_LIST], before[APPOINTMENT_LIST + 1]]));
+        assert_eq!(count, (old + 1).min(20));
+        let entries: Vec<&[u8]> = (0..count).map(|i| &list[2 + i * APPOINTMENT..2 + (i + 1) * APPOINTMENT]).collect();
+        let party: Vec<&&[u8]> = entries.iter().filter(|e| u16::from_le_bytes([e[4], e[5]]) == 0x6a).collect();
+        assert_eq!(party.len(), 1, "one party");
+        let due = records.globals.date_of(records.globals.day() as i16 + 15).unwrap();
+        {
+            use chrono::Datelike;
+            assert_eq!((party[0][0], party[0][1], u16::from_le_bytes([party[0][2], party[0][3]])), (due.day() as u8, due.month() as u8, due.year() as u16));
+        }
+        let key = |e: &[u8]| (u16::from_le_bytes([e[2], e[3]]), e[1], e[0]);
+        assert!(entries.windows(2).all(|w| key(w[0]) <= key(w[1])), "in date order");
     }
 }

@@ -97,6 +97,15 @@ impl ValueTables {
             })
             .sum()
     }
+
+    /// What the best players' pick values a player at (`FUN_00708b80`):
+    /// his abilities' and character's percent and a hundred, weighed by
+    /// his form today.
+    pub fn pick_value(&self, p: &crate::records::Player) -> i32 {
+        let percent = self.pick_percent(p.good(), p.traits(), p.positions()[0] == 1);
+        let share = (f64::from(crate::statistics::form_today(p)) * 1.5 + 85.0) / 100.0;
+        (f64::from(percent + 100) * share) as i32
+    }
 }
 
 /// What the market value goes by.
@@ -217,6 +226,18 @@ impl ValueTables {
     pub fn loan_prices(&self, w: &Worth, years: i32, month: u32) -> LoanPrices {
         let months = self.months.get(month as usize).copied().unwrap_or(0);
         loan_prices(self.monthly(w), months, years)
+    }
+
+    /// The months a contract of `years` still runs in the month `month`
+    /// (`FUN_00707f50`): this season's months left, and twelve for each
+    /// year after it.
+    pub fn months_left(&self, years: i32, month: u32) -> i32 {
+        let first = i32::from(self.months.get(month as usize).copied().unwrap_or(0));
+        match years {
+            ..=0 => 0,
+            1 => first,
+            y => (y - 1) * 12 + first,
+        }
     }
 
     /// His market value with `years` of his contract left in the month

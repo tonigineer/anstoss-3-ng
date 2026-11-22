@@ -34,7 +34,7 @@ pub fn kind(records: &Records, country: u16, level: u8) -> Kind {
 
 /// The nations the game can be played in, whose stadiums it keeps even when
 /// they are not played (`DAT_0089ddd8`).
-const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
+pub(crate) const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
 
 /// A club's stadium (`FUN_00638335`, the two branches the dialogs reach).
 pub fn stadium(records: &Records, country: u16, number: u16) -> Option<&Stadium> {
@@ -361,6 +361,19 @@ impl<'a> League<'a> {
 
     pub fn four_rounds(&self) -> bool {
         self.i16_at(0x1a) > 0
+    }
+
+    /// Whether the league splits in two groups after its regular rounds
+    /// (G+0x1c, the object's +0x6c; `FUN_00690a9e`).
+    pub fn split(&self) -> i16 {
+        self.i16_at(0x1c)
+    }
+
+    /// Its regular rounds' matchdays (`FUN_0068fd13`): twice the teams
+    /// less two, or four times less four once G+0x1a is set at all.
+    pub fn regular_matchdays(&self) -> usize {
+        let teams = self.teams();
+        if self.i16_at(0x1a) == 0 { (teams * 2).saturating_sub(2) } else { (teams * 4).saturating_sub(4) }
     }
 
     /// The team number at a place in the league.
@@ -934,11 +947,32 @@ const UEFA_PAIRINGS: usize = 0x20;
 const UEFA_STARTS: [usize; 8] = [0, 50, 98, 122, 138, 146, 150, 152];
 
 pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
+    let Some([(champions_code, champions_info), (uefa_code, uefa_info)]) = europe_codes(records, team) else {
+        return EuropeStand::NotIn;
+    };
+    let mut stand = match champions_code {
+        0 | -1 => EuropeStand::NotIn,
+        c if c > 0 => EuropeStand::In(0, CHAMPIONS_ROUNDS[c as usize], champions_info),
+        c => EuropeStand::Out(0, CHAMPIONS_ROUNDS[c.unsigned_abs() as usize]),
+    };
+    // The UEFA cup's finder, where it finds the club, has the say.
+    if uefa_code > 0 {
+        stand = EuropeStand::In(1, UEFA_ROUNDS[uefa_code as usize], uefa_info);
+    } else if uefa_code < 0 {
+        stand = EuropeStand::Out(1, UEFA_ROUNDS[uefa_code.unsigned_abs() as usize]);
+    }
+    stand
+}
+
+/// The codes the European cups' finders give a club, each with the
+/// opponent it found: the Champions League's (`FUN_0042451e`) and the
+/// UEFA cup's (`FUN_0042462b`); none without the cups' records.
+pub(crate) fn europe_codes(records: &Records, team: &Team) -> Option<[(i16, Option<Id>); 2]> {
     let club = (team.country(), i16::from(team.number()));
     let (entrants, champions, uefa) =
         (records.block(ENTRANTS_AT), records.block(CHAMPIONS_AT), records.block(UEFA_AT));
     let (Some(entrants), Some(champions), Some(uefa)) = (entrants, champions, uefa) else {
-        return EuropeStand::NotIn;
+        return None;
     };
     let id = |data: &[u8], at: usize| -> Id {
         data.get(at..at + 4).map_or((0, 0), |b| (b[0], i16::from_le_bytes([b[2], b[3]])))
@@ -1012,14 +1046,9 @@ pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
         }
     };
 
-    let mut stand = match champions_code {
-        0 | -1 => EuropeStand::NotIn,
-        c if c > 0 => EuropeStand::In(0, CHAMPIONS_ROUNDS[c as usize], info),
-        c => EuropeStand::Out(0, CHAMPIONS_ROUNDS[c.unsigned_abs() as usize]),
-    };
+    let champions_info = info;
 
-    // The UEFA cup (`FUN_0042462b`), by the Champions League's stage first;
-    // where it finds the club it has the say.
+    // The UEFA cup (`FUN_0042462b`), by the Champions League's stage first.
     let limit = entrants
         .get(DIRECT_LIMIT..DIRECT_LIMIT + 2)
         .map_or(0, |b| i16::from_le_bytes([b[0], b[1]]));
@@ -1043,10 +1072,5 @@ pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
         let r = (0..UEFA_STARTS.len() - 1).rev().find(|&k| UEFA_STARTS[k] <= i).unwrap_or(0) as i16;
         if r < records.globals.uefa_round() { -(r + 1) } else { r + 1 }
     };
-    if uefa_code > 0 {
-        stand = EuropeStand::In(1, UEFA_ROUNDS[uefa_code as usize], info);
-    } else if uefa_code < 0 {
-        stand = EuropeStand::Out(1, UEFA_ROUNDS[uefa_code.unsigned_abs() as usize]);
-    }
-    stand
+    Some([(champions_code, champions_info), (uefa_code, info)])
 }
