@@ -4745,6 +4745,11 @@ const PLAYER_EVENTS: [(u32, u16); 50] = [
 /// not there yet).
 const HAPPENING_MET: i32 = 24_500;
 
+/// The second trait word's bit (the handle's +0x12, the record's
+/// +0x1ca) that makes a man his club's Musterprofi, its model
+/// professional — the one whose say at a squad meeting is heard.
+const MUSTERPROFI: u16 = 0x100;
+
 /// The bit of the man's second trait word a happening asks — the switch
 /// of `FUN_005e08f1` over `short*(man + 0x12)`; codes 57 to 59 fall in
 /// its default, which asks no bit.
@@ -4752,7 +4757,7 @@ fn asked_trait(code: u16) -> Option<u16> {
     match code {
         1..=6 => Some(0x2),
         11..=14 => Some(0x4),
-        21 | 22 => Some(0x100),
+        21 | 22 => Some(MUSTERPROFI),
         31..=47 | 100 => Some(MODEL_TRAIT),
         51..=56 => Some(STAR_AIRS),
         61..=66 => Some(SENSITIVE),
@@ -4811,8 +4816,24 @@ const MARTIAL_ARTS: u8 = 0x15;
 /// (`FUN_00600f2f`) only while the club stands level with its season's
 /// goal (`FUN_00775f0a`, [`crate::league::goal_missing`] at nought),
 /// and 14: a bit part in a TV crime show (0x4ef, weighed one) told by
-/// name alone — neither leaves a mark. The other forty codes end
-/// consumed, as before.
+/// name alone — neither leaves a mark. The Musterprofi happenings,
+/// codes 21 and 22 behind the trait word's bit [`MUSTERPROFI`]: 21 has
+/// the model pro rant at a squad meeting about the lax discipline that
+/// has crept in
+/// (0x4f0, told by name) once the club's own discipline word — a
+/// run-time byte of the club object at +0xa7 between −100 and 100,
+/// filled at nought with the object and moved only by the answers to
+/// `FUN_005f29bc`'s unbuilt question, read at codes 47 and 48 too —
+/// stands past five and the club is off its season's goal
+/// (`FUN_00775f0a`); the word never stands past five here, so 21 tells
+/// nothing. 22 has him fault the team's condition at a squad meeting
+/// (0x4f1, told by name) while the club stands above nought short of
+/// its season's goal, its shown condition on average under 60
+/// (`FUN_00676f16`, [`crate::evaluation::average_condition`]), the
+/// man's own shown condition above 60 (`FUN_00457e00`,
+/// [`shown_condition`]) and the club rising on the calendar
+/// (`FUN_0069947b`, [`rising`]). The other thirty-eight codes end
+/// consumed too.
 pub fn player_news(
     records: &mut Records,
     club: (u16, u16),
@@ -4820,6 +4841,7 @@ pub fn player_news(
     planned: bool,
     league: &crate::league::LeagueTables,
     recent: &mut Vec<i32>,
+    posted: &mut Vec<Posted>,
     random: &mut Random,
 ) {
     let Some(man) = drawn_man(records, club, random) else { return };
@@ -4868,6 +4890,26 @@ pub fn player_news(
         // of a TV bit part always — and no text stands here, so nothing
         // moves. The rest of `FUN_005e08f1`'s cases come in their parts.
         13 | 14 => {}
+        // 21: the discipline rant at the squad meeting (0x4f0) waits on
+        // the club's discipline word, the run-time byte at +0xa7 —
+        // filled at nought with the club object and wound only by the
+        // answers to `FUN_005f29bc`'s unbuilt question — past five; it
+        // never stands there, and the rant stays unheard.
+        21 => {}
+        // 22: the Musterprofi faults the team's condition (0x4f1, told
+        // by name) while the club is off its season's goal, its shown
+        // condition on average under 60, his own above 60 and the club
+        // rising on the calendar.
+        22 => {
+            let short = records.team(club.0, club.1).is_some_and(|team| {
+                crate::league::goal_missing(records, league, team) > 0
+                    && crate::evaluation::average_condition(records, team) < 0x3c
+                    && rising(records, &team)
+            });
+            if short && records.player(man).is_some_and(|p| shown_condition(&p) > 0x3c) {
+                posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x4f1, fill: Fill::NumberedOne(man) });
+            }
+        }
         _ => {}
     }
 }
@@ -4980,12 +5022,12 @@ mod tests {
         expected.below(u32::MAX);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == expected, "the man drawn and one raw roll, no more");
         assert_eq!(recent, [57 + HAPPENING_MET]);
         // Met again: consumed, the list stands, both rolls still taken.
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == expected);
         assert_eq!(recent, [57 + HAPPENING_MET]);
 
@@ -5003,7 +5045,7 @@ mod tests {
             p.set_traits(traits);
         }
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
 
         // The silent code: a roll of 473 and up weighs nothing.
@@ -5012,7 +5054,7 @@ mod tests {
             weighed_within(&PLAYER_EVENTS, u32::MAX, random) == 0
         });
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(recent, [57 + HAPPENING_MET, 51 + HAPPENING_MET]);
     }
 
@@ -5065,7 +5107,7 @@ mod tests {
         }
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == rolls(s), "the man drawn and one raw roll, no more");
         assert_eq!(recent, [1 + HAPPENING_MET]);
         assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
@@ -5078,7 +5120,7 @@ mod tests {
         }
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(recent, [1 + HAPPENING_MET]);
         let p = r.player(man).unwrap();
         assert_eq!(crate::discipline::offence(p), FURY_OFFENCE);
@@ -5099,7 +5141,7 @@ mod tests {
         let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == rolls(s), "the man drawn and one raw roll, no more");
         assert_eq!(recent, [3 + HAPPENING_MET]);
         let p = r.player(man).unwrap();
@@ -5120,7 +5162,7 @@ mod tests {
         }
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(recent, [6 + HAPPENING_MET]);
         assert_eq!(crate::discipline::offence(r.player(man).unwrap()), KUNGFU_OFFENCE);
         if let Some(p) = r.player_mut(man) {
@@ -5130,7 +5172,7 @@ mod tests {
         }
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(crate::discipline::offence(r.player(man).unwrap()), 0);
     }
 
@@ -5191,7 +5233,7 @@ mod tests {
         let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, today, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, today, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == rolls(s), "the man drawn and one raw roll, no more");
         assert_eq!(recent, [11 + HAPPENING_MET]);
         let p = r.player(man).unwrap();
@@ -5211,7 +5253,7 @@ mod tests {
         let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, week, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, week, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert!(random == rolls(s), "the man drawn and one raw roll, no more");
         assert_eq!(recent, [12 + HAPPENING_MET]);
         assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before, "a whole week of a day");
@@ -5222,13 +5264,13 @@ mod tests {
         set_row(&mut r, 0, [crate::training::FREE; 3]);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(recent, [12 + HAPPENING_MET]);
         assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before, "yesterday all free");
         set_row(&mut r, 0, [crate::training::FREE, 0, crate::training::FREE]);
         let mut recent = Vec::new();
         let mut random = Random::new(s);
-        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+        player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut Vec::new(), &mut random);
         assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), (before - 5).max(0));
 
         // 13 and 14: told by name only — the crowd favourite and the
@@ -5244,11 +5286,112 @@ mod tests {
             let before = i32::from(r.player(man).unwrap().contentment()[DISTRACTION]);
             let mut recent = Vec::new();
             let mut random = Random::new(s);
-            player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut random);
+            player_news(&mut r, club, week + 1, false, &league, &mut recent, &mut Vec::new(), &mut random);
             assert!(random == rolls(s), "the man drawn and one raw roll, no more");
             assert_eq!(recent, [i32::from(code) + HAPPENING_MET]);
             assert_eq!(i32::from(r.player(man).unwrap().contentment()[DISTRACTION]), before);
         }
+    }
+
+    /// The Musterprofi happenings on A's human club: the discipline
+    /// rant (21) tells nothing however fit the man is and however
+    /// rising the club — its word waits on the club's discipline byte,
+    /// which only the unbuilt question's answers wind up; the condition
+    /// fault (22) is told by name exactly while the club is off its
+    /// season's goal, and falls silent again when the man's own shown
+    /// condition drops under 60 or the club's two rising bytes stand
+    /// even. Every key goes among the lately met, and no roll beyond
+    /// the man and the weigh is taken.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_musterprofi_faults_the_teams_condition() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let league = crate::league::LeagueTables::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let team = r.team(club.0, club.1).unwrap();
+        let squad = team.players().to_vec();
+        let count = u32::from(team.player_count());
+        let slot = usize::from(team.human()) - 1;
+        let today = i32::from(r.globals.day());
+        let missing = crate::league::goal_missing(&r, &league, &team);
+        let seed = |keep: &dyn Fn(&mut Random) -> bool| (0..100_000u64).find(|&s| keep(&mut Random::new(s))).unwrap();
+        let weighed_to = |code: u16| {
+            seed(&|random| {
+                let at = random.below(count);
+                weighed_within(&PLAYER_EVENTS, u32::MAX, random) == code && squad[at as usize] <= LAST_REAL_ID
+            })
+        };
+        let drawn_by = |s: u64| squad[{ let mut random = Random::new(s); random.below(count) } as usize];
+        let rolls = |s: u64| {
+            let mut expected = Random::new(s);
+            expected.below(count);
+            expected.below(u32::MAX);
+            expected
+        };
+        let at_gates = |r: &mut Records, man: u16| {
+            if let Some(p) = r.player_mut(man) {
+                let mut traits = p.traits();
+                traits[1] |= MUSTERPROFI;
+                p.set_traits(traits);
+            }
+            for id in squad.iter().copied() {
+                if let Some(p) = r.player_mut(id) {
+                    p.set_condition(if id == man { 6600 } else { 0 });
+                }
+            }
+            let extra = r.extras.get_mut(slot).expect("extra data of the human club");
+            extra.put::<u8>(RISING, 0);
+            extra.put::<u8>(RISING + 1, 1);
+        };
+        let told = |r: &mut Records, s: u64| {
+            let mut posted = Vec::new();
+            let mut recent = Vec::new();
+            let mut random = Random::new(s);
+            player_news(r, club, today, false, &league, &mut recent, &mut posted, &mut random);
+            assert!(random == rolls(s), "the man drawn and one raw roll, no more");
+            (posted, recent)
+        };
+
+        // Code 21: all of the case's buildable gates met, and the rant
+        // still stays unheard — the discipline byte at +0xa7 stands at
+        // nought and no answer winds it up here.
+        let s = weighed_to(21);
+        let man = drawn_by(s);
+        at_gates(&mut r, man);
+        let (posted, recent) = told(&mut r, s);
+        assert_eq!(recent, [21 + HAPPENING_MET]);
+        assert!(posted.is_empty(), "the club's discipline word never stands past five");
+
+        // Code 22: told by name (0x4f1) exactly while the club is off
+        // its season's goal, the rest of the squad at nought and he
+        // himself at 66 shown.
+        let s = weighed_to(22);
+        let man = drawn_by(s);
+        at_gates(&mut r, man);
+        let (posted, recent) = told(&mut r, s);
+        assert_eq!(recent, [22 + HAPPENING_MET]);
+        assert_eq!(posted.len(), usize::from(missing > 0), "told only off the season's goal");
+        if missing > 0 {
+            let one = &posted[0];
+            assert_eq!((one.club, one.code, one.text), (club, PRIVATE_NEWS, 0x4f1));
+            assert!(matches!(one.fill, Fill::NumberedOne(id) if id == man));
+        }
+
+        // His own shown condition back at nought: the fault is silent.
+        r.player_mut(man).unwrap().set_condition(0);
+        let (posted, _) = told(&mut r, s);
+        assert!(posted.is_empty(), "the man himself not fit");
+
+        // Fit again, but the club's two bytes even: silent as well.
+        r.player_mut(man).unwrap().set_condition(6600);
+        let extra = r.extras.get_mut(slot).expect("extra data of the human club");
+        extra.put::<u8>(RISING + 1, 0);
+        let (posted, _) = told(&mut r, s);
+        assert!(posted.is_empty(), "the club not rising");
     }
 
     /// The pick takes one draw and walks the table: the roll of save A

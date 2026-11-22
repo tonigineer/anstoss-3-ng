@@ -186,6 +186,11 @@ fn average(records: &Records, team: &Team, of: fn(&records::Player) -> i32) -> i
     squad.iter().map(|&id| value(id)).sum::<i32>() / squad.len() as i32
 }
 
+/// The team's shown condition on average (`FUN_00676f16`): [`average`]
+/// over [`condition_points`].
+pub(crate) fn average_condition(records: &Records, team: &Team) -> i32 {
+    average(records, team, condition_points)
+}
 
 /// The season records' table (block `0x1ba9f38`, ERFOLGE.md §A.4): ten
 /// entries of 0x40 — the name (0x34 bytes), the points (i32), the club's

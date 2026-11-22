@@ -720,7 +720,7 @@ pub fn news(
             continue;
         }
         if random.below(PLAYER_NEWS) < u32::from(squad) {
-            crate::news::player_news(records, club, today, planned, league, recent, random);
+            crate::news::player_news(records, club, today, planned, league, recent, &mut posted, random);
             continue;
         }
         if random.below(OTHER_NEWS) < u32::from(squad) {
