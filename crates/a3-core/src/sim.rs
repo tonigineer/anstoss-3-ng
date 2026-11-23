@@ -248,10 +248,10 @@ pub struct Side {
     pub pressed: u16,
     /// +0xfa (record +0x156/+0x34a): the side's entered men, short ids.
     /// The original copies these from its line-up (runtime +0x8e, the
-    /// manager's saved eleven and bench) or the pre-match squads in
-    /// `FUN_0078b26c`; the walk enters the saved formation when the
-    /// team record keeps one and its own eleven otherwise
-    /// (`fill_entries`), the reserve places nought with the stand-in.
+    /// manager's or the co-trainer's eleven and bench, `line_up_row`);
+    /// the walk enters the saved formation when the team record lists
+    /// one and its own eleven otherwise (`fill_entries`), the reserve
+    /// places nought with the stand-in.
     pub entries: [u16; LEDGER_SLOTS],
     /// +0x1c0 (record +0x21c/+0x410): one ledger byte per entered man,
     /// read together with `entries` by `book_event`, `own_goal_mark` and
@@ -509,11 +509,11 @@ pub fn play_matches(
 /// touch before the hour — and no referee, the record's 0xffff. Nothing here
 /// draws a random number: the league day's draw stream starts at its
 /// first minute, as the week's trace shows. The walk's third loop — the
-/// national call-ups, the squads summed into the sides by `FUN_0078b26c`
-/// and their totals at +0x50/+0x54 settling the favourite byte at +0x58,
-/// and the referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by
-/// `FUN_0063161e` into +0x44a..+0x458 for a national tie — works on the
-/// clubs and their squads and waits there.
+/// national call-ups, the crowd `FUN_0078b26c` reckons (the gate, its home
+/// and away fans at +0x50/+0x54 settling the crowd byte at +0x58), and the
+/// referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by `FUN_0063161e`
+/// into +0x44a..+0x458 for a national tie — works on the clubs and waits
+/// there; its fourth, the sides' line-ups, is [`line_up_row`].
 pub fn pre_match(row: &mut [Match]) {
     for (index, m) in row.iter_mut().enumerate() {
         m.index = index as u16;
@@ -542,6 +542,40 @@ pub fn pre_match(row: &mut [Match]) {
             // the assistants drop where the club has none (its f_08a and
             // f_084 flags), and the referee drawn out of the two clubs
             // fills the slot, the added byte and +0x44a..+0x454
+        }
+    }
+}
+
+/// The pre-match walk's fourth loop (`FUN_006ef296` on a row it does not
+/// resume, its third parameter nought), match by match, the first side
+/// before the second: the camp booked before the match (`FUN_0059a2ea`,
+/// [`training_day::camp_before_match`], which the day runs on the human
+/// fixtures), then `FUN_0042a702` — a side whose club has no human
+/// trainer (club +0x8a nought) is lined up by its co-trainer in a system
+/// of his choosing with three foreigners at most (`FUN_0042c802` with 6,
+/// its parameter block from `FUN_004300b0`; the competition flag
+/// `FUN_0042a702` lays beside it at +0xc is read by nobody), the bench
+/// "Auto." fills (`FUN_0042a828`) and the parts the eleven count for
+/// (`FUN_006a18c2`): [`crate::autolineup::line_up_computer`], into the
+/// team record the club object is loaded from. So every computer side —
+/// a foreign club of a European tie, whose record the week's line-up
+/// (`FUN_0042a76e`, the played nations only) never touches, or a club
+/// whose listed man has left since — stands the co-trainer's eleven the
+/// walk copies into the side's +0x8e. A national side takes its call-ups
+/// first (`FUN_0062fdc9`, `FUN_0062f5d9` on club 200), which wait with
+/// the national lists; and a human side, before day 42 unless the start
+/// option `DAT_00b5d152` is 5 or 12 (`FUN_006ef262`), is lined up the
+/// same way without his turn (`FUN_0042a7da`), else his turn opens
+/// (events 0xb7, 0xc0) — the replica stands his saved eleven. The
+/// co-trainer draws nothing.
+pub fn line_up_row(row: &[Match], records: &mut Records, data: &crate::data::Data) {
+    for m in row {
+        for which in 0..2 {
+            let (country, number) = (m.ids[which * 2], m.ids[which * 2 + 1]);
+            if is_national(number) {
+                continue;
+            }
+            crate::autolineup::line_up_computer(records, data, country, number);
         }
     }
 }
@@ -1600,7 +1634,8 @@ fn shot_band(kind: u8) -> i32 {
 /// 30/40/30 — or 35/30/35 for the attacking style — bent a third of the way
 /// by each line's deviation, thence `pow(x/100, 0.33)` for the scorer's
 /// list and `sqrt(x/100)` for the assist's). Those line shorts wait with
-/// `FUN_0078b26c`'s squad sums, and with them the factors fall away: both
+/// their writer — not `FUN_0078b26c`, which reckons the crowd — and with
+/// them the factors fall away: both
 /// lists carry the same whole-number weights. The scorer is drawn below the
 /// first list's total — first cumulative above the draw, the head when
 /// none; the assist below the second list's, the scorer lifted out with the
@@ -1728,25 +1763,28 @@ pub fn own_goal_mark(m: &Match, id: u16) -> bool {
     false
 }
 
-/// The side's team record's saved formation, when it stands complete:
-/// the manager's eleven at the record's +0x148 and his bench at +0x15e
+/// The side's team record's saved formation, when it lists anybody: the
+/// manager's — or the co-trainer's, [`line_up_row`] — eleven at the
+/// record's +0x148 and the bench at +0x15e
 /// (`Player ids of the eleven and the bench, 0 an empty place`). The
 /// save's club block carries the same eleven at +0xa9a: the loader
 /// `FUN_0063b75a` copies the 0xaa bytes there from the record
 /// (134811ff), the save-back copies them home (134954), and the walk
 /// copies the eleven into the match's side block at +0x8e
-/// (`memcpy(side + 0x8e, club + 0xa9a, 0x16)`, _global.c 221842). A
-/// side whose record lists an incomplete eleven — a computer club or a
-/// national selection, which the pre-match squads in `FUN_0078b26c`
-/// stand in the original's way — stands none.
+/// (`memcpy(side + 0x8e, club + 0xa9a, 0x16)`, _global.c 221842), an
+/// empty place copied as nought — a squad too short for the co-trainer's
+/// system, or a human's listed man gone since, leaves the side a man
+/// down there. A record listing nobody — a club the row's line-up did
+/// not reach — stands none.
 fn saved_formation(team: &crate::records::Team) -> Option<([u16; 11], [u16; 7])> {
-    (team.lineup().iter().all(|&id| id != 0)).then(|| (team.lineup(), team.bench()))
+    (team.lineup().iter().any(|&id| id != 0)).then(|| (team.lineup(), team.bench()))
 }
 
-/// The side's eleven on the pitch: the manager's saved eleven when his
-/// record stands one, the replica's strongest otherwise (the stand-in
-/// in `crate::matches::eleven` for the pre-match squads the replica
-/// does not run). The original keeps the formation's place order; the
+/// The side's eleven on the pitch: the eleven its record lists, the
+/// manager's or the co-trainer's of [`line_up_row`], an empty place
+/// nought; the replica's strongest when it lists nobody (the stand-in
+/// in `crate::matches::eleven`, for a walk run without the row's
+/// line-up). The original keeps the formation's place order; the
 /// list's first short is the keeper, and the taker fallbacks read
 /// exactly that (`+0xa9a`'s first place). The line-up screen's
 /// substitution helpers — they replace an injured or suspended listed
@@ -1766,7 +1804,7 @@ fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
 
 /// The side's men on the pitch, as records: its eleven in the
 /// formation's place order (or the stand-in's strongest), each looked
-/// up in its record.
+/// up in its record, an empty place left out.
 fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
     pitch_eleven(m, which, records)
         .into_iter()
@@ -1775,13 +1813,12 @@ fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player
 }
 
 /// Enter the side's men in the record's entered slots (the original's
-/// +0xfa, filled from the line-up at runtime +0x8e — the saved eleven —
-/// or by the pre-match squads in `FUN_0078b26c`, which work on club
-/// objects the replica has not). The original enters eighteen men,
-/// eleven on the pitch and seven at the reserve's place: the saved
-/// formation's eleven and bench, the record's +0x148 and +0x15e, an
-/// empty place nought. Without a saved formation the replica's
-/// stand-in enters its eleven and leaves the rest nought. The slots are
+/// +0xfa, filled from the line-up at runtime +0x8e — the saved eleven,
+/// the manager's or the co-trainer's of [`line_up_row`]). The original
+/// enters eighteen men, eleven on the pitch and seven at the reserve's
+/// place: the saved formation's eleven and bench, the record's +0x148
+/// and +0x15e, an empty place nought. A record listing nobody has the
+/// replica's stand-in enter its eleven and the rest nought. The slots are
 /// where `book_event` hangs its ledger bytes, and the halftime dialog
 /// walks them; the fill draws nothing.
 fn fill_entries(m: &mut Match, which: usize, records: &Records) {
@@ -3941,6 +3978,41 @@ mod tests {
         assert!(!run, "the penalty minute is the walk's last word");
         assert_ne!(m.goals[0], m.goals[1], "{:?}", m.goals);
         assert_ne!(r, Random::new(7), "the minute rolled the kicks' dice");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_row_lines_up_its_computer_sides_before_the_minutes() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&game).unwrap();
+        // a German computer club whose listed second man has gone since
+        // the week's line-up, against a foreign club whose record lists
+        // nobody — the week's line-up reaches the played nations only
+        let foreign = (0..8u16)
+            .find(|&t| records.team(13, t).is_some_and(|x| x.lineup() == [0; 11] && x.players().len() >= 11))
+            .expect("a foreign club listing nobody");
+        let mut m = fixture();
+        m.ids = [14, 16, 13, foreign];
+        assert_eq!(records.team(14, 16).unwrap().humans()[0], 0);
+        assert_eq!(saved_eleven(&m, 0, &records)[1], 0, "the hole stands in the record");
+        let mut human = fixture();
+        human.ids = [0, 0, 0, 0];
+        let saved = records.team(0, 0).unwrap().lineup();
+        line_up_row(&[m, human], &mut records, &data);
+        // both stand the co-trainer's full eleven out of their squads,
+        // the walk enters it, and the human's saved eleven stays his
+        for which in 0..2 {
+            let team = records.team(m.ids[which * 2], m.ids[which * 2 + 1]).unwrap();
+            let eleven = saved_eleven(&m, which, &records);
+            assert_eq!(eleven, team.lineup().to_vec());
+            assert!(eleven.iter().all(|&id| id != 0 && team.players().contains(&id)), "{eleven:?}");
+        }
+        assert_eq!(records.team(0, 0).unwrap().lineup(), saved);
+        let lineup = records.team(13, foreign).unwrap().lineup();
+        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), None, test_day(), &mut Random::new(5));
+        assert_eq!(m.sides[1].entries[..11], lineup[..]);
     }
 
     #[test]
