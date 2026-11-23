@@ -22,11 +22,24 @@
 //! Posted here: the training day's events ([`crate::training_day`]) whose
 //! texts the original builds of its texts alone or with the names of the
 //! men concerned, the two-part ones with their second part in tow
-//! ([`Fill::Headbutt`], [`Fill::Bomb`], [`Fill::NamedThen`]). Not here:
-//! the events with values beside the text (`FUN_005f1f42`, window
-//! `CEreignis1Wert`: player events 10 to 14 and 16), the training's
-//! ability and trait events (105 to 107) and the events of the day's news
-//! and the rest of the game.
+//! ([`Fill::Headbutt`], [`Fill::Bomb`], [`Fill::NamedThen`]), the day's
+//! news ([`crate::news`]: its appointments and their loan news, its
+//! doping news) and the youth week, which build their texts the same way.
+//! Not here: the events with values beside the text (`FUN_005f1f42`,
+//! window `CEreignis1Wert`: player events 10 to 14 and 16), the
+//! training's ability and trait events (105 to 107), the session's own
+//! injury and luck news (`FUN_0074a1ec`: text 0x396 with the next match
+//! or 0x714, then 0x397 with the injury's name, and 0x332 to 0x33a), and
+//! every happening the replica does not run — the money news
+//! (`FUN_005e6153`, event 0x62) with the news of a paid youth salary
+//! (`FUN_005e9cfb` at text 0x36b), the human manager's own news
+//! (`FUN_005f0133`, event 0x5d, with the media part `FUN_005f3baf` and
+//! the legal part `FUN_005e9ed1`), the ground and spectator news (event
+//! 0x57), the fine for fan violence (event 0x5e, text 0x709), the moved
+//! club's contract news (`FUN_00716522`), the appointment kinds nothing
+//! books (`FUN_006a7cfe`, `FUN_006a7f52`), the trainer's complaint over
+//! his load (`FUN_0074b5d7` in the trainer's talk) and the start
+//! dialog's menu news.
 
 use a3_files::saq::EventTexts;
 
