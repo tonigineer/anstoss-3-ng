@@ -650,22 +650,23 @@ pub fn new_hobby(
 /// the day's news goes on to its later rolls. A man with one meets his
 /// hobby's day ([`hobby_day`]), which returns 1 in its low half on every
 /// way out, so the news took place whatever it told. `planned` whether
-/// the club's plan holds anything but free today. Whether the news took
-/// place.
+/// the club's plan holds anything but free today. `questions` takes the
+/// question over a fine that food's case 4 asks the manager
+/// ([`crate::fine_question`]). Whether the news took place.
 pub fn about_a_player(
     records: &mut Records,
     club: (u16, u16),
     today: i32,
     planned: bool,
     league: &crate::league::LeagueTables,
-    posted: &mut Vec<Posted>,
+    (posted, questions): (&mut Vec<Posted>, &mut Vec<crate::fine_question::Question>),
     random: &mut Random,
 ) -> bool {
     let Some(id) = drawn_man(records, club, random) else { return false };
     if id > LAST_REAL_ID || records.player(id).is_none_or(|p| p.hobby() == 0) {
         return false;
     }
-    hobby_day(records, club, id, today, planned, league, posted, random);
+    hobby_day(records, club, id, today, planned, league, (posted, questions), random);
     true
 }
 
@@ -716,9 +717,9 @@ pub fn about_a_player(
 /// Food, for a man whose condition shows under 60: from 28 December to
 /// 13 January overweight (0x4b4); else one of six — overweight (0x4b2,
 /// 0x4b6, 0x4b7), slim again (0x4b3), overweight with an offence of
-/// level 1 and the manager asked over a fine (0x4b8, `FUN_005f29bc`'s
-/// question, not built: nothing posted), or a stomach upset, two days
-/// (0x4b9). Motorbikes, for a man over 17, one of six: a fall (0x4bf) or
+/// level 1 and the manager asked over a fine (0x4b8 and
+/// [`crate::fine_question`]'s three rows, nothing posted), or a stomach
+/// upset, two days (0x4b9). Motorbikes, for a man over 17, one of six: a fall (0x4bf) or
 /// a crash (0x4c0), out the kind's days; or, while he has his licence,
 /// two months without it and five less content with the press (0x4c1,
 /// told with values; headline 0x4c2). Sports cars, one of six: while he
@@ -737,7 +738,7 @@ fn hobby_day(
     today: i32,
     planned: bool,
     league: &crate::league::LeagueTables,
-    posted: &mut Vec<Posted>,
+    (posted, questions): (&mut Vec<Posted>, &mut Vec<crate::fine_question::Question>),
     random: &mut Random,
 ) {
     let Some(p) = records.player(id) else { return };
@@ -987,6 +988,10 @@ fn hobby_day(
                         if let Some(p) = records.player_mut(id) {
                             crate::discipline::note_offence(p, GLUTTONY_OFFENCE);
                         }
+                        // The manager of the club is asked what to do with
+                        // him (`FUN_005f29bc` kind 1, event 0xfd posted
+                        // and waited for); the window waits for a row.
+                        questions.push(crate::fine_question::Question { club, player: id });
                         return;
                     }
                     _ => {
@@ -7762,7 +7767,7 @@ mod tests {
         // Without a hobby category 19 goes on, one draw taken.
         let s = seed(&|r| r.below(count) == 3);
         let mut random = Random::new(s);
-        assert!(!about_a_player(&mut r, club, 63, false, &league, &mut posted, &mut random));
+        assert!(!about_a_player(&mut r, club, 63, false, &league, (&mut posted, &mut Vec::new()), &mut random));
         assert!(posted.is_empty());
         let mut expected = Random::new(s);
         expected.below(count);
@@ -7792,7 +7797,7 @@ mod tests {
         let mut expected = Random::new(s);
         expected.below(count);
         assert!(random == expected);
-        assert!(about_a_player(&mut r, club, 63, false, &league, &mut Vec::new(), &mut Random::new(s)));
+        assert!(about_a_player(&mut r, club, 63, false, &league, (&mut Vec::new(), &mut Vec::new()), &mut Random::new(s)));
     }
 
     /// Category 19 on A's human squad, the drawn man given a hobby: the
@@ -7831,7 +7836,7 @@ mod tests {
             }
             let mut posted = Vec::new();
             let mut random = Random::new(seed(n, k));
-            assert!(about_a_player(&mut r, club, day, false, &league, &mut posted, &mut random));
+            assert!(about_a_player(&mut r, club, day, false, &league, (&mut posted, &mut Vec::new()), &mut random));
             (r, posted, random)
         };
         let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
@@ -7917,7 +7922,7 @@ mod tests {
             r.player_mut(man).unwrap().set_hobby(hobby);
             let mut posted = Vec::new();
             let mut random = Random::new(seed(draws));
-            assert!(about_a_player(r, club, day, false, &league, &mut posted, &mut random));
+            assert!(about_a_player(r, club, day, false, &league, (&mut posted, &mut Vec::new()), &mut random));
             (posted, random)
         };
         let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];
@@ -8041,7 +8046,7 @@ mod tests {
             r.player_mut(man).unwrap().set_hobby(hobby);
             let mut posted = Vec::new();
             let mut random = Random::new(seed(draws));
-            assert!(about_a_player(r, club, today, false, &league, &mut posted, &mut random));
+            assert!(about_a_player(r, club, today, false, &league, (&mut posted, &mut Vec::new()), &mut random));
             (posted, random)
         };
         let told = |text: u16| vec![Posted { club, code: PRIVATE_NEWS, text, fill: Fill::NumberedOne(man) }];

@@ -2,7 +2,8 @@
 //! in the RE repo): the world map of the camps' places (dialog 488,
 //! `CDiWeltkarte`), the place confirmed with its pictures and cost (285,
 //! `CTrainingslagerAuswahl`), and for a group of places sharing one point
-//! the choice among them (50, `CTrainingslagerSubAuswahl`). The map closes
+//! the choice among them, asked over dialog 50 shown by
+//! [`super::event_question`] (`CTrainingslagerSubAuswahl`). The map closes
 //! with the place chosen, from 1, which the calendar books.
 
 use std::collections::HashMap;
@@ -57,14 +58,6 @@ const WEEKDAYS: u16 = 1779;
 const VODKA: u16 = 1404;
 const WATER: u16 = 1403;
 const SPARKLING: u16 = 1402;
-
-/// The group's choice: the question, the ball, the hidden picture, the
-/// three rows; OK stays hidden, so only a row ends it.
-const QUESTION: u16 = 1445;
-const QUESTION_TEXT: u16 = 4587;
-const GROUP_BALL: u16 = 1336;
-const GROUP_PICTURE: u16 = 1450;
-const ROWS: u16 = 1447;
 
 /// What the map waits for: the confirmation of a place, or the choice
 /// among a group's.
@@ -263,64 +256,6 @@ impl Screen for CampConfirm {
     }
 }
 
-#[derive(Default)]
-pub struct CampGroup;
-
-impl Screen for CampGroup {
-    fn ids(&self) -> &[u16] {
-        &[CAMP_GROUP]
-    }
-
-    /// `FUN_005a2bf8`: the title with the manager's name, the question, a
-    /// bouncing ball, and a row for each of the group's other places.
-    fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
-        let (game, dialog) = (cx.game, cx.dialog);
-        let Args::CampGroup { places, count } = args else { return };
-        let name = cx.state.season.as_ref().and_then(|s| s.manager()).map_or_else(String::new, |m| {
-            format!("{} {}", m.first_name, m.last_name)
-        });
-        set(view, dialog, CAPTION_ID, format!("{} {name}", dialog.title));
-        set(view, dialog, QUESTION, game.text(QUESTION_TEXT).to_owned());
-        if let Some(ball) = control(dialog, GROUP_BALL).and_then(|b| view.anim_mut(b)) {
-            ball.frames = (1745u16..=1753).chain((1746..=1752).rev()).collect();
-            ball.playing = true;
-        }
-        for id in [GROUP_PICTURE, OK] {
-            if let Some(c) = control(dialog, id) {
-                view.controls[c].hidden = true;
-            }
-        }
-        let tables = &game.rules.year;
-        if let Some(rows) = control(dialog, ROWS).and_then(|c| view.options_mut(c)) {
-            // Answers, not a choice: none stands chosen, the one pointed
-            // at lights up.
-            rows.actions = true;
-            rows.chosen = crate::controls::options::NONE;
-            let count = usize::from(count);
-            for (row, &place) in places.iter().enumerate() {
-                if let Some(label) = rows.labels.get_mut(row) {
-                    let name = tables.places.get(usize::from(place)).map_or(0, |p| p.name);
-                    *label = if row < count { game.text(name).to_owned() } else { String::new() };
-                }
-                if let Some(off) = rows.off.get_mut(row) {
-                    *off = row >= count;
-                }
-            }
-        }
-        mark_inert(view, dialog, |_| true);
-    }
-
-    /// A row ends it with its place (`OnClicked_IDC_EREIGNISFRAGE_ANTW1`).
-    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, _: bool) -> Outcome {
-        match target {
-            Target::Option { control: c, item } if cx.dialog.controls[c].id == Some(ROWS) => {
-                Outcome::Close(Reply::Choice(item))
-            }
-            _ => Outcome::Stay,
-        }
-    }
-}
-
 /// The season's year (`DAT_00b5cbca`) and its lottery (`DAT_00b5d174`).
 fn season_year(cx: &Cx) -> (i32, u16) {
     cx.state.records.as_ref().map_or((0, 1), |r| {
@@ -332,7 +267,7 @@ fn season_year(cx: &Cx) -> (i32, u16) {
 /// with a point, whether open or not (`FUN_005ccf5a` makes only the open
 /// ones; the others stay hidden here).
 pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
-    for id in [WORLD_MAP, CAMP_CONFIRM, CAMP_GROUP] {
+    for id in [WORLD_MAP, CAMP_CONFIRM] {
         let Some(dialog) = dialogs.get_mut(&id) else { continue };
         let caption = super::caption(dialog.frame, CAPTION_ID, dialog.title.clone());
         dialog.controls.insert(0, caption);

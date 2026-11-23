@@ -646,9 +646,10 @@ pub fn refresh_individual(records: &Records, clubs: &mut BTreeMap<(usize, usize)
 /// the team's mood does to its squad, `nation_kinds` the nations' kinds
 /// a far-from-home tale is weighed by
 /// ([`crate::world::World::nation_kinds`]), `reported` the humans' doping
-/// reports and `controls` where a reported club's positive control goes
-/// (event 0xcb). (The town's share in the stadium's building after a
-/// youth's quiet week is not built.)
+/// reports, `controls` where a reported club's positive control goes
+/// (event 0xcb) and `questions` where the question over a fine goes
+/// ([`crate::fine_question`], food's case 4). (The town's share in the
+/// stadium's building after a youth's quiet week is not built.)
 pub fn news(
     records: &mut Records,
     today: i32,
@@ -659,7 +660,7 @@ pub fn news(
     mood: &MoodTables,
     nation_kinds: &[u8],
     plan: &dyn Fn((u16, u16)) -> [u8; training::SESSIONS],
-    (reported, controls): (&mut Reports, &mut Vec<crate::doping_control::Control>),
+    (reported, controls, questions): (&mut Reports, &mut Vec<crate::doping_control::Control>, &mut Vec<crate::fine_question::Question>),
     random: &mut Random,
 ) -> Vec<Posted> {
     let mut posted = Vec::new();
@@ -712,7 +713,7 @@ pub fn news(
                 crate::news::new_hobby(records, club, tables, &mut posted, random);
                 true
             }
-            19 => crate::news::about_a_player(records, club, today, planned, league, &mut posted, random),
+            19 => crate::news::about_a_player(records, club, today, planned, league, (&mut posted, questions), random),
             20 => crate::news::press_on_a_player(records, club, league, random),
             21 => crate::news::revolt(records, club, today, units, league, (recent, &mut posted), random),
             22 => crate::news::first_months(records, club, &mut posted, random),

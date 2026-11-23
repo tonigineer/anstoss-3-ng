@@ -254,6 +254,11 @@ pub mod dialogs {
     /// The association's court on its planner day, `CGerichtDialog`
     /// (`IDD_GERICHT`).
     pub const COURT: u16 = 89;
+    /// The question over a fine the day's news asks its manager,
+    /// `CEreignisFrage` (event 0xfd posted and waited for,
+    /// `FUN_00650669`); the camp group's choice shares this window
+    /// (dialog 50).
+    pub const EVENT_QUESTION: u16 = 50;
     /// The season's new goal at the turn
     /// (`IDD_VERTRAGSKONDITIONEN_SAISONWECHSEL`, `FUN_005bebe0`'s 0x17b).
     pub const SEASON_GOAL: u16 = 379;
@@ -473,6 +478,10 @@ pub enum Args {
     Farewells(crate::rollover::Farewells),
     /// A case the association's court heard (`DAT_00a3b44c`).
     Court(crate::court::Case),
+    /// The question over a fine the day's news left standing: the man
+    /// seen at it and his club (`FUN_005f29bc` kind 1, `CEreignisFrage`);
+    /// the reply names the row chosen, the dialog's OK the first.
+    EventQuestion(crate::fine_question::Question),
     /// The new contract terms of the season's turn
     /// (`CVertragskonditionenNeu`): its flag, set on a promotion and
     /// clear on a relegation.
@@ -1396,6 +1405,7 @@ impl Cycle {
                 let mut cups = None;
                 let mut news = Vec::new();
                 let mut news_controls = Vec::new();
+                let mut fine_questions = Vec::new();
                 {
                     let mut guard = self.state();
                     let state = &mut *guard;
@@ -1429,7 +1439,7 @@ impl Cycle {
                                 &self.data.rules.discipline.mood,
                                 &self.data.world.nation_kinds,
                                 &|club| crate::training_day::units_today(&season.clubs, &self.data.world, club, today),
-                                (&mut season.reported, &mut news_controls),
+                                (&mut season.reported, &mut news_controls, &mut fine_questions),
                                 &mut season.random,
                             );
                         }
@@ -1536,6 +1546,19 @@ impl Cycle {
                 // `FUN_005db227`), posted in the day's news.
                 for control in news_controls {
                     self.ask(Request::with(DOPING_CONTROL, Args::Doping(control)))?;
+                }
+                // A man seen eating too much (the food news' case 4,
+                // `FUN_005f29bc` kind 1): the window of `CEreignisFrage`
+                // waits for the club's manager and his row; its OK leaves
+                // the answer at nought, the first row.
+                for q in fine_questions {
+                    let row = match self.ask(Request::with(EVENT_QUESTION, Args::EventQuestion(q)))? {
+                        Reply::Choice(row) => row,
+                        _ => 0,
+                    };
+                    if let Some(records) = self.state().records.as_mut() {
+                        crate::fine_question::answer(records, &q, row);
+                    }
                 }
                 // The matches' dialogs come up as `FUN_00710839` posts
                 // them, on the day they are played, before the youth

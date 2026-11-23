@@ -21,6 +21,7 @@ pub mod doping_report;
 pub mod duties;
 pub mod european_ranking;
 pub mod event_text;
+pub mod event_question;
 pub mod development;
 pub mod farewells;
 pub mod finances;
@@ -326,7 +327,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(training::career::PlayerCareer::default()),
         Box::new(camp::WorldMap::default()),
         Box::new(camp::CampConfirm),
-        Box::new(camp::CampGroup),
+        Box::new(event_question::EventQuestion),
         Box::new(friendly::FriendlyChoice::default()),
         Box::new(friendly::FriendlyRequest),
         Box::new(tournament::TournamentChoice::default()),
@@ -371,6 +372,7 @@ pub fn compose(game: &mut Game) {
     training::rooms::compose(&mut game.dialogs);
     training::career::compose(&mut game.dialogs);
     camp::compose(&mut game.dialogs, &game.data.rules);
+    event_question::compose(&mut game.dialogs);
     friendly::compose(&mut game.dialogs);
     tournament::compose(&mut game.dialogs);
     donations::compose(&mut game.dialogs);
