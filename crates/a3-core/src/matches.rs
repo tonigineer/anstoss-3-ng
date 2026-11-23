@@ -1452,8 +1452,10 @@ fn settle(
     {
         // The visiting fans: a part of the away club's own plan (save A
         // reads 3926 with the away club planning 34000), never more than
-        // came to the ground. The original draws them inside the match
-        // (the match record's +0x54); the replica draws them over the plan.
+        // came to the ground. The original reckons them in the walk's
+        // third loop (`FUN_0078b26c`, `sim::crowd_row`, the match
+        // record's +0x54 once the stadium has taken them); the replica
+        // draws them over the plan.
         let plan = records
             .team(nation, away)
             .map_or(0, |a| a.get::<i32>(PLAN_ATTENDANCE + CLUB_TO_TEAM));
@@ -2528,6 +2530,9 @@ mod listing_tests {
             walked.iter().flat_map(|m| [m.goals[0] as u8, m.goals[1] as u8, m.half[0], m.half[1]]).collect();
         assert!(results.iter().any(|&g| g > 0), "the minutes scored: {results:?}");
         assert!(walked.iter().all(|m| m.half[0] as i16 <= m.goals[0] && m.half[1] as i16 <= m.goals[1]));
+        // the walk's crowd leaned every match by its fans, mostly the home side's way
+        assert!(walked.iter().all(|m| m.fans[0] > 0 && m.form == sim::crowd_lean(m.fans[0], m.fans[1])));
+        assert!(walked.iter().any(|m| m.form < 0), "{:?}", walked.iter().map(|m| m.fans).collect::<Vec<_>>());
         settle(&mut records, nation, level, day, &data.rules.individual, Some(walked), &mut random, &mut Vec::new());
         let name = League::block_name(&records, nation, level).unwrap();
         let block = records.block(&name).unwrap();

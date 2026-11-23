@@ -92,6 +92,9 @@ pub struct PresaleTables {
     /// it stands (`DAT_0089e0b8`, `DAT_008ace90`).
     indexed: Vec<u8>,
     index_at: Vec<u8>,
+    /// The part of a league match's demand that comes, in percent, by the
+    /// country's index (`0x8ad324`).
+    on_the_day: Vec<i16>,
 }
 
 impl PresaleTables {
@@ -117,6 +120,7 @@ impl PresaleTables {
             pull_own: exe.bytes(0x89ddd8, 128)?.to_vec(),
             indexed: exe.bytes(0x89e0b8, 128)?.to_vec(),
             index_at: exe.bytes(0x8ace90, 256)?.to_vec(),
+            on_the_day: i16s(0x8ad324, 8)?,
         })
     }
 
@@ -461,6 +465,13 @@ fn standing(home: &Side, away: &Side, h: &mut f32, a: &mut f32, t: &PresaleTable
 /// home fans over the four classes by their prices, the away fans on the
 /// side and the standing places.
 fn demand(home: &Side, away: &Side, prices: [i16; 4], t: &PresaleTables) -> i32 {
+    let (own, guests) = demand_halves(home, away, prices, t);
+    own + guests
+}
+
+/// [`demand`]'s two halves apart, as `FUN_0078e5e6` hands them back: the
+/// home fans, the visitors.
+fn demand_halves(home: &Side, away: &Side, prices: [i16; 4], t: &PresaleTables) -> (i32, i32) {
     let f = distance(home, away);
     let row = |class: usize| t.demand.get(class).copied().unwrap_or([0; 4]);
     let (lh, la) = (fan_class(home, away, t), fan_class(away, home, t));
@@ -496,7 +507,69 @@ fn demand(home: &Side, away: &Side, prices: [i16; 4], t: &PresaleTables) -> i32 
     let own = ftol(hh * f64::from(boxes) + hh * f64::from(side) + hh * f64::from(behind) + hh * f64::from(standing)) / 100;
     let aa = f64::from(a);
     let guests = ftol(aa * 4.0 * f64::from(w_side) / 5.0 + aa * f64::from(w_stand) / 5.0);
-    own + guests
+    (own, guests)
+}
+
+/// The crowd of a league match on its day, its home fans and its
+/// visitors (`FUN_0078b26c`'s branch for a fixture whose kind's top bits
+/// and +0x24 are nought). The record the pair sells on today
+/// (`FUN_0077c9c2`/`FUN_0077bd10`: an unopened one in its order, an open
+/// one either way round) lends its prices and its sold tickets; without
+/// one the home club's league prices go by the matchday's mark
+/// (`FUN_0069e3d1`, `DAT_008acc2c`) and nothing is sold. The demand's
+/// halves (`FUN_0078e5e6`) are cut by the day's part of the home
+/// country's index (`0x8ad324`); falling short of the sold tickets and
+/// the season tickets (club +0x22c), the sold are shared by the halves'
+/// weights and the season tickets join the home fans. Nothing is drawn.
+pub(crate) fn league_crowd(
+    records: &Records,
+    home: (u8, i16),
+    away: (u8, i16),
+    matchday: i32,
+    today: i16,
+    t: &PresaleTables,
+) -> Option<(i32, i32)> {
+    let (h, a) = (Side::of(records, home.0, home.1)?, Side::of(records, away.0, away.1)?);
+    let sale = records.block(SALES_AT).and_then(|block| {
+        (0..SALES).find_map(|k| {
+            let r = block.get(k * SALE..(k + 1) * SALE)?;
+            let (first, second, day) = ((r[0], word(r, 2)), (r[4], word(r, 6)), word(r, SALE_DAY));
+            let found = if word(r, SALE_OPEN) == 0 {
+                first == home && second == away && day == today
+            } else {
+                day == today && ((first == home && second == away) || (first == away && second == home))
+            };
+            if found { read(block, k) } else { None }
+        })
+    });
+    let (prices, sold) = match &sale {
+        Some(sale) => (sale.prices, sale.sold),
+        None => {
+            let mark = crate::tickets::matchday_mark(h.team, matchday);
+            let factor = t.mark_factors.get(mark).copied().unwrap_or(1.0);
+            (h.prices().map(|p| ftol(f64::from(p) * f64::from(factor)) as i16), 0)
+        }
+    };
+    let (mut fans, mut guests) = demand_halves(&h, &a, prices, t);
+    let index = country_index(records, h.country, t);
+    let part = i32::from(t.on_the_day.get(index).copied().unwrap_or(0));
+    fans = fans.wrapping_mul(part) / 100;
+    guests = guests.wrapping_mul(part) / 100;
+    let season = h.season_tickets();
+    if fans.wrapping_add(guests) < sold.wrapping_add(season) {
+        if guests == 0 {
+            fans = sold.wrapping_add(season);
+        } else if fans == 0 {
+            fans = season;
+            guests = sold;
+        } else {
+            let weight = fans as f32 / (guests.wrapping_add(fans)) as f32;
+            fans = ftol(f64::from(sold) * f64::from(weight));
+            guests = sold.wrapping_sub(fans);
+            fans = fans.wrapping_add(season);
+        }
+    }
+    Some((fans, guests))
 }
 
 /// A side's demand at the ground: the home row when the side's club

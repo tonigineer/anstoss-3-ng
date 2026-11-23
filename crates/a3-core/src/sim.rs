@@ -369,7 +369,8 @@ pub struct Match {
     /// on.
     pub advantage: i16,
     /// +0x446: a percent on the leading side's attack and hold, see
-    /// `minute_play`.
+    /// `minute_play` — the crowd's lean the walk's third loop leaves
+    /// ([`crowd_lean`]), below nought for the home side.
     pub form: i16,
     /// +0x448: the minute this match's half ends at; the walk's threshold,
     /// floored at 45, 90 and 120 by the half.
@@ -410,6 +411,10 @@ pub struct Match {
     /// replica keeps no live men, so their ids wait here for the
     /// settlement's test), none 0.
     pub picked: [[u16; 2]; 2],
+    /// The crowd the walk's third loop reckons for a league fixture
+    /// (`FUN_0078b26c`'s locals, before the stadium takes them): the home
+    /// fans and the visitors.
+    pub fans: [i32; 2],
 }
 
 /// The day's clock, `DAT_01bad044` and its state globals: minute (+0xe),
@@ -546,9 +551,9 @@ pub fn play_matches(
 /// touch before the hour — and no referee, the record's 0xffff. Nothing here
 /// draws a random number: the league day's draw stream starts at its
 /// first minute, as the week's trace shows. The walk's third loop — the
-/// national call-ups, the crowd `FUN_0078b26c` reckons (the gate, its home
-/// and away fans at +0x50/+0x54 settling the crowd byte at +0x58), and the
-/// referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by `FUN_0063161e`
+/// national call-ups, the crowd `FUN_0078b26c` reckons ([`crowd_row`]: the
+/// lean; the gate, its home and away fans at +0x50/+0x54 settling the
+/// crowd byte at +0x58, wait), and the referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by `FUN_0063161e`
 /// into +0x44a..+0x458 for a national tie — works on the clubs and waits
 /// there; its fourth, the sides' line-ups, is [`line_up_row`].
 pub fn pre_match(row: &mut [Match]) {
@@ -580,6 +585,47 @@ pub fn pre_match(row: &mut [Match]) {
             // f_084 flags), and the referee drawn out of the two clubs
             // fills the slot, the added byte and +0x44a..+0x454
         }
+    }
+}
+
+/// The walk's third loop's crowd for each league fixture of the row
+/// (`FUN_0078b26c` with the match, its home and its away club: a kind
+/// whose top bits are nought), [`crate::presale::league_crowd`] on the
+/// day, and the lean it leaves at +0x446 ([`crowd_lean`]). The cups' and
+/// the friendlies' branches wait with their rows.
+pub fn crowd_row(row: &mut [Match], records: &Records, data: &crate::data::Data) {
+    let today = records.globals.day() as i16;
+    for m in row.iter_mut() {
+        if m.kind & 0x7f00_0000 != 0 || is_national(m.ids[1]) || is_national(m.ids[3]) {
+            continue;
+        }
+        let side = |which: usize| (m.ids[which * 2] as u8, m.ids[which * 2 + 1] as i16);
+        let matchday = (m.kind & 0x3f) as i32 + 1;
+        if let Some((home, away)) =
+            crate::presale::league_crowd(records, side(0), side(1), matchday, today, &data.presale)
+        {
+            m.fans = [home, away];
+            m.form = crowd_lean(home, away);
+        }
+    }
+}
+
+/// The crowd's lean (`FUN_0078b26c`'s tail): the more fans' side against
+/// the fewer, twice the more over the fewer under a root, times twice the
+/// whole crowd, 40000 on, a sixty-thousandth of it — below nought for
+/// the home side, at most three either way; an even crowd leans to the
+/// visitors.
+pub fn crowd_lean(home: i32, away: i32) -> i16 {
+    let ahead = |more: i32, fewer: i32| {
+        let more = f64::from(more) + f64::from(more);
+        if fewer < 1 { more.sqrt() } else { (more / f64::from(fewer)).sqrt() }
+    };
+    let whole = f64::from(home.wrapping_add(away));
+    let lean = |root: f64, sign: f64| ((whole + whole) * root + 40000.0) * sign / 6_000_000.0;
+    if away < home {
+        (lean(ahead(home, away), -100.0) as i32 as i16).max(-3)
+    } else {
+        (lean(ahead(away, home), 100.0) as i32 as i16).min(3)
     }
 }
 
@@ -1052,6 +1098,7 @@ pub fn ready_row(row: &mut [Match], records: &mut Records, random: &mut Random) 
 /// ([`ready_row`]).
 pub fn pre_match_walk(row: &mut [Match], records: &mut Records, data: &crate::data::Data, random: &mut Random) {
     pre_match(row);
+    crowd_row(row, records, data);
     line_up_row(row, records, data);
     kick_off_row(row, records, data, random);
     ready_row(row, records, random);
@@ -3449,6 +3496,20 @@ mod tests {
         m.sides[0].tilt = 0; // all the way forward
         minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated, [110, 451, 330, 440, 418]);
+    }
+
+    #[test]
+    fn the_bigger_crowd_leans_the_match_its_way() {
+        // home fans ahead: below nought, at most three
+        assert_eq!(crowd_lean(20000, 2000), -3);
+        assert_eq!(crowd_lean(25477, 21018), -3);
+        assert_eq!(crowd_lean(12000, 5000), -1);
+        assert_eq!(crowd_lean(10000, 3000), -1);
+        // a small crowd leans nowhere, an even one to the visitors
+        assert_eq!(crowd_lean(2000, 1000), 0);
+        assert_eq!(crowd_lean(0, 0), 0);
+        assert_eq!(crowd_lean(10000, 10000), 1);
+        assert_eq!(crowd_lean(1000, 20000), 3);
     }
 
     #[test]
@@ -5937,6 +5998,7 @@ mod tests {
                 m.home_id = m.ids[1];
             }
             pre_match(&mut row);
+            crowd_row(&mut row, &records, &data);
             line_up_row(&row, &mut records, &data);
             let mut ours = original.clone();
             kick_off_row(&mut row, &mut records, &data, &mut ours);
