@@ -3878,6 +3878,7 @@ mod tests {
     /// fifth gives a computer club the co-trainer's tactics, three throws,
     /// and lays them over the side with its three talks.
     #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_walk_enters_the_men_and_ends_the_first_half() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
@@ -5451,11 +5452,9 @@ mod tests {
     }
 
     #[test]
-    fn fouls_book_yellow_and_red_cards() {
-        use a3_files::an3::Save;
-        // the kind tables walk their throw: entry nought is empty, so the
-        // plain table's first eight throws name kind one; the other draw's
-        // six land on 26..31
+    fn the_foul_kind_tables_walk_their_throw() {
+        // entry nought is empty, so the plain table's first eight throws
+        // name kind one; the other draw's six land on 26..31
         assert_eq!(foul_kind(&FOULS, 0, 1), 1);
         assert_eq!(foul_kind(&FOULS, 8, 1), 2);
         assert_eq!(foul_kind(&FOULS, 11, 1), 4);
@@ -5463,6 +5462,12 @@ mod tests {
         assert_eq!(foul_kind(&FOULS_OTHER, 0, 0x20), 26);
         assert_eq!(foul_kind(&FOULS_OTHER, 5, 0x20), 31);
         assert_eq!(foul_kind(&FOULS_TRAIT, 27, 1), 1, "a throw past the table names one");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn fouls_book_yellow_and_red_cards() {
+        use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         let mut m = fixture();
@@ -5546,10 +5551,8 @@ mod tests {
     }
 
     #[test]
-    fn roll_699_sends_a_man_straight_off() {
-        use a3_files::an3::Save;
-        // the tables' widths are their throws'; entries nought and one
-        // are empty, the other table names 26..32
+    fn the_straight_red_tables_are_as_wide_as_their_throws() {
+        // entries nought and one are empty, the other table names 26..32
         for (table, width) in [(&REDS, 0x66), (&REDS_FRONT, 0x52), (&REDS_HARD, 0x79), (&REDS_OTHER, 7)] {
             assert_eq!(table.iter().take(0x22).map(|&x| x as i32).sum::<i32>(), width);
         }
@@ -5558,6 +5561,12 @@ mod tests {
         assert_eq!(foul_kind(&REDS_FRONT, 6, 1), 9, "a forward's table has no kind 8");
         assert_eq!(foul_kind(&REDS_OTHER, 0, 1), 26);
         assert_eq!(foul_kind(&REDS_OTHER, 6, 1), 32);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn roll_699_sends_a_man_straight_off() {
+        use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
         let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         let side = |men| {
@@ -5605,6 +5614,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn rolls_900_to_903_injure_a_man() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
