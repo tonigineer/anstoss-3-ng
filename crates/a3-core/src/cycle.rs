@@ -1193,6 +1193,11 @@ impl Cycle {
                             &mut season.random,
                             &self.data.presale,
                         );
+                        // The week's big sale is forgotten
+                        // (`FUN_0064e40f`'s `FUN_0069fd5a(0, 0)`).
+                        if let Some(extra) = usize::from(slot).checked_sub(1).and_then(|s| records.extras.get_mut(s)) {
+                            extra.set_big_sale([0, 0]);
+                        }
                     }
                     // The computer clubs line up for the new week
                     // (`FUN_0064e40f`'s `FUN_0042a76e`), so the week's

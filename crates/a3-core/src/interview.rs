@@ -23,10 +23,16 @@
 //! are scored by a stand-in that leaves them at nought. The manager's
 //! record, the club's money, its squad (ages, freshness, condition,
 //! contentment, injuries, bans, its five best and whether they stood the
-//! match) and its run of league results give their facts from the save;
-//! the men the record names stay off; no referee is drawn, and the
-//! match's best and worst men go unnamed. League matches and the
-//! national cup's ties are looked at.
+//! match) and its run of league results give their facts from the save.
+//! The names "N01" … stand for the match's men: its referee, whom the
+//! report holds; its best and worst by the grades the record keeps of the
+//! men who stood it, and its keeper (`FUN_006fa9cc`) — the stand-in's
+//! record keeps neither, so they go unnamed and the keeper is the
+//! line-up's; the foe's one scorer, its own scorer of a penalty, its first
+//! man booked and its last booked for a hard foul, which the match leaves
+//! in the club's block (the stand-in only the foe's scorer); and the man
+//! sold dear this week. League matches and the national cup's ties are
+//! looked at.
 
 use std::io;
 
@@ -94,6 +100,33 @@ const PLACE_NEXT: usize = 0x133;
 const GOAL_CLASS: usize = 0x135;
 const RIVAL_AT: usize = 0x122;
 
+/// The match's men in the human club's block ([`crate::records::Extra::match_men`],
+/// `DAT_00a58920` + slot × 0x2940), by their places there: the worst
+/// (N01, N14), its scorer of a penalty (N04), the keeper (N05 and the
+/// effects' kind 30), the foe's one scorer (N06, N13), the first man
+/// booked (N08 and kind 20), the one man in state ten, the best (N15),
+/// the last booked for a hard foul (N16); -1 more than one.
+const WORST: usize = 0;
+const PENALTY_SCORER: usize = 1;
+const KEEPER: usize = 2;
+const FOE_SCORER: usize = 3;
+const FIRST_BOOKED: usize = 4;
+const STATE_TEN: usize = 5;
+const BEST_MAN: usize = 6;
+const HARD_FOUL: usize = 7;
+const SEVERAL: i16 = -1;
+/// The eleven's state the sixth place counts, and the match bit that
+/// puts its man out of it (live +0x57 bit 4, the record's +0x25b).
+const TEN: i16 = 10;
+const STATE_TEN_OFF: u8 = 4;
+/// The referees' records (`DAT_019f4ef8` + id × 0x34, saved from
+/// `0x19f4ed8[id]`): his first and last name (+0, +2), and the number of
+/// the club he has it in for (+7, 0xff none).
+const REFEREES_AT: u32 = 0x19f4ed8;
+const REFEREES: i16 = 240;
+const GRUDGE: usize = 7;
+const NO_GRUDGE: u8 = 0xff;
+
 /// The effects' kinds (`FUN_0065ff9e`'s switch), and the players the
 /// kinds from 18 to 34 name (+0x467c + kind × 2).
 const FANS: i16 = 1;
@@ -112,6 +145,7 @@ const STOP: i16 = 16;
 const END: i16 = 17;
 const PLAYERS: std::ops::Range<i16> = 18..35;
 const KEEPER_KIND: i16 = 30;
+const BOOKED_KIND: i16 = 20;
 /// A player effect's values that give him a reason instead
 /// (`FUN_00770800`).
 const HAPPY: (i16, u32) = (30, 0x80000);
@@ -314,6 +348,16 @@ const STATES: usize = 0x78;
 const YELLOWS: usize = 0xd4;
 const SECOND_YELLOWS: usize = 0xdc;
 const STRAIGHT_REDS: usize = 0xde;
+/// In a side's block as well: its eleven (+0x54, a short each, the keeper
+/// first), the men it entered (+0xfa, eighteen) and their grades (+0x142,
+/// a byte each: 0x80 or 0x40 the man stood the match, both the grade
+/// stands as it is, else it is reckoned to the minute).
+const ELEVEN: usize = 0x54;
+const ENTRIES: usize = 0xfa;
+const GRADES: usize = 0x142;
+const ENTERED: usize = 18;
+/// The record's referee (+0x44e).
+const REFEREE: usize = 0x44e;
 /// The record's flag byte: extra time, penalties (+0x1d); the crowd
 /// (+0x34); the weather (+0x466); the score at the clock's marks, a byte
 /// each side, home first: at the half (+0x12), at 90 (+0x14), 10 (+0x16),
@@ -383,6 +427,121 @@ impl Record {
     fn states(&self, pick: impl Fn(i16) -> bool) -> usize {
         (0..11).filter(|&k| pick(self.own_word(STATES + k * 2))).count()
     }
+
+    /// The entered place a man has, home side first, and his grade byte.
+    fn entered(&self, id: u16) -> impl Iterator<Item = u8> + '_ {
+        (0..ENTERED).flat_map(move |k| {
+            [HOME_SIDE, AWAY_SIDE]
+                .into_iter()
+                .filter(move |&side| self.word(side + ENTRIES + k * 2) == id as i16)
+                .map(move |side| self.byte(side + GRADES + k))
+        })
+    }
+
+    /// Whether a man stood the match (`FUN_00657fb0`).
+    fn stood(&self, id: u16) -> bool {
+        self.entered(id).any(|g| g & 0xc0 != 0)
+    }
+
+    /// A man's grade, in tenths, at a minute (`FUN_006580b2`): as it
+    /// stands where both bits are up, else reckoned out to the minute and
+    /// put in half steps from 1 to 6 (`FUN_0065803c`); 3.5 for a man not
+    /// entered.
+    fn grade(&self, id: u16, minute: i16) -> u8 {
+        let minute = (minute + 0x1e).clamp(0x1e, 0x5a);
+        let Some(g) = self.entered(id).next() else { return 0x23 };
+        if g & 0xc0 == 0xc0 {
+            return g & 0x3f;
+        }
+        let at = (i32::from(g & 0x3f) - 0x1e) * 0x5a / i32::from(minute) + 0x1e;
+        match at as i16 {
+            a if a < 10 => 10,
+            a if a < 0x3d => (a / 5 * 5) as u8,
+            _ => 0x3c,
+        }
+    }
+}
+
+/// The match's men the interview reads from the club's block, the ones
+/// the record gives set anew (`FUN_006fa9cc`): the keeper the eleven's
+/// first; of the squad's men who stood the match, the first with the
+/// highest grade the worst and the first with the lowest the best; the
+/// eleven's one man in state ten whom the match bit 4 does not hold.
+fn mark_men(records: &Records, team: &Team, rec: &Record, mut men: [i16; 8]) -> [i16; 8] {
+    let (mut worst, mut best) = (0u8, 99u8);
+    men[KEEPER] = rec.own_word(ELEVEN);
+    let squad = team.players();
+    for &id in &squad {
+        let Some(p) = records.player(id) else { continue };
+        if p.match_bits() & PLAYED == 0 || !rec.stood(id) {
+            continue;
+        }
+        let g = rec.grade(id, 0x5a);
+        if worst < g {
+            (men[WORST], worst) = (id as i16, g);
+        }
+        if g < best {
+            (men[BEST_MAN], best) = (id as i16, g);
+        }
+    }
+    for k in 0..11 {
+        let id = rec.own_word(ELEVEN + k * 2) as u16;
+        if rec.own_word(STATES + k * 2) != TEN || !squad.contains(&id) {
+            continue;
+        }
+        let Some(p) = records.player(id) else { continue };
+        if p.match_bits() & STATE_TEN_OFF == 0 {
+            men[STATE_TEN] = if men[STATE_TEN] == 0 { id as i16 } else { SEVERAL };
+        } else if men[STATE_TEN] > 0 {
+            men[STATE_TEN] = SEVERAL;
+        }
+    }
+    men
+}
+
+/// A human club's extra block, by its club.
+fn extra_of(records: &Records, (country, number): (u8, i16)) -> Option<usize> {
+    let slot = usize::from(team(records, (country, number))?.human());
+    (1..=4).contains(&slot).then(|| slot - 1)
+}
+
+/// The pre-match walk empties a human club's men of the match
+/// (`FUN_006ef296`'s `FUN_006faba0`).
+pub fn clear_men(records: &mut Records, club: (u8, i16)) {
+    if let Some(e) = extra_of(records, club).and_then(|s| records.extras.get_mut(s)) {
+        e.set_match_men([0; 8]);
+    }
+}
+
+/// A goal against a human club names its scorer there, once he alone has
+/// scored (`FUN_00740aad`'s `FUN_006fac42`).
+pub fn foe_scored(records: &mut Records, club: (u8, i16), id: u16) {
+    if let Some(e) = extra_of(records, club).and_then(|s| records.extras.get_mut(s)) {
+        let mut men = e.match_men();
+        men[FOE_SCORER] = match men[FOE_SCORER] {
+            0 => id as i16,
+            m if m != id as i16 => SEVERAL,
+            m => m,
+        };
+        e.set_match_men(men);
+    }
+}
+
+/// A referee's name for "N03": his first and last name (`FUN_0065f390`'s
+/// "%s %s" over `FUN_00637d38`), both none for no referee.
+fn referee_name(records: &Records, id: i16) -> String {
+    let names = (1..=REFEREES)
+        .contains(&id)
+        .then(|| records.block(&format!("{REFEREES_AT:#x}[{id}]")))
+        .flatten()
+        .filter(|b| b.len() >= 4)
+        .map_or([0; 2], |b| [u16::from_le_bytes([b[0], b[1]]), u16::from_le_bytes([b[2], b[3]])]);
+    format!("{} {}", records.name(names[0]), records.name(names[1]))
+}
+
+/// A player's name for "N…" (`FUN_0065f1c9`): none below 1.
+fn man(records: &Records, id: i16) -> String {
+    if id < 1 { String::new() } else { records.known_as(id as u16).unwrap_or_default() }
 }
 
 /// What the dialog shows.
@@ -488,6 +647,8 @@ struct Club {
     /// The club's league results by matchday, its own goals first, none
     /// for a day not played (`FUN_006907da`).
     results: Vec<Option<(u8, u8)>>,
+    /// The player it sold dear this week (`FUN_0069fcee`).
+    big_sale: i16,
 }
 
 /// The main position of a forward (handle +0x3), the days out that count,
@@ -551,6 +712,10 @@ impl Club {
             c.age = crate::free_agents::today(records).map_or(0, |d| crate::autolineup::age(born, d));
         }
         c.figure = crate::finances::figure(team, records.globals.fund_prices());
+        let slot = usize::from(team.human());
+        if (1..=4).contains(&slot) {
+            c.big_sale = records.extras.get(slot - 1).map_or(0, |e| e.big_sale()[0] as i16);
+        }
         c.booked = crate::finances::booked_result(team);
         let achieved = team.get::<u16>(ACHIEVEMENTS);
         (c.champion, c.promoted) = (achieved & TITLE != 0, achieved & PROMOTION != 0);
@@ -810,6 +975,7 @@ fn holds_club(case: u8, m: &Match) -> bool {
         0xba => c.titles > 5,
         0xb7 => c.black_cash > 0,
         0xec => c.ability > 10,
+        0x78 => c.big_sale > 0,
         0x30 => c.fans > 90,
         0xc7 => c.fans == 100,
         0xc2 => c.media > 80,
@@ -912,6 +1078,11 @@ pub struct Interview {
     names: [String; 17],
     /// The players the effects' kinds 18 to 34 move (+0x46a0).
     players: [u16; 17],
+    /// The match's referee (the record's +0x44e, his record `FUN_0063161e`
+    /// copied to +0x46dc), and the match's men as the club's block keeps
+    /// them, the ones the record gives set anew.
+    referee: i16,
+    men: [i16; 8],
     /// The question up and its answers' order.
     current: Option<(usize, [usize; 3])>,
 }
@@ -972,6 +1143,8 @@ impl Interview {
             not_asked: vec![true; FACTS + 1],
             names: Default::default(),
             players: [0; 17],
+            referee: 0,
+            men: [0; 8],
             current: None,
         };
         for (k, place) in crate::cup_draw::order(REMARKS, random).into_iter().enumerate() {
@@ -1014,13 +1187,28 @@ impl Interview {
                 me.facts[fact + 1] = true;
             }
         }
-        // The names: the manager, the association, the rival, the
-        // reporter, the ground's town, an expert; the keeper of the
-        // line-up. The referee and the match's men wait for the match.
+        // The match's men: those the record gives (`FUN_006fa9cc`), then
+        // the block read (`FUN_0069fbee`).
+        let kept = extra_of(records, club).and_then(|s| records.extras.get(s)).map_or([0; 8], |e| e.match_men());
+        me.men = m.rec.as_ref().map_or(kept, |rec| mark_men(records, own, rec, kept));
+        me.referee = m.rec.as_ref().map_or(0, |rec| rec.word(REFEREE));
+        // The names: the worst, the manager, the referee, the scorer of a
+        // penalty, the keeper (the line-up's where the record keeps no
+        // eleven), the foe's scorer, the association, the first booked,
+        // the man sold dear, the rival, the reporter, the ground's town,
+        // the foe's scorer again, the worst again, the best, the last
+        // booked for a hard foul, an expert.
+        let men = me.men;
+        me.names[0] = man(records, men[WORST]);
         me.names[1] = me.manager_name.clone();
-        let keeper = own.lineup()[0];
-        me.names[4] = records.known_as(keeper).filter(|_| keeper != 0).unwrap_or_default();
+        me.names[2] = referee_name(records, me.referee);
+        me.names[3] = man(records, men[PENALTY_SCORER]);
+        let keeper = if men[KEEPER] > 0 { men[KEEPER] as u16 } else { own.lineup()[0] };
+        me.names[4] = man(records, keeper as i16);
+        me.names[5] = man(records, men[FOE_SCORER]);
         me.names[6] = text_at(ASSOCIATION);
+        me.names[7] = man(records, men[FIRST_BOOKED]);
+        me.names[8] = man(records, m.club.big_sale);
         if m.rival >= 0 {
             me.names[9] = records.team(club.0.into(), m.rival as u16).map(Team::name).unwrap_or_default();
         }
@@ -1029,9 +1217,14 @@ impl Interview {
         me.names[11] = crate::opponent::stadium(records, ground.0.into(), ground.1 as u16)
             .map(|s| s.town.clone())
             .unwrap_or_default();
+        me.names[12] = man(records, men[FOE_SCORER]);
+        me.names[13] = man(records, men[WORST]);
+        me.names[14] = man(records, men[BEST_MAN]);
+        me.names[15] = man(records, men[HARD_FOUL]);
         let expert = EXPERTS_AT + random.below(2) as usize * EXPERT;
         me.names[16] = text_at((expert + EXPERT_NAME.0, EXPERT_NAME.1));
         me.players[usize::from((KEEPER_KIND - PLAYERS.start) as u16)] = keeper;
+        me.players[usize::from((BOOKED_KIND - PLAYERS.start) as u16)] = men[FIRST_BOOKED].max(0) as u16;
         me.next(recent, random);
         Some(me)
     }
@@ -1249,8 +1442,20 @@ impl Interview {
             BOARD => self.standing([0; 3], v, records),
             MOOD => self.mood = (i32::from(self.mood) + v).clamp(0, 5) as i8,
             MANNER_SET => self.manner = value as i8,
-            // The referee's grudge against the club: no referee here.
-            REFEREE_FORGIVES | REFEREE_MINDS => {}
+            // The referee lets go of his grudge against the club, or takes
+            // one up (his +7 against the club's number, +0x103).
+            REFEREE_FORGIVES => {
+                if let Some(r) = self.referee_mut(records)
+                    && i32::from(r[GRUDGE] as i8) == i32::from(self.club.1 as u8)
+                {
+                    r[GRUDGE] = NO_GRUDGE;
+                }
+            }
+            REFEREE_MINDS => {
+                if let Some(r) = self.referee_mut(records) {
+                    r[GRUDGE] = self.club.1 as u8;
+                }
+            }
             NEW_TOPIC => {
                 self.change = 1;
                 self.topic = -1;
@@ -1289,10 +1494,24 @@ impl Interview {
         m.set_confidence((i32::from(m.confidence()) + confidence).clamp(0, 100) as i16);
     }
 
-    /// The interview is over: the reporter keeps his mood with the
-    /// manager for the next time, unless he stopped minding it
-    /// (`FUN_0065fb29`, `FUN_00681142`).
+    /// The match's referee's record, while the interview holds it
+    /// (`FUN_0063161e`, put back by `FUN_006316f7`).
+    fn referee_mut<'a>(&self, records: &'a mut Records) -> Option<&'a mut [u8]> {
+        if !(1..=REFEREES).contains(&self.referee) {
+            return None;
+        }
+        records.block_mut(&format!("{REFEREES_AT:#x}[{}]", self.referee)).filter(|b| b.len() > GRUDGE)
+    }
+
+    /// The interview is over: the match's men it found stay in the club's
+    /// block (`FUN_006fa9cc`'s `FUN_0069fc6e`, which the original writes
+    /// as it begins), and the reporter keeps his mood with the manager for
+    /// the next time, unless he stopped minding it (`FUN_0065fb29`,
+    /// `FUN_00681142`).
     pub fn finish(&self, records: &mut Records) {
+        if let Some(e) = extra_of(records, self.club).and_then(|s| records.extras.get_mut(s)) {
+            e.set_match_men(self.men);
+        }
         if self.mood < 0 {
             return;
         }
@@ -1408,6 +1627,72 @@ mod tests {
             assert_eq!(holds(case, &engine), holds_now, "{case:#x}");
         }
         assert!(!holds(0xa0, &at(None)) && !holds(0xd7, &at(None)));
+    }
+
+    /// The record's grades: both bits up the grade stands, one up it is
+    /// put in half steps and held to 1 and 6; a man entered without
+    /// either did not stand the match, and one not entered grades 3.5.
+    #[test]
+    fn the_record_grades_the_men_who_stood_the_match() {
+        let mut bytes = vec![0u8; RECORD];
+        for (k, (id, g)) in [(7u16, 0xe3u8), (8, 0xa6), (9, 0x23), (10, 0x84), (11, 0xbf)].into_iter().enumerate() {
+            bytes[AWAY_SIDE + ENTRIES + 2 * k..AWAY_SIDE + ENTRIES + 2 * k + 2].copy_from_slice(&id.to_le_bytes());
+            bytes[AWAY_SIDE + GRADES + k] = g;
+        }
+        let rec = Record { bytes, own: AWAY_SIDE, foe: HOME_SIDE, home: false, engine: true, capacity: None };
+        assert_eq!([7, 8, 10, 11, 12].map(|id| rec.grade(id, 0x5a)), [0x23, 35, 10, 60, 0x23]);
+        assert_eq!(rec.grade(8, 0), 50, "reckoned out from the half hour");
+        assert!(rec.stood(7) && rec.stood(8) && !rec.stood(9) && !rec.stood(12));
+    }
+
+    /// A's report of Union's 0:2 at Hertha's: the interview names its
+    /// referee, its worst and best men by the record's grades, its keeper
+    /// and the man first booked the club's block kept; the referee takes
+    /// up his grudge against Union and lets it go again; the men found
+    /// go back into the block.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_interview_names_the_matchs_men() {
+        let Some((dir, mut records, rules)) = setup() else { return };
+        let union = records.team(14, 84).unwrap();
+        let report = crate::statistics::match_report(&records, union).expect("A keeps Union's report");
+        let fixture = Fixture { sides: report.sides(), goals: report.goals(), kind: report.competition(), engine: true, ..Fixture::default() };
+        assert_eq!((fixture.sides[1], report.referee()), ((14, 84), 26));
+        let questions = a3_files::interview::load(&dir);
+        let mut interview =
+            Interview::begin(&records, &rules, questions, (fixture, false), &mut Recent::default(), &mut Random::new(3)).unwrap();
+        let name = |id: u16| records.known_as(id).unwrap();
+        let referee = records.referee_name(26).unwrap();
+        assert_eq!(interview.names[2], referee);
+        assert!(interview.fill("Schiedsrichter N3 heute").starts_with(&format!("Schiedsrichter {referee}")));
+        // Graded 2.0 the best, 4.0 the worst (0x96, 0xa8 …), the first of
+        // each in the squad's order.
+        let squad = records.team(14, 84).unwrap().players();
+        let first = |of: &[u16]| *squad.iter().find(|id| of.contains(id)).unwrap();
+        assert_eq!(interview.names[14], name(first(&[3257, 3261, 3262, 3270])));
+        assert_eq!(interview.names[0], name(first(&[3268, 9853, 8378, 3280])));
+        assert_eq!(interview.names[13], interview.names[0]);
+        assert_eq!((interview.names[4].as_str(), interview.names[7].as_str()), (name(3257).as_str(), "Diogo Leite"));
+        assert!(interview.names[5].is_empty() && interview.names[8].is_empty(), "{:?}", interview.names);
+        assert_eq!(interview.players[2], 3261);
+        let tables = MoodTables::load(&Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let grudge = |r: &Records| r.block("0x19f4ed8[26]").unwrap()[GRUDGE];
+        interview.effect(REFEREE_MINDS, 0, &mut records, &tables);
+        assert_eq!(grudge(&records), 84);
+        interview.effect(REFEREE_FORGIVES, 0, &mut records, &tables);
+        assert_eq!(grudge(&records), NO_GRUDGE);
+        interview.finish(&mut records);
+        let men = records.extras[usize::from(records.team(14, 84).unwrap().human()) - 1].match_men();
+        assert_eq!((men[KEEPER], men[FIRST_BOOKED], men[FOE_SCORER]), (3257, 3261, -1));
+        assert!(men[WORST] > 0 && men[BEST_MAN] > 0);
+        // The next report empties them; Hertha's one scorer stands, and
+        // the referee Union holds for its match is the report's.
+        let played = crate::report::Played { sides: [(14, 22), (14, 84)], goals: [2, 0], scorers: [vec![1600, 1600], vec![]], ..Default::default() };
+        assert!(crate::report::write(&mut records, &played, &mut Random::new(5)));
+        let union = records.team(14, 84).unwrap();
+        let men = records.extras[usize::from(union.human()) - 1].match_men();
+        assert_eq!(men, [0, 0, 0, 1600, 0, 0, 0, 0]);
+        assert_eq!(crate::statistics::match_report(&records, union).unwrap().referee(), union.referee());
     }
 
     /// A's report of Union's last match, as the original's engine wrote

@@ -83,9 +83,9 @@ const NO_EUROPE: u16 = 0x10;
 /// The club insures its players itself (club +0x303).
 const INSURES: usize = 0x303;
 /// A sale above this (`DAT_00a3b308`) a human seller keeps in mind: the
-/// player and his strength, in his block `0xa58078` at +0x293a.
+/// player and his strength, in his extra block at +0x293a
+/// ([`crate::records::Extra::big_sale`]).
 const BIG_SALE: i32 = 3_000_000;
-const BIG_SALE_AT: usize = 0x293a - 0x20;
 
 /// A deal as the list keeps it.
 #[derive(Clone, Copy)]
@@ -747,11 +747,9 @@ fn carry_out(
     if fee as i32 > BIG_SALE
         && (1..=4).contains(&seller_slot)
         && let Some(strength) = records.player(id).map(Player::strength)
-        && let Some(b) = records.block_mut(&format!("0xa58078[{}]", seller_slot - 1))
-        && let Some(e) = b.get_mut(BIG_SALE_AT..BIG_SALE_AT + 4)
+        && let Some(extra) = records.extras.get_mut(seller_slot - 1)
     {
-        e[0..2].copy_from_slice(&id.to_le_bytes());
-        e[2..4].copy_from_slice(&u16::from(strength).to_le_bytes());
+        extra.set_big_sale([id, u16::from(strength)]);
     }
 }
 

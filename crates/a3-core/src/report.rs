@@ -11,9 +11,12 @@
 //! replica scores its matches without the original's engine, so the
 //! record carries what the stand-in knows: the sides, the score and the
 //! half's, the first leg, the competition, the ground, the crowd and the
-//! gate, and the scorers without a minute. The engine's counters —
-//! chances, cards, corners, fouls, the referee and the weather — stay at
-//! nought, and the marks are reckoned over them as the original does.
+//! gate, the referee the schedule gave it, and the scorers without a
+//! minute. The engine's counters — chances, cards, corners, fouls, the
+//! men's grades and the weather — stay at nought, and the marks are
+//! reckoned over them as the original does. The pre-match walk empties
+//! the human clubs' men of the match as well, and the scorers name
+//! themselves to the other side's ([`crate::interview::foe_scored`]).
 
 use crate::random::Random;
 use crate::records::Records;
@@ -150,7 +153,19 @@ pub fn write(records: &mut Records, played: &Played, random: &mut Random) -> boo
     }
     let mut report = vec![0u8; REPORT_SIZE];
     lay_record(&mut report, played);
+    lay_referee(&mut report, records, played.sides);
     lay_goals(&mut report, played);
+    // Before the match the walk empties the human clubs' men of the match
+    // (`FUN_006faba0`); each goal names its scorer to the other side's
+    // (`FUN_00740aad`'s `FUN_006fac42`).
+    for side in played.sides {
+        crate::interview::clear_men(records, side);
+    }
+    for (side, scorers) in played.scorers.iter().enumerate() {
+        for &id in scorers {
+            crate::interview::foe_scored(records, played.sides[1 - side], id);
+        }
+    }
     let marks = marks(&report, random);
     for (side, keeper) in keepers.into_iter().enumerate() {
         let Some(human) = keeper else { continue };
@@ -193,6 +208,39 @@ fn lay_record(r: &mut [u8], p: &Played) {
     r[0x2a..0x2c].copy_from_slice(&hn.to_le_bytes());
     r[0x34..0x38].copy_from_slice(&p.attendance.to_le_bytes());
     r[0x3c..0x40].copy_from_slice(&p.gate.to_le_bytes());
+}
+
+/// The referees' records (`DAT_019f4ef8` + id × 0x34, saved from
+/// `0x19f4ed8[id]`), 240 of them.
+const REFEREES_AT: u32 = 0x19f4ed8;
+const REFEREES: i16 = 240;
+const REFEREE: usize = 0x44e;
+
+/// The referee the schedule gave the match (`FUN_006cdbb9`): the one a
+/// human side's club holds for its match (team +0x25a, as the page before
+/// the match shows him), at +0x44e, his record unpacked around him as
+/// `FUN_0063161e` hands it over — his first and last name (+0x44a,
+/// +0x44c), his bytes 6 and 5 (+0x450, +0x451), his long at 0x10
+/// (+0x454) and his byte 7 widened (+0x458).
+fn lay_referee(r: &mut [u8], records: &Records, sides: [(u8, i16); 2]) {
+    let Some(team) = human_side(records, sides).and_then(|(c, n)| records.team(c.into(), u16::try_from(n).ok()?)) else {
+        return;
+    };
+    let id = team.referee();
+    r[REFEREE..REFEREE + 2].copy_from_slice(&id.to_le_bytes());
+    let Some(b) = (1..=REFEREES)
+        .contains(&id)
+        .then(|| records.block(&format!("{REFEREES_AT:#x}[{id}]")))
+        .flatten()
+        .filter(|b| b.len() >= 0x14)
+    else {
+        return;
+    };
+    r[0x44a..0x44e].copy_from_slice(&b[0..4]);
+    r[0x450] = b[6];
+    r[0x451] = b[5];
+    r[0x454..0x458].copy_from_slice(&b[0x10..0x14]);
+    r[0x458..0x45a].copy_from_slice(&i16::from(b[7] as i8).to_le_bytes());
 }
 
 /// The scorers, the home side's goals before the away side's, each with

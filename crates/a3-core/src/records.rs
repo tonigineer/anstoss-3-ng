@@ -717,6 +717,16 @@ record! {
     /// How many past seasons' transfer balances are kept
     /// ([`Extra::transfers`]).
     0x202c => transfer_count, set_transfer_count: i16;
+    /// The men of the club's last match the interview names (`DAT_00a58920`:
+    /// `FUN_0069fbee` reads them, `FUN_0069fc6e` writes them; -1 more than
+    /// one): the worst, its own scorer of a penalty, the keeper, the foe's
+    /// one scorer, its first man booked, its one man in state ten, the
+    /// best, and its last man booked for a hard foul
+    /// ([`crate::interview`]). The pre-match walk empties them.
+    0x8a8 => match_men, set_match_men: [i16; 8];
+    /// The player sold this week above `DAT_00a3b308`, and his strength
+    /// (`FUN_0069fd5a`; the week's end clears them).
+    0x293a => big_sale, set_big_sale: [u16; 2];
 }
 
 /// One past season as the Saisonbilanzen page lists it (0x18 bytes): its
