@@ -22,12 +22,14 @@
 //! Posted here: the training day's events ([`crate::training_day`]) whose
 //! texts the original builds of its texts alone or with the names of the
 //! men concerned, the two-part ones with their second part in tow
-//! ([`Fill::Headbutt`], [`Fill::Bomb`], [`Fill::NamedThen`]), the day's
-//! news ([`crate::news`]: its appointments and their loan news, its
-//! doping news) and the youth week, which build their texts the same way.
-//! Not here: the events with values beside the text (`FUN_005f1f42`,
-//! window `CEreignis1Wert`: player events 10 to 14 and 16), the
-//! training's ability and trait events (105 to 107), the session's own
+//! ([`Fill::Headbutt`], [`Fill::Bomb`], [`Fill::NamedThen`]), those
+//! standing a changed contentment value beside the text ([`Fill::Value`],
+//! player events 10 to 14 and 16: `FUN_00601043` and `FUN_005f1f42` write
+//! the block's kind 1 with its label and its values, and the window is
+//! `CEreignis1Wert` whichever way the text runs), the day's news
+//! ([`crate::news`]: its appointments and their loan news, its doping
+//! news) and the youth week, which build their texts the same way.
+//! Not here: the training's ability and trait events (105 to 107), the session's own
 //! injury and luck news (`FUN_0074a1ec`: text 0x396 with the next match
 //! or 0x714, then 0x397 with the injury's name, and 0x332 to 0x33a), and
 //! every happening the replica does not run — the money news
@@ -49,6 +51,10 @@ use crate::records::Records;
 pub const EVENT_TEXT: u16 = 51;
 /// The larger one (`IDD_EREIGNIS_TEXT_GROSS`).
 pub const EVENT_TEXT_LARGE: u16 = 435;
+/// The window of an event that changed a value, the block's kind 1
+/// (`FUN_005ef4dd(1, …)`, `IDD_EREIGNIS_1WERT`); its text length never
+/// matters (`FUN_005f2234`).
+pub const EVENT_VALUE: u16 = 392;
 /// The longest text the small window takes (`strlen < 0xc9`).
 const SMALL_MOST: usize = 0xc8;
 
@@ -151,12 +157,34 @@ pub enum Fill {
     /// full name (`FUN_006feb4d`), the second part the text `second`
     /// (0x3b or 0x3d) as it stands.
     NamedThen(u16, u16),
+    /// `%1` a man's name, `%2` nothing (`FUN_00601043` through
+    /// `FUN_005eee7f`, its second name buffer at `DAT_00a327d8` on never
+    /// written) and the value pair `value` beside the text: the window
+    /// `CEreignis1Wert` stands the number the part stood at and stands
+    /// at now (player events 10 to 14 and 16).
+    Value(u16, Value),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lead {
     Player(u16),
     Text(u16),
+}
+
+/// What an event with a value changed (`FUN_005f1f42`): `art` says which
+/// contentment part it is (`DAT_00a2f6ee`, the window's label shows the
+/// game text 4771 "Trainer" `art` further — 4772 "Mannschaft" and 4774
+/// "Ablenkung" among the player events), `before` and `after`
+/// what it stood at and stands at (`DAT_00a2f6f4` and `DAT_00a2f6f6`):
+/// the team part as the reasons leave it (`FUN_00700c42`) before, the
+/// record's byte as the setter wrote it (`FUN_00700a6d`) after; the
+/// distractions' both straight from the record (+0x294, `FUN_00701328`
+/// and `FUN_00701210`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Value {
+    pub art: u16,
+    pub before: i16,
+    pub after: i16,
 }
 
 /// An event as a rule posts it: the club, the event's code and the text's
@@ -190,13 +218,20 @@ pub struct Event {
     /// window joins behind the text after the pause; `None` for the
     /// one-part events.
     pub second: Option<String>,
+    /// The value beside the text of the events that changed one, from
+    /// [`Fill::Value`]; `None` for the plain text events.
+    pub value: Option<Value>,
 }
 
 impl Event {
-    /// The window the text fits (`FUN_005f2234`); the first part alone
-    /// sizes it, the second may run the window over.
+    /// The window the text fits (`FUN_005f2234`): a kind 1 block's text
+    /// always stands in the value window, whatever its length; of the
+    /// rest the first part alone sizes it, the second may run the window
+    /// over.
     pub fn dialog(&self) -> u16 {
-        if self.text.chars().count() <= SMALL_MOST {
+        if self.value.is_some() {
+            EVENT_VALUE
+        } else if self.text.chars().count() <= SMALL_MOST {
             EVENT_TEXT
         } else {
             EVENT_TEXT_LARGE
@@ -290,6 +325,7 @@ pub fn make(
         // second (`FUN_0060d1bf` case 0x18).
         Fill::Bomb(_, shooter, _) => format!("{}\n{}", body.replacen("%s", &name(shooter), 1), saq(0x2b)),
         Fill::NamedThen(id, _) => body.replacen("%s", &name(id), 1),
+        Fill::Value(player, _) => numbered(body, &[name(player), String::new()]),
     };
     // The second part of the two-part events (`DAT_00a2f8f4`).
     let second = match posted.fill {
@@ -303,9 +339,13 @@ pub fn make(
         Fill::NamedThen(_, part) => Some(saq(part).to_owned()),
         _ => None,
     };
+    let value = match posted.fill {
+        Fill::Value(_, value) => Some(value),
+        _ => None,
+    };
     let (country, number) = posted.club;
     let manager = records.team(country, number).map_or(0, |t| u16::from(t.human()));
-    Event { code: posted.code, club: (country as u8, number), manager, text, second }
+    Event { code: posted.code, club: (country as u8, number), manager, text, second, value }
 }
 
 /// `%1` … `%99` replaced by `args` (`FUN_005eee7f`): one or two digits,
@@ -357,9 +397,29 @@ mod tests {
 
     #[test]
     fn a_text_past_two_hundred_takes_the_large_window() {
-        let event =
-            |n: usize| Event { code: 99, club: (1, 1), manager: 1, text: "x".repeat(n), second: None };
+        let event = |n: usize| Event {
+            code: 99,
+            club: (1, 1),
+            manager: 1,
+            text: "x".repeat(n),
+            second: None,
+            value: None,
+        };
         assert_eq!(event(200).dialog(), EVENT_TEXT);
         assert_eq!(event(201).dialog(), EVENT_TEXT_LARGE);
+    }
+
+    #[test]
+    fn an_event_with_a_value_always_takes_392() {
+        let event = |n: usize| Event {
+            code: 99,
+            club: (1, 1),
+            manager: 1,
+            text: "x".repeat(n),
+            second: None,
+            value: Some(Value { art: 1, before: 100, after: 96 }),
+        };
+        assert_eq!(event(10).dialog(), EVENT_VALUE);
+        assert_eq!(event(300).dialog(), EVENT_VALUE);
     }
 }

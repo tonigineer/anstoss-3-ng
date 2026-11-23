@@ -72,14 +72,7 @@ impl Screen for EventText {
             }
             _ => {}
         }
-        let mut who = String::new();
-        if let Some(m) = usize::from(event.manager).checked_sub(1).and_then(|m| records.managers.get(m)) {
-            who = format!("{} {}", m.first_name(), m.last_name());
-        }
-        if event.club.0 != 0 {
-            let club = cx.game.club_name(Some(records), event.club.0, event.club.1 as i16);
-            who = if who.is_empty() { club } else { format!("{who} ({club})") };
-        }
+        let who = super::discipline::event_caption(cx, records, event.manager, event.club);
         self.pending = event.second.take().map(|second| (event.text.clone(), second));
         self.waited = 0.0;
         set(view, dialog, CAPTION_ID, format!("{} {who}", dialog.title));

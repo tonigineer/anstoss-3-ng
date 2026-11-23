@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use a3_core::cycle::Request;
 use a3_core::discipline::{self, Club, Fined, PLAYER_UNIT, TEAM_UNIT};
+use a3_core::event_text::{self, EVENT_VALUE};
 use a3_core::mood::LAST_REAL_ID;
+use a3_core::records::Records;
 use a3_files::rch::Dialog;
 
 use super::popups::{NOTICE, QUESTION, ball};
@@ -22,7 +24,9 @@ pub const FINE: u16 = 85;
 pub const REFORMED: u16 = 86;
 pub const ALREADY: u16 = 87;
 pub const INNOCENT: u16 = 88;
-pub const CHANGE: u16 = 392;
+/// The same window the day's value events use
+/// ([`a3_core::event_text::EVENT_VALUE`]).
+pub const CHANGE: u16 = EVENT_VALUE;
 
 const BONUS_AMOUNT: u16 = 2941;
 const BONUS_SLIDER: u16 = 2942;
@@ -43,10 +47,10 @@ const FINE_MOST: i32 = 500;
 const START: i32 = 100;
 
 const REPLY_TEXTS: [(u16, u16); 3] = [(REFORMED, 1869), (ALREADY, 1871), (INNOCENT, 1873)];
-const CHANGE_TEXT: u16 = 4949;
-const BEFORE: u16 = 4945;
-const AFTER: u16 = 4947;
-const WHAT: u16 = 4950;
+pub(crate) const CHANGE_TEXT: u16 = 4949;
+pub(crate) const BEFORE: u16 = 4945;
+pub(crate) const AFTER: u16 = 4947;
+pub(crate) const WHAT: u16 = 4950;
 const COLUMN: u16 = 5331;
 /// "Trainer": what changed.
 const TRAINER: u16 = 4771;
@@ -462,9 +466,26 @@ impl Screen for FineReply {
     }
 }
 
-/// How an event changed a player's contentment with the trainer: a text, the
-/// value before and after, and a bar of the new one.
+/// How something changed a player's contentment: a text, the value before
+/// and after, and a bar of the new one. A fine moves his contentment with
+/// the trainer; a day's event with a value ([`a3_core::event_text`],
+/// player events 10 to 14 and 16) the team's or his distractions'.
 pub struct Change;
+
+/// The caption an event window takes: the club's human manager and the
+/// club ("%s %s" and "%s (%s)", `FUN_0049505e` and `FUN_00497ea3`), the
+/// club alone without a manager and neither without a club.
+pub(crate) fn event_caption(cx: &Cx, records: &Records, manager: u16, club: (u8, u16)) -> String {
+    let mut who = String::new();
+    if let Some(m) = usize::from(manager).checked_sub(1).and_then(|m| records.managers.get(m)) {
+        who = format!("{} {}", m.first_name(), m.last_name());
+    }
+    if club.0 != 0 {
+        let club = cx.game.club_name(Some(records), club.0, club.1 as i16);
+        who = if who.is_empty() { club } else { format!("{who} ({club})") };
+    }
+    who
+}
 
 /// The bar's pictures: red below 80, yellow below 100, green.
 const COLUMN_PICTURES: [(i32, u16); 3] = [(80, 2654), (100, 2653), (i32::MAX, 2655)];
@@ -476,21 +497,41 @@ impl Screen for Change {
     }
 
     fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
-        let Args::Change { text, player, before, after } = args else { return };
-        let records = cx.state.records.as_ref();
-        let season = cx.state.season.as_ref();
-        let manager = season.and_then(|s| s.manager());
-        let who = manager.map_or_else(String::new, |m| format!("{} {}", m.first_name, m.last_name));
-        let club = manager
-            .and_then(|m| m.club)
-            .and_then(|(slot, c)| cx.game.world.country(slot)?.clubs.get(c))
-            .map_or_else(String::new, |c| c.name.clone());
-        set(view, cx.dialog, CAPTION_ID, format!("{} {who} ({club})", cx.dialog.title));
-        let name = records.and_then(|r| r.known_as(player)).unwrap_or_default();
-        set(view, cx.dialog, CHANGE_TEXT, cx.game.text(text).replacen("%s", &name, 1));
+        // Two flows open this window (`CEreignis1Wert`): the fine, its
+        // text one of the game's own with the fined man's name, and a
+        // day's event with a value, `ereignis.saq`'s text with the man
+        // in `%1` (`FUN_00601043` through `FUN_005eee7f`).
+        let (text, before, after, art, caption) = match args {
+            Args::Change { text, player, before, after } => {
+                let records = cx.state.records.as_ref();
+                let season = cx.state.season.as_ref();
+                let manager = season.and_then(|s| s.manager());
+                let who = manager.map_or_else(String::new, |m| format!("{} {}", m.first_name, m.last_name));
+                let club = manager
+                    .and_then(|m| m.club)
+                    .and_then(|(slot, c)| cx.game.world.country(slot)?.clubs.get(c))
+                    .map_or_else(String::new, |c| c.name.clone());
+                let name = records.and_then(|r| r.known_as(player)).unwrap_or_default();
+                let text = cx.game.text(text).replacen("%s", &name, 1);
+                (text, before, after, 0, format!("{} {who} ({club})", cx.dialog.title))
+            }
+            Args::Event(posted) => {
+                let event_text::Fill::Value(_, value) = posted.fill else { return };
+                let Some(records) = cx.state.records.as_ref() else { return };
+                let Some(texts) = a3_files::saq::EventTexts::load(&cx.game.dir) else { return };
+                let event = event_text::make(records, &texts, &|id| cx.game.text(id).to_owned(), &cx.game.rules.words.first_names, &posted);
+                let who = event_caption(cx, records, event.manager, event.club);
+                (event.text, value.before, value.after, value.art, format!("{} {who}", cx.dialog.title))
+            }
+            _ => return,
+        };
+        set(view, cx.dialog, CAPTION_ID, caption);
+        set(view, cx.dialog, CHANGE_TEXT, text);
         set(view, cx.dialog, BEFORE, before.to_string());
         set(view, cx.dialog, AFTER, after.to_string());
-        set(view, cx.dialog, WHAT, cx.game.text(TRAINER).to_owned());
+        // The changed part's label: the game text `art` past "Trainer"
+        // (`FUN_0049505e` over the table at `0x8808b0`, held to 0..=11).
+        set(view, cx.dialog, WHAT, cx.game.text(TRAINER + art.min(0xb)).to_owned());
         let Some(c) = control(cx.dialog, COLUMN) else { return };
         let rect = cx.dialog.controls[c].rect;
         let shown = i32::from(after).clamp(0, COLUMN_MOST);

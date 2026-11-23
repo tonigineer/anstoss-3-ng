@@ -13164,4 +13164,51 @@ mod tests {
             assert!(apart.contains_key(what), "{what} agrees with the original's new game now: take it off NEW_GAME_APART");
         }
     }
+
+    /// Walking on from A with the generator at 12360/67905, the day's
+    /// training events take their own window: on day 66 player event 12
+    /// (the text of 0xf) opens CEreignis1Wert (dialog 392) — Nsoki's four
+    /// goals in a training game with his name in its "%1", "Mannschaft"
+    /// under the label table at "Trainer" plus the training's kind 1, the
+    /// team part 98 before and 100 after its +2, and the caption as 392's
+    /// "Ereignis für" title has it with the manager and his club (the
+    /// brawl's 51, beside it, has that wordless). OK closes it and the
+    /// day goes on.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_training_shows_the_value_it_left_a_man() {
+        let game = game();
+        let handlers = "on 89 press 1875\non 422 ok\non 420 ok\non 421 ok\non 287 ok\non 321 ok\non 25 ok\non 341 ok\n\
+                        on 364 ok\non 120 ok\non 96 ok\non 161 ok\non 419 ok\n\
+                        on 477 ok\non 380 press 4731\non 384 press 4741\non 218 click bar 0\non 147 click bar 18\n\
+                        on 302 click bar 18\non 308 choose 4095 0\non 332 ok\non 269 ok\non 93 press 1943\non 499 ok\n\
+                        on 41 ok\non 383 click at 460 210\non 99 press 2\non 307 click at 320 240\non 310 click at 320 240\n\
+                        on 331 press 4303\non 65 click at 165 330\non 423 ok\non 1 click at 320 357\n\
+                        on 375 click at 617 182; press 4715\non 461 ok\non 2 wait\non 381 wait\non 270 ok\n";
+        let then = format!("now random 12360 67905\n{handlers}until dialog 392");
+        let Some(runner) = on_save(&game, "A", &then) else { return };
+        let dialog = &game.dialogs[&392];
+        let text = |id: u16| runner.host.view().text(control(dialog, id).unwrap()).to_owned();
+        let state = runner.host.state();
+        let records = state.records.as_ref().unwrap();
+        let union = records.team(14, 84).unwrap();
+        let manager = &records.managers[usize::from(union.human()) - 1];
+        let club = game.club_name(Some(records), 14, 84);
+        let caption = format!("{} {} {} ({club})", dialog.title, manager.first_name(), manager.last_name());
+        assert_eq!(caption, "ANSTOSS 3 - Ereignis für Toni Lubiniecki (1.FC Union Berlin)");
+        assert_eq!(text(crate::screens::discipline::CAPTION_ID), caption);
+        let texts = a3_files::saq::EventTexts::load(&game.dir).unwrap();
+        let body = texts.get(0xf).unwrap();
+        let filled = a3_core::event_text::numbered(body, &["Stanley Nsoki".into(), String::new()]);
+        assert_eq!(text(crate::screens::discipline::CHANGE_TEXT), filled);
+        assert_eq!(text(crate::screens::discipline::WHAT), game.text(4772), "Mannschaft");
+        assert_eq!(text(crate::screens::discipline::BEFORE), "98");
+        assert_eq!(text(crate::screens::discipline::AFTER), "100");
+        assert_eq!(state.season.as_ref().unwrap().day, 66);
+        assert_eq!(seen(&runner, 392), 1, "{}", runner.log.join("\n"));
+        drop(state);
+        drop(runner);
+        let Some(runner) = on_save(&game, "A", &format!("{then}\nnow ok\nuntil day 67")) else { return };
+        assert_eq!(runner.host.state().season.as_ref().unwrap().day, 67, "{}", runner.log.join("\n"));
+    }
 }

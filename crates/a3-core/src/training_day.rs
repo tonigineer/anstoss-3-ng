@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 use chrono::NaiveDate;
 
 use crate::computer_training::{cond_percent, fresh_percent};
-use crate::event_text::{Fill, Lead, Posted};
+use crate::event_text::{Fill, Lead, Posted, Value};
 use crate::individual::{self, Entry, IndividualTables, FIELD_ABILITIES, LEARNT, NOTHING};
 use crate::lineup;
 use crate::league::LeagueTables;
@@ -2125,10 +2125,11 @@ fn player_event(
 /// A player event's run (`FUN_0060d1bf`, by its code less 4): whether
 /// it took place. Its text goes to `posted` where the original builds it
 /// of its texts and names alone ([`crate::event_text`]; `FUN_005f1e86`,
-/// `FUN_005ee5c0`, `FUN_005ee619`, none of them drawing); those with
-/// values (`FUN_00601043`) are not posted — the four with a second part
-/// (`FUN_005f2114`, [`Fill::Headbutt`], [`Fill::Bomb`] and
-/// [`Fill::NamedThen`]) post the first half with the second in tow.
+/// `FUN_005ee5c0`, `FUN_005ee619`, none of them drawing), those with a
+/// value post the number it changed beside the text ([`Fill::Value`],
+/// `FUN_00601043`), and the four with a second part (`FUN_005f2114`,
+/// [`Fill::Headbutt`], [`Fill::Bomb`] and [`Fill::NamedThen`]) post the
+/// first half with the second in tow.
 /// Here are:
 /// 4 and 5, the team's mood ten down or up (`FUN_007147ce`); 8, with a
 /// human manager standing below ten (`FUN_006a61e5`) and his record's
@@ -2139,8 +2140,9 @@ fn player_event(
 /// `FUN_00411130` on the handle's +0x16, the record's condition in
 /// hundredths, wrapped before it is held to its range); 10 and 11,
 /// a keeper drawn and four or three less content with the team
-/// (`FUN_00700a6d`) — 10 answering "not met" all the same; 12 and 14, a
-/// man who keeps no goal drawn and two or one more content; 31, two
+/// (`FUN_00700a6d`), and 12 and 14, a man who keeps no goal drawn and
+/// two or one more content, each telling the value in 0xd to 0xf and
+/// 0x11 — 10 answering "not met" all the same; 31, two
 /// friends in the training (case 0x1b): one man drawn, and when his best
 /// friend (+0x204) trains too, both three more content; 20, the offside
 /// trap (the club's +0xa0, the record's `offside`) twenty up where it
@@ -2171,7 +2173,8 @@ fn player_event(
 /// content with the team; 42, with a human trainer in a unit the gate
 /// shuts, the mood ten down; 43, the mood five up, answering "not met";
 /// 13, any trained man drawn, at a morale of 106 or more two less
-/// content with his distractions (`FUN_00701210`, the record's +0x294);
+/// content with his distractions (`FUN_00701210`, the record's +0x294),
+/// told in 0x10 with the value;
 /// 15, with a human trainer, met unless the next match is tomorrow
 /// (the club's +0xb44, the team's `next_day`); 32, unless the next
 /// match is the league's, at its round 7 the team's +0xca (the club's
@@ -2199,7 +2202,8 @@ fn player_event(
 /// 0 takes the trainer's man of the week's individual training) and a
 /// three-roll — its 0 makes him one less content with his
 /// distractions, the rest one more with the team, each with a roll of
-/// three or five for its news's wording;
+/// three or five for its news's wording (0x18 to 0x1a, 0x13 to 0x17),
+/// told with the value;
 /// 41, with a human
 /// trainer, every trained defender (main position 2 to 5,
 /// `FUN_00677c5f`) one more content with the team (`FUN_005ee7ed`);
@@ -2236,12 +2240,17 @@ fn run_player_event(
         posted.push(Posted { club: (country, number), code: PLAYER_EVENT, text, fill });
     };
     let knock = |records: &mut Records, id: u16, days: u16| knock_for(records, id, days, today);
-    let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| {
-        let Some(id) = draw_listed(records, trainable, keepers, random) else { return false };
-        if let Some(p) = records.player_mut(id) {
-            crate::mood::change(p, 1, by);
-        }
-        true
+    // Draws a listed man, moves his contentment with the team by `by`
+    // and answers with him and the value pair of `FUN_00601043`: the
+    // part as the reasons leave it (`FUN_00700c42`) before, the byte as
+    // the setter wrote it (`FUN_00700a6d` answers with the record's)
+    // after.
+    let content = |records: &mut Records, keepers: bool, by: i32, random: &mut Random| -> Option<(u16, Value)> {
+        let id = draw_listed(records, trainable, keepers, random)?;
+        let p = records.player_mut(id)?;
+        let before = i16::try_from(crate::mood::parts(p)[1]).unwrap_or(0);
+        crate::mood::change(p, 1, by);
+        Some((id, Value { art: 1, before, after: i16::from(p.contentment()[1]) }))
     };
     match code {
         4 | 5 => {
@@ -2285,12 +2294,32 @@ fn run_player_event(
             true
         }
         10 => {
-            content(records, true, -4, random);
+            if let Some((id, value)) = content(records, true, -4, random) {
+                post(0xd, Fill::Value(id, value));
+            }
             false
         }
-        11 => content(records, true, -3, random),
-        12 => content(records, false, 2, random),
-        14 => content(records, false, 1, random),
+        11 => match content(records, true, -3, random) {
+            Some((id, value)) => {
+                post(0xe, Fill::Value(id, value));
+                true
+            }
+            None => false,
+        },
+        12 => match content(records, false, 2, random) {
+            Some((id, value)) => {
+                post(0xf, Fill::Value(id, value));
+                true
+            }
+            None => false,
+        },
+        14 => match content(records, false, 1, random) {
+            Some((id, value)) => {
+                post(0x11, Fill::Value(id, value));
+                true
+            }
+            None => false,
+        },
         20 => {
             // The offside trap rises: the club's byte at +0xa0 (the
             // record's `offside`) stands below 70; the merch range of
@@ -2340,7 +2369,12 @@ fn run_player_event(
             if p.morale() < 0x6a {
                 return false;
             }
+            // `FUN_00701328` reads the byte off the record, `FUN_00701210`
+            // answers with the new one.
+            let before = i16::from(p.contentment()[5]);
             crate::mood::change(p, 5, -2);
+            let after = i16::from(p.contentment()[5]);
+            post(0x10, Fill::Value(id, Value { art: 3, before, after }));
             true
         }
         15 => {
@@ -2389,12 +2423,18 @@ fn run_player_event(
             let Some(p) = records.player_mut(id) else { return false };
             if random.below(3) == 0 {
                 if 1 < statistics::form_today(p) {
+                    let before = i16::from(p.contentment()[5]);
                     crate::mood::change(p, 5, -1);
-                    random.below(3);
+                    let after = i16::from(p.contentment()[5]);
+                    let text = match random.below(3) { 0 => 0x18, 1 => 0x19, _ => 0x1a };
+                    post(text, Fill::Value(id, Value { art: 3, before, after }));
                 }
             } else {
+                let before = i16::try_from(crate::mood::parts(p)[1]).unwrap_or(0);
                 crate::mood::change(p, 1, 1);
-                random.below(5);
+                let after = i16::from(p.contentment()[1]);
+                let roll = u16::try_from(random.below(5)).unwrap_or(4);
+                post(0x13 + roll, Fill::Value(id, Value { art: 1, before, after }));
             }
             true
         }
@@ -3114,7 +3154,8 @@ mod tests {
         assert_eq!(i32::from(records.team(club.0, club.1).unwrap().mood()), (down + 10).min(200));
         assert_eq!(random, expected, "the mood events draw nothing");
         // Each tells the club with a text of its own, the brawl and the
-        // 4:4; code 12's is one with a value, not posted.
+        // 4:4; code 12's post names the man drawn and stands his team
+        // contentment's value beside the text.
         assert_eq!(posted, [Posted::plain(club, PLAYER_EVENT, 7), Posted::plain(club, PLAYER_EVENT, 8)]);
         let outfield = trainable.iter().filter(|&&id| records.player(id).unwrap().get::<u8>(0x21d) != 1).count();
         let team_parts = |records: &Records| -> i32 {
@@ -3122,10 +3163,14 @@ mod tests {
         };
         let before = team_parts(&records);
         assert!(run_player_event(&mut records, club, &trainable, (&tables, &league_tables), 12, 0, [0, 0, 0], (64, date), &mut posted, &mut random));
-        assert_eq!(posted.len(), 2);
         expected.below(outfield as u32);
         assert_eq!(random, expected);
         assert!((0..=2).contains(&(team_parts(&records) - before)));
+        assert_eq!(posted.len(), 3);
+        let Posted { code, text, fill, .. } = posted[2];
+        assert_eq!((code, text), (PLAYER_EVENT, 0xf));
+        let Fill::Value(id, value) = fill else { panic!("code 12 posts the man and his value") };
+        assert_eq!((value.art, value.after), (1, i16::from(records.player(id).unwrap().contentment()[1])), "the window shows what the record now holds");
         // Code 24 in a unit whose row shuts it (unit 1) is no event and
         // draws nothing; code 23 draws a keeper and sets his +0x2f to 5.
         let held = random.clone();
