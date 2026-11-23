@@ -75,7 +75,7 @@ pub(crate) const NATIONAL_SYMBOL: usize = 15;
 pub(crate) const DRESSING_SYMBOL: usize = 17;
 pub const WHISTLE: usize = 18;
 /// The screens the bar's symbols lead to, as far as they are built.
-const BAR_SCREENS: [(usize, u16); 17] = [
+const BAR_SCREENS: [(usize, u16); 18] = [
     (LINEUP_SYMBOL, LINEUP),
     (COMPARISON_SYMBOL, COMPARISON),
     (TACTICS_SYMBOL, TACTICS),
@@ -91,6 +91,7 @@ const BAR_SCREENS: [(usize, u16); 17] = [
     (CONTACTS_SYMBOL, CONTACTS),
     (BOARD_SYMBOL, BOARD),
     (STATISTICS_SYMBOL, a3_core::cycle::dialogs::STATISTICS),
+    (NATIONAL_SYMBOL, a3_core::cycle::dialogs::NATIONAL_MENU),
     (HONOURS_SYMBOL, HONOURS),
     (DRESSING_SYMBOL, DRESSING_ROOM),
 ];
@@ -305,6 +306,12 @@ const NEW_GAME_QUESTION: u16 = u16::MAX - 2;
 const CAREER_ITEM: usize = 5;
 const CAREER_REALLY: u16 = 2691;
 const CAREER_QUESTION: u16 = u16::MAX - 3;
+/// "Neueinstieg" (`FUN_005b1156`): with fewer than four humans the room
+/// closes on 3000 and his name and birthday are asked
+/// (`CMyStartDialog::FUN_006b7255`); with four, 3260 says no one more.
+const JOIN_ITEM: usize = 0;
+const JOIN_FULL: u16 = 3260;
+use a3_core::cycle::dialogs::{BIRTHDAY, NAMES};
 /// "3D - Optionen": the 3D settings (`FUN_005b15ec`).
 const KONFIG_3D_ITEM: usize = 7;
 /// "Musik & Soundeffekte" (`FUN_005b1653`).
@@ -355,20 +362,7 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
         }
         dialog.controls.insert(0, super::caption(dialog.frame, CAPTION_ID, String::new()));
         if id == LINEUP {
-            let spots = rules.pitch.formations.first().map_or([(0, 0); FIELD], |f| f.1);
-            for control in &mut dialog.controls {
-                let Some(id) = control.id else { continue };
-                let at = if (FIELD_BOXES..FIELD_BOXES + FIELD as u16).contains(&id) {
-                    let (x, y) = spots[usize::from(id - FIELD_BOXES)];
-                    PITCH_ORIGIN + Vec2::new(f32::from(x), f32::from(y))
-                } else if (BENCH_BOXES..BENCH_BOXES + BENCH as u16).contains(&id) {
-                    BENCH_ORIGIN + Vec2::new(0.0, BENCH_STEP * f32::from(id - BENCH_BOXES))
-                } else {
-                    continue;
-                };
-                control.kind = Kind::Player;
-                control.rect = Rect::from_corners(at, at + BOX_SIZE);
-            }
+            place_boxes(dialog, rules, FIELD_BOXES, BENCH_BOXES);
         }
         if id == LINEUP_LIST {
             // The small pitch's markers, which the screen moves and labels.
@@ -383,6 +377,25 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>, rules: &Rules) {
             dialog.controls.push(menu_control());
         }
         add_bar(dialog, rules);
+    }
+}
+
+/// The line-up's boxes as players' boxes, where the first formation and
+/// the bench put them: eleven from `field` on, seven from `bench` on.
+pub(crate) fn place_boxes(dialog: &mut Dialog, rules: &Rules, field: u16, bench: u16) {
+    let spots = rules.pitch.formations.first().map_or([(0, 0); FIELD], |f| f.1);
+    for control in &mut dialog.controls {
+        let Some(id) = control.id else { continue };
+        let at = if (field..field + FIELD as u16).contains(&id) {
+            let (x, y) = spots[usize::from(id - field)];
+            PITCH_ORIGIN + Vec2::new(f32::from(x), f32::from(y))
+        } else if (bench..bench + BENCH as u16).contains(&id) {
+            BENCH_ORIGIN + Vec2::new(0.0, BENCH_STEP * f32::from(id - bench))
+        } else {
+            continue;
+        };
+        control.kind = Kind::Player;
+        control.rect = Rect::from_corners(at, at + BOX_SIZE);
     }
 }
 
@@ -417,6 +430,26 @@ pub(crate) fn open_bar(cx: &Cx, view: &mut View, own: usize) {
     state.chosen = own;
     state.off = (0..BAR_SYMBOLS).map(|symbol| bar_closed(cx, symbol)).collect();
     state.tips = game.rules.bar_tips.iter().map(|&t| game.text(t as u16).to_owned()).collect();
+}
+
+/// The bar of the national menu (`FUN_0051dd53`), which switches its own
+/// way: its symbol never off; without a club all but the table's few; on a
+/// Saturday only the short training, where every other screen shuts the
+/// other two trainings instead.
+pub(crate) fn open_national_bar(cx: &Cx, view: &mut View) {
+    open_bar(cx, view, NATIONAL_SYMBOL);
+    let clubless = cx.state.season.as_ref().and_then(|s| s.manager()).is_none_or(|m| m.club.is_none());
+    let saturday = last_day(cx);
+    let Some(state) = control(cx.dialog, BAR_ID).and_then(|b| view.bar_mut(b)) else { return };
+    state.off = (0..BAR_SYMBOLS)
+        .map(|symbol| {
+            if clubless {
+                cx.game.rules.bar_without_club[symbol]
+            } else {
+                saturday && symbol == SHORT_TRAINING_SYMBOL
+            }
+        })
+        .collect();
 }
 
 /// Whether a symbol of the bar is switched off today: all but a few
@@ -802,6 +835,32 @@ impl Screen for MenuBar {
             light_option(cx.dialog, view, Some(item));
             return Outcome::Popup(Request::with(QUESTION, Args::Text(CAREER_REALLY)));
         }
+        if view.id == DRESSING_ROOM
+            && cx.dialog.controls[c].id == Some(DRESSING_OPTIONS)
+            && item == JOIN_ITEM
+        {
+            light_option(cx.dialog, view, Some(item));
+            let humans = cx.state.season.as_ref().map_or(0, |s| s.managers.len());
+            if humans >= a3_core::joining::MOST {
+                self.popup = Some(NOTICE);
+                return Outcome::Popup(Request::with(NOTICE, Args::Text(JOIN_FULL)));
+            }
+            // A game over the net takes its newcomers its own way
+            // (`FUN_006c1b7c`), not built.
+            if matches!(cx.state.mode, Mode::ServerNew | Mode::ServerLoad | Mode::Client) {
+                info!("Neueinstieg over the net: not built yet");
+                light_option(cx.dialog, view, None);
+                return Outcome::Stay;
+            }
+            // The name dialog counts him as the next human
+            // (`DAT_008a56d8 = DAT_00b5cbce + 1`).
+            let setup = &mut cx.state.setup;
+            *setup = a3_core::newgame::Setup::default();
+            setup.trainers = vec![Default::default(); humans + 1];
+            setup.current = humans;
+            self.popup = Some(NAMES);
+            return Outcome::Popup(Request::new(NAMES));
+        }
         // "Spielstand speichern". The original asks first whether the
         // game is on at all (`FUN_007cb965`); here it always is. A game
         // played over the net saves when every player has ended the
@@ -901,6 +960,23 @@ impl Screen for MenuBar {
                     end_career(cx);
                 }
                 Outcome::Close(Reply::Quit)
+            }
+            (Some(NAMES), Reply::Ok) => {
+                self.popup = Some(BIRTHDAY);
+                Outcome::Popup(Request::new(BIRTHDAY))
+            }
+            // Queued for the week's start (`FUN_006c4f81`).
+            (Some(BIRTHDAY), Reply::Ok) => {
+                let setup = &cx.state.setup;
+                if let Some(trainer) = setup.trainers.get(setup.current).cloned() {
+                    cx.state.joining.push(trainer);
+                }
+                light_option(cx.dialog, view, None);
+                Outcome::Stay
+            }
+            (Some(NAMES | BIRTHDAY), _) => {
+                light_option(cx.dialog, view, None);
+                Outcome::Stay
             }
             (Some(NEW_GAME_QUESTION), Reply::Ok) => Outcome::Close(Reply::NewGame),
             // The career ends with the week, and the turn at once
@@ -1309,6 +1385,38 @@ fn show_lineup(
     boxes: Boxes,
     sort: Sort,
 ) {
+    show_lineup_in(view, dialog, game, season, state, records, boxes, sort, (FIELD_BOXES, BENCH_BOXES));
+}
+
+/// The line-up as half time shows it (`CHalbzeitpause`, `FUN_004bace2`):
+/// the same boxes, squad and comparison, its boxes under ids of its own.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn show_break_lineup(
+    view: &mut View,
+    dialog: &Dialog,
+    game: &Game,
+    season: &Season,
+    state: &ClubState,
+    records: Option<&Records>,
+    field: u16,
+    bench: u16,
+) {
+    show_lineup_in(view, dialog, game, season, state, records, Boxes::Refill, Sort::default(), (field, bench));
+}
+
+/// The line-up into the boxes from `field` and `bench` on.
+#[allow(clippy::too_many_arguments)]
+fn show_lineup_in(
+    view: &mut View,
+    dialog: &Dialog,
+    game: &Game,
+    season: &Season,
+    state: &ClubState,
+    records: Option<&Records>,
+    boxes: Boxes,
+    sort: Sort,
+    (field_boxes, bench_boxes): (u16, u16),
+) {
     let pitch = &game.rules.pitch;
     let players = &state.players;
     let lineup = &state.lineup;
@@ -1322,7 +1430,7 @@ fn show_lineup(
     let duties = a3_core::duties::on_pitch(players, &state.duties, &lineup.field);
     let spots = if list_view { &[][..] } else { &lineup.spots[..] };
     for (i, (&spot, &player)) in spots.iter().zip(&lineup.field).enumerate() {
-        let Some(c) = control(dialog, FIELD_BOXES + i as u16) else { continue };
+        let Some(c) = control(dialog, field_boxes + i as u16) else { continue };
         let position = pitch.position(spot);
         let shown = match player {
             Some(p) => PlayerBox {
@@ -1345,7 +1453,7 @@ fn show_lineup(
     // The bench shows no duties.
     let bench = if boxes == Boxes::Refill && !list_view { &lineup.bench[..] } else { &[] };
     for (i, &player) in bench.iter().enumerate() {
-        let Some(c) = control(dialog, BENCH_BOXES + i as u16) else { continue };
+        let Some(c) = control(dialog, bench_boxes + i as u16) else { continue };
         let shown = player.map_or_else(PlayerBox::default, |p| filled(p, players[p].positions[0]));
         view.set_player(c, shown);
     }
@@ -1752,8 +1860,6 @@ pub(crate) fn tenths(value: i32) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use a3_core::random::Random;
-    use a3_core::season::NewManager;
     use a3_core::state::GameState;
 
     use super::*;
@@ -1770,17 +1876,29 @@ mod tests {
         compose(&mut game);
         let germany = game.world.country(0).unwrap();
         let bayern = germany.clubs.iter().position(|c| c.name == "FC Bayern München").unwrap();
-        let manager = NewManager {
-            first_name: "Anna".into(),
-            last_name: "Test".into(),
-            club: Some((0, bayern)),
-            national_team: None,
-            level: 9,
-            difficulty: 2,
-            negotiating: 3,
+        // A new game as the cycle makes it, and Anna signed to Bayern as
+        // the cycle's signing writes it into the records; the season then
+        // stands as a loaded game reads it.
+        let setup = a3_core::newgame::Setup {
+            trainers: vec![a3_core::newgame::Trainer {
+                first_name: "Anna".into(),
+                last_name: "Test".into(),
+                ..a3_core::newgame::Trainer::default()
+            }],
+            ..a3_core::newgame::Setup::default()
         };
-        let season =
-            Season::first(&game.world, &game.rules, vec![0], 0, vec![manager], Random::new(7));
+        let (mut records, random) = a3_core::newgame::start(&game.data, &setup, 7).unwrap();
+        let nation = germany.nation;
+        let slot = records.human_slot(0).unwrap();
+        let manager = &mut records.managers[slot];
+        manager.set_status(3); // under contract, `load::HIRED`
+        manager.set_country(nation);
+        manager.set_team(bayern as u16);
+        if let Some(team) = records.team_mut(nation, bayern as u16) {
+            let [_, second] = team.humans();
+            team.set_humans([slot as u8 + 1, second]);
+        }
+        let season = a3_core::load::season(&records, &game.data, random);
         let mut state = GameState { season: Some(season), ..GameState::default() };
         let dialog = &game.dialogs[&LINEUP];
         let mut view = View::new(LINEUP, dialog);

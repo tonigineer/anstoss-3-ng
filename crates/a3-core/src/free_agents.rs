@@ -89,18 +89,18 @@ const PROMISE_OLD: [i8; 5] = [-2, -2, -2, -2, -2];
 const THOUSAND: i32 = 1000;
 const FEE_UNIT: i64 = 10_000;
 
-fn today(records: &Records) -> Option<NaiveDate> {
+pub(crate) fn today(records: &Records) -> Option<NaiveDate> {
     let [day, month, year] = records.globals.date();
     NaiveDate::from_ymd_opt(i32::from(year), u32::from(month), u32::from(day))
 }
 
-fn age(records: &Records, p: &Player) -> i32 {
+pub(crate) fn age(records: &Records, p: &Player) -> i32 {
     today(records).map_or(0, |d| crate::statistics::age_on(p, d))
 }
 
 /// The years his contract has left in the closing season, as his object
 /// holds them: none once run out.
-fn years_left(records: &Records, p: &Player) -> i32 {
+pub(crate) fn years_left(records: &Records, p: &Player) -> i32 {
     (i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year())).max(0)
 }
 
@@ -184,7 +184,7 @@ fn aged_out(records: &Records, country: u8, number: u16) -> Vec<u16> {
 
 /// His promise (`FUN_006ff516`): his strength and what his age and talent
 /// add, within 1 and what his talent reaches.
-fn promise(p: &Player, age: i32) -> i16 {
+pub(crate) fn promise(p: &Player, age: i32) -> i16 {
     let talent = usize::try_from(p.talent()).unwrap_or(0).min(4);
     let add = match age {
         ..17 => PROMISE[0][talent],
@@ -226,7 +226,7 @@ fn table(records: &Records, country: u16, level: u8) -> Table {
 
 /// The years of his fresh terms (`FUN_0076d3ac`): by his age, the young
 /// and able drawn up to five.
-fn fresh_years(p: &Player, age: i32, random: &mut Random) -> i8 {
+pub(crate) fn fresh_years(p: &Player, age: i32, random: &mut Random) -> i8 {
     match age {
         ..23 if p.strength() > 3 => match random.below(3) {
             0 => 5,
@@ -256,8 +256,52 @@ fn fresh_terms(
     random: &mut Random,
 ) {
     let year = i32::from(records.globals.start_year());
+    let Some(t) = fresh_contract(records, id, level, tables, random) else { return };
+    let word = |at: usize| u16::from_le_bytes([t[at], t[at + 1]]);
+    if let Some(p) = records.player_mut(id) {
+        p.set_salary(word(0));
+        p.set_appearance_bonus(word(2));
+        p.set_goal_bonus(word(4));
+        p.set_fixed_fee(word(6));
+        p.put::<u32>(0x158, 0);
+        p.set_terms(word(0xe));
+        p.put::<u8>(0x161, 0);
+        p.put::<u8>(0x160, 0);
+        // A year more than the terms, counted from the closing season.
+        p.set_contract((i32::from(t[0xc] as i8) + 1 + year) as u16);
+        p.put::<u8>(0x14c, 0);
+        p.put::<u16>(0x14e, 0);
+    }
+}
+
+/// `FUN_00709fb6`'s terms as the contract's 0x14 bytes it fills, zeroed
+/// before: salary, the bonuses for playing and for a goal, the release
+/// fee, the years at 0xc, the player's option in the word at 0xe.
+pub(crate) fn fresh_contract(
+    records: &Records,
+    id: u16,
+    level: u8,
+    tables: (&ContractTables, &ValueTables),
+    random: &mut Random,
+) -> Option<[u8; 0x14]> {
+    terms_over(records, id, level, tables, [0; 0x14], random)
+}
+
+/// `FUN_00709fb6` over the contract `t` as it stands: the salary and the
+/// bonuses anew, the fresh years added to those it holds, the release
+/// fee spared the one-in-five draw when it held one already (and
+/// reckoned at the years so summed), the terms' word cleared but for the
+/// player's option, one time in two; the rest of `t` as it was.
+pub(crate) fn terms_over(
+    records: &Records,
+    id: u16,
+    level: u8,
+    tables: (&ContractTables, &ValueTables),
+    mut t: [u8; 0x14],
+    random: &mut Random,
+) -> Option<[u8; 0x14]> {
     let month = u32::from(records.globals.date()[1]);
-    let Some(p) = records.player(id) else { return };
+    let p = records.player(id)?;
     let age = age(records, p);
     let form = crate::statistics::form_today(p);
     let position = p.positions()[0];
@@ -275,10 +319,9 @@ fn fresh_terms(
         9 => (f64::from(salary) / share / 2.5) as i32 as u16,
         _ => 0,
     };
-    let p = records.player(id).cloned();
-    let Some(p) = p else { return };
-    let years = fresh_years(&p, age, random);
-    let fee = if p.strength() >= 7 && random.below(5) == 0 {
+    let years = (t[0xc] as i8).wrapping_add(fresh_years(p, age, random));
+    let held = u16::from_le_bytes([t[6], t[7]]) != 0;
+    let fee = if p.strength() >= 7 && (held || random.below(5) == 0) {
         let worth = Worth {
             strength: p.strength(),
             position,
@@ -294,21 +337,14 @@ fn fresh_terms(
     } else {
         0
     };
-    let option = if random.below(2) != 0 { 0x1000 } else { 0 };
-    if let Some(p) = records.player_mut(id) {
-        p.set_salary(salary);
-        p.set_appearance_bonus(appearance);
-        p.set_goal_bonus(goal);
-        p.set_fixed_fee(fee);
-        p.put::<u32>(0x158, 0);
-        p.set_terms(option);
-        p.put::<u8>(0x161, 0);
-        p.put::<u8>(0x160, 0);
-        // A year more than the terms, counted from the closing season.
-        p.set_contract((i32::from(years) + 1 + year) as u16);
-        p.put::<u8>(0x14c, 0);
-        p.put::<u16>(0x14e, 0);
-    }
+    let option: u16 = if random.below(2) != 0 { 0x1000 } else { 0 };
+    t[0..2].copy_from_slice(&salary.to_le_bytes());
+    t[2..4].copy_from_slice(&appearance.to_le_bytes());
+    t[4..6].copy_from_slice(&goal.to_le_bytes());
+    t[6..8].copy_from_slice(&fee.to_le_bytes());
+    t[0xc] = years as u8;
+    t[0xe..0x10].copy_from_slice(&option.to_le_bytes());
+    Some(t)
 }
 
 /// The free agents find clubs (`FUN_0040ec50`).

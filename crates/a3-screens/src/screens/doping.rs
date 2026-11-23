@@ -5,9 +5,9 @@
 //! off (`OnUserC000_00516dad` on the list's `MSG_SEND_TAB_POS`,
 //! `FUN_00516f7a`), the pills dose all on it
 //! (`OnClicked_IDC_DOPING_ALLE_DOPEN_005173ff`). What to raise and how
-//! hard the stuff is to find stand on the two option groups. Telling the
-//! association of other humans' players (`CDopingMitspieler`) is not
-//! built.
+//! hard the stuff is to find stand on the two option groups. The report
+//! button tells the association of other humans' players
+//! ([`super::doping_report`]).
 
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ use a3_core::doping;
 use a3_core::records::Records;
 use a3_files::rch::Dialog;
 
-use super::{Args, Cx, Outcome, Reply, Request, Screen, control, mark_inert, ok_or_cancel, set};
+use super::{Args, Cx, Outcome, Reply, Request, Screen, control, ok_or_cancel, set};
 use crate::pointer::Target;
 use crate::view::View;
 
@@ -27,8 +27,11 @@ const KINDS: u16 = 4928;
 const SUBSTANCES: u16 = 4927;
 const ALL: u16 = 4930;
 /// Telling the association (`FUN_00517588`): hidden without other humans
-/// (`FUN_0051689b`), crossed out with them.
+/// (`FUN_0051689b`).
 const REPORT: u16 = 5485;
+/// "Sie haben schon zu oft ..." — the alert once his reports stand at
+/// three (`FUN_00517588`, text 0x138a).
+const TOO_MANY_REPORTS: u16 = 5002;
 const CAPTION_ID: u16 = 9945;
 /// "Aggression steigern" and the normal stuff, as it opens.
 const FIRST_KIND: usize = 0;
@@ -200,8 +203,6 @@ impl Screen for Doping {
         if let Some(c) = control(dialog, REPORT) {
             view.controls[c].hidden = humans < 2;
         }
-        let report = |t| matches!(t, Target::Button(b) if dialog.controls[b].id == Some(REPORT));
-        mark_inert(view, dialog, |t| !report(t));
         self.fill(cx, view);
     }
 
@@ -215,6 +216,20 @@ impl Screen for Doping {
             Outcome::Popup(Request::with(super::popups::NOTICE, args))
         };
         match target {
+            // With humans about (`FUN_006355f4`), the reports allowed
+            // (`FUN_006a660b`) open dialog 509, else the alert.
+            Target::Button(b) if id(b) == Some(REPORT) => {
+                let reports = cx.state.records.as_ref().and_then(|r| {
+                    let m = r.managers.get(slot(cx)?)?;
+                    Some(m.doping_reports())
+                });
+                let Some(reports) = reports else { return Outcome::Stay };
+                if !doping::may_report(reports) {
+                    let args = Args::Text(TOO_MANY_REPORTS);
+                    return Outcome::Popup(Request::with(super::popups::NOTICE, args));
+                }
+                Outcome::Popup(Request::new(super::doping_report::DOPING_REPORT))
+            }
             Target::Button(b) if id(b) == Some(ALL) => {
                 for player in squad(cx) {
                     let r = cx.state.records.as_ref().and_then(|r| r.player(player));

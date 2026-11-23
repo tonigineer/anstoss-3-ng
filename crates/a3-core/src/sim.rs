@@ -37,16 +37,19 @@
 //! displays: `FUN_0073f1a6` and the `DAT_01bad050`/`01bad060` displays) has
 //! no replica and is left out.
 //!
-//! Not wired into `matches::play_day` yet: the quality-one shot and the
-//! scorer's books still wait, so these games would end thin beside the
-//! stand-in's.
+//! Before the minutes the kick-off (`kick_off_strengths`, the pre-match
+//! walk's `FUN_006f6fc7`) reckons both sides' strengths from their
+//! elevens; the clubs' tactics laid behind it wait. `matches::play_day`
+//! walks the day's listed league matches through it.
 
 use chrono::NaiveDate;
 
 use crate::duties::{self, Duty};
 use crate::random::Random;
+use crate::individual::IndividualTables;
 use crate::records::{Player, Records};
-use crate::{statistics, world};
+use crate::training_day;
+use crate::{statistics, tactics, world};
 
 /// The record's flag byte at +0x1d.
 /// The match is over; its score stands and the minute walk passes it by.
@@ -60,8 +63,10 @@ pub const PENS: u8 = 0x40;
 /// The match goes to (or is in) extra time.
 pub const EXTRA: u8 = 0x80;
 
-/// The record's kind at +0x20: this fixture can go to extra time.
-pub const MAY_EXTRA: u32 = 0x80_0000;
+/// The record's kind at +0x20: this fixture must be won and can go to
+/// extra time (`FUN_00414e2e`, `FUN_006f3343` test 0x80000; a
+/// tournament's game carries it, `FUN_00625974`).
+pub const MAY_EXTRA: u32 = 0x8_0000;
 /// Two legs home and away; the tie is decided over both.
 pub const TWO_LEGS: u32 = 0x8000_0000;
 
@@ -115,16 +120,25 @@ const WEAR_MULT: [i32; 5] = [8, 9, 10, 11, 12];
 /// three freshness values — a full match lifts the man's condition a
 /// little and drains his freshness well below it, the shorter bands lift
 /// and drain less. `FUN_006f8b3f` takes the sibling
-/// rows at `DAT_008a6f24` (a third of the size, condition barely lifted)
-/// when the record's short at +0x24 stands above nought — no ported walk
-/// ever raises that byte, so the played rows always answer; the seam waits
-/// with whatever fixture would.
+/// rows [`FRIENDLY_WEAR_ROWS`] when the record's short at +0x24 is not
+/// nought, as the friendlies' and tournaments' walk (`FUN_006f3b7a`) has
+/// it; the competitions' walks answer with these.
 const WEAR_ROWS: [[i32; 4]; 5] = [
     [10, -30, -60, -25],
     [40, -90, -270, -135],
     [70, -162, -450, -225],
     [100, -225, -630, -315],
     [120, -340, -810, -405],
+];
+/// The rows a friendly or a tournament's game writes (`DAT_008a6f24`),
+/// as [`WEAR_ROWS`]: the condition barely lifted, the freshness drained
+/// about half as much.
+const FRIENDLY_WEAR_ROWS: [[i32; 4]; 5] = [
+    [0, -18, -36, -18],
+    [20, -45, -135, -72],
+    [40, -80, -225, -108],
+    [50, -125, -315, -153],
+    [60, -160, -670, -315],
 ];
 /// A shootout's regulation round lists five takers a side
 /// (`FUN_005ddea7`'s `FUN_005de669(club, list, 0, 5)` on each side).
@@ -149,7 +163,8 @@ pub struct Side {
     pub strengths: [i16; 5],
     /// +0x0a (+0x66/+0x25a): the standing a goal counts against the foe's,
     /// a sixth of the two apart added to the minute's mood (`FUN_007410ca`);
-    /// no ported walk fills it, so the replica keeps it at nought.
+    /// the kick-off lays the club's will to win there, tenfold
+    /// (`FUN_006f7b67`, [`kick_off_strengths`]).
     pub nerve: i16,
     /// +0x0c: the mood of the minute, `minute_play` sinks it when the side
     /// trails through the half.
@@ -157,7 +172,9 @@ pub struct Side {
     /// +0x0e..+0x16: recomputed every minute from strengths, morale,
     /// stance and tactic; the chances read these.
     pub rated: [i16; 5],
-    /// +0x1c: what the stance's percentage is taken of.
+    /// +0x1c: what the stance's percentage is taken of — a hundred from
+    /// the kick-off, less for a favourite taking the match lightly
+    /// ([`kick_off_strengths`]).
     pub strength: i16,
     /// +0x1e: index into `MENTAL`.
     pub mental: i16,
@@ -190,6 +207,35 @@ pub struct Side {
     pub men: u8,
     /// +0x39 (+0x95/+0x289): the count of the side's plain chances.
     pub chances: u8,
+    /// +0x3d (+0x99/+0x28d): the straight reds whose kind came from the
+    /// other table (`FUN_006748ea`, see `straight_red`).
+    pub other_reds: u8,
+    /// +0x43 (+0x9f/+0x293): the side's bookings of the foul kinds 4 and
+    /// 12, a first card lifting it (`FUN_0065a6b0`, `FUN_0065ab3a`).
+    pub hard_fouls: u8,
+    /// +0x4e (+0xaa/+0x29e): bit 0x10 stands once a man went off for a
+    /// foul of the kinds 4 and 12.
+    pub foul_marks: u16,
+    /// +0xd4,+0xd6 (+0x130,+0x132/+0x324,+0x326): the side's first cards,
+    /// both counters lifted together.
+    pub cautions: [i16; 2],
+    /// +0xd8 (+0x134/+0x328): bit 1 raised by the side's first card.
+    pub caution_bits: u16,
+    /// +0xdc (+0x138/+0x32c): the side's sendings-off.
+    pub reds: i16,
+    /// +0xde (+0x13a/+0x32e): the side's straight reds, the chance
+    /// frame's roll 699 (`straight_red`); the second card counts at +0xdc.
+    pub straight_reds: i16,
+    /// The side's cautioned men in order — the live player's +0x57 bit 8
+    /// (record +0x25b) the booking raises at the moment; the replica
+    /// keeps no live objects, so the names wait here.
+    pub booked: [u16; LEDGER_SLOTS],
+    /// The side's men sent off in order — the live +0x57 bit 0x10 (0x20
+    /// for a straight red), and
+    /// the man's place in the club's formation +0xa9a cleared; the
+    /// eleven the events read (`pitch_eleven`) leaves these places
+    /// empty.
+    pub sent_off: [u16; LEDGER_SLOTS],
     /// +0xb2 (+0x10e/+0x302): how many talks the side has left.
     pub talk_max: i16,
     /// +0xb4 (+0x110/+0x304): the side's shooting strength, `shot_quality`.
@@ -208,10 +254,10 @@ pub struct Side {
     pub pressed: u16,
     /// +0xfa (record +0x156/+0x34a): the side's entered men, short ids.
     /// The original copies these from its line-up (runtime +0x8e, the
-    /// manager's saved eleven and bench) or the pre-match squads in
-    /// `FUN_0078b26c`; the walk enters the saved formation when the
-    /// team record keeps one and its own eleven otherwise
-    /// (`fill_entries`), the reserve places nought with the stand-in.
+    /// manager's or the co-trainer's eleven and bench, `line_up_row`);
+    /// the walk enters the saved formation when the team record lists
+    /// one and its own eleven otherwise (`fill_entries`), the reserve
+    /// places nought with the stand-in.
     pub entries: [u16; LEDGER_SLOTS],
     /// +0x1c0 (record +0x21c/+0x410): one ledger byte per entered man,
     /// read together with `entries` by `book_event`, `own_goal_mark` and
@@ -270,6 +316,15 @@ pub struct Side {
     /// (`FUN_00740fb6`); the replica keeps no live objects, so the
     /// pairs wait here for `post_match_books`.
     pub keeper_book: [(u16, bool); LEDGER_SLOTS],
+    /// +0x20..+0x2a: the six line shorts the scorer pick's factors read
+    /// (`FUN_0077e590`): the defensive and the attacking midfield's parts
+    /// on the three wings, pairwise (`FUN_006a1bcf`).
+    pub lines: [i16; 6],
+    /// +0xc6..+0xcc (+0x122../+0x316..): the side's strength on the day —
+    /// the five strengths' sum, the club's +0xdf2 —, its attack, its
+    /// midfield and its defence, each a tenth of the strengths it sums
+    /// (`FUN_006f6fc7`).
+    pub day: [i16; 4],
 }
 
 /// A match as the original keeps it: the 0x498-byte record, one of the
@@ -284,6 +339,9 @@ pub struct Match {
     /// +0x08,+0x09: the first leg's goals — +0x09 counts with +0x0e, +0x08
     /// with +0x10.
     pub leg: [u8; 2],
+    /// +0x12,+0x13: the score at half time, which the break copies from
+    /// the goals (`FUN_0064987a`) and the settlement reads as the half's.
+    pub half: [u8; 2],
     /// +0x14..+0x1b: the score at the clock's marks — 90, 10, 75, 85 —
     /// each kept in two bytes, one per side.
     pub score90: [u8; 2],
@@ -307,11 +365,14 @@ pub struct Match {
     /// +0x240,+0x434: what the last minute's booking left for the frame to
     /// pass on (`FUN_00413115`); both cleared after.
     pub cards: [u16; 2],
-    /// +0x444: what side one leads by; its sign decides which side's mood
-    /// sinks as the minutes of a lost half run on.
+    /// +0x444: what side one leads by — at the kick-off twice its
+    /// eleven's lead in condition, within 45 (`FUN_006f6c35`); its sign
+    /// decides which side's mood sinks as the minutes of a lost half run
+    /// on.
     pub advantage: i16,
     /// +0x446: a percent on the leading side's attack and hold, see
-    /// `minute_play`.
+    /// `minute_play` — the crowd's lean the walk's third loop leaves
+    /// ([`crowd_lean`]), below nought for the home side.
     pub form: i16,
     /// +0x448: the minute this match's half ends at; the walk's threshold,
     /// floored at 45, 90 and 120 by the half.
@@ -324,6 +385,8 @@ pub struct Match {
     /// +0x458: the referee, a record index; the pre-match walk draws one
     /// only for a national tie and leaves a plain fixture at 0xffff.
     pub referee: i16,
+    /// +0x45a: the bookings both sides took in the match (`FUN_0065a6b0`).
+    pub bookings: i16,
     /// +0x468: this match's place in the day's row, set by the pre-match
     /// walk.
     pub index: u16,
@@ -337,6 +400,28 @@ pub struct Match {
     /// (`FUN_0070c334`) and joins the minute walk only when the whole day
     /// runs watched.
     pub nat_bits: u16,
+    /// +0x244,+0x438: the bonus each side plays for, the club's +0xb0,
+    /// which the pre-match walk lays only after the kick-off strengths
+    /// (its sixth loop); the row is cleared before (`FUN_0062a325`), so
+    /// the kick-off reads nought here.
+    pub bonus: [i32; 2],
+    /// +0x460: the match the day's listing marked for the doping control
+    /// (`FUN_00690a9e`'s throw of a league's pairs).
+    pub doping: bool,
+    /// The men the control picked on each side before the match
+    /// (`FUN_005dad80`, which marks the live man's +0x57 bit 0x40; the
+    /// replica keeps no live men, so their ids wait here for the
+    /// settlement's test), none 0.
+    pub picked: [[u16; 2]; 2],
+    /// The crowd the walk's third loop reckons for a league fixture
+    /// (`FUN_0078b26c`'s locals, before the stadium takes them): the home
+    /// fans and the visitors.
+    pub fans: [i32; 2],
+    /// +0x24: a game of the day's own list — a friendly (`FUN_00625310`
+    /// lays 1) or a tournament's (`FUN_00625974` lays 2). The plain pass then wears its men by
+    /// the friendly rows ([`FRIENDLY_WEAR_ROWS`]), no graded pass follows
+    /// and the scorers' books stand off ([`post_match_books`]).
+    pub exhibition: bool,
 }
 
 /// The day's clock, `DAT_01bad044` and its state globals: minute (+0xe),
@@ -371,11 +456,14 @@ struct Clock {
 /// each match of the row once the minutes have walked
 /// (`FUN_006f8f44` with the fifth parameter nought); the graded pass and
 /// the clubs' ledgers in that loop (`FUN_00714236`, `FUN_00744d02`) wait
-/// with the club objects.
+/// with the club objects. `lessons`, the individual training's tables,
+/// lets the goals, assists and saved penalties teach the human clubs'
+/// men their abilities as well ([`post_match_lessons`]).
 pub fn play_matches(
     matches: &mut [Match],
     live: bool,
     mut records: Option<&mut Records>,
+    lessons: Option<&IndividualTables>,
     today: NaiveDate,
     random: &mut Random,
 ) {
@@ -388,20 +476,26 @@ pub fn play_matches(
         }
     }
     let mut minute = 1;
-    while minute < 0x31 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random)
+    while minute < 0x31 && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random)
     {
         minute += 1;
     }
     clock.minute = 45;
     // Half time also packs the half's events (FUN_006f85b7 for the live
-    // match) and records the scorers so far (FUN_0064987a) — not ported.
+    // match) and records the scorers so far (FUN_0064987a) — not ported
+    // but for the half's score, copied over the whole row (+0x12/+0x13;
+    // the original skips the copy on a day `FUN_006ef262` shows no
+    // break, whose half nothing reads).
+    for m in matches.iter_mut() {
+        m.half = [m.goals[0] as u8, m.goals[1] as u8];
+    }
     for m in matches.iter_mut() {
         m.ends_at = added_time(m, random) + 90;
         m.flags &= !MINUTE_UP;
     }
     clock.half2 = 1;
     let mut minute = 46;
-    while minute < 99 && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
+    while minute < 99 && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random) {
         minute += 1;
     }
     clock.minute = 90;
@@ -412,12 +506,12 @@ pub fn play_matches(
         clock.half2 = 0;
         clock.extra = 1;
         let mut minute = 90;
-        while minute < 0x7e && tick(matches, live, minute, &mut clock, records.as_deref(), today, random) {
+        while minute < 0x7e && tick(matches, live, minute, &mut clock, records.as_deref_mut(), today, random) {
             minute += 1;
         }
         if after_extra_time(matches, live) {
             clock.extra = 2;
-            tick(matches, live, 0x78, &mut clock, records.as_deref(), today, random);
+            tick(matches, live, 0x78, &mut clock, records.as_deref_mut(), today, random);
         }
     }
     // The day loop's per-match passes: what the ninety minutes leave on
@@ -425,12 +519,32 @@ pub fn play_matches(
     // assist and own-goal counters. They run on the walk's own matches,
     // the way the loop walks the row after `FUN_006f352e` ended it; the
     // national ties bulk-simulated at pre-match wait with their lists.
-    // Nothing here draws a number.
+    // Only the grades draw, one number a graded man.
     if let Some(records) = records.as_deref_mut() {
         for m in matches.iter() {
-            if live || m.nat_bits == 0 {
+            if m.exhibition {
+                // The friendlies' walk ends on the plain pass alone
+                // (`FUN_006f3b7a`'s last loop, `FUN_006f8f44` with the
+                // fifth parameter nought).
+                exhibition_wear(m, records);
+            } else if live || m.nat_bits == 0 {
+                // The men's form as the kick-off took it (runtime +0xb7).
+                let kickoff: Vec<Vec<(u16, i32)>> = (0..2)
+                    .map(|w| {
+                        saved_eleven(m, w, records)
+                            .into_iter()
+                            .filter_map(|id| records.player(id).map(|p| (id, statistics::form_today(p))))
+                            .collect()
+                    })
+                    .collect();
                 post_match_wear(m, records);
+                for (which, form) in kickoff.iter().enumerate() {
+                    post_match_grades(m, which, form, records, random);
+                }
                 post_match_books(m, records);
+                if let Some(tables) = lessons {
+                    post_match_lessons(m, records, tables);
+                }
             }
         }
     }
@@ -449,11 +563,11 @@ pub fn play_matches(
 /// touch before the hour — and no referee, the record's 0xffff. Nothing here
 /// draws a random number: the league day's draw stream starts at its
 /// first minute, as the week's trace shows. The walk's third loop — the
-/// national call-ups, the squads summed into the sides by `FUN_0078b26c`
-/// and their totals at +0x50/+0x54 settling the favourite byte at +0x58,
-/// and the referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by
-/// `FUN_0063161e` into +0x44a..+0x458 for a national tie — works on the
-/// clubs and their squads and waits there.
+/// national call-ups, the crowd `FUN_0078b26c` reckons ([`crowd_row`]: the
+/// lean; the gate, its home and away fans at +0x50/+0x54 settling the
+/// crowd byte at +0x58, wait), and the referee pair `FUN_006cdbb9`/`FUN_004244da` unpacked by `FUN_0063161e`
+/// into +0x44a..+0x458 for a national tie — works on the clubs and waits
+/// there; its fourth, the sides' line-ups, is [`line_up_row`].
 pub fn pre_match(row: &mut [Match]) {
     for (index, m) in row.iter_mut().enumerate() {
         m.index = index as u16;
@@ -486,6 +600,578 @@ pub fn pre_match(row: &mut [Match]) {
     }
 }
 
+/// The walk's third loop's crowd for each league fixture of the row
+/// (`FUN_0078b26c` with the match, its home and its away club: a kind
+/// whose top bits are nought), [`crate::presale::league_crowd`] on the
+/// day, and the lean it leaves at +0x446 ([`crowd_lean`]). The cups' and
+/// the friendlies' branches wait with their rows.
+pub fn crowd_row(row: &mut [Match], records: &Records, data: &crate::data::Data) {
+    let today = records.globals.day() as i16;
+    for m in row.iter_mut() {
+        if m.kind & 0x7f00_0000 != 0 || is_national(m.ids[1]) || is_national(m.ids[3]) {
+            continue;
+        }
+        let side = |which: usize| (m.ids[which * 2] as u8, m.ids[which * 2 + 1] as i16);
+        let matchday = (m.kind & 0x3f) as i32 + 1;
+        if let Some((home, away)) =
+            crate::presale::league_crowd(records, side(0), side(1), matchday, today, &data.presale)
+        {
+            m.fans = [home, away];
+            m.form = crowd_lean(home, away);
+        }
+    }
+}
+
+/// The crowd's lean (`FUN_0078b26c`'s tail): the more fans' side against
+/// the fewer, twice the more over the fewer under a root, times twice the
+/// whole crowd, 40000 on, a sixty-thousandth of it — below nought for
+/// the home side, at most three either way; an even crowd leans to the
+/// visitors.
+pub fn crowd_lean(home: i32, away: i32) -> i16 {
+    let ahead = |more: i32, fewer: i32| {
+        let more = f64::from(more) + f64::from(more);
+        if fewer < 1 { more.sqrt() } else { (more / f64::from(fewer)).sqrt() }
+    };
+    let whole = f64::from(home.wrapping_add(away));
+    let lean = |root: f64, sign: f64| ((whole + whole) * root + 40000.0) * sign / 6_000_000.0;
+    if away < home {
+        (lean(ahead(home, away), -100.0) as i32 as i16).max(-3)
+    } else {
+        (lean(ahead(away, home), 100.0) as i32 as i16).min(3)
+    }
+}
+
+/// The pre-match walk's fourth loop (`FUN_006ef296` on a row it does not
+/// resume, its third parameter nought), match by match, the first side
+/// before the second: the camp booked before the match (`FUN_0059a2ea`,
+/// [`training_day::camp_before_match`], which the day runs on the human
+/// fixtures), then `FUN_0042a702` — a side whose club has no human
+/// trainer (club +0x8a nought) is lined up by its co-trainer in a system
+/// of his choosing with three foreigners at most (`FUN_0042c802` with 6,
+/// its parameter block from `FUN_004300b0`; the competition flag
+/// `FUN_0042a702` lays beside it at +0xc is read by nobody), the bench
+/// "Auto." fills (`FUN_0042a828`) and the parts the eleven count for
+/// (`FUN_006a18c2`): [`crate::autolineup::line_up_computer`], into the
+/// team record the club object is loaded from. So every computer side —
+/// a foreign club of a European tie, whose record the week's line-up
+/// (`FUN_0042a76e`, the played nations only) never touches, or a club
+/// whose listed man has left since — stands the co-trainer's eleven the
+/// walk copies into the side's +0x8e. A national side takes its call-ups
+/// first (`FUN_0062fdc9`, `FUN_0062f5d9` on club 200), which wait with
+/// the national lists; and a human side, before day 42 unless the start
+/// option `DAT_00b5d152` is 5 or 12 (`FUN_006ef262`), is lined up the
+/// same way without his turn (`FUN_0042a7da`), else his turn opens
+/// (events 0xb7, 0xc0) — the replica stands his saved eleven. The
+/// co-trainer draws nothing.
+pub fn line_up_row(row: &[Match], records: &mut Records, data: &crate::data::Data) {
+    for m in row {
+        for which in 0..2 {
+            let (country, number) = (m.ids[which * 2], m.ids[which * 2 + 1]);
+            if is_national(number) {
+                continue;
+            }
+            crate::autolineup::line_up_computer(records, data, country, number);
+        }
+    }
+}
+
+/// The pay a side plays for against a man's salary (live +0x88, the
+/// record's +0x150), in the money unit `DAT_00a3b420` (ten:
+/// `FUN_00627bd0`'s floats times one): a bonus past fifty units of his
+/// salary lifts his part to 112 %, past twenty to 110, twelve 108, ten
+/// 106, six 104, three 103; one under a unit leaves him at 96 %, under
+/// two at 98, else whole (`FUN_006a1bcf`, `DAT_00a3b3ec` …
+/// `DAT_00a3b418`).
+const BONUS_STEPS: [(i32, i32); 6] = [(500, 112), (200, 110), (120, 108), (100, 106), (60, 104), (30, 103)];
+const BONUS_SHORT: [(i32, i32); 2] = [(10, 96), (20, 98)];
+/// The position whose ability word bit 0x800 lifts or sinks a man's part
+/// by a point (`FUN_006a1bcf`'s `FUN_00696c00(…) == 0xe`).
+const WORD_POSITION: u8 = 14;
+const WORD_BIT: u16 = 0x800;
+/// The live +0x57 bit a caution raises — the record's +0x25b keeps it
+/// from the man's last match — and the trait bits that spare him its
+/// toll: the second word's bit 1, the first's 1 and 8.
+const CAUTIONED: u8 = 8;
+/// The favourite's slack (`FUN_006f6fc7`): a side whose strength on the
+/// day lies past the foe's by more than these may take the match lightly,
+/// each step a throw under `(200 - will) * 3 / 80` of a hundred,
+/// its base percent at +0x1c falling to the step's.
+const FAVOURITE: [(i16, &[i16]); 2] = [(40, &[70, 90, 98]), (20, &[90, 98])];
+
+/// What one man of a side counts for before its match, a hundredfold
+/// (`FUN_006a1bcf`'s loop): his strength on the spot's kind as the
+/// line-up reckons it (`FUN_006a144e`) and twenty more, a point either
+/// way on position 14 by his good and bad word's bit 0x800, a cautioned
+/// man less — four fifths for a defender (`FUN_00677c5f`), nine tenths
+/// for any other — and the side's bonus against his salary.
+fn man_part(pitch: &crate::lineup::Tables, spot: (i16, i16), strength: i32, p: &Player, bonus: i32) -> i32 {
+    let mut v = strength + 20;
+    if pitch.position(spot) == WORD_POSITION {
+        if p.good() & WORD_BIT != 0 {
+            v += 10;
+        } else if p.bad() & WORD_BIT != 0 {
+            v = (v - 10).max(0);
+        }
+    }
+    let traits = p.traits();
+    if p.match_bits() & CAUTIONED != 0 && traits[1] & 1 == 0 && traits[0] & 9 == 0 {
+        v = if (2..=5).contains(&p.positions()[0]) { (v << 2) / 5 } else { v * 9 / 10 };
+    }
+    v * bonus_percent(bonus, p.salary())
+}
+
+/// What the side's bonus makes of a man's part against his salary, in
+/// percent ([`BONUS_STEPS`], [`BONUS_SHORT`]).
+fn bonus_percent(bonus: i32, salary: u16) -> i32 {
+    let salary = i32::from(salary);
+    BONUS_STEPS
+        .iter()
+        .find(|&&(by, _)| bonus > salary * by)
+        .or_else(|| BONUS_SHORT.iter().find(|&&(by, _)| bonus < salary * by))
+        .map_or(100, |&(_, pct)| pct)
+}
+
+/// A side's five strengths and six line shorts before its match
+/// (`FUN_006a1bcf`, which `FUN_006f7b67` reaches through `FUN_006f6c20`):
+/// a squad under eleven takes the defaults at 0x8a52a8 — the second row
+/// for a club of a country marked at 0x89dfc8, the third for one below
+/// the tenth level, else the first —; any other sums its eleven, each
+/// man's part ([`man_part`]) spread by the band down the pitch his spot
+/// lies in over goal, defence, defensive and attacking midfield and
+/// attack (the row's bytes 0, 1, 4, 5 and 3 at 0x8a5258), the two
+/// midfields further over the wings by the spot across
+/// ([`crate::lineup::Tables::wing`]); every sum a hundredth. The offside
+/// byte the side keeps at +0x3e (`FUN_006f981c`) reads the men's kinds
+/// at their live +0x28, which the record keeps nowhere: a seam.
+fn side_parts(data: &crate::data::Data, records: &Records, team: &crate::records::Team, bonus: i32) -> ([i16; 5], [i16; 6]) {
+    let pitch = &data.rules.pitch;
+    if team.players().len() < 11 {
+        let row = if data.rules.contract.marked_country(team.country()) {
+            1
+        } else if team.level() > 9 {
+            2
+        } else {
+            0
+        };
+        let r = pitch.short_side(row);
+        return ([r[0], r[1], r[2], r[3], r[4]], [r[5], r[6], r[7], r[8], r[9], r[10]]);
+    }
+    let club = crate::load::club_state_of(records, team, data);
+    let squad = team.players();
+    let (mut s, mut l) = ([0i32; 5], [0i32; 6]);
+    for (spot, k) in club.lineup.on_field() {
+        let (Some(man), Some(p)) = (club.players.get(k), squad.get(k).and_then(|&id| records.player(id))) else {
+            continue;
+        };
+        let strength = pitch.strength_at(man, crate::lineup::fitness_of(&club.fitness, k), pitch.kind_under(spot));
+        let v = man_part(pitch, spot, strength, p, bonus);
+        let row = pitch.side_row(pitch.down_band(spot.1));
+        let part = |b: u8| (u32::from(b).wrapping_mul(v as u32)) as i32 / 100;
+        s[0] += part(row[0]);
+        s[1] += part(row[1]);
+        s[4] += part(row[3]);
+        let (a, b) = (part(row[4]), part(row[5]));
+        s[2] += a;
+        s[3] += b;
+        let wing = pitch.wing(spot.0).map(i32::from);
+        for (w, &share) in wing.iter().enumerate() {
+            l[w * 2] += a * share / 100;
+            l[w * 2 + 1] += b * share / 100;
+        }
+    }
+    (s.map(|v| (v / 100) as i16), l.map(|v| (v / 100) as i16))
+}
+
+/// The class a man adds to his side (`FUN_006f6b7d`): the first trait
+/// word's bit 8 one up, a field player's bit 0x10 one down.
+fn class_of(p: &Player) -> i8 {
+    let bits = p.traits()[0];
+    if bits & 8 != 0 {
+        1
+    } else if p.positions()[0] != crate::world::GOALKEEPER && bits & 0x10 != 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The condition a side's eleven stand in on average, as the lists show
+/// it (`FUN_006770a4` over `FUN_00457e00`): a side listing nobody takes
+/// its squad's, an empty squad fifty.
+fn eleven_condition(records: &Records, team: &crate::records::Team) -> i32 {
+    let points = |ids: &[u16]| -> Vec<i32> {
+        ids.iter()
+            .filter(|&&id| id != 0)
+            .map(|&id| records.player(id).map_or(0, |p| i32::from(crate::computer_training::cond_percent(p))))
+            .collect()
+    };
+    let eleven = points(&team.lineup());
+    if !eleven.is_empty() {
+        return eleven.iter().sum::<i32>() / eleven.len() as i32;
+    }
+    let squad = points(&team.players());
+    if squad.is_empty() { 50 } else { squad.iter().sum::<i32>() / squad.len() as i32 }
+}
+
+/// The kick-off of one match of the row (`FUN_006f6fc7`, the first call
+/// of the pre-match walk's fifth loop), over the sides' records as
+/// [`line_up_row`] left them: both sides' strengths and line shorts
+/// ([`side_parts`]), each club's tactics copied in — its style word to
+/// +0x2e, its tilt, stance and tier bytes (club +0xa8, +0xa9, +0xaa) —
+/// and its will to win tenfold to +0x0a (`FUN_006f7b67`); the class the
+/// eleven's men carry summed into +0x8f/+0x283 (`FUN_006f6b7d`); eleven
+/// men a side; what the first side's eleven lead the second's by in
+/// condition, twice over and within 45, at +0x444 (`FUN_006f6c35`); the
+/// strength on the day and its parts at +0x122../+0x316.. (the club's
+/// +0xdf2); both base percents at a hundred, and a side stronger on the
+/// day by more than forty or twenty throws for its slack ([`FAVOURITE`]),
+/// the first side first. The man marks at +0x40 (`FUN_006f794a`), the
+/// forwards' percent at +0xb4 (`FUN_006fad6c`), the league table's
+/// bits at +0x13c/+0x330 and the per-man match bytes the walk resets
+/// (`FUN_006f7af1`) wait; none of them draws.
+pub fn kick_off_strengths(m: &mut Match, records: &Records, data: &crate::data::Data, random: &mut Random) {
+    let mut wills = [0i16; 2];
+    let mut conditions = [0i32; 2];
+    for which in 0..2 {
+        let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) else { continue };
+        let (strengths, lines) = side_parts(data, records, team, m.bonus[which]);
+        let side = &mut m.sides[which];
+        side.strengths = strengths;
+        side.lines = lines;
+        side.style = team.tactic_flags();
+        wills[which] = team.will();
+        side.nerve = wills[which].wrapping_mul(10);
+        side.tilt = team.style();
+        side.stance = team.effort();
+        side.tier = team.hardness();
+        for id in team.lineup().into_iter().filter(|&id| id != 0) {
+            if let Some(p) = records.player(id) {
+                side.aggr = side.aggr.wrapping_add(class_of(p));
+            }
+        }
+        side.men = 11;
+        side.shot_pwr = shot_strength(data, records, team);
+        conditions[which] = eleven_condition(records, team);
+    }
+    m.advantage = ((conditions[0] - conditions[1]) * 2).clamp(-45, 45) as i16;
+    for side in m.sides.iter_mut() {
+        let s = side.strengths.map(i32::from);
+        side.day = [
+            (s.iter().sum::<i32>() / 10) as i16,
+            (s[4] / 10) as i16,
+            ((s[2] + s[3]) / 10) as i16,
+            (s[1] / 10) as i16,
+        ];
+        side.strength = 100;
+    }
+    for (us, them) in [(0usize, 1usize), (1, 0)] {
+        let (ours, theirs) = (m.sides[us].day[0], m.sides[them].day[0]);
+        let Some(&(_, steps)) = FAVOURITE.iter().find(|&&(by, _)| theirs.wrapping_add(by) < ours) else {
+            continue;
+        };
+        let odds = (200 - i32::from(wills[us])) * 3 / 80;
+        for &step in steps {
+            if (random.below(100) as i32) < odds {
+                m.sides[us].strength = step;
+                break;
+            }
+        }
+    }
+}
+
+/// The side's shooting strength the kick-off ends with (`FUN_006fad6c`
+/// on +0x5c and +0x250, +0xb4): over the club's formation (+0xa9a, each
+/// man's spot at +0xae6/+0xae8), a man in the striker's area (position
+/// 10, `FUN_00696c00`) counts two and one on the wings or behind the
+/// striker (9, 11, 12) one; under six the side shoots whole, up to eight
+/// ten points less each from 150, and past that at 60.
+fn shot_strength(data: &crate::data::Data, records: &Records, team: &crate::records::Team) -> i16 {
+    let pitch = &data.rules.pitch;
+    let club = crate::load::club_state_of(records, team, data);
+    let forward: i16 = club
+        .lineup
+        .on_field()
+        .map(|(spot, _)| match pitch.position(spot) {
+            10 => 2,
+            9 | 11 | 12 => 1,
+            _ => 0,
+        })
+        .sum();
+    if forward < 6 {
+        100
+    } else if forward < 9 {
+        forward * -10 + 0x96
+    } else {
+        0x3c
+    }
+}
+
+/// The pre-match walk's fifth loop (`FUN_006ef296`), match by match: the
+/// kick-off ([`kick_off_strengths`]); each side's press window, the
+/// first side first ([`press_window`], `FUN_006f9656`); the computer
+/// clubs' tactics against the other side by their strengths on the day
+/// as the kick-off left them (club +0xdf2), the first side at home
+/// (`FUN_0042c1aa` both ways, [`crate::exhibition::computer_tactics`],
+/// three throws a computer side), into the team records the club objects
+/// go back to; then the clubs' tactics laid over the sides — style word,
+/// tilt, stance, tier (`FUN_006f7d4d`) — and three talks a side (+0x10e,
+/// +0x302; a match of the kind at +0x24 takes `DAT_00b5d168`, which no
+/// league match is). `FUN_0071511f` (a human club's ledger),
+/// `FUN_006f94e4`, `FUN_00698006` (club +0xb40) and the club-object
+/// halves of `FUN_006f7d4d` — the formation copies the replica reads from
+/// the record, the listed men's freshness and condition averaged into
+/// +0xc0/+0xc2, a human manager's tactics at `DAT_01bdd6d8` — draw nothing
+/// and wait; so do the events 0xc5/0xc6 a human's turn opens.
+pub fn kick_off_row(row: &mut [Match], records: &mut Records, data: &crate::data::Data, random: &mut Random) {
+    for m in row.iter_mut() {
+        kick_off_strengths(m, records, data, random);
+        for which in 0..2 {
+            press_window(m, which, records, random);
+        }
+        let clubs = [0, 1].map(|w| (m.ids[w * 2] as u8, m.ids[w * 2 + 1] as i16));
+        let ahead = i32::from(m.sides[0].day[0].wrapping_sub(m.sides[1].day[0]));
+        let behind = i32::from(m.sides[1].day[0].wrapping_sub(m.sides[0].day[0]));
+        crate::exhibition::computer_tactics(records, clubs[0], clubs[1], true, ahead, random);
+        crate::exhibition::computer_tactics(records, clubs[1], clubs[0], false, behind, random);
+        for which in 0..2 {
+            let side = &mut m.sides[which];
+            if let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) {
+                side.style = team.tactic_flags();
+                side.tilt = team.style();
+                side.stance = team.effort();
+                side.tier = team.hardness();
+            }
+            side.talk_max = TALKS;
+        }
+    }
+}
+
+/// The talks a side may hold in a match (+0x10e/+0x302).
+const TALKS: i16 = 3;
+/// The places of the formation whose men can carry the press
+/// (`FUN_006f9656`: +0xa9a's shorts 5 to 10), the bits of the man's good
+/// word that make him one (+0xc & 0x102) and the condition and freshness
+/// he must stand past.
+const PRESS_PLACES: std::ops::Range<usize> = 5..11;
+const PRESS_WORD: u16 = 0x102;
+const PRESS_FIT: i16 = 40;
+
+/// A side's press window (`FUN_006f9656`, the clock nought from the
+/// walk's start): both bytes cleared; a club pressing (its style bit
+/// 0x10) counts its pressing byte (club +0x9f, `FUN_00698b3d(-1)`) and
+/// each man on the places 5 to 10 with the good word's 0x102 who stands
+/// past forty in condition (`FUN_00457e00`) and in freshness
+/// (`FUN_006ff649`); past two, +0x3b takes a throw of twenty from the
+/// fifth minute (the 45th once the clock runs) and +0x3c five minutes
+/// past it for each beyond two. The minute's test (`FUN_006f9788`) asks
+/// for a minute at most +0x3b and at least +0x3c, so the window the walk
+/// lays never opens.
+fn press_window(m: &mut Match, which: usize, records: &Records, random: &mut Random) {
+    let side = &mut m.sides[which];
+    side.press_to = 0;
+    side.press_from = 0;
+    let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) else { return };
+    if team.tactic_flags() & PRESS_BIT == 0 {
+        return;
+    }
+    let lineup = team.lineup();
+    let mut count = i16::from(team.pressing());
+    for &id in &lineup[PRESS_PLACES] {
+        let Some(p) = (id != 0).then(|| records.player(id)).flatten() else { continue };
+        if p.good() & PRESS_WORD != 0
+            && crate::computer_training::cond_percent(p) > PRESS_FIT
+            && crate::computer_training::fresh_percent(p) > PRESS_FIT
+        {
+            count += 1;
+        }
+    }
+    if count > 2 {
+        side.press_to = random.below(20) as u8 + 5;
+        side.press_from = side.press_to.wrapping_add(((count - 2) * 5) as u8);
+    }
+}
+
+/// The building kind of an airfield, its record's first dword
+/// (`DAT_01c8b498`, the 57th of the grounds' types).
+const AIRFIELD: i16 = 57;
+
+/// Whether a club's cached grounds hold a finished airfield of its own
+/// (`FUN_007be73d` over the ten keys at `DAT_008ef358`, then
+/// `FUN_007be6bd`: an entry in use, on its land, no week of building
+/// left).
+fn has_airfield(records: &Records, country: u16, number: u16) -> bool {
+    let Some(grounds) = crate::grounds::Grounds::of(records, country as u8, number as i16) else {
+        return false;
+    };
+    (0..crate::grounds::ENTRIES).rev().map(|k| grounds.entry(k)).any(|e| {
+        e.used && e.owned && e.weeks == 0 && e.kind == AIRFIELD
+    })
+}
+
+/// Whether the match is played on the side's own ground (`FUN_006782aa`
+/// on the row's +0x28: nation byte and number).
+fn at_home(m: &Match, which: usize) -> bool {
+    m.home_nation == m.ids[which * 2] as u8 && m.home_id == m.ids[which * 2 + 1] & 0xff
+}
+
+/// Both sides' men entered for the match (`FUN_00658cfb`, the sixth
+/// loop's first call): the formation's eighteen places — eleven and the
+/// bench, club +0xa9a — copied into +0x156/+0x34a as listed, the first
+/// side's place before the second's, and for each listed man a throw of
+/// a hundred whether he has an off day (past his live +0x09 five times
+/// and fifty his part at +0x17a is seventy of a hundred, a second side's
+/// man with the good word's 0x800 at eighty). The parts, his condition
+/// at +0x1f8 and the ledger bytes at 0x23 wait with the live man.
+fn enter_sides(m: &mut Match, records: &Records, random: &mut Random) {
+    let listed = [0, 1].map(|which| {
+        let mut ids = [0u16; LEDGER_SLOTS];
+        if let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) {
+            for (slot, id) in ids.iter_mut().zip(team.lineup().into_iter().chain(team.bench())) {
+                *slot = id;
+            }
+        }
+        ids
+    });
+    for slot in 0..LEDGER_SLOTS {
+        for which in 0..2 {
+            let id = listed[which][slot];
+            m.sides[which].entries[slot] = id;
+            if id != 0 && records.player(id).is_some() {
+                random.below(100);
+            }
+        }
+    }
+}
+
+/// The base percent a side loses on a foe's record against it: a tally
+/// from eight on takes the second side's to 96 of a hundred, from five
+/// to 98; under minus five the first side's to 96, under minus two 98
+/// (`FUN_006ef296` over `FUN_0040c5e0`).
+const TALLY_STEPS: [(i16, usize, i16); 4] = [(8, 1, 96), (5, 1, 98), (-6, 0, 96), (-3, 0, 98)];
+/// A side whose foe flew in on its own airfield plays at 95 of a hundred.
+const FLOWN_IN: i16 = 95;
+
+/// The pre-match walk's sixth loop (`FUN_006ef296`), match by match:
+/// the men entered ([`enter_sides`]); the base percents at +0x78/+0x26c
+/// bent by the first club's record against the second
+/// ([`crate::opponent::home_tally`], [`TALLY_STEPS`]) and by a visitor's
+/// airfield ([`has_airfield`]: a side away from its ground that has one
+/// takes the other side's to [`FLOWN_IN`]); then the first half's added
+/// time (`FUN_0040bc1b`) on the 45th minute as the half's end, the
+/// minute-up flag cleared. On the match the listing marked for the
+/// doping control (+0x460) both sides have their men picked between the
+/// tally and the added time, the first side first
+/// ([`crate::doping_control::pick`], `FUN_005dad80`). Before the tally, a club a human manager's
+/// flag +0xf8 bit 1 names starts at 120 (`FUN_006782aa` over
+/// `FUN_006a421a`'s list), which waits with the manager objects; the national
+/// tie's bulk run (`FUN_0070c334`), the home club's gate
+/// (`FUN_00678021`), the human manager's man at +0x74/+0x268
+/// (`FUN_0069c1a2`), the weighted lists' counts at +0x462/+0x463
+/// (`FUN_00767686`), `FUN_006fb1d1` and the bonus at +0x244/+0x438 —
+/// club +0xb0, a word the team record does not keep — draw nothing and
+/// wait.
+pub fn ready_row(row: &mut [Match], records: &mut Records, random: &mut Random) {
+    for m in row.iter_mut() {
+        enter_sides(m, records, random);
+        let teams = [0, 1].map(|w| records.team(m.ids[w * 2], m.ids[w * 2 + 1]));
+        let tally = match teams {
+            [Some(a), Some(b)] => crate::opponent::home_tally(records, a, b),
+            _ => 0,
+        };
+        let step = TALLY_STEPS
+            .iter()
+            .find(|&&(by, _, _)| if by > 0 { tally >= by } else { tally <= by });
+        if let Some(&(_, which, pct)) = step {
+            let s = &mut m.sides[which].strength;
+            *s = (i32::from(*s) * i32::from(pct) / 100) as i16;
+        }
+        for (us, them) in [(0usize, 1usize), (1, 0)] {
+            if !at_home(m, us) && has_airfield(records, m.ids[us * 2], m.ids[us * 2 + 1]) {
+                let s = &mut m.sides[them].strength;
+                *s = (i32::from(*s) * i32::from(FLOWN_IN) / 100) as i16;
+            }
+        }
+        if m.doping {
+            for which in 0..2 {
+                let men = crate::doping_control::pick(records, m.ids[which * 2], m.ids[which * 2 + 1], random);
+                for (slot, id) in m.picked[which].iter_mut().zip(men) {
+                    *slot = id;
+                }
+            }
+        }
+        m.ends_at = added_time(m, random) + 45;
+        m.flags &= !MINUTE_UP;
+    }
+}
+
+/// The day's whole pre-match walk (`FUN_006ef296`) over a row the day
+/// lists: [`pre_match`]'s loops, the line-ups ([`line_up_row`]), the
+/// kick-off and tactics ([`kick_off_row`]) and the men and added time
+/// ([`ready_row`]).
+pub fn pre_match_walk(row: &mut [Match], records: &mut Records, data: &crate::data::Data, random: &mut Random) {
+    pre_match(row);
+    crowd_row(row, records, data);
+    line_up_row(row, records, data);
+    kick_off_row(row, records, data, random);
+    ready_row(row, records, random);
+    // the info page's tip reads it; the replica's page waits
+    let _tip = celebrity_tip(row, records, random);
+}
+
+/// The celebrity's tip on the humans' matches, drawn as the walk's last
+/// step once every match stands ready (`FUN_004cbf59` from
+/// `FUN_006ef296` at 0x6f0ea8; `CInfoseiteProminententip` shows it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CelebrityTip {
+    /// The celebrity's country (`DAT_008ec6ea`) and which of its twenty
+    /// (`DAT_008ec6ec`).
+    pub country: i16,
+    pub celebrity: u32,
+    /// Each tipped match's ids (`DAT_008ec6f0..`) and the goals tipped
+    /// for its sides (`DAT_008ec710`, `DAT_008ec718`).
+    pub tips: Vec<([u16; 4], [i16; 2])>,
+}
+
+/// Seven times in ten, or always without further countries, the main
+/// country's celebrity (`DAT_00b5cbb0`), else one of a further country,
+/// picked among `DAT_00b5cbae` by the countries' key (`DAT_00ae5d8e`);
+/// then each match marked at +0x474 (a human's club, a national side)
+/// gets ninety throws below a thousand: under 24 and twice the levels'
+/// gap (club +0x105, at most 2, the away side's less the home side's) a
+/// home goal, above 972 less that an away goal, and a one-leg tie that
+/// must be won (+0x20 bit 0x80000 without the second leg) breaks a draw
+/// for the home side.
+pub fn celebrity_tip(row: &[Match], records: &Records, random: &mut Random) -> CelebrityTip {
+    let globals = &records.globals;
+    let more = globals.more_count();
+    let country = if random.below(10) < 7 || more == 0 {
+        globals.main_country()
+    } else {
+        records.countries.ranking_key(random.below(u32::try_from(more).unwrap_or(0)) as usize)
+    };
+    let celebrity = random.below(0x14);
+    let level = |nation: u16, id: u16| records.team(nation, id).map_or(0, |t| i16::from(t.level().min(2)));
+    let mut tips = Vec::new();
+    for m in row.iter().filter(|m| m.nat_bits != 0) {
+        let gap = level(m.ids[2], m.ids[3]) - level(m.ids[0], m.ids[1]);
+        let (mut home, mut away) = (0, 0);
+        for _ in 0..0x5a {
+            let roll = random.below(1000) as i16;
+            if roll < gap * 2 + 0x18 {
+                home += 1;
+            }
+            if gap * -2 + 0x3cc < roll {
+                away += 1;
+            }
+        }
+        if m.kind & (TWO_LEGS | MAY_EXTRA) == MAY_EXTRA && home == away {
+            home += 1;
+        }
+        tips.push((m.ids, [home, away]));
+    }
+    CelebrityTip { country, celebrity, tips }
+}
+
 /// One minute of the day's matches, `FUN_006f2d4f` without its
 /// presentation; true while some open match still runs before its end of
 /// half. The display clocks (+0x1c, +0x0c) are left out.
@@ -494,7 +1180,7 @@ fn tick(
     live: bool,
     minute: i16,
     clock: &mut Clock,
-    records: Option<&Records>,
+    mut records: Option<&mut Records>,
     today: NaiveDate,
     random: &mut Random,
 ) -> bool {
@@ -506,7 +1192,7 @@ fn tick(
                 if minute == 10 {
                     m.score10 = [m.goals[0] as u8, m.goals[1] as u8];
                 }
-                minute_play(m, clock, records, random);
+                minute_play(m, clock, records.as_deref_mut(), random);
                 if minute < m.ends_at.max(45) {
                     run = true;
                 } else {
@@ -521,7 +1207,7 @@ fn tick(
         for m in matches.iter_mut() {
             if live || m.nat_bits == 0 {
                 if m.flags & FINISHED == 0 {
-                    minute_play(m, clock, records, random);
+                    minute_play(m, clock, records.as_deref_mut(), random);
                     if minute < m.ends_at.max(90) {
                         run = true;
                     } else {
@@ -546,7 +1232,7 @@ fn tick(
         let mut run = false;
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & EXTRA != 0 {
-                minute_play(m, clock, records, random);
+                minute_play(m, clock, records.as_deref_mut(), random);
                 if minute < m.ends_at.max(120) {
                     run = true;
                 } else {
@@ -558,7 +1244,7 @@ fn tick(
     } else {
         for m in matches.iter_mut() {
             if (live || m.nat_bits == 0) && m.flags & FINISHED == 0 && m.flags & PENS != 0 {
-                penalties(m, records, today, random);
+                penalties(m, records.as_deref(), today, random);
             }
         }
         false
@@ -569,18 +1255,11 @@ fn tick(
 /// both sides' rated strengths come out of their strengths, stance, tactic,
 /// mood and the foe's form, fatigue accumulates — and what the minute is
 /// worth in chances follows.
-fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
+fn minute_play(m: &mut Match, clock: &Clock, mut records: Option<&mut Records>, random: &mut Random) {
     if m.flags & (MINUTE_UP | OVER) != 0 {
         return;
     }
-    // A national side's own tactic, which the association's table sets
-    // for the minute from the side's place in the list — not ported.
-    if m.nat_bits & 1 != 0 {
-        national_tactic(&mut m.sides[0], (m.nat_bits as i16 >> 8) & 7);
-    }
-    if m.nat_bits & 2 != 0 {
-        national_tactic(&mut m.sides[1], (m.nat_bits as i16 >> 12) & 7);
-    }
+    national_tactics(m, records.as_deref());
     let extra = m.flags & EXTRA != 0;
     if m.advantage < 0 {
         if m.advantage as i32 + 90 < clock.minute as i32 {
@@ -668,7 +1347,7 @@ fn minute_play(m: &mut Match, clock: &Clock, records: Option<&Records>, random: 
     // walk), the set pieces (`FUN_006f543f`) and, when those come to
     // nothing, open play (`FUN_006f562b`) — that path is a later piece.
     if !is_national(m.ids[0]) && !is_national(m.ids[2]) {
-        chance_minute(m, clock, records, random);
+        chance_minute(m, clock, records.as_deref_mut(), random);
         morale_talk(m, clock, random);
     } else {
         // FUN_0063dd1c()/FUN_0063df96() pair the clubs, FUN_00658b30(club,
@@ -716,11 +1395,39 @@ fn rate_side(m: &mut Match, which: usize, _extra: bool) {
     r[4] = (r[4] as i32 + r[4] as i32 * mental / 100) as i16;
 }
 
+/// A national side's own tactic, which the association's table sets for
+/// the minute from the side's place in the list: the first side's place
+/// in the marker's bits 8..10, the second's in bits 12..14.
+fn national_tactics(m: &mut Match, records: Option<&Records>) {
+    if m.nat_bits & 1 != 0 {
+        national_tactic(&mut m.sides[0], (m.nat_bits as i16 >> 8) & 7, records);
+    }
+    if m.nat_bits & 2 != 0 {
+        national_tactic(&mut m.sides[1], (m.nat_bits as i16 >> 12) & 7, records);
+    }
+}
+
 /// The association's national-side table (`FUN_006fb8f5`) overwriting a
 /// national side's tactic byte at +0x30 with the entry at its list place
-/// less one, from the exe table at DAT_01bdd6d8 — not ported; it only
-/// ever runs for a tie carrying that side.
-fn national_tactic(_side: &mut Side, _place: i16) {}
+/// less one: `DAT_01bdd6d8 + (place-1)·0x38`, the first data byte (+0x20)
+/// of the four saved raw objects at 0x1bdd6b8, 24 bytes each. Places
+/// outside 1..4 leave the tactic standing; it only ever runs for a tie
+/// carrying that side. Without the save the tactic stands as well.
+fn national_tactic(side: &mut Side, place: i16, records: Option<&Records>) {
+    if !(1..=4).contains(&place) {
+        return;
+    }
+    let Some(block) = records.and_then(|r| r.block(&format!("{NATIONAL_TABLE}[{}]", place - 1))) else {
+        return;
+    };
+    if let Some(&tilt) = block.first() {
+        side.tilt = tilt;
+    }
+}
+
+/// The association's four national-side entries, saved raw (`0x1bdd6b8`
+/// + i·0x38, the loader's 24-byte objects).
+const NATIONAL_TABLE: &str = "0x1bdd6b8";
 
 /// Which side has the minute's set moment, `FUN_006f6857`: the record's
 /// chance slot at +0x450 (the pre-match walk leaves a plain fixture at 5)
@@ -746,18 +1453,434 @@ fn chance_chooser(m: &Match, random: &mut Random) -> u8 {
     0
 }
 
+/// The kinds a foul is drawn from (`FUN_006746aa`): one table by the
+/// fouling man, walked with a throw of the table's width, each kind as
+/// wide as its entry — `DAT_008a04e8` the plain man's (width 0x21),
+/// `DAT_008a0530` a man of a club in the countries 0x10 and 0x39 (live
+/// +6, record +0x220; 0x1b), `DAT_008a05c0` the second trait bit 0x20
+/// (live +0x12, record +0x1ca; 0x1c), `DAT_008a0578` its bit 2 (0x24) —
+/// and `DAT_008a0608` the other draw's (`FUN_00674794`, width 6). A walk
+/// past 0x21 entries names 1 (0x20 for `FUN_00674794`).
+const FOULS: [i16; 36] = [
+    0, 8, 3, 0, 4, 0, 0, 1, 0, 1, 1, 1, 3, 0, 3, 3, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_COUNTRY: [i16; 36] = [
+    0, 8, 2, 0, 2, 0, 0, 1, 0, 0, 0, 0, 3, 0, 3, 3, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_HARD: [i16; 36] = [
+    0, 12, 3, 0, 6, 0, 0, 3, 0, 2, 1, 2, 3, 0, 3, 3, 2, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_TRAIT: [i16; 36] = [
+    0, 6, 3, 0, 2, 0, 0, 0, 0, 1, 1, 1, 3, 0, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const FOULS_OTHER: [i16; 36] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+
+/// The kind out of a table: the throw walks the entries, less each one
+/// it passes, and stops at the first it falls under.
+fn foul_kind(table: &[i16; 36], roll: u32, past: i16) -> i16 {
+    let mut left = roll as i16;
+    for (kind, &width) in table.iter().take(0x22).enumerate() {
+        if left < width {
+            return kind as i16;
+        }
+        left -= width;
+    }
+    past
+}
+
+/// The eleven the events read: the club's formation +0xa9a, a man sent
+/// off leaving his place empty (`FUN_0065a6b0` clears it).
+fn pitch_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
+    let off = &m.sides[which].sent_off;
+    saved_eleven(m, which, records)
+        .into_iter()
+        .map(|id| if off.contains(&id) { 0 } else { id })
+        .collect()
+}
+
+/// Whether the man stands cautioned: the live +0x57 bit 8 this match's
+/// first card raised. The record's +0x25b keeps the bit from the man's
+/// last match — every kept save shows hundreds of men with bit 8 or 0x10
+/// standing — and its clearing before the next one is not traced, so
+/// the replica starts every man of the walk uncautioned.
+fn cautioned(side: &Side, p: &Player) -> bool {
+    side.booked.contains(&p.id())
+}
+
+/// The man the manager's tactics name at +0x390 of his club's extra data
+/// (`FUN_0069c313` on the club object: a club's human slot +0x11de one to
+/// four reads `DAT_00a58408`); a computer club names nobody, and a
+/// national side's own block (`DAT_00a559f2`) the replica does not read.
+fn foul_pick(m: &Match, which: usize, records: &Records) -> u16 {
+    if m.nat_bits != 0 {
+        return 0;
+    }
+    let at = which * 2;
+    records
+        .team(m.ids[at], m.ids[at + 1])
+        .and_then(|t| records.extras.get(usize::from(t.human()).checked_sub(1)?))
+        .map_or(0, |extra| extra.picks()[tactics::PROVOKE])
+}
+
+/// The foul's candidates (`FUN_00674c12`): every man of the eleven by his
+/// place, a keeper (type byte live +3 at one) once and always at place
+/// nought; a back (2..5) weighs 140, a midfielder (6..9) 100, any other
+/// 58, a cautioned man 60, 40 and 20; the first trait's bit 0x10 halves
+/// it, else its bit 8 or the second's bit 2 add a half, and the named
+/// man uncautioned another half; the man stands weight/10 + 1 times.
+fn foul_candidates(m: &Match, which: usize, eleven: &[u16], records: &Records) -> Vec<u8> {
+    let marked = foul_pick(m, which, records);
+    let mut list = Vec::new();
+    for (slot, &id) in eleven.iter().enumerate().take(11) {
+        let Some(p) = (id != 0).then(|| records.player(id)).flatten() else {
+            continue;
+        };
+        let position = p.positions()[0];
+        if position == world::GOALKEEPER {
+            list.push(0);
+            continue;
+        }
+        let booked = cautioned(&m.sides[which], p);
+        let mut weight: u16 = match (position, booked) {
+            (2..=5, false) => 140,
+            (2..=5, true) => 60,
+            (6..=9, false) => 100,
+            (6..=9, true) => 40,
+            (_, false) => 58,
+            (_, true) => 20,
+        };
+        let [first, second] = p.traits();
+        if first & 0x10 == 0 {
+            if first & 8 != 0 || second & 2 != 0 {
+                weight += weight / 2;
+            }
+            if id == marked && !booked {
+                weight += weight / 2;
+            }
+        } else {
+            weight /= 2;
+        }
+        for _ in 0..=weight / 10 {
+            list.push(slot as u8);
+        }
+    }
+    list
+}
+
+/// The chooser's foul (`FUN_0065b0b5`, side two's `FUN_0065bd27`): only a
+/// side with more than eight men on the pitch; one throw over the
+/// candidates names the man, an empty place nobody; under
+/// `35 - 2·added` of a hundred the kind comes from `FUN_00674794`'s
+/// table, else from the man's own (`FUN_006746aa`), and the card books.
+fn booking(m: &mut Match, which: usize, records: &Records, random: &mut Random) {
+    if m.sides[which].men <= 8 {
+        return;
+    }
+    let eleven = pitch_eleven(m, which, records);
+    let list = foul_candidates(m, which, &eleven, records);
+    if list.is_empty() {
+        return;
+    }
+    let slot = list[random.below(list.len() as u32) as usize] as usize;
+    let Some(p) = eleven.get(slot).filter(|&&id| id != 0).and_then(|&id| records.player(id)) else {
+        return;
+    };
+    let kind = if (random.below(100) as i32) < 0x23 - 2 * m.added_draw as i32 {
+        foul_kind(&FOULS_OTHER, random.below(6), 0x20)
+    } else {
+        let second = p.traits()[1];
+        let (table, width) = if second & 2 != 0 {
+            (&FOULS_HARD, 0x24)
+        } else if second & 0x20 != 0 {
+            (&FOULS_TRAIT, 0x1c)
+        } else if matches!(p.club()[0], 0x10 | 0x39) {
+            (&FOULS_COUNTRY, 0x1b)
+        } else {
+            (&FOULS, 0x21)
+        };
+        foul_kind(table, random.below(width), 1)
+    };
+    let booked = cautioned(&m.sides[which], p);
+    book_card(m, which, p.id(), &eleven, kind, booked);
+}
+
+/// The kinds a straight red is drawn from (`FUN_00674825`): the plain
+/// man's `DAT_008a0728` (width 0x66), a man of the places 9 and 10 (live
+/// +3) `DAT_008a0770` (0x52), the second trait bit 2 (live +0x12)
+/// `DAT_008a07b8` (0x79); and `FUN_006748ea`'s `DAT_008a0800` (width 7).
+/// A walk past 0x21 entries names 1.
+const REDS: [i16; 36] = [
+    0, 0, 2, 0, 4, 0, 0, 0, 20, 4, 6, 2, 1, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_FRONT: [i16; 36] = [
+    0, 0, 2, 0, 4, 0, 0, 0, 0, 4, 6, 2, 1, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_HARD: [i16; 36] = [
+    0, 0, 2, 0, 8, 0, 0, 0, 20, 10, 8, 6, 4, 10, 8, 2, 1, 1, 1, 2, 6, 2, 1, 10, 10, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+const REDS_OTHER: [i16; 36] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+];
+
+/// The chance frame's straight red, roll 699 (`FUN_0065b894`, side two's
+/// `FUN_0065bf36`): only a side with more than nine men; the foul's
+/// candidates (`FUN_00674c12`) and one throw name the man, an empty
+/// place nobody. He lifts the match's bookings, and under
+/// `100 - 6·added` of four hundred his kind comes from the other table
+/// (`FUN_006748ea`, counted at +0x3d), else from his own
+/// (`FUN_00674825`); his live +0x57 takes 0x20, his place empties, the
+/// side's men drop by one and its straight reds rise, a mood above
+/// nought takes 105 of a hundred, and before the 31st minute the foul
+/// mark 0x20 stands. The kind goes only to the news and the books
+/// (`FUN_00674e74`, `FUN_0073ebb6`); seams as at `book_card`'s
+/// sending-off (`FUN_0070497d`, `FUN_00414b25`, `FUN_004131b0`,
+/// `FUN_004fc3c8`, the strengths' `FUN_006f794a` pair, `FUN_006f6c20`,
+/// `FUN_006f6c35`) and the national tie's +0x474 block with its keeper's
+/// stand-in at +0x112.
+fn straight_red(m: &mut Match, which: usize, records: &Records, minute: i16, random: &mut Random) -> Option<i16> {
+    if m.sides[which].men <= 9 {
+        return None;
+    }
+    let eleven = pitch_eleven(m, which, records);
+    let list = foul_candidates(m, which, &eleven, records);
+    if list.is_empty() {
+        return None;
+    }
+    let slot = list[random.below(list.len() as u32) as usize] as usize;
+    let p = eleven.get(slot).filter(|&&id| id != 0).and_then(|&id| records.player(id))?;
+    m.bookings += 1;
+    let other = (random.below(400) as i32) < 100 - 6 * m.added_draw as i32;
+    let kind = if other {
+        foul_kind(&REDS_OTHER, random.below(7), 1)
+    } else if p.traits()[1] & 2 != 0 {
+        foul_kind(&REDS_HARD, random.below(0x79), 1)
+    } else if matches!(p.positions()[0], 9 | 10) {
+        foul_kind(&REDS_FRONT, random.below(0x52), 1)
+    } else {
+        foul_kind(&REDS, random.below(0x66), 1)
+    };
+    let side = &mut m.sides[which];
+    book_in(&mut side.sent_off, p.id());
+    side.men -= 1;
+    side.straight_reds += 1;
+    if 0 < side.morale {
+        side.morale = (side.morale as i32 * 0x69 / 100) as i16;
+    }
+    if other {
+        side.other_reds += 1;
+    }
+    if minute < 31 {
+        side.foul_marks |= 0x20;
+    }
+    Some(kind)
+}
+
+/// The injury kinds' rows as the match's injury reads them
+/// (`DAT_008ac340`, ten bytes a kind, kinds 0 to 0x43): byte 0 whether a
+/// lingering knock of the kind comes back — 1 as itself, 2 as the worse
+/// kind `FUN_00766c1b` names —, byte 1 the base days, byte 5 the weight
+/// of the draw.
+const INJURY_RECURS: [u8; 0x44] = [
+    0, 0, 0, 1, 1, 1, 1, 0, 1, 2, 0, 1, 1, 0, 2, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 1, 1, 1, 0, 0, 0,
+    1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+const INJURY_DAYS: [u8; 0x44] = [
+    56, 56, 182, 28, 14, 31, 21, 56, 21, 21, 35, 21, 7, 28, 28, 21, 56, 42, 10, 10, 28, 28, 140, 14, 84, 7, 3, 182, 7,
+    49, 140, 3, 7, 21, 21, 42, 35, 112, 28, 21, 5, 7, 49, 7, 7, 14, 14, 3, 49, 21, 10, 84, 7, 28, 42, 49, 14, 14, 14,
+    42, 42, 2, 28, 14, 21, 56, 42, 112,
+];
+const INJURY_WEIGHTS: [u8; 0x44] = [
+    1, 1, 1, 2, 3, 2, 3, 1, 2, 2, 2, 3, 2, 2, 2, 2, 2, 1, 2, 2, 1, 1, 1, 1, 1, 3, 2, 0, 2, 1, 2, 1, 4, 4, 2, 1, 3, 1, 2,
+    4, 3, 4, 1, 1, 3, 4, 1, 1, 1, 1, 0, 2, 1, 3, 0, 1, 2, 3, 1, 1, 1, 1, 2, 3, 2, 2, 2, 1,
+];
+/// The kinds a club with its flag bit 2 (club +0xfd, team +0x874) draws
+/// only above 74 of a hundred.
+const SPARED_KINDS: [u8; 6] = [6, 0xc, 0x21, 0x27, 0x2d, 0x39];
+/// The ids of men (`FUN_00767686` skips the places above).
+const MEN_BELOW: i16 = 0x4269;
+
+/// A man's lingering knock as the live object holds it: his days out
+/// (+0x2c, reckoned from the record's end) one to six and a kind
+/// (+0x2e, the record's +0x228) under 0x3e — its row's byte 0, else
+/// nought.
+fn lingering(records: &Records, p: &Player) -> (u8, u8) {
+    let days = crate::load::days_to(&records.globals, p.injured_to());
+    let kind = p.injury_kind();
+    if (1..7).contains(&days) && kind != 0 && kind < 0x3e {
+        (kind, INJURY_RECURS[usize::from(kind)])
+    } else {
+        (kind, 0)
+    }
+}
+
+/// The injury's candidates (`FUN_00767686`): each place of the eleven
+/// with a man stands ten times, seventeen with a lingering knock; the
+/// knock bit 2 (record +0x218, the live +0x14) halves that, else the
+/// bit 4 adds two. The man at the side's +0x18 (+0x74 for the first,
+/// +0x268 for the second — `FUN_006782aa` says which the club is) adds
+/// twenty, the second side's fifty; no ported walk fills that field, so
+/// nobody draws the extra.
+fn injury_candidates(eleven: &[u16], records: &Records) -> Vec<u8> {
+    let mut list = Vec::new();
+    for (slot, &id) in eleven.iter().enumerate().take(11) {
+        if id == 0 || MEN_BELOW <= id as i16 {
+            continue;
+        }
+        let Some(p) = records.player(id) else { continue };
+        let mut weight: u16 = if lingering(records, p).1 != 0 { 0x11 } else { 10 };
+        if p.knocks() & 2 != 0 {
+            weight /= 2;
+        } else if p.knocks() & 4 != 0 {
+            weight += 2;
+        }
+        list.extend(std::iter::repeat_n(slot as u8, usize::from(weight)));
+    }
+    list
+}
+
+/// The injury's kind (`FUN_00766c1b`): a lingering knock comes back on
+/// one throw of two — its own kind, or for a row's byte 2 the kinds 9,
+/// 14 and 29 as 10, 16 and 30 —, else a draw over the kinds 1 to 61 by
+/// their weights, a club with its flag bit 2 throwing a hundred for each
+/// of `SPARED_KINDS` and keeping it only above 74; the walk stops one
+/// band late as `training_day`'s does. A torn muscle (0x25) of a man
+/// under 35 fresh is the worse 0x43.
+fn injury_kind(records: &Records, p: &Player, flags: u8, random: &mut Random) -> u8 {
+    let (kind, recurs) = lingering(records, p);
+    let mut drawn = 0;
+    if recurs != 0 && random.below(2) != 0 {
+        drawn = if recurs == 2 {
+            match kind {
+                9 => 10,
+                0xe => 0x10,
+                0x1d => 0x1e,
+                _ => 0,
+            }
+        } else {
+            kind
+        };
+    }
+    if drawn == 0 {
+        let mut kinds = Vec::new();
+        let mut starts = Vec::new();
+        let mut total = 0i32;
+        for k in 1..0x3e_u8 {
+            if flags & 2 != 0 && SPARED_KINDS.contains(&k) && random.below(100) <= 0x4a {
+                continue;
+            }
+            kinds.push(k);
+            starts.push(total);
+            total += i32::from(INJURY_WEIGHTS[usize::from(k)]);
+        }
+        let roll = random.below(total as u32) as i32;
+        let mut at = 0;
+        while at + 1 < kinds.len() && starts[at] <= roll {
+            at += 1;
+        }
+        drawn = kinds[at];
+    }
+    if drawn == 0x25 && crate::computer_training::fresh_percent(p) < 0x23 {
+        drawn = 0x43;
+    }
+    drawn
+}
+
+/// The chance frame's injury, rolls 900 to 903 (`FUN_0065cd8a`, side
+/// two's `FUN_0065ce98`): a throw over the candidates names the place,
+/// and its man takes the kind `injury_kind` draws (`FUN_00766eb9`) for
+/// the kind's base days as the club's doctors shorten them
+/// (`training_day::cared_days`), from today (+0x2a, `DAT_00b5cbd4`);
+/// kinds 0x1b and 0x1e may leave the knee knock (`FUN_007675c6`), and
+/// the live object goes back to the record (`FUN_006364cf`). The
+/// place's spot on the pitch (`FUN_00696cc5`, +0xae8/+0xae6) and the
+/// match's own injury event (`FUN_0065c8b1` — the man's way off, the
+/// news) are seams. Returns the man and his kind.
+fn injury(m: &mut Match, which: usize, records: &mut Records, random: &mut Random) -> Option<(u16, u8)> {
+    let at = which * 2;
+    let team = records.team(m.ids[at], m.ids[at + 1])?;
+    let (flags, spent) = (team.get::<u8>(training_day::CLUB_FLAGS), team.get::<i32>(MEDICAL_SPENT));
+    let eleven = pitch_eleven(m, which, records);
+    let list = injury_candidates(&eleven, records);
+    if list.is_empty() {
+        return None;
+    }
+    let slot = usize::from(list[random.below(list.len() as u32) as usize]);
+    let id = eleven[slot];
+    let p = records.player(id)?;
+    let kind = injury_kind(records, p, flags, random);
+    if kind == 0 {
+        return None;
+    }
+    let days = training_day::cared_days(spent, INJURY_DAYS[usize::from(kind)], random);
+    let today = records.globals.day();
+    training_day::injure(records, id, kind, days, i32::from(today));
+    if let Some(date) = records.globals.date_of(today as i16) {
+        training_day::knee_knock(records, id, kind, date, random);
+    }
+    Some((id, kind))
+}
+/// The club's medical spending (club +0x2ac, team +0x314).
+const MEDICAL_SPENT: usize = 0x314;
+
+/// The card (`FUN_0065a6b0`, side two's `FUN_0065ab3a`, here with the
+/// sixth parameter nought and the seventh one): a man standing in the
+/// eleven lifts the match's bookings at +0x45a. His first card cautions
+/// him and lifts the side's counters, the kinds 4 and 12 its hard
+/// fouls; a cautioned man goes off: his place empties, the side's men
+/// drop by one, its reds rise, and a mood above nought takes 105 of a
+/// hundred (an x87 division the integer one matches). Seams: the
+/// national tie's news and books (`FUN_0073e712`, `FUN_0073e963`,
+/// `FUN_006fcbba`, `FUN_006fabf0`, `FUN_00702eee`) and its keeper's
+/// stand-in at +0x112, the sending-off's own calls (`FUN_0070492e`,
+/// `FUN_00414b25`, `FUN_004131b0`, `FUN_006fad22`, `FUN_004fc3c8`) and
+/// the two sides' strengths recomputed (`FUN_006f794a` twice,
+/// `FUN_006f6c20`, `FUN_006f6c35`), which the replica's walk takes as
+/// the pre-match walk left them.
+fn book_card(m: &mut Match, which: usize, id: u16, eleven: &[u16], kind: i16, booked: bool) {
+    if !eleven.iter().take(11).any(|&x| x == id) {
+        return;
+    }
+    m.bookings += 1;
+    let side = &mut m.sides[which];
+    if !booked {
+        book_in(&mut side.booked, id);
+        side.cautions[0] += 1;
+        side.caution_bits |= 1;
+        side.cautions[1] += 1;
+        if kind == 4 || kind == 12 {
+            side.hard_fouls += 1;
+        }
+    } else {
+        book_in(&mut side.sent_off, id);
+        side.men -= 1;
+        side.reds += 1;
+        if 0 < side.morale {
+            side.morale = (side.morale as i32 * 0x69 / 100) as i16;
+        }
+        if kind == 4 || kind == 12 {
+            side.foul_marks |= 0x10;
+        }
+    }
+}
+
 /// The minute's chance frame, `FUN_006f6007`: what the chooser picked runs
-/// as an event through the match's club (`FUN_0065b0b5`, `FUN_0065bd27` —
-/// seam); then both sides' chance comes out of their rated support and
+/// as a foul through the match's club (`FUN_0065b0b5`, `FUN_0065bd27`,
+/// see `booking`); then both sides' chance comes out of their rated support and
 /// attack, scaled to a common 92 together, the ground's owner lifting the
 /// first side's attack an eighth. A roll under the side's share opens the
 /// chance — its shape by the minute kind and the shot's quality — and the
 /// frame closes with the bookings the last minute left.
-fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random: &mut Random) {
-    // The chooser's set moment becomes an event at the match's club:
+fn chance_minute(m: &mut Match, clock: &Clock, mut records: Option<&mut Records>, random: &mut Random) {
+    // The chooser's set moment becomes a foul at the match's club:
     // FUN_0065b0b5 when it picked the first side, FUN_0065bd27 the second
-    // (each through the club slot FUN_0063dd1c) — the events piece.
-    let _ = chance_chooser(m, random);
+    // (each through the club slot FUN_0063dd1c); without the save there
+    // is no club to book.
+    let picked = chance_chooser(m, random);
+    if let (1 | 2, Some(records)) = (picked, records.as_deref()) {
+        booking(m, picked as usize - 1, records, random);
+    }
     // The four chance weights: support and attack per side, as floats.
     let mut w = [
         [m.sides[0].rated[3] as f32, m.sides[0].rated[2] as f32],
@@ -781,8 +1904,8 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
         attack *= 1.08;
     }
     let defend = w[1][0] + w[1][1];
-    chance_for(m, 0, attack, records, random);
-    chance_for(m, 1, defend, records, random);
+    chance_for(m, 0, attack, clock.minute, records.as_deref_mut(), random);
+    chance_for(m, 1, defend, clock.minute, records, random);
     // What the last minute's booking left (`FUN_00413115`): the match-day
     // state takes it (`FUN_00412cf2` per side, its bit +0x80 saying
     // red), then both marks clear; `FUN_0070c1a9` keeps the live clocks —
@@ -793,7 +1916,8 @@ fn chance_minute(m: &mut Match, clock: &Clock, records: Option<&Records>, random
 
 /// One side's half of the frame: a thousand-wide roll against its share;
 /// past it (or past fifteen goals for the side) no chance, though the
-/// roll's own marks 699 and 900..903 set events off (seams). Inside, the
+/// roll's own marks set events off: 699 the straight red (`straight_red`),
+/// 900..903 the injury (`injury`). Inside, the
 /// minute kind under 90 is a plain chance — the quality-one shot runs the
 /// `FUN_00659d2b` event (side two's `FUN_0065a3e1`) and counts twice, once
 /// in the event and once in the frame; every other imperfect shot counts
@@ -804,13 +1928,24 @@ fn chance_for(
     m: &mut Match,
     which: usize,
     weight: f32,
-    records: Option<&Records>,
+    minute: i16,
+    records: Option<&mut Records>,
     random: &mut Random,
 ) {
     let roll = random.below(1000);
     if weight <= roll as f32 || 15 < m.goals[which] {
-        // roll 699: FUN_0065b894; 899 < roll < 904: FUN_0065cd8a (side
-        // one) / FUN_0065bf36, FUN_0065ce98 (side two) — event seams.
+        // roll 699: FUN_0065b894 (side two's FUN_0065bf36), each through
+        // the club slot FUN_0063dd1c — without the save no club to book;
+        // 899 < roll < 904: FUN_0065cd8a / FUN_0065ce98, the injury.
+        match (roll, records) {
+            (699, Some(records)) => {
+                straight_red(m, which, records, minute, random);
+            }
+            (900..=903, Some(records)) => {
+                injury(m, which, records, random);
+            }
+            _ => {}
+        }
         return;
     }
     let kind = random.below(100);
@@ -819,7 +1954,7 @@ fn chance_for(
         if quality == 1 {
             // The shot event raises the byte itself; the frame raises once
             // more, so a quality-one chance costs the side two counts.
-            let men = records.map(|r| (side_men(m, which, r), side_men(m, 1 - which, r)));
+            let men = records.as_deref().map(|r| (side_men(m, which, r), side_men(m, 1 - which, r)));
             shot_event(
                 m,
                 which,
@@ -1091,7 +2226,8 @@ fn shot_band(kind: u8) -> i32 {
 /// 30/40/30 — or 35/30/35 for the attacking style — bent a third of the way
 /// by each line's deviation, thence `pow(x/100, 0.33)` for the scorer's
 /// list and `sqrt(x/100)` for the assist's). Those line shorts wait with
-/// `FUN_0078b26c`'s squad sums, and with them the factors fall away: both
+/// their writer — not `FUN_0078b26c`, which reckons the crowd — and with
+/// them the factors fall away: both
 /// lists carry the same whole-number weights. The scorer is drawn below the
 /// first list's total — first cumulative above the draw, the head when
 /// none; the assist below the second list's, the scorer lifted out with the
@@ -1219,31 +2355,34 @@ pub fn own_goal_mark(m: &Match, id: u16) -> bool {
     false
 }
 
-/// The side's team record's saved formation, when it stands complete:
-/// the manager's eleven at the record's +0x148 and his bench at +0x15e
+/// The side's team record's saved formation, when it lists anybody: the
+/// manager's — or the co-trainer's, [`line_up_row`] — eleven at the
+/// record's +0x148 and the bench at +0x15e
 /// (`Player ids of the eleven and the bench, 0 an empty place`). The
 /// save's club block carries the same eleven at +0xa9a: the loader
 /// `FUN_0063b75a` copies the 0xaa bytes there from the record
 /// (134811ff), the save-back copies them home (134954), and the walk
 /// copies the eleven into the match's side block at +0x8e
-/// (`memcpy(side + 0x8e, club + 0xa9a, 0x16)`, _global.c 221842). A
-/// side whose record lists an incomplete eleven — a computer club or a
-/// national selection, which the pre-match squads in `FUN_0078b26c`
-/// stand in the original's way — stands none.
+/// (`memcpy(side + 0x8e, club + 0xa9a, 0x16)`, _global.c 221842), an
+/// empty place copied as nought — a squad too short for the co-trainer's
+/// system, or a human's listed man gone since, leaves the side a man
+/// down there. A record listing nobody — a club the row's line-up did
+/// not reach — stands none.
 fn saved_formation(team: &crate::records::Team) -> Option<([u16; 11], [u16; 7])> {
-    (team.lineup().iter().all(|&id| id != 0)).then(|| (team.lineup(), team.bench()))
+    (team.lineup().iter().any(|&id| id != 0)).then(|| (team.lineup(), team.bench()))
 }
 
-/// The side's eleven on the pitch: the manager's saved eleven when his
-/// record stands one, the replica's strongest otherwise (the stand-in
-/// in `crate::matches::eleven` for the pre-match squads the replica
-/// does not run). The original keeps the formation's place order; the
+/// The side's eleven on the pitch: the eleven its record lists, the
+/// manager's or the co-trainer's of [`line_up_row`], an empty place
+/// nought; the replica's strongest when it lists nobody (the stand-in
+/// in `crate::matches::eleven`, for a walk run without the row's
+/// line-up). The original keeps the formation's place order; the
 /// list's first short is the keeper, and the taker fallbacks read
 /// exactly that (`+0xa9a`'s first place). The line-up screen's
 /// substitution helpers — they replace an injured or suspended listed
 /// man — run when the manager visits, not in the walk; the replica
 /// stands the listed man as saved.
-fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
+pub(crate) fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
     let at = which * 2;
     let team = match records.team(m.ids[at], m.ids[at + 1]) {
         Some(team) => team,
@@ -1257,24 +2396,25 @@ fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
 
 /// The side's men on the pitch, as records: its eleven in the
 /// formation's place order (or the stand-in's strongest), each looked
-/// up in its record.
+/// up in its record, an empty place left out.
 fn side_men<'a>(m: &Match, which: usize, records: &'a Records) -> Vec<&'a Player> {
-    saved_eleven(m, which, records)
+    pitch_eleven(m, which, records)
         .into_iter()
         .filter_map(|id| records.player(id))
         .collect()
 }
 
 /// Enter the side's men in the record's entered slots (the original's
-/// +0xfa, filled from the line-up at runtime +0x8e — the saved eleven —
-/// or by the pre-match squads in `FUN_0078b26c`, which work on club
-/// objects the replica has not). The original enters eighteen men,
-/// eleven on the pitch and seven at the reserve's place: the saved
-/// formation's eleven and bench, the record's +0x148 and +0x15e, an
-/// empty place nought. Without a saved formation the replica's
-/// stand-in enters its eleven and leaves the rest nought. The slots are
+/// +0xfa, filled from the line-up at runtime +0x8e — the saved eleven,
+/// the manager's or the co-trainer's of [`line_up_row`]). The original
+/// enters eighteen men, eleven on the pitch and seven at the reserve's
+/// place: the saved formation's eleven and bench, the record's +0x148
+/// and +0x15e, an empty place nought. A record listing nobody has the
+/// replica's stand-in enter its eleven and the rest nought. The slots are
 /// where `book_event` hangs its ledger bytes, and the halftime dialog
-/// walks them; the fill draws nothing.
+/// walks them. The walk's sixth loop enters them first, with its throws
+/// ([`enter_sides`]); this fill, for a row walked without it, draws
+/// nothing.
 fn fill_entries(m: &mut Match, which: usize, records: &Records) {
     let at = which * 2;
     let ids = records
@@ -1331,7 +2471,7 @@ fn designated_taker(m: &Match, which: usize, records: &Records, duty: Duty, from
             }
         })
         .collect();
-    let eleven = saved_eleven(m, which, records);
+    let eleven = pitch_eleven(m, which, records);
     let pitch = eleven.get(from..).unwrap_or(&[]);
     duties::normalise(&men, &list)
         .into_iter()
@@ -1617,6 +2757,11 @@ fn wear_band(fatigue: i16, extra: bool) -> usize {
 /// behind the club's slot at +0x11de, asked by `FUN_0069bec0` — is exactly
 /// this man; both wait with the club objects and their staff, seam here.
 fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
+    wear_by_rows(p, minutes, mult, &WEAR_ROWS);
+}
+
+/// [`wear_man`] by the `rows` the match's kind takes.
+fn wear_by_rows(p: &mut Player, minutes: i32, mult: i32, rows: &[[i32; 4]; 5]) {
     let band = if minutes < 30 {
         0
     } else if minutes < 60 {
@@ -1628,7 +2773,7 @@ fn wear_man(p: &mut Player, minutes: i32, mult: i32) {
     } else {
         4
     };
-    let row = WEAR_ROWS[band];
+    let row = rows[band];
     let scaled = |d: i32| d * mult / 10;
     let cond = i32::from(p.condition()) + scaled(row[0]);
     p.set_condition(cond.clamp(0, 10_000) as i16);
@@ -1661,6 +2806,211 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
                 wear_man(p, minutes, mult);
             }
         }
+    }
+}
+
+/// What the plain pass leaves on a walked game of the day's own list
+/// (`FUN_006f8f44` with the fifth parameter nought on a record whose
+/// +0x24 is set, `FUN_006f8e73` over both sides): each side's eleven by
+/// the friendly rows ([`FRIENDLY_WEAR_ROWS`]) for the whole game, the
+/// multiplier by the side's pressure band as its minutes summed it
+/// (+0x2c), halved for the man at the keeper's spot. The scorers' marks
+/// the pass reads beside (`FUN_006244c3`, `FUN_0062445b` over the men's
+/// +0xc3 with both sides' strengths on the day) wait with the live men.
+fn exhibition_wear(m: &Match, records: &mut Records) {
+    let extra = m.flags & EXTRA != 0;
+    let minutes = if extra { 120 } else { 90 };
+    for which in 0..2 {
+        let mult = WEAR_MULT[wear_band(m.sides[which].fatigue, extra)];
+        for id in saved_eleven(m, which, records) {
+            if let Some(p) = records.player_mut(id).filter(|_| id != 0) {
+                let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
+                wear_by_rows(p, minutes, mult, &FRIENDLY_WEAR_ROWS);
+            }
+        }
+    }
+}
+
+/// The talks a side may hold in a game of the day's own list
+/// (`DAT_00b5d168`, laid on both sides by `FUN_006f3b7a`).
+const EXHIBITION_TALKS: usize = 0xb5d168;
+
+/// The friendlies' walk's second loop (`FUN_006f3b7a`), one game of the
+/// day's own list: both sides' men entered with their throws
+/// ([`enter_sides`], `FUN_00658cfb`), the kick-off
+/// ([`kick_off_strengths`], `FUN_006f6fc7`) whose strength on the day
+/// each club keeps (club +0xdf2, stored back to the team record's +0x304
+/// by `FUN_0063df96`), each computer side's tactics against the other by
+/// it (`FUN_0042c1aa`, the home side first) and the clubs' tactics laid
+/// over the sides (`FUN_006f7d4d`); the talks are the option's. Unlike
+/// the competitions' walk (`FUN_006ef296`) it lays no chance slot,
+/// added-time byte, staff or referee slot (+0x450, +0x451, +0x150,
+/// +0x458 keep the cleared record's nought), opens no press window,
+/// weighs neither the record against the foe nor an airfield, and draws
+/// no first half's added time: the half ends on the 45th minute.
+pub fn exhibition_kick_off(m: &mut Match, records: &mut Records, data: &crate::data::Data, random: &mut Random) {
+    enter_sides(m, records, random);
+    kick_off_strengths(m, records, data, random);
+    for which in 0..2 {
+        if let Some(team) = records.team_mut(m.ids[which * 2], m.ids[which * 2 + 1]) {
+            team.set_day_strength(m.sides[which].day[0]);
+        }
+    }
+    let clubs = [0, 1].map(|w| (m.ids[w * 2] as u8, m.ids[w * 2 + 1] as i16));
+    let ahead = i32::from(m.sides[0].day[0].wrapping_sub(m.sides[1].day[0]));
+    let behind = i32::from(m.sides[1].day[0].wrapping_sub(m.sides[0].day[0]));
+    crate::exhibition::computer_tactics(records, clubs[0], clubs[1], true, ahead, random);
+    crate::exhibition::computer_tactics(records, clubs[1], clubs[0], false, behind, random);
+    let talks = records.globals.get::<i16>(EXHIBITION_TALKS);
+    for which in 0..2 {
+        let side = &mut m.sides[which];
+        if let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) {
+            side.style = team.tactic_flags();
+            side.tilt = team.style();
+            side.stance = team.effort();
+            side.tier = team.hardness();
+        }
+        side.talk_max = talks;
+    }
+}
+
+/// A man's grade for a club match, in half steps 2 (a one) to 12 (a
+/// six) — `FUN_006f7f6f` with the match's national marker +0x474 nought:
+/// six and a draw below four, twice what his form fell from the kick-off
+/// (the runtime +0xb7 that `FUN_006f7af1`'s reset took from
+/// `FUN_006ff037`) to now, one or two better for a win by one or two or
+/// by more than two — worse by as much for such a loss —, one better at
+/// the top form of twenty. The man's runtime mark at +0xc3 above two
+/// (grade one) and the high nibble of his +0xb8 (the grade held to three
+/// of it) have no writer in the replica's walk and stand nought.
+pub fn match_grade(kickoff_form: i32, form_now: i32, own: i16, against: i16, random: &mut Random) -> u8 {
+    let mut g = random.below(4) as i32 + 6 + (kickoff_form - form_now) * 2;
+    g += if own > against + 2 {
+        -2
+    } else if own > against {
+        -1
+    } else if own < against - 2 {
+        2
+    } else if own < against {
+        1
+    } else {
+        0
+    };
+    if form_now == 20 {
+        g -= 1;
+    }
+    g.clamp(2, 12) as u8
+}
+
+/// The grading over a side's squad (`FUN_006f86e1` in the graded pass,
+/// `FUN_006f8f44` with the fifth parameter one), in the club's squad
+/// order at +0xb50: a man of twenty minutes and more takes his grade
+/// ([`match_grade`], kept at the record's +0x273), one of fewer a
+/// nought; the side's mean in tenths goes to the match side's +0x3a, and
+/// the best grade among the men of more than forty-four minutes names
+/// the match's best men, all its ties. The replica's eleven stand the
+/// whole match. The best man's talks (`FUN_0069e008` and its kin) and the
+/// clubs' ledgers (`FUN_00714236`, `FUN_00744d02`) wait with the club
+/// objects. Returns the mean and the best men.
+pub fn post_match_grades(
+    m: &Match,
+    which: usize,
+    kickoff: &[(u16, i32)],
+    records: &mut Records,
+    random: &mut Random,
+) -> (u8, Vec<u16>) {
+    let at = which * 2;
+    let Some(team) = records.team(m.ids[at], m.ids[at + 1]) else { return (0, Vec::new()) };
+    let minutes = if m.flags & EXTRA != 0 { 120 } else { 90 };
+    let (own, against) = (m.goals[which], m.goals[1 - which]);
+    let (mut sum, mut count, mut best, mut men) = (0i32, 0i32, 0xffu8, Vec::new());
+    for id in team.players() {
+        let Some(&(_, form)) = kickoff.iter().find(|(man, _)| *man == id && id != 0) else { continue };
+        let Some(p) = records.player_mut(id) else { continue };
+        if minutes < 0x14 {
+            p.set_grade(0);
+            continue;
+        }
+        let g = match_grade(form, statistics::form_today(p), own, against, random);
+        p.set_grade(g);
+        sum += i32::from(g);
+        count += 1;
+        if minutes > 0x2c {
+            if g < best {
+                best = g;
+                men.clear();
+                men.push(id);
+            } else if g == best {
+                men.push(id);
+            }
+        }
+    }
+    let mean = if count < 1 { 0 } else { (sum * 10 / count) as u8 };
+    (mean, men)
+}
+
+/// The record bit of a smoker (player +0x1b4 bit 11): his condition
+/// counts five steps less (`FUN_006fffd9` in `FUN_00457e00`).
+const SMOKER: u32 = 0x800;
+
+/// What a league or cup match leaves on a side's squad: the graded pass
+/// (`FUN_006f8f44` with the fifth parameter one, as the day's matches
+/// walk `FUN_006f0efd` calls it; `FUN_006f86e1` over the club's squad
+/// at +0xb50, in its order). A man who stood on the pitch wears by the
+/// competition rows ([`WEAR_ROWS`], the record's +0x24 nought) for the
+/// minutes `played` names him, the multiplier by the side's pressure band
+/// — its stance the club's effort (`FUN_006f7d4d`, club +0xa9 into side
+/// +0x32), held the whole match — halved at the keeper's spot; a man who did not
+/// (`position == 0`) loses one condition step ([`sat_out`]). The original's
+/// eight tenths for the man its human club's fitness trainer looks after
+/// (`FUN_0069bec0`, the human slot's runtime staff at `DAT_00a58402`)
+/// waits with those staff objects; the computer clubs answer nought.
+pub fn competition_wear(records: &mut Records, (country, number): (u8, u16), played: &[(u16, i32)], extra: bool) {
+    let Some(team) = records.team(country.into(), number) else { return };
+    let squad = team.players();
+    let full = if extra { 120 } else { 90 };
+    let pct = MINUTE_PCT.get(usize::from(team.effort())).copied().unwrap_or(100);
+    let mult = WEAR_MULT[wear_band((pct * full) as i16, extra)];
+    for id in squad {
+        let Some(p) = records.player_mut(id).filter(|_| id != 0) else { continue };
+        match played.iter().find(|(man, _)| *man == id) {
+            Some(&(_, minutes)) => {
+                let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
+                wear_by_rows(p, minutes, mult, &WEAR_ROWS);
+            }
+            None => sat_out(p),
+        }
+    }
+}
+
+/// The squad's men a walked match left off its pitch, each a sat-out
+/// step ([`sat_out`]), the walk having worn those who stood
+/// ([`post_match_wear`]).
+pub fn sat_out_rest(records: &mut Records, (country, number): (u8, u16), stood: &[u16]) {
+    let Some(team) = records.team(country.into(), number) else { return };
+    for id in team.players() {
+        if id == 0 || stood.contains(&id) {
+            continue;
+        }
+        if let Some(p) = records.player_mut(id) {
+            sat_out(p);
+        }
+    }
+}
+
+/// A competition match's man who sat it out (`FUN_006f8d88`, the record's
+/// +0x24 nought): one condition step down (`FUN_00411130(-1)`, kept at
+/// 0..10000) while his steps (`FUN_00457e00`, the condition by the
+/// hundred, a smoker's five less) stand above nought. The original asks
+/// `FUN_00747998` first: no step for a man whose runtime byte +0xb5 is 4,
+/// and at a human club none for one its manager's individual plan
+/// (`FUN_00746ddf`, `DAT_00a50028`) holds with a task; neither has a save
+/// copy found, so every man takes the step.
+fn sat_out(p: &mut Player) {
+    let steps = i32::from(p.condition()) / 100;
+    let steps = if p.shown() & SMOKER != 0 { if steps < 5 { 0 } else { steps - 5 } } else { steps };
+    if steps > 0 {
+        p.set_condition((i32::from(p.condition()) - 100).clamp(0, 10_000) as i16);
     }
 }
 
@@ -1699,7 +3049,7 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// goal branch; both sit behind the same kind gate and ask a club man,
 /// which every entered man of a club fixture is. The mood byte both
 /// branches shift, live +0x65, has no save copy, and `FUN_006a784b`
-/// beside the miss's mood lift is a club seam. Beside the keeper list
+/// beside the miss's mood lift teaches in [`post_match_lessons`]. Beside the keeper list
 /// the shot list books both events' takers: the shot books' own counters
 /// lift the taker's taken penalty or free-kick byte — the +0x24b and
 /// +0x24d first bytes — and the club at the side's own id pair adds
@@ -1708,18 +3058,20 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
 /// and kind one add the scored byte standing beside them,
 /// `FUN_007410ca`'s `+0xdeb` and `FUN_007411ea`'s `+0xdee` lifts at the
 /// goal; a wide penalty's taken byte stands lifted twice, once by the
-/// shot book and once by the miss branch above. The club counters behind those
-/// buckets (`FUN_006facd8`, `FUN_006a76df`, `FUN_006a7737`,
-/// `FUN_006a778f`, `FUN_007408d1`) and the talks `FUN_00677c87` and
+/// shot book and once by the miss branch above. The lessons behind those
+/// buckets (`FUN_006a76df`, `FUN_006a7737`, `FUN_006a778f`) teach in
+/// [`post_match_lessons`]; the club counters (`FUN_006facd8`,
+/// `FUN_007408d1`) and the talks `FUN_00677c87` and
 /// `FUN_00740959` stay seams; the tail that reads which side the man
 /// stands in and marks him there (`FUN_006782aa`, `FUN_006fac42`) works
 /// only for national sides — the id pair returns nought for clubs — so a
 /// plain fixture passes it by. All these lifts run
 /// only while the match's kind code sits below 0x3f or stands at 0x10 —
 /// a national tie carries its counters in its own block instead — and
-/// the match's short at +0x24 stands nought, which the replica's kind
-/// always is: as with the wear, the replica stands national ties off the
-/// books through the tie's `nat_bits`. Nothing here draws a number.
+/// the match's short at +0x24 stands nought — [`play_matches`] passes a
+/// game of the day's own list by (`Match::exhibition`); as with the
+/// wear, the replica stands national ties off the books through the
+/// tie's `nat_bits`. Nothing here draws a number.
 pub fn post_match_books(m: &Match, records: &mut Records) {
     for which in 0..2 {
         // the club's season pair counts the side's attempts and its
@@ -1840,6 +3192,33 @@ pub fn post_match_books(m: &Match, records: &mut Records) {
                     taken.wrapping_add(fks_taken),
                     scored.wrapping_add(fks_scored),
                 ]);
+            }
+        }
+    }
+}
+
+/// What a walked match teaches the human clubs' men, out of the same
+/// waiting lists as [`post_match_books`]: the original teaches at the
+/// event's moment, behind the same kind gate — the scorer by his goal's
+/// kind (`FUN_00740aad`), the assist man (`FUN_00740dc4`) and the foe
+/// keeper who saved the big chance (`FUN_00741038`), the club at the
+/// keeper's own side. The lessons touch only the individual training's
+/// store and the abilities, which the books leave alone, so their order
+/// against the books does not matter. Nothing here draws a number.
+pub fn post_match_lessons(m: &Match, records: &mut Records, tables: &IndividualTables) {
+    for which in 0..2 {
+        let club = (m.ids[which * 2], m.ids[which * 2 + 1]);
+        let foe = (m.ids[(1 - which) * 2], m.ids[(1 - which) * 2 + 1]);
+        let side = &m.sides[which];
+        for &(id, kind) in side.goal_book.iter().take_while(|&&(id, _)| id != 0) {
+            training_day::goal_lessons(records, tables, club, id, kind);
+        }
+        for &id in side.assist_book.iter().take_while(|&&id| id != 0) {
+            training_day::assist_lesson(records, tables, club, id);
+        }
+        for &(id, saved) in side.keeper_book.iter().take_while(|&&(id, _)| id != 0) {
+            if saved {
+                training_day::save_lesson(records, tables, foe, id);
             }
         }
     }
@@ -2060,7 +3439,7 @@ mod tests {
     fn a_goalless_afternoon_ends_by_the_book() {
         let mut m = fixture();
         let mut r = Random::new(12345);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         // the added time now sits behind the minutes' chance draws in the
         // stream, so it is checked in its band, not by pre-drawing it:
         // the plain fixture's byte 5 gives selector one, 88 up
@@ -2096,7 +3475,7 @@ mod tests {
         b.added_draw = 2 << 2; // its band is the wider one, 87 up
         let mut ms = [b, a];
         let mut r = Random::new(99);
-        play_matches(&mut ms, false, None, test_day(), &mut r);
+        play_matches(&mut ms, false, None, None, test_day(), &mut r);
         assert!((87..=90).contains(&ms[0].ends_at), "{}", ms[0].ends_at);
         assert!((88..=90).contains(&ms[1].ends_at), "{}", ms[1].ends_at);
         assert_eq!(ms[1].half_score, 0x32);
@@ -2110,7 +3489,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 2];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | EXTRA | PENS);
         // the extra time's fresh added-time draw, behind the chances,
         // adds the plain fixture's selector one to 120
@@ -2123,7 +3502,7 @@ mod tests {
         m.kind = MAY_EXTRA;
         m.goals = [2, 1];
         let mut r = Random::new(5);
-        play_matches(std::slice::from_mut(&mut m), false, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut m), false, None, None, test_day(), &mut r);
         assert_eq!(m.flags, MINUTE_UP | OVER);
     }
 
@@ -2171,6 +3550,20 @@ mod tests {
         m.sides[0].tilt = 0; // all the way forward
         minute_play(&mut m, &clock, None, &mut r);
         assert_eq!(m.sides[0].rated, [110, 451, 330, 440, 418]);
+    }
+
+    #[test]
+    fn the_bigger_crowd_leans_the_match_its_way() {
+        // home fans ahead: below nought, at most three
+        assert_eq!(crowd_lean(20000, 2000), -3);
+        assert_eq!(crowd_lean(25477, 21018), -3);
+        assert_eq!(crowd_lean(12000, 5000), -1);
+        assert_eq!(crowd_lean(10000, 3000), -1);
+        // a small crowd leans nowhere, an even one to the visitors
+        assert_eq!(crowd_lean(2000, 1000), 0);
+        assert_eq!(crowd_lean(0, 0), 0);
+        assert_eq!(crowd_lean(10000, 10000), 1);
+        assert_eq!(crowd_lean(1000, 20000), 3);
     }
 
     #[test]
@@ -2479,6 +3872,50 @@ mod tests {
         assert_eq!(r, Random::new(9));
     }
 
+    /// The walk's sixth loop throws once for each man both sides list,
+    /// eleven and bench, and then the first half's added time: a plain
+    /// fixture's half ends between the 43rd and the 45th minute. Its
+    /// fifth gives a computer club the co-trainer's tactics, three throws,
+    /// and lays them over the side with its three talks.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_walk_enters_the_men_and_ends_the_first_half() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let data = crate::data::Data::load(&game).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = Match::default();
+        m.ids = [14, 2, 14, 3];
+        (m.home_nation, m.home_id) = (14, 2);
+        let mut row = [m];
+        pre_match(&mut row);
+        line_up_row(&row, &mut records, &data);
+        let listed: usize = [2, 3]
+            .iter()
+            .map(|&n| {
+                let t = records.team(14, n).unwrap();
+                t.lineup().into_iter().chain(t.bench()).filter(|&id| id != 0 && records.player(id).is_some()).count()
+            })
+            .sum();
+        assert!(listed > 22, "both sides list a bench");
+        let mut random = Random::new(3);
+        kick_off_row(&mut row, &mut records, &data, &mut random);
+        for (side, n) in row[0].sides.iter().zip([2, 3]) {
+            let t = records.team(14, n).unwrap();
+            assert_eq!((side.style, side.stance, side.tier, side.talk_max), (0, t.effort(), t.hardness(), 3));
+            assert_eq!(side.tilt, t.style());
+        }
+        let before = random.clone();
+        ready_row(&mut row, &mut records, &mut random);
+        let mut step = before;
+        for _ in 0..=listed {
+            step.below(2);
+        }
+        assert_eq!(step, random, "a throw a listed man and the added time");
+        assert!((43..=45).contains(&row[0].ends_at), "{}", row[0].ends_at);
+        assert_eq!(row[0].sides[0].entries[0], records.team(14, 2).unwrap().lineup()[0]);
+    }
+
     #[test]
     fn a_quiet_day_leaves_the_national_tie_to_its_sums() {
         // a tie carrying a national side is bulk-simulated at pre-match;
@@ -2488,7 +3925,7 @@ mod tests {
         let mut plain = fixture();
         let mut ms = [tie, plain];
         let mut r = Random::new(3);
-        play_matches(&mut ms, false, None, test_day(), &mut r);
+        play_matches(&mut ms, false, None, None, test_day(), &mut r);
         assert_eq!(ms[0].sides[0].fatigue, 0);
         assert!(ms[1].sides[0].fatigue > 0);
     }
@@ -2498,7 +3935,7 @@ mod tests {
         let mut tie = fixture();
         tie.nat_bits = 1;
         let mut r = Random::new(3);
-        play_matches(std::slice::from_mut(&mut tie), true, None, test_day(), &mut r);
+        play_matches(std::slice::from_mut(&mut tie), true, None, None, test_day(), &mut r);
         assert!(tie.sides[0].fatigue > 0);
     }
 
@@ -2683,6 +4120,66 @@ mod tests {
     }
 
     #[test]
+    fn a_friendly_wears_by_its_own_rows() {
+        // as the original's dumps of Probe1's pre-season tournaments have
+        // it: ninety minutes at the normal effort's hundred a minute, the
+        // multiplier ten, lift a man fifty and drain 125, 315 and 153
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_condition(5850);
+        p.set_freshness([5807, -985, -468]);
+        wear_by_rows(&mut p, 90, WEAR_MULT[wear_band(90 * 100, false)], &FRIENDLY_WEAR_ROWS);
+        assert_eq!(p.condition(), 5900);
+        assert_eq!(p.freshness(), [5682, -1300, -621]);
+        // extra time at the harder effort's 105 stands in the band of
+        // eleven; the keeper's halved five takes 30, 80, 335 and 157
+        assert_eq!(WEAR_MULT[wear_band(120 * 105, true)], 11);
+        let mut p = squad_player(1, 7, 4, 0, 0, 10);
+        p.set_freshness([6335, 0, 0]);
+        wear_by_rows(&mut p, 120, 10 / 2, &FRIENDLY_WEAR_ROWS);
+        assert_eq!(p.condition(), 30);
+        assert_eq!(p.freshness(), [6255, -335, -157]);
+    }
+
+    #[test]
+    fn a_competition_match_wears_who_stood_and_steps_down_who_sat() {
+        // as the original's dumps of Probe1's supercup final have it (the
+        // visitors 14/85 the day after): ninety minutes at the harder
+        // effort's 105 a minute stand in the band of eleven, lifting a man
+        // 110 and draining 247, 693 and 346 by the competition rows
+        assert_eq!(WEAR_MULT[wear_band(90 * 105, false)], 11);
+        let mut p = squad_player(3289, 7, 4, 0, 0, 10);
+        p.set_condition(5747);
+        p.set_freshness([5762, 0, 0]);
+        wear_by_rows(&mut p, 90, 11, &WEAR_ROWS);
+        assert_eq!(p.condition(), 5857);
+        assert_eq!(p.freshness(), [5515, -693, -346]);
+        // the keeper's halved five: 50, 112, 315 and 157
+        let mut p = squad_player(3285, 7, 1, 0, 0, 10);
+        p.set_condition(6897);
+        p.set_freshness([6676, 0, 0]);
+        wear_by_rows(&mut p, 90, 11 / 2, &WEAR_ROWS);
+        assert_eq!(p.condition(), 6947);
+        assert_eq!(p.freshness(), [6564, -315, -157]);
+        // a man who sat it out loses a step, his freshness untouched
+        let mut p = squad_player(3286, 7, 4, 0, 0, 10);
+        p.set_condition(5652);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 5552);
+        assert_eq!(p.freshness(), [0, 0, 0]);
+        // none below a step, and a smoker's five fewer: none below six
+        p.set_condition(99);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 99);
+        p.set_shown(SMOKER);
+        p.set_condition(599);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 599);
+        p.set_condition(600);
+        sat_out(&mut p);
+        assert_eq!(p.condition(), 500);
+    }
+
+    #[test]
     fn the_wear_holds_its_three_numbers_within_band() {
         // `FUN_00654ff0` keeps the condition at 0..10000 and `FUN_006fc330`
         // the freshness at 0..10000 on the first value, −10000..10000 on
@@ -2698,6 +4195,41 @@ mod tests {
         p.set_condition(3000);
         wear_man(&mut p, 90, 8);
         assert_eq!(p.condition(), 3080);
+    }
+
+    #[test]
+    fn a_grade_follows_the_result_and_the_form_lost() {
+        // the draw below four, replayed from the same seed
+        let draw = Random::new(7).below(4) as u8;
+        // a level game at unchanged form: six and the draw
+        assert_eq!(match_grade(9, 9, 1, 1, &mut Random::new(7)), 6 + draw);
+        // a win by more than two, two half steps better
+        assert_eq!(match_grade(9, 9, 4, 0, &mut Random::new(7)), 4 + draw);
+        // a loss by one with two form points lost: one and four worse
+        assert_eq!(match_grade(9, 7, 0, 1, &mut Random::new(7)), (11 + draw).min(12));
+        // the top form of twenty and a big win cannot pass a one
+        assert_eq!(match_grade(0, 20, 9, 0, &mut Random::new(7)), 2);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_match_grades_its_eleven_on_the_save() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = Match::default();
+        m.ids = [0, 0, 0, 500];
+        m.goals = [2, 0];
+        let eleven = saved_eleven(&m, 0, &records);
+        let kickoff: Vec<(u16, i32)> =
+            eleven.iter().map(|&id| (id, statistics::form_today(records.player(id).unwrap()))).collect();
+        let (mean, best) = post_match_grades(&m, 0, &kickoff, &mut records, &mut Random::new(3));
+        let grades: Vec<u8> = eleven.iter().map(|&id| records.player(id).unwrap().grade()).collect();
+        assert!(grades.iter().all(|g| (2..=12).contains(g)), "{grades:?}");
+        let low = *grades.iter().min().unwrap();
+        assert!(!best.is_empty() && best.iter().all(|id| records.player(*id).unwrap().grade() == low));
+        let sum: i32 = grades.iter().map(|&g| i32::from(g)).sum();
+        assert_eq!(i32::from(mean), sum * 10 / 11);
     }
 
     #[test]
@@ -3132,7 +4664,7 @@ mod tests {
     fn the_walks_penalty_minute_settles_the_saved_tie() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
-        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
         // the first German club's eleven on both pitches, a level tie
         // after extra time: the walk's penalty minute now calls the
         // shootout itself, and the saved men's ages make the kicks dice
@@ -3148,13 +4680,48 @@ mod tests {
             false,
             0x78,
             &mut clock,
-            Some(&records),
+            Some(&mut records),
             test_day(),
             &mut r,
         );
         assert!(!run, "the penalty minute is the walk's last word");
         assert_ne!(m.goals[0], m.goals[1], "{:?}", m.goals);
         assert_ne!(r, Random::new(7), "the minute rolled the kicks' dice");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_row_lines_up_its_computer_sides_before_the_minutes() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let data = crate::data::Data::load(&game).unwrap();
+        // a German computer club whose listed second man has gone since
+        // the week's line-up, against a foreign club whose record lists
+        // nobody — the week's line-up reaches the played nations only
+        let foreign = (0..8u16)
+            .find(|&t| records.team(13, t).is_some_and(|x| x.lineup() == [0; 11] && x.players().len() >= 11))
+            .expect("a foreign club listing nobody");
+        let mut m = fixture();
+        m.ids = [14, 16, 13, foreign];
+        assert_eq!(records.team(14, 16).unwrap().humans()[0], 0);
+        assert_eq!(saved_eleven(&m, 0, &records)[1], 0, "the hole stands in the record");
+        let mut human = fixture();
+        human.ids = [0, 0, 0, 0];
+        let saved = records.team(0, 0).unwrap().lineup();
+        line_up_row(&[m, human], &mut records, &data);
+        // both stand the co-trainer's full eleven out of their squads,
+        // the walk enters it, and the human's saved eleven stays his
+        for which in 0..2 {
+            let team = records.team(m.ids[which * 2], m.ids[which * 2 + 1]).unwrap();
+            let eleven = saved_eleven(&m, which, &records);
+            assert_eq!(eleven, team.lineup().to_vec());
+            assert!(eleven.iter().all(|&id| id != 0 && team.players().contains(&id)), "{eleven:?}");
+        }
+        assert_eq!(records.team(0, 0).unwrap().lineup(), saved);
+        let lineup = records.team(13, foreign).unwrap().lineup();
+        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), None, test_day(), &mut Random::new(5));
+        assert_eq!(m.sides[1].entries[..11], lineup[..]);
     }
 
     #[test]
@@ -3169,7 +4736,7 @@ mod tests {
         // from the first minute the books find their men
         let mut m = fixture();
         m.ids = [0, 0, 0, 0];
-        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), test_day(), &mut Random::new(5));
+        play_matches(std::slice::from_mut(&mut m), false, Some(&mut records), None, test_day(), &mut Random::new(5));
         for which in 0..2 {
             let team = records
                 .team(m.ids[which * 2], m.ids[which * 2 + 1])
@@ -3186,7 +4753,10 @@ mod tests {
                 "the line-up's first short names the keeper"
             );
             let pitch: Vec<u16> = side_men(&m, which, &records).iter().map(|p| p.id()).collect();
-            assert_eq!(pitch, team.lineup().to_vec(), "side {which} plays its manager's eleven");
+            // a man sent off leaves his place empty
+            let standing: Vec<u16> =
+                team.lineup().into_iter().filter(|id| !m.sides[which].sent_off.contains(id)).collect();
+            assert_eq!(pitch, standing, "side {which} plays its manager's eleven");
         }
     }
 
@@ -3231,6 +4801,38 @@ mod tests {
 
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_national_side_plays_the_associations_saved_tactic() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let saved: Vec<u8> =
+            (0..4).map(|i| records.block(&format!("0x1bdd6b8[{i}]")).unwrap()[0]).collect();
+        eprintln!("national tactics {saved:?}");
+        // the side at list place p takes the first byte of the saved entry
+        // p-1 into its tactic (+0x30); places 0 and 5..7 keep the tactic
+        for place in 1..=4i16 {
+            let mut side = fixture().sides[0];
+            side.tilt = 0x7f;
+            national_tactic(&mut side, place, Some(&records));
+            assert_eq!(side.tilt, saved[place as usize - 1]);
+        }
+        for place in [0i16, 5, 7] {
+            let mut side = fixture().sides[0];
+            national_tactic(&mut side, place, Some(&records));
+            assert_eq!(side.tilt, 3);
+        }
+        // the minute reads the second side's place from the marker's top
+        // nibble, the first side's from the byte above the bits
+        let mut m = fixture();
+        m.sides[0].tilt = 0x7f;
+        m.sides[1].tilt = 0x7f;
+        m.nat_bits = 2 | (3 << 8) | (2 << 12);
+        national_tactics(&mut m, Some(&records));
+        assert_eq!([m.sides[0].tilt, m.sides[1].tilt], [0x7f, saved[1]]);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_walked_match_wears_its_men_on_the_save() {
         use a3_files::an3::Save;
         let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
@@ -3262,7 +4864,7 @@ mod tests {
         tie.ids = [0, 0, 0, 0];
         tie.nat_bits = 1;
         let mut r = Random::new(6);
-        play_matches(&mut [m, tie], false, Some(&mut records), test_day(), &mut r);
+        play_matches(&mut [m, tie], false, Some(&mut records), None, test_day(), &mut r);
         // top wear band through the side's fatigue, ninety minutes on
         // the men: the fourth row scaled twelve tenths, twice over for
         // the eleven that stands on both of this fixture's pitches
@@ -3537,7 +5139,7 @@ mod tests {
         let joker = |id: u16| (read().player(id).unwrap().match_bits() >> 1) & 1;
         let at_home = |id: u16| read().player(id).unwrap().club()[1] as u16 == 0;
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name stands in the walked club's goal list,
         // wholly and per kind
@@ -3626,7 +5228,7 @@ mod tests {
         };
         let (before_gk, before_mate) = (pair(&records, gk), pair(&records, mate));
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name stands in the walked club's keeper list,
         // saved and conceded apart
@@ -3693,7 +5295,7 @@ mod tests {
             (taken(&records, a), taken(&records, b), taken(&records, c));
         let (before_pens, before_fks) = club_pair(&records);
         let mut records = read();
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let seen_club = row[0];
         // how often each name meets the walked club's shot list, by the
         // shot's name — and how often its wide chances meet the miss
@@ -3801,7 +5403,7 @@ mod tests {
         };
         let (before_a, before_b) = (counters(&records, a), counters(&records, b));
         let (before_c, before_d) = (counters(&records, c), counters(&records, d));
-        play_matches(&mut row, false, Some(&mut records), test_day(), &mut Random::new(6));
+        play_matches(&mut row, false, Some(&mut records), None, test_day(), &mut Random::new(6));
         let (seen_club, seen_tie) = (row[0], row[1]);
         // every name standing in the walked club's lists meets the
         // records once — the seeded one and the walk's own picks alike
@@ -3847,5 +5449,689 @@ mod tests {
         assert_eq!(seen_tie.sides[0].assist_book[0], c);
         assert_eq!(counters(&records, c), before_c, "the national tie's man is not booked");
         assert_eq!(counters(&records, d), before_d, "the national tie's own-goal man is not booked");
+    }
+
+    #[test]
+    fn the_foul_kind_tables_walk_their_throw() {
+        // entry nought is empty, so the plain table's first eight throws
+        // name kind one; the other draw's six land on 26..31
+        assert_eq!(foul_kind(&FOULS, 0, 1), 1);
+        assert_eq!(foul_kind(&FOULS, 8, 1), 2);
+        assert_eq!(foul_kind(&FOULS, 11, 1), 4);
+        assert_eq!(foul_kind(&FOULS, 15, 1), 7);
+        assert_eq!(foul_kind(&FOULS_OTHER, 0, 0x20), 26);
+        assert_eq!(foul_kind(&FOULS_OTHER, 5, 0x20), 31);
+        assert_eq!(foul_kind(&FOULS_TRAIT, 27, 1), 1, "a throw past the table names one");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn fouls_book_yellow_and_red_cards() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 1];
+        m.sides[0].men = 11;
+        m.sides[0].morale = 100;
+        let eleven = pitch_eleven(&m, 0, &records);
+        assert_eq!(eleven.len(), 11);
+        // every man of the eleven stands among the candidates, the keeper
+        // once and at place nought
+        let list = foul_candidates(&m, 0, &eleven, &records);
+        for (slot, &id) in eleven.iter().enumerate() {
+            let p = records.player(id).unwrap();
+            let n = list.iter().filter(|&&s| s as usize == slot).count();
+            if p.positions()[0] == world::GOALKEEPER {
+                assert_eq!(slot, 0);
+                assert_eq!(n, 1, "the keeper stands once");
+            } else {
+                assert!(1 < n, "a field man stands his weight's tenth and one");
+            }
+        }
+        // a first card cautions the man, a second sends him off
+        let man = eleven[3];
+        book_card(&mut m, 0, man, &eleven, 4, false);
+        assert_eq!(m.bookings, 1);
+        assert_eq!(m.sides[0].booked[0], man);
+        assert_eq!(m.sides[0].cautions, [1, 1]);
+        assert_eq!(m.sides[0].caution_bits, 1);
+        assert_eq!(m.sides[0].hard_fouls, 1, "kind 4 is a hard foul");
+        assert_eq!(m.sides[0].men, 11);
+        assert!(cautioned(&m.sides[0], records.player(man).unwrap()));
+        let weighed = foul_candidates(&m, 0, &eleven, &records);
+        assert!(
+            weighed.iter().filter(|&&s| s == 3).count() < list.iter().filter(|&&s| s == 3).count(),
+            "a cautioned man weighs less"
+        );
+        book_card(&mut m, 0, man, &eleven, 2, true);
+        assert_eq!(m.bookings, 2);
+        assert_eq!(m.sides[0].sent_off[0], man);
+        assert_eq!(m.sides[0].reds, 1);
+        assert_eq!(m.sides[0].men, 10);
+        assert_eq!(m.sides[0].morale, 105, "the side's mood takes 105 of a hundred");
+        assert_eq!(m.sides[0].foul_marks, 0, "kind 2 leaves the mark");
+        assert_eq!(m.sides[0].cautions, [1, 1], "the red card is no caution");
+        let pitch = pitch_eleven(&m, 0, &records);
+        assert_eq!(pitch[3], 0, "his place stands empty");
+        assert!(!side_men(&m, 0, &records).iter().any(|p| p.id() == man));
+        // a man off the pitch books nothing
+        book_card(&mut m, 0, man, &pitch, 4, true);
+        assert_eq!(m.bookings, 2);
+        // a side down to eight men draws no foul at all
+        let mut few = fixture();
+        few.ids = [0, 0, 0, 1];
+        few.sides[0].men = 8;
+        let mut random = Random::new(3);
+        let before = random.clone();
+        booking(&mut few, 0, &records, &mut random);
+        assert_eq!(random, before);
+        assert_eq!(few.bookings, 0);
+        // a full side draws its man out of the eleven and books him
+        let mut full = fixture();
+        full.ids = [0, 0, 0, 1];
+        full.sides[0].men = 11;
+        booking(&mut full, 0, &records, &mut Random::new(3));
+        assert_eq!(full.bookings, 1);
+        let named = full.sides[0].booked[0];
+        assert!(named != 0 && eleven.contains(&named));
+        // the walk's chooser hands the minute's foul to its side
+        let booked = (1u64..200).any(|seed| {
+            let mut m = fixture();
+            m.ids = [0, 0, 0, 1];
+            m.sides[0].men = 11;
+            m.sides[1].men = 11;
+            let mut random = Random::new(seed);
+            for _ in 0..90 {
+                chance_minute(&mut m, &Clock::default(), Some(&mut records), &mut random);
+            }
+            0 < m.bookings
+        });
+        assert!(booked, "ninety minutes book a card now and then");
+    }
+
+    #[test]
+    fn the_straight_red_tables_are_as_wide_as_their_throws() {
+        // entries nought and one are empty, the other table names 26..32
+        for (table, width) in [(&REDS, 0x66), (&REDS_FRONT, 0x52), (&REDS_HARD, 0x79), (&REDS_OTHER, 7)] {
+            assert_eq!(table.iter().take(0x22).map(|&x| x as i32).sum::<i32>(), width);
+        }
+        assert_eq!(foul_kind(&REDS, 0, 1), 2);
+        assert_eq!(foul_kind(&REDS, 6, 1), 8);
+        assert_eq!(foul_kind(&REDS_FRONT, 6, 1), 9, "a forward's table has no kind 8");
+        assert_eq!(foul_kind(&REDS_OTHER, 0, 1), 26);
+        assert_eq!(foul_kind(&REDS_OTHER, 6, 1), 32);
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn roll_699_sends_a_man_straight_off() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let side = |men| {
+            let mut m = fixture();
+            m.ids = [0, 0, 0, 1];
+            m.sides[0].men = men;
+            m.sides[0].morale = 100;
+            m
+        };
+        // a side of nine draws nothing
+        let mut nine = side(9);
+        let mut random = Random::new(5);
+        let before = random.clone();
+        assert_eq!(straight_red(&mut nine, 0, &records, 10, &mut random), None);
+        assert_eq!(random, before);
+        // a full side's man goes off, early in the match with the mark
+        let mut early = side(11);
+        let kind = straight_red(&mut early, 0, &records, 10, &mut Random::new(5));
+        assert!(matches!(kind, Some(1..=0x21)));
+        let s = &early.sides[0];
+        let man = s.sent_off[0];
+        assert!(man != 0 && saved_eleven(&early, 0, &records).contains(&man));
+        assert_eq!((early.bookings, s.men, s.straight_reds, s.reds), (1, 10, 1, 0));
+        assert_eq!(s.morale, 105);
+        assert_eq!(s.foul_marks, 0x20);
+        assert_eq!(s.booked, [0; LEDGER_SLOTS], "no caution");
+        assert_eq!(pitch_eleven(&early, 0, &records).iter().filter(|&&id| id == 0).count(), 1);
+        let mut late = side(11);
+        straight_red(&mut late, 0, &records, 31, &mut Random::new(5));
+        assert_eq!(late.sides[0].foul_marks, 0, "from the 31st minute no mark");
+        assert_eq!(late.sides[0].sent_off, early.sides[0].sent_off);
+        // the frame's no-chance roll 699 sends off until nine are left,
+        // and without the save nothing happens
+        let mut m = side(11);
+        let mut bare = side(11);
+        let mut random = Random::new(7);
+        let mut other = Random::new(7);
+        for _ in 0..20_000 {
+            chance_for(&mut m, 0, 0.0, 60, Some(&mut records), &mut random);
+            chance_for(&mut bare, 0, 0.0, 60, None, &mut other);
+        }
+        assert_eq!((m.sides[0].men, m.sides[0].straight_reds, m.bookings), (9, 2, 2));
+        assert_eq!((bare.sides[0].men, bare.bookings), (11, 0));
+        assert_eq!(m.sides[1], side(11).sides[1], "the other side stands untouched");
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn rolls_900_to_903_injure_a_man() {
+        use a3_files::an3::Save;
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        // the kinds' rows stand as the exe holds them
+        let exe = a3_files::exe::Exe::open(&game.join("anstoss3.exe")).unwrap();
+        let rows = exe.bytes(0x8ac340, 10 * 0x44).unwrap();
+        for (k, row) in rows.chunks(10).enumerate() {
+            assert_eq!((row[0], row[1], row[5]), (INJURY_RECURS[k], INJURY_DAYS[k], INJURY_WEIGHTS[k]), "kind {k}");
+        }
+        let mut records = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let mut m = fixture();
+        m.ids = [0, 0, 0, 1];
+        m.sides[0].men = 11;
+        let eleven = pitch_eleven(&m, 0, &records);
+        let list = injury_candidates(&eleven, &records);
+        for (slot, &id) in eleven.iter().enumerate() {
+            let n = list.iter().filter(|&&s| usize::from(s) == slot).count();
+            assert!(id == 0 || (5..=0x13).contains(&n), "place {slot}: {n}");
+        }
+        // a lingering knock comes back on about half the throws, a row's
+        // byte 2 as the worse kind
+        let id = eleven[0];
+        crate::medical::injure_for(&mut records, id, 3);
+        for (kind, back) in [(3u8, 3u8), (9, 10), (0x1d, 0x1e)] {
+            records.player_mut(id).unwrap().set_injury_kind(kind);
+            let p = records.player(id).unwrap();
+            assert_eq!(lingering(&records, p).1, INJURY_RECURS[usize::from(kind)]);
+            let again = (0..400).filter(|&s| injury_kind(&records, p, 0, &mut Random::new(s)) == back).count();
+            assert!((150..260).contains(&again), "kind {kind}: {again}");
+        }
+        // the spared kinds come up less for a club with the flag bit 2
+        let p = records.player(eleven[1]).unwrap();
+        let spared = |flags| (0..3000).filter(|&s| SPARED_KINDS.contains(&injury_kind(&records, p, flags, &mut Random::new(s)))).count();
+        assert!(spared(2) * 2 < spared(0), "{} {}", spared(2), spared(0));
+        // the man takes the kind from today for a day at least
+        let (man, kind) = injury(&mut m, 0, &mut records, &mut Random::new(5)).unwrap();
+        assert!(eleven.contains(&man));
+        let p = records.player(man).unwrap();
+        assert!(matches!(kind, 1..=0x3d | 0x43));
+        assert_eq!((p.injury_kind(), p.injured_on()), (kind, records.globals.day()));
+        assert!(1 <= crate::load::days_to(&records.globals, p.injured_to()));
+        // the frame's rolls 900..903 injure a man now and then; without
+        // the save nothing happens
+        let mut fresh = Records::from_save(Save::read(&game.join("saves/A.an3")).unwrap()).unwrap();
+        let hurt = |records: &Records| {
+            eleven.iter().filter(|&&id| id != 0 && records.player(id).unwrap().injured_on() == records.globals.day()).count()
+        };
+        assert_eq!(hurt(&fresh), 0);
+        let mut random = Random::new(9);
+        for _ in 0..3000 {
+            chance_for(&mut m, 0, 0.0, 60, Some(&mut fresh), &mut random);
+        }
+        assert!(0 < hurt(&fresh));
+    }
+
+    /// The kick-off's bonus against a man's salary: the row's nought
+    /// leaves every paid man at 96 % and an unpaid one whole, a bonus of
+    /// one and a half units at 98, two whole, and past fifty his part at
+    /// 112.
+    #[test]
+    fn the_bonus_bends_a_mans_part_by_his_salary() {
+        assert_eq!(bonus_percent(0, 300), 96);
+        assert_eq!(bonus_percent(0, 0), 100);
+        assert_eq!(bonus_percent(15 * 300, 300), 98);
+        assert_eq!(bonus_percent(20 * 300, 300), 100);
+        assert_eq!(bonus_percent(31 * 300, 300), 103);
+        assert_eq!(bonus_percent(501 * 300, 300), 112);
+    }
+
+    /// The original's trace of a season's days (the oracle's
+    /// `runs/season`, its dumps a day apart and `draws.bin` from the
+    /// start): between one dump's generator and the next lies the day's
+    /// pre-match walk, and in its fifth loop the kick-off's slack throws
+    /// (`FUN_006f6fc7`, return addresses 0x6f7469.. for the first side,
+    /// 0x6f757a.. for the second) name each favourite by more than forty
+    /// or twenty, the clubs' tactics (`FUN_0042c1aa`, 0x6f007e and
+    /// 0x6f009d) parting the matches. On every league day whose row holds
+    /// only the leagues the day lists, the replica's kick-off over the
+    /// dump's records, the row lined up first, names the original's
+    /// favourite — or none — match by match: 611 of 612 over ten days,
+    /// the one apart a second side 22 ahead on the day.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's season run from $ANSTOSS3_ORACLE"]
+    fn the_kick_off_names_the_originals_favourites() {
+        let Some((data, draws, traced)) = traced_days() else { return };
+        let kick = |c: u32| (0x6f6fc7..0x6f791a).contains(&c);
+        let tactic = |above: u32| above == 0x6f007e || above == 0x6f009d;
+        let (mut days, mut matches, mut agreed) = (0, 0, 0);
+        for TracedDay { day, start, end, records, row, .. } in traced {
+            let (mut records, mut row) = (records, row);
+            // the day's fifth loop: from its first throw or tactic on,
+            // as long as only those come
+            let Some(first) = (start..end).find(|&i| kick(draws[i].0) || tactic(draws[i].3)) else {
+                continue;
+            };
+            let span: Vec<_> = draws[first..].iter().take_while(|d| kick(d.0) || tactic(d.3)).collect();
+            // the original's matches in order, each its favourite — the
+            // side and whether by forty — or none: a match closes with its
+            // clubs' tactics, three throws a computer side
+            let mut theirs: Vec<Option<(usize, bool)>> = Vec::new();
+            let (mut open, mut last, mut run) = (false, 0u32, 0);
+            for d in &span {
+                let fresh = if kick(d.0) {
+                    last != 0 && last != 1
+                } else {
+                    (d.3 == 0x6f007e && (last == 0x6f009d || (last == 0x6f007e && run == 3)))
+                        || (d.3 == 0x6f009d && last == 0x6f009d && run == 3)
+                };
+                if fresh || !open {
+                    theirs.push(None);
+                    open = true;
+                }
+                let cat = match d.0 {
+                    0x6f7469 => Some((0, true)),
+                    0x6f7500 => Some((0, false)),
+                    0x6f757a => Some((1, true)),
+                    0x6f761a => Some((1, false)),
+                    _ => None,
+                };
+                if let Some(cat) = cat {
+                    *theirs.last_mut().unwrap() = Some(cat);
+                }
+                let now = if kick(d.0) { 1 } else { d.3 };
+                run = if now == last { run + 1 } else { 1 };
+                last = now;
+            }
+            // the replica's, over the day's league matches in the
+            // listing's order
+            if theirs.len() != row.len() {
+                eprintln!("day {day}: {} matches listed, the original's row {}", row.len(), theirs.len());
+                continue;
+            }
+            line_up_row(&row, &mut records, &data);
+            let mut ours = Vec::new();
+            for m in row.iter_mut() {
+                kick_off_strengths(m, &records, &data, &mut Random::new(1));
+                let (a, b) = (m.sides[0].day[0], m.sides[1].day[0]);
+                ours.push(if b + 40 < a {
+                    Some((0, true))
+                } else if b + 20 < a {
+                    Some((0, false))
+                } else if a + 40 < b {
+                    Some((1, true))
+                } else if a + 20 < b {
+                    Some((1, false))
+                } else {
+                    None
+                });
+            }
+            days += 1;
+            matches += row.len();
+            for (k, (t, o)) in theirs.iter().zip(&ours).enumerate() {
+                if t == o {
+                    agreed += 1;
+                } else {
+                    let m = &row[k];
+                    eprintln!("day {day} match {k} {:?}: theirs {t:?}, ours {o:?} at {} {}", m.ids, m.sides[0].day[0], m.sides[1].day[0]);
+                }
+            }
+        }
+        eprintln!("{days} days, {agreed} of {matches} matches agree");
+        assert!(days >= 8, "only {days} league days found in the trace");
+        assert!(agreed * 100 >= matches * 99, "{agreed} of {matches} matches name the original's favourite");
+    }
+
+    /// A league day of the oracle's season run: where its dump's
+    /// generator stands in the trace and the next dump's, that state,
+    /// the dump's records and the day's league matches in the listing's
+    /// order.
+    struct TracedDay {
+        day: u16,
+        start: usize,
+        end: usize,
+        state: (i64, i64),
+        records: Records,
+        row: Vec<Match>,
+        /// Where each match of the row writes its result: the league's
+        /// block and the four bytes' offset in it.
+        slots: Vec<(String, usize)>,
+    }
+
+    /// The oracle's season run (`runs/season`, its dumps a day apart, and
+    /// `draws.bin` from the start): the game data, the main generator's
+    /// moving draws — caller, range, result, the first return address
+    /// above — and the league days whose dumps align in the trace.
+    fn traced_days() -> Option<(crate::data::Data, Vec<(u32, u32, u32, u32)>, Vec<TracedDay>)> {
+        use a3_files::an3::Save;
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle season run among the saves: ANSTOSS3_ORACLE is not set");
+            return None;
+        };
+        let runs = std::path::PathBuf::from(oracle).join("runs");
+        let Ok(trace) = std::fs::read(runs.join("draws.bin")) else {
+            eprintln!("no oracle season trace among the saves");
+            return None;
+        };
+        if !runs.join("season/day-064.an3").exists() {
+            eprintln!("no oracle season dumps among the saves");
+            return None;
+        }
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let data = crate::data::Data::load(&game).unwrap();
+        let u32_at = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        let draws: Vec<(u32, u32, u32, u32)> = trace
+            .chunks_exact(48)
+            .filter(|r| r[12] == 0 && u32_at(r, 4) >= 2)
+            .map(|r| (u32_at(r, 0), u32_at(r, 4), u32_at(r, 8), u32_at(r, 16)))
+            .collect();
+        // where each dump's generator stands in the trace
+        let mut starts = Vec::new();
+        let mut from = 0;
+        for day in 63..=139u16 {
+            let dump = Save::read(&runs.join(format!("season/day-{day:03}.an3"))).unwrap();
+            let word = |name: &str| i64::from(i32::from_le_bytes(dump.block(name).unwrap().data[..4].try_into().unwrap()));
+            let state = (word("0x89dcc0"), word("0x89dcc4"));
+            let start = (from..draws.len().saturating_sub(8)).find(|&i| {
+                let mut r = Random::from_state(state.0, state.1);
+                draws[i..i + 8].iter().all(|d| r.below(d.1) == d.2)
+            });
+            if let Some(start) = start {
+                from = start;
+            }
+            starts.push((day, start, state, dump));
+        }
+        let mut days = Vec::new();
+        for pair in starts.windows(2) {
+            let ((day, Some(start), state, dump), (_, Some(end), _, _)) = (&pair[0], &pair[1]) else { continue };
+            let records = Records::from_save(dump.clone()).unwrap();
+            let mut row = Vec::new();
+            let mut slots = Vec::new();
+            let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+            let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
+            let firsts: Vec<(u16, u8)> =
+                records.globals.more_countries()[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0)).collect();
+            let leagues: Vec<(u16, u8)> =
+                (0..records.countries.leagues(usize::from(main)).max(0)).map(|l| (main, l as u8)).chain(firsts).collect();
+            for (country, level) in leagues {
+                let Some(r) = data.calendar.row(country, usize::from(level)) else { continue };
+                let Some(matchday) = data.calendar.matchday(r, usize::from(*day)) else { continue };
+                let Some(league) = crate::opponent::League::of(&records, country, level) else { continue };
+                if league.played() + 1 != matchday {
+                    continue;
+                }
+                let name = crate::opponent::League::block_name(&records, country, level).unwrap_or_default();
+                for (home, away, at) in league.open_games() {
+                    let mut m = Match::default();
+                    m.ids = [country, league.team(home) as u16, country, league.team(away) as u16];
+                    row.push(m);
+                    slots.push((name.clone(), at));
+                }
+            }
+            if !row.is_empty() {
+                days.push(TracedDay { day: *day, start: *start, end: *end, state: *state, records, row, slots });
+            }
+        }
+        Some((data, draws, days))
+    }
+
+    /// The whole pre-match walk against the original's trace: from the
+    /// dump's generator replayed up to the walk's first throw, the
+    /// replica's fifth loop (the kick-off's slack, the press windows and
+    /// the computer clubs' tactics) leaves the generator where the
+    /// original's does on every traced league day but the one whose
+    /// favourite it misnames; its sixth loop, from the original's state
+    /// there, throws once for every listed man of both sides and then
+    /// the first half's added time (`FUN_00658cfb`, 0x658cfb..; then
+    /// `FUN_0040bc1b`), the doping control's picks between on the match
+    /// the listing marked, match by match as the original does, and ends
+    /// each half where the original's throw puts it: 585 of 585 matches
+    /// over ten days. The human's own match takes the national branch
+    /// there (`FUN_00677428` names the human managers' clubs, +0x474;
+    /// `FUN_006fc8c6`, the bulk run `FUN_0070c334`), which waits; the
+    /// test steps over it on the original's throws.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's season run from $ANSTOSS3_ORACLE"]
+    fn the_walk_throws_as_the_originals_league_days() {
+        let Some((data, draws, traced)) = traced_days() else { return };
+        let kick = |c: u32| (0x6f6fc7..0x6f791a).contains(&c);
+        let tactic = |above: u32| above == 0x6f007e || above == 0x6f009d;
+        let press = |c: u32| (0x6f9656..0x6f9788).contains(&c);
+        let man = |c: u32| (0x658cfb..0x658fb2).contains(&c);
+        let added = |c: u32| (0x40bc1b..0x40bc96).contains(&c);
+        let fifth = |d: &(u32, u32, u32, u32)| kick(d.0) || tactic(d.3) || press(d.0);
+        let (mut days, mut wholes, mut fifths, mut matches, mut sixths, mut pressed) = (0, 0, 0, 0, 0, 0);
+        for TracedDay { day, start, end, state, records, row, .. } in traced {
+            let Some(first) = (start..end).find(|&i| fifth(&draws[i])) else { continue };
+            // the generator at the walk's first throw, the day's draws
+            // before it replayed; a day whose trace the replay leaves
+            // (the generator set anew on the way) is passed
+            let mut original = Random::from_state(state.0, state.1);
+            if !draws[start..first].iter().all(|d| original.below(d.1) == d.2) {
+                eprintln!("day {day}: the trace does not replay to the walk");
+                continue;
+            }
+            let six = first + draws[first..].iter().take_while(|d| fifth(d)).count();
+            pressed += draws[first..six].iter().filter(|d| press(d.0)).count();
+            // the original's sixth loop, match by match: a human's
+            // club's side first draws for its national branch
+            // (`FUN_006fc8c6`, 0x6fc8c6..), then each listed man throws,
+            // the doping control picks (0x5dac94..0x5dae5f), a human's
+            // match runs in bulk (`FUN_0070c334`), and the added time
+            let mut theirs = Vec::new();
+            let mut i = six;
+            loop {
+                let from = i;
+                let national = draws[i..].iter().take_while(|d| (0x6fc8c6..0x6fc9dc).contains(&d.0)).count();
+                i += national;
+                let n = draws[i..].iter().take_while(|d| man(d.0)).count();
+                i += n;
+                let picks = draws[i..].iter().take_while(|d| (0x5dac94..0x5dae5f).contains(&d.0)).count();
+                i += picks;
+                let bulk = if national > 0 { draws[i..].iter().take_while(|d| !added(d.0)).count() } else { 0 };
+                i += bulk;
+                if !added(draws[i].0) {
+                    break;
+                }
+                i += 1;
+                theirs.push((national > 0, n, picks > 0, &draws[from..i]));
+            }
+            if theirs.len() < row.len() {
+                let at = row.get(theirs.len()).map(|m| m.ids);
+                eprintln!("day {day}: {} matches listed, the original's sixth loop {} up to {at:?}", row.len(), theirs.len());
+                continue;
+            }
+            // a row the original holds more matches in than the day's
+            // leagues list (its cups) leaves the fifth loop's end apart
+            let whole = theirs.len() == row.len();
+            days += 1;
+            wholes += usize::from(whole);
+            let (mut records, mut row) = (records, row);
+            for m in row.iter_mut() {
+                m.home_nation = m.ids[0] as u8;
+                m.home_id = m.ids[1];
+            }
+            pre_match(&mut row);
+            line_up_row(&row, &mut records, &data);
+            let mut ours = original.clone();
+            kick_off_row(&mut row, &mut records, &data, &mut ours);
+            for d in &draws[first..six] {
+                original.below(d.1);
+            }
+            if ours == original {
+                fifths += 1;
+            } else if whole {
+                eprintln!("day {day}: the fifth loop parts from the original's");
+            }
+            for (k, m) in row.iter_mut().enumerate() {
+                let (human, n, picked, span) = theirs[k];
+                // the listing's mark, which the day's list draws before
+                // the walk, as the original's picks show it
+                m.doping = picked;
+                let mut ours = original.clone();
+                ready_row(std::slice::from_mut(m), &mut records, &mut ours);
+                for d in span {
+                    assert_eq!(original.below(d.1), d.2);
+                }
+                if human {
+                    // the human's match, the national branch, waits
+                    continue;
+                }
+                let throw = span[span.len() - 1];
+                matches += 1;
+                if ours == original && throw.1 == 3 && m.ends_at == throw.2 as i16 - 2 + 45 {
+                    sixths += 1;
+                } else {
+                    eprintln!("day {day} match {k} {:?}: the original throws {n} for its men, then {throw:?}", m.ids);
+                }
+            }
+        }
+        eprintln!("{days} days, {fifths} of {wholes} fifth loops agree, {sixths} of {matches} matches in the sixth, {pressed} press throws");
+        assert!(days >= 8, "only {days} league days found in the trace");
+        assert!(fifths + 1 >= wholes, "{fifths} of {wholes} fifth loops leave the original's generator");
+        assert_eq!(sixths, matches, "the sixth loop's throws");
+    }
+
+    /// The original's sixth loop from its first throw, match by match:
+    /// whether a human's club's side drew for its national branch
+    /// (`FUN_006fc8c6`, 0x6fc8c6..) and ran in bulk (`FUN_0070c334`),
+    /// the throws for the listed men, whether the doping control picked
+    /// (0x5dac94..0x5dae5f), and the match's draws up to its added time
+    /// (`FUN_0040bc1b`).
+    fn sixth_loop(draws: &[(u32, u32, u32, u32)], six: usize) -> Vec<(bool, usize, bool, std::ops::Range<usize>)> {
+        let man = |c: u32| (0x658cfb..0x658fb2).contains(&c);
+        let added = |c: u32| (0x40bc1b..0x40bc96).contains(&c);
+        let mut theirs = Vec::new();
+        let mut i = six;
+        loop {
+            let from = i;
+            let national = draws[i..].iter().take_while(|d| (0x6fc8c6..0x6fc9dc).contains(&d.0)).count();
+            i += national;
+            let n = draws[i..].iter().take_while(|d| man(d.0)).count();
+            i += n;
+            let picks = draws[i..].iter().take_while(|d| (0x5dac94..0x5dae5f).contains(&d.0)).count();
+            i += picks;
+            let bulk = if national > 0 { draws[i..].iter().take_while(|d| !added(d.0)).count() } else { 0 };
+            i += bulk;
+            if i >= draws.len() || !added(draws[i].0) {
+                return theirs;
+            }
+            i += 1;
+            theirs.push((national > 0, n, picks > 0, from..i));
+        }
+    }
+
+    /// The walk's last step against the original's trace: on every traced
+    /// league day whose row holds only the listed leagues, from the
+    /// original's state once its sixth loop is through (the human's
+    /// match, bulk-run in the national branch, stepped over on the
+    /// original's throws and marked at +0x474), the celebrity's tip
+    /// (`FUN_004cbf59`, 0x4cbf59..) throws as the original's — two or
+    /// three for the celebrity, ninety for each marked match — and leaves
+    /// the generator where the minutes' first throw (`FUN_006f6857`, or
+    /// a marked match's open play first) finds it. How far the replica's minutes then follow and
+    /// how many of the next dump's league results they meet is printed:
+    /// the shot's range (`FUN_0040b8c9`, the attack's rated +0x16 a few
+    /// hundredths low), the sides' class sum (+0x33, one apart on some
+    /// sides) and the human's match, which the watched walk plays through
+    /// the national path (`FUN_006f562b`'s `FUN_006f529d`, 0x6f5308), part
+    /// them still.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's season run from $ANSTOSS3_ORACLE"]
+    fn the_walk_ends_where_the_originals_minutes_start() {
+        use a3_files::an3::Save;
+        let Some((data, draws, traced)) = traced_days() else { return };
+        let season = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_ORACLE").unwrap()).join("runs/season");
+        let kick = |c: u32| (0x6f6fc7..0x6f791a).contains(&c);
+        let tactic = |above: u32| above == 0x6f007e || above == 0x6f009d;
+        let press = |c: u32| (0x6f9656..0x6f9788).contains(&c);
+        let fifth = |d: &(u32, u32, u32, u32)| kick(d.0) || tactic(d.3) || press(d.0);
+        let (mut days, mut tipped, mut followed, mut matches, mut agreed) = (0, 0, 0, 0, 0);
+        for TracedDay { day, start, end, state, records, row, slots } in traced {
+            let Some(first) = (start..end).find(|&i| fifth(&draws[i])) else { continue };
+            let mut original = Random::from_state(state.0, state.1);
+            if !draws[start..first].iter().all(|d| original.below(d.1) == d.2) {
+                continue;
+            }
+            let six = first + draws[first..].iter().take_while(|d| fifth(d)).count();
+            let theirs = sixth_loop(&draws, six);
+            if theirs.len() != row.len() {
+                continue;
+            }
+            let (mut records, mut row) = (records, row);
+            for m in row.iter_mut() {
+                m.home_nation = m.ids[0] as u8;
+                m.home_id = m.ids[1];
+            }
+            pre_match(&mut row);
+            crowd_row(&mut row, &records, &data);
+            line_up_row(&row, &mut records, &data);
+            let mut ours = original.clone();
+            kick_off_row(&mut row, &mut records, &data, &mut ours);
+            for d in &draws[first..six] {
+                original.below(d.1);
+            }
+            if ours != original {
+                eprintln!("day {day}: the fifth loop parts from the original's");
+                continue;
+            }
+            for (m, (human, _, picked, span)) in row.iter_mut().zip(&theirs) {
+                m.doping = *picked;
+                let mut ours = original.clone();
+                ready_row(std::slice::from_mut(m), &mut records, &mut ours);
+                for d in &draws[span.clone()] {
+                    original.below(d.1);
+                }
+                if *human {
+                    // run in bulk by the national branch: the minutes pass it
+                    m.nat_bits |= 1;
+                }
+            }
+            let walk = theirs.last().map_or(six, |t| t.3.end);
+            days += 1;
+            // the tip, by the generator's state, then the minutes' first
+            // throw: the chance's side (`FUN_006f6857`) or, a marked match
+            // first, its open play (`FUN_006f529d`..)
+            let tip = draws[walk..].iter().take_while(|d| (0x4cbf59..0x4cc22e).contains(&d.0)).count();
+            let mut ours = original.clone();
+            let marked = row.iter().filter(|m| m.nat_bits != 0).count();
+            let drawn = celebrity_tip(&row, &records, &mut ours);
+            for d in &draws[walk..walk + tip] {
+                original.below(d.1);
+            }
+            let minutes = walk + tip;
+            if ours == original && (0x6f529d..0x6f6af7).contains(&draws[minutes].0) && drawn.tips.len() == marked {
+                tipped += 1;
+            } else {
+                eprintln!("day {day}: the tip throws {tip}, then {:#x}", draws[minutes].0);
+                continue;
+            }
+            let today = records.globals.date_of(records.globals.day() as i16).unwrap();
+            crate::random::record(true);
+            play_matches(&mut row, false, Some(&mut records), None, today, &mut ours);
+            let mine = crate::random::recorded();
+            crate::random::record(false);
+            let part = mine.iter().zip(&draws[minutes..]).position(|(a, d)| (a.range, a.result) != (d.1, d.2));
+            match part {
+                None => followed += 1,
+                Some(k) => {
+                    let (d, a) = (draws[minutes + k], mine[k]);
+                    eprintln!(
+                        "day {day}: the minutes part at throw {k} of {}: theirs {:#x} below {} {}, ours below {} {} at {}:{}",
+                        mine.len(), d.0, d.1, d.2, a.range, a.result, a.at.file(), a.at.line()
+                    );
+                }
+            }
+            let next = Records::from_save(Save::read(&season.join(format!("day-{:03}.an3", day + 1))).unwrap()).unwrap();
+            for ((m, (human, ..)), (name, at)) in row.iter().zip(&theirs).zip(&slots) {
+                if *human {
+                    continue;
+                }
+                matches += 1;
+                let written = next.block(name).unwrap()[*at..*at + 4].to_vec();
+                agreed += usize::from(written == [m.goals[0] as u8, m.goals[1] as u8, m.half[0], m.half[1]]);
+            }
+        }
+        eprintln!("{days} days, {tipped} tips as the original's; {followed} follow its minutes, {agreed} of {matches} results agree");
+        assert!(days >= 8, "only {days} league days found in the trace");
+        assert_eq!(tipped, days, "the celebrity's tip");
     }
 }

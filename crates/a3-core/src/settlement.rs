@@ -405,7 +405,7 @@ pub fn count_down_contracts(records: &mut Records) {
 /// (`DAT_008a66ac`), the numbers others hold marked as the order reaches
 /// them; whoever is left draws one to forty and takes the next free from
 /// there. (Player +0x223, the object's +0x26; his position +0x21d.)
-const SHIRT_CHOICES: [u8; 30] = [1, 21, 30, 5, 22, 23, 4, 6, 14, 2, 13, 15, 3, 12, 16, 8, 18, 25, 7, 17, 24, 19, 28, 27, 10, 26, 20, 9, 11, 29];
+pub(crate) const SHIRT_CHOICES: [u8; 30] = [1, 21, 30, 5, 22, 23, 4, 6, 14, 2, 13, 15, 3, 12, 16, 8, 18, 25, 7, 17, 24, 19, 28, 27, 10, 26, 20, 9, 11, 29];
 const SHIRT_DRAWN: u32 = 40;
 
 pub fn number_shirts(records: &mut Records, random: &mut Random) {
@@ -493,10 +493,11 @@ fn number_squad(records: &mut Records, squad: &[usize], random: &mut Random) {
 /// keeps what the season made (`FUN_0042b2fc` walks the countries'
 /// clubs, `FUN_0042b424` reaches `FUN_0042b589`, and there
 /// `FUN_00672839` clears), and the clubs the walk plans get their
-/// season's sums and grades again (`plan_season`). What the original sets
-/// back up beside — the ticket sales target (`FUN_0067324c`), the drawn
-/// sums and the class template's money — the replica has not built, so
-/// its clubs stand at nought there. The cycle reaches this from
+/// season's sums and grades again (`plan_season`), every club its drawn
+/// +0x1a4 (`clear_drawn`) and a planned one its season tickets' target
+/// (`ticket_target`) and the European television's offer
+/// (`draw_european_tv`). The class template's money the replica has not
+/// built, so its clubs stand at nought there. The cycle reaches this from
 /// [`open_season`].
 pub fn clear_bookings(records: &mut Records, random: &mut Random) {
     let second = records.globals.seasons() > 1;
@@ -510,13 +511,14 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         clear_club(&mut records.teams[i]);
         plan_club(&mut records.teams[i], system);
         plan_staff(records, i);
+        // A human club the walk passes by (`FUN_0042b424`: its +0x8b
+        // stands), so none of the clearing's draws.
         if records.teams[i].humans()[1] == 0 {
+            let skill = manager_skill(records, &records.teams[i]);
+            clear_drawn(&mut records.teams[i], skill, random);
+            clear_stadium(&mut records.teams[i], second, skill, random);
             let carried = players_carried_on(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], 0x17c, carried);
-            if records.teams[i].level() >= 10 {
-                let skill = manager_skill(records, &records.teams[i]);
-                plan_amateur_stadium(&mut records.teams[i], skill, random);
-            }
             plan_bonuses(&mut records.teams[i], system);
             let bonuses = expected_bonuses(records, &records.teams[i]);
             put::<i32>(&mut records.teams[i], EXPECTED_BONUSES, bonuses);
@@ -530,17 +532,69 @@ pub fn clear_bookings(records: &mut Records, random: &mut Random) {
         let skill = manager_skill(records, &records.teams[i]);
         plan_season(&mut records.teams[i], second, held, cover);
         if planned(&records.teams[i]) {
-            plan_drawn(&mut records.teams[i], skill, random);
+            // The walk's order of draws (`FUN_0042b589`): the stadium's
+            // tenths, the sponsors, the European television, +0x1a4's
+            // fifty thousands, then the plan's rest (`FUN_00673566`).
+            let tenths = random.below(2) as i32 + 7;
             let capacity = records
                 .block(&format!("{STADIUMS}[{i}]"))
                 .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
                 .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-            sign_main_sponsor(&mut records.teams[i], system, skill, held, capacity, random);
+            sign_main_sponsor(&mut records.teams[i], system, skill, held, capacity, second, random);
             number_sponsor(&mut records.teams[i], system, random);
-            plan_price(&mut records.teams[i], system, random);
-            sign_boards(&mut records.teams[i], system, random);
             sign_shirt(&mut records.teams[i], system, random);
+            sign_boards(&mut records.teams[i], system, random);
             sign_television(&mut records.teams[i], system, random);
+            draw_european_tv(&mut records.teams[i], random);
+            let more = random.below(2) as i32;
+            plan_drawn(&mut records.teams[i], skill, tenths, more);
+            plan_price(&mut records.teams[i], system, random);
+            plan_rest_drawn(&mut records.teams[i], random);
+            let target = ticket_target(records, &records.teams[i], system, capacity);
+            put::<i32>(&mut records.teams[i], SEASON_TICKETS, target);
+        }
+    }
+    if !second {
+        clear_kept_clubs(records, random);
+    }
+}
+
+/// The game's first season clears the clubs of the kept countries too
+/// (`FUN_0042b2fc`'s last walk, `FUN_00673131` for each club of a country
+/// of the second kind, `DAT_00ae61ae` = 2): both blocks of season fields
+/// zeroed, the band at +0x1f9 one or two by a draw of two — two for a
+/// club of class five or more (team +0x875, the object's +0x11e0) —,
+/// +0x1fa nought, the ticket sales plan's five rows at the start's prices
+/// (`DAT_00a3b424` thrice, `DAT_00a3b418`, `DAT_00a3b40c`,
+/// `DAT_00a3b3fc` and `DAT_00a3b408`), +0x494 three and the discount at
+/// +0x490 twenty.
+const KEPT_KIND: u8 = 2;
+const KEPT_ROWS: [i16; 4] = [15, 20, 40, 150];
+const KEPT_494: u16 = 3;
+const KEPT_DISCOUNT: u16 = 20;
+
+fn clear_kept_clubs(records: &mut Records, random: &mut Random) {
+    for c in 1..KEPT_COUNTRIES {
+        if records.countries.kind(c) != KEPT_KIND {
+            continue;
+        }
+        for n in 0..records.countries.team_count(c).max(0) {
+            let Some(team) = records.team_mut(c as u16, n as u16) else { continue };
+            for block in BOOKED_BLOCKS {
+                for k in 0..BOOKED_LEN / 4 {
+                    put::<u32>(team, block + k * 4, 0);
+                }
+            }
+            let band = random.below(2) as u8 + 1;
+            put::<u8>(team, 0x1f9, if team.get::<u8>(CLUB_CLASS) > 4 { 2 } else { band });
+            put::<u8>(team, 0x1fa, 0);
+            for (&at, &price) in PLAN_ROWS.iter().zip(&KEPT_ROWS) {
+                for k in 0..5 {
+                    put::<i16>(team, at + k * 2, price);
+                }
+            }
+            put::<u16>(team, 0x494, KEPT_494);
+            put::<u16>(team, TICKET_DISCOUNT_AT, KEPT_DISCOUNT);
         }
     }
 }
@@ -697,7 +751,7 @@ const SKILL_AT: usize = 0x25;
 const SHARED_AT: usize = 0x872;
 const CASH_AT: usize = 0x210;
 
-fn manager_skill(records: &Records, team: &Team) -> i64 {
+pub(crate) fn manager_skill(records: &Records, team: &Team) -> i64 {
     let [manager_trainer, _, manager] = team.staff();
     let id = if manager_trainer != 0 { manager_trainer } else { manager };
     if id == 0 || id > LAST_PERSON {
@@ -706,16 +760,30 @@ fn manager_skill(records: &Records, team: &Team) -> i64 {
     records.persons.get(usize::from(id)).map_or(0, |p| i64::from(p.get::<i8>(SKILL_AT)))
 }
 
-fn drawn_figure(team: &Team, skill: i64) -> i32 {
+/// The figure as `FUN_0042b489` returns it, not yet kept within bounds.
+fn raw_figure(team: &Team, skill: i64) -> i32 {
     let (first, per_skill, per_million) = DRAWN_ROWS[usize::from(team.level().min(2))];
     let millions = club::<i64>(team, CASH_AT) / 1_000_000;
-    let v = (millions.wrapping_mul(per_million) + first + skill * per_skill).wrapping_mul(1000) as i32;
-    v.clamp(DRAWN_LEAST, DRAWN_MOST)
+    (millions.wrapping_mul(per_million) + first + skill * per_skill).wrapping_mul(1000) as i32
 }
 
-fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
+fn drawn_figure(team: &Team, skill: i64) -> i32 {
+    raw_figure(team, skill).clamp(DRAWN_LEAST, DRAWN_MOST)
+}
+
+/// The sum the clearing itself draws at +0x1a4 for every club
+/// (`FUN_00672839`, before the stadium's draws; a planned club has it
+/// drawn again by the walk): the figure (`FUN_0042b489`, unbounded) down
+/// to fifty thousands (`FUN_0067575a`), 50 000 more on a draw of two, at
+/// least 50 000.
+fn clear_drawn(team: &mut Team, skill: i64, random: &mut Random) {
+    let figure = raw_figure(team, skill) / DRAWN_LEAST * DRAWN_LEAST;
+    let v = figure.wrapping_add(random.below(2) as i32 * DRAWN_LEAST);
+    put::<i32>(team, 0x1a4, v.max(DRAWN_LEAST));
+}
+
+fn plan_drawn(team: &mut Team, skill: i64, tenths: i32, more: i32) {
     let figure = drawn_figure(team, skill);
-    let tenths = random.below(2) as i32 + 7;
     let down = |v: i32| v / DRAWN_LEAST * DRAWN_LEAST;
     let (own, other) = if team.get::<i8>(SHARED_AT) < 0 {
         let own = down(figure * tenths / 10).max(DRAWN_LEAST);
@@ -729,16 +797,27 @@ fn plan_drawn(team: &mut Team, skill: i64, random: &mut Random) {
     };
     put::<i32>(team, 0x18c, own);
     put::<i32>(team, 0x1a8, other);
-    let more = (down(figure) + random.below(2) as i32 * DRAWN_LEAST).max(DRAWN_LEAST);
+    let more = (down(figure) + more * DRAWN_LEAST).max(DRAWN_LEAST);
     put::<i32>(team, 0x1a4, more);
     put::<i32>(team, 0x294, own);
     put::<i32>(team, 0x2b0, other);
     put::<i32>(team, 0x2ac, more);
-    // The plan's rest: five times a draw below six at +0x4fc, and the
-    // class's millions at +0x500 (`FUN_00673566`).
-    put::<u16>(team, 0x4fc, random.below(6) as u16 * 5);
     let class = i32::from(team.get::<u8>(CLUB_CLASS));
     put::<i32>(team, 0x500, (class * 4 + 4) * 1_000_000);
+}
+
+/// The plan's rest's own draws after the price (`FUN_00673566`): five
+/// times a draw below six at +0x4fc, and +0x9e4 (`FUN_00717438`) ninety
+/// and a draw below 21 hundredths of the season tickets' plan at +0x120.
+/// (The club's +0x9e4 sits at the team record's +0x36c, as +0x9ec at
+/// +0x374.)
+const TEAM_9E4: usize = 0x36c;
+
+fn plan_rest_drawn(team: &mut Team, random: &mut Random) {
+    put::<u16>(team, 0x4fc, random.below(6) as u16 * 5);
+    let plan = club::<i32>(team, 0x120) as u32;
+    let v = (random.below(21) + 90).wrapping_mul(plan) / 100;
+    team.put::<u32>(TEAM_9E4, v);
 }
 
 /// The main sponsor's offer the walk signs every planned club with
@@ -793,7 +872,7 @@ fn round_by_size(v: i32) -> i32 {
     v / unit * unit
 }
 
-fn sign_main_sponsor(team: &mut Team, system: usize, skill: i64, held: u8, capacity: i32, random: &mut Random) {
+fn sign_main_sponsor(team: &mut Team, system: usize, skill: i64, held: u8, capacity: i32, second: bool, random: &mut Random) {
     let level = team.level();
     let place = i32::from(team.league_place());
     let flags = team.get::<u16>(FLAGS_AT);
@@ -814,24 +893,44 @@ fn sign_main_sponsor(team: &mut Team, system: usize, skill: i64, held: u8, capac
     if (flags & CUP_WINNER_FLAG != 0 || held != 0 || gates > 40_000) && random.below(2) != 0 {
         years += 1;
     }
-    let mut money = if place < 18 && !promoted {
-        (24 - place) * 100_000 + 400_000 + gates / 50 * 5_000
-    } else {
-        gates / 5 * 3_000 / 10 + 300_000
-    };
-    money = money.min(15_000_000);
-    if flags & CHAMPION_FLAG != 0 {
-        money += 2_000_000;
-    } else if flags & 0x40 != 0 {
-        money += 1_500_000;
-    }
-    if promoted {
-        match level {
-            0 => money += 1_000_000,
-            1 => money += 500_000,
-            _ => {}
+    // The game's first season (`DAT_00b5cbc8` below two) has no gates
+    // to go by: a draw of four on a base by the season's mark — the
+    // title 2–5 × 500 000 over five millions, flag 0x40 2–5 × 400 000
+    // over four, a European place (0x10) 9–12 × 300 000 over three,
+    // else nine to twelve less the credit class (+0xec) × 200 000 over
+    // 500 000.
+    let mut money = if !second {
+        let d = random.below(4) as i32;
+        if flags & CHAMPION_FLAG != 0 {
+            (d + 2) * 500_000 + 5_000_000
+        } else if flags & 0x40 != 0 {
+            (d + 2) * 400_000 + 4_000_000
+        } else if flags & 0x10 != 0 {
+            (d + 9) * 300_000 + 3_000_000
+        } else {
+            (d + 9 - i32::from(team.get::<u8>(PRICE_CLASS_AT))) * 200_000 + 500_000
         }
-    }
+    } else {
+        let mut money = if place < 18 && !promoted {
+            (24 - place) * 100_000 + 400_000 + gates / 50 * 5_000
+        } else {
+            gates / 5 * 3_000 / 10 + 300_000
+        };
+        money = money.min(15_000_000);
+        if flags & CHAMPION_FLAG != 0 {
+            money += 2_000_000;
+        } else if flags & 0x40 != 0 {
+            money += 1_500_000;
+        }
+        if promoted {
+            match level {
+                0 => money += 1_000_000,
+                1 => money += 500_000,
+                _ => {}
+            }
+        }
+        money
+    };
     if flags & EUROPE_FLAG != 0 {
         money = money / 5 * 6;
     }
@@ -981,6 +1080,33 @@ fn sign_television(team: &mut Team, system: usize, random: &mut Random) {
     put::<i32>(team, 0x2fc, money);
 }
 
+/// The European television's offer the walk draws every planned club
+/// after its sponsors (`FUN_005b9a2a`, the sums the season start's
+/// European TV talks put before a human, `CDiVerhandlungenUefa`): over
+/// the clearing's two millions (`FUN_00672839`), +0x5e8 3 500 000 and
+/// +0x5ec 1 500 000 (f32 0x82e5b4, 0x82e5b0), each one hundredth more
+/// for every step of a draw below eleven, down to hundred thousands and
+/// then down to the 100 000 and 50 000 of `DAT_00a3b37c`, `DAT_00a3b38c`
+/// (`FUN_0067575a`); +0x5f0 a draw below three. Measured on the
+/// original's first new-season day: every planned club holds one of
+/// them.
+const EURO_TV_FIRST: f64 = 3_500_000.0;
+const EURO_TV_SECOND: f64 = 1_500_000.0;
+const EURO_TV_STEP: i32 = 100_000;
+const EURO_TV_ROUND: [i32; 2] = [100_000, 50_000];
+
+fn draw_european_tv(team: &mut Team, random: &mut Random) {
+    let sum = |base: f64, random: &mut Random| {
+        let v = ((f64::from(random.below(11)) / 100.0 + 1.0) * base) as i32;
+        v / EURO_TV_STEP * EURO_TV_STEP
+    };
+    let first = sum(EURO_TV_FIRST, random);
+    let second = sum(EURO_TV_SECOND, random);
+    put::<i32>(team, 0x5e8, first / EURO_TV_ROUND[0] * EURO_TV_ROUND[0]);
+    put::<i32>(team, 0x5ec, second / EURO_TV_ROUND[1] * EURO_TV_ROUND[1]);
+    put::<u8>(team, 0x5f0, random.below(3) as u8);
+}
+
 /// The shirt's contract, signed the same way when the club has none left
 /// (`FUN_00717462`: the offer first, then its number at +0x5a8 drawn from
 /// one to ten, the money at +0x5a9/+0x5ac); the plan's rest takes a
@@ -1074,6 +1200,189 @@ fn plan_bonuses(team: &mut Team, system: usize) {
     put::<i32>(team, LAST_BONUS, drop);
 }
 
+/// The manager's skill the computer signs a human's main sponsor at
+/// (`FUN_006741be`'s 5 to `FUN_00716a87`).
+const LEFT_TALK_SKILL: i64 = 5;
+
+/// The season start's talks a human manager left to the computer
+/// (`CMyStartDialog::FUN_006741be`, which `FUN_00671d57` hands the ticks
+/// of dialog 422 at `CSaisonstartVerhandlungen` +0xa08 … +0xa1c, in the
+/// boxes' order of [`crate::finances::season_talks`]): each box left
+/// unticked has the computer sign what the walk signs a planned club
+/// with — the main sponsor where club +0x509 holds no years
+/// (`FUN_00716a87` at a manager's skill of five: the offer, its number,
+/// the sponsor's rate at +0x504 and +0x1fc), the boards where +0x5a1
+/// holds none (`FUN_007176cf`), the team bonuses (`FUN_00672611`), the
+/// merchandise where +0x5a9 holds none (`FUN_00717462`), the kit
+/// supplier where +0x5b1 holds none (`FUN_00717709`) and for a club in
+/// Europe (team +0x110 0x4000, `FUN_0069a2e5`) the European television's
+/// offer (`FUN_005b9a2a`), booked at once where [`european_tv_booked`]
+/// says so. The original passes the main sponsor's tick for the boards
+/// as well (its +0xa0c is never read), so the boards follow that box.
+/// Like the walk's, the signing here sets the plan's sums that go with
+/// each contract, which the original's plan rest (`FUN_00673566`) reckons
+/// after the preparation.
+pub fn sign_left_talks(records: &mut Records, i: usize, ticked: [bool; 6], random: &mut Random) {
+    let Some(team) = records.teams.get(i) else { return };
+    let country = team.country();
+    let system = usize::from(records.countries.cup_system(usize::from(country)));
+    let first = usize::try_from(records.countries.first_team(usize::from(country))).unwrap_or(0);
+    let holders = records.block(HOLDERS).map(<[u8]>::to_vec).unwrap_or_default();
+    let held = holder(&holders, country, i.wrapping_sub(first));
+    let capacity = records
+        .block(&format!("{STADIUMS}[{i}]"))
+        .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
+        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let [sponsor, _boards, kit, bonuses, merchandise, television] = ticked;
+    let team = &mut records.teams[i];
+    if !sponsor && club::<u8>(team, 0x509) == 0 {
+        // The rate and +0x1fc close `FUN_00716a87` and draw nothing; the
+        // plan's sponsors reckoned from them follow the offer.
+        put::<i32>(team, 0x504, if team.level() < 3 { PLAN_RATE_TOP } else { PLAN_RATE_LOW });
+        let set = club::<u16>(team, 0x304);
+        put::<u16>(team, 0x1fc, if set == 0 { PLAN_1FC } else { set });
+        sign_main_sponsor(team, system, LEFT_TALK_SKILL, held, capacity, true, random);
+        number_sponsor(team, system, random);
+    }
+    if !sponsor && club::<u8>(team, 0x5a1) == 0 {
+        sign_boards(team, system, random);
+    }
+    if !bonuses {
+        plan_bonuses(team, system);
+    }
+    if !merchandise && club::<u8>(team, 0x5a9) == 0 {
+        sign_shirt(team, system, random);
+    }
+    if !kit && club::<u8>(team, 0x5b1) == 0 {
+        sign_television(team, system, random);
+    }
+    if !television && team.get::<u16>(FLAGS_AT) & EUROPE_FLAG != 0 {
+        draw_european_tv(team, random);
+        book_european_tv(records, i);
+    }
+}
+
+/// The European television's first sum (club +0x5e8) goes to the season's
+/// television money, the plan's (+0x13c) and the booked (+0x244), and
+/// leaves nought behind, where [`european_tv_booked`] says so
+/// (`FUN_006741be`'s and `FUN_00671d57`'s tail after the talks).
+pub fn book_european_tv(records: &mut Records, i: usize) {
+    if !records.teams.get(i).is_some_and(|t| european_tv_booked(records, t)) {
+        return;
+    }
+    let team = &mut records.teams[i];
+    let first = club::<i32>(team, 0x5e8);
+    for at in [0x13c, 0x244] {
+        let v = club::<i32>(team, at);
+        put::<i32>(team, at, v.wrapping_add(first));
+    }
+    put::<i32>(team, 0x5e8, 0);
+}
+
+/// One station's bid in the European television's talks with a human
+/// (`CDiVerhandlungenUefa`, dialog 475, a 0x1c-byte part of it from
+/// +0x2470 each): its fixed sum (+0x14) and its sum per home match
+/// (+0x18) as they stand, and how far its patience has run (+0x10).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct TvBid {
+    pub fixed: i32,
+    pub per_home: i32,
+    pub strain: i32,
+}
+
+/// From this strain the station breaks the talks off (`FUN_005ba04d`).
+pub const TV_PATIENCE: i32 = 15;
+/// Which of the three offers each station makes, by a draw below six
+/// (`DAT_0088c620`): 0 a fixed sum alone, 1 both, 2 a sum per home match
+/// alone.
+const TV_BID_KINDS: [[u8; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+/// The offers' sums (`FUN_005b9b1d`): eight tenths of these and one
+/// hundredth more for every step of a draw below eleven, down to hundred
+/// thousands (f32 0x81c088, 0x82e5bc, 0x82e5b4, 0x82e5b0, 0x82e5b8).
+const TV_BID_FLOOR: f32 = 0.8;
+const TV_FIXED_ALONE: f32 = 6_000_000.0;
+const TV_FIXED: f32 = 3_500_000.0;
+const TV_PER_HOME: f32 = 1_500_000.0;
+const TV_PER_HOME_ALONE: f32 = 2_500_000.0;
+/// What one round of bargaining raises both sums by: 1.1 and a draw
+/// below fifteen in hundredths (f32 0x82e5c0).
+const TV_RAISE: f32 = 1.1;
+
+/// The three stations' first bids (`FUN_005ba500`): one draw below six
+/// deals out the kinds, then each station draws its sums in turn.
+pub fn tv_bids(random: &mut Random) -> [TvBid; 3] {
+    let kinds = TV_BID_KINDS[random.below(6) as usize];
+    let mut sum = |base: f32| {
+        let v = ((f64::from(random.below(11)) / 100.0 + f64::from(TV_BID_FLOOR)) * f64::from(base)) as i32;
+        v / EURO_TV_STEP * EURO_TV_STEP
+    };
+    kinds.map(|kind| match kind {
+        0 => TvBid { fixed: sum(TV_FIXED_ALONE), ..TvBid::default() },
+        1 => {
+            let fixed = sum(TV_FIXED);
+            TvBid { fixed, per_home: sum(TV_PER_HOME), strain: 0 }
+        }
+        _ => TvBid { per_home: sum(TV_PER_HOME_ALONE), ..TvBid::default() },
+    })
+}
+
+/// One "Verhandeln" with a station (`FUN_005ba04d`): its strain grows by
+/// one to five; still short of [`TV_PATIENCE`], it raises the sum per home
+/// match and then the fixed sum by its own draw each. Whether it stays in
+/// the talks.
+pub fn tv_bargain(bid: &mut TvBid, random: &mut Random) -> bool {
+    bid.strain += random.below(5) as i32 + 1;
+    if bid.strain >= TV_PATIENCE {
+        return false;
+    }
+    let mut raise = |v: i32| ((f64::from(random.below(15)) / 100.0 + f64::from(TV_RAISE)) * f64::from(v)) as i32;
+    bid.per_home = raise(bid.per_home);
+    bid.fixed = raise(bid.fixed);
+    true
+}
+
+/// A bid's sums as the talks write and sign them: the fixed sum down to
+/// hundred thousands, the one per home match to fifty thousands
+/// (`DAT_00a3b37c`, `DAT_00a3b38c`).
+pub fn tv_terms(bid: &TvBid) -> (i32, i32) {
+    (bid.fixed / EURO_TV_ROUND[0] * EURO_TV_ROUND[0], bid.per_home / EURO_TV_ROUND[1] * EURO_TV_ROUND[1])
+}
+
+/// The station's bid signed (`FUN_005ba88c`): its sums go to the club's
+/// +0x5e8 and +0x5ec, the station's place to +0x5f0.
+pub fn sign_tv_bid(team: &mut Team, bid: &TvBid, station: u8) {
+    let (fixed, per_home) = tv_terms(bid);
+    put::<i32>(team, 0x5e8, fixed);
+    put::<i32>(team, 0x5ec, per_home);
+    put::<u8>(team, 0x5f0, station);
+}
+
+/// Whether the European television's first sum is booked at once
+/// (`CMyStartDialog::FUN_00424e42(0x50000004)` → `FUN_00424a35` for id
+/// 4, its kind 0x100): the Champions League's finder (`FUN_0042451e`)
+/// missing the club or giving it -1, the UEFA cup's (`FUN_0042462b`)
+/// giving it a round code checked against round one (the short at
+/// 0x877280 for id 4) — out at -1 no, out later yes, in it yes unless
+/// the UEFA cup's round (`DAT_00b5d166`) lies past one and the code is
+/// not past it. A club in the Champions League (kind 0x400) is not. With
+/// neither finder having it the original reads a third list through a
+/// stray object (`FUN_004247f5` on its ECX), which is not followed: no.
+const UEFA_FIRST_ROUND: i16 = 1;
+
+pub fn european_tv_booked(records: &Records, team: &Team) -> bool {
+    let Some([(champions, _), (uefa, _)]) = crate::opponent::europe_codes(records, team) else { return false };
+    if champions != 0 && champions != -1 {
+        return false;
+    }
+    if champions == 0 && uefa == 0 {
+        return false;
+    }
+    if uefa < 0 {
+        return !(uefa == -UEFA_FIRST_ROUND || -uefa < UEFA_FIRST_ROUND);
+    }
+    if UEFA_FIRST_ROUND < records.globals.uefa_round() { UEFA_FIRST_ROUND < uefa } else { true }
+}
+
 /// The players' pay the clearing carries into the plan at +0x17c
 /// (`FUN_006202c1`, as [`crate::forecast`] reckons it): the pay booked —
 /// nought, the bookings just cleared — and the squad's wage bill
@@ -1113,11 +1422,24 @@ const AMATEUR_STADIUM: i32 = 50_000;
 const AMATEUR_STADIUM_STEP: i32 = 5_000;
 const AMATEUR_STADIUM_LEAST: i32 = 25_000;
 
-fn plan_amateur_stadium(team: &mut Team, skill: i64, random: &mut Random) {
-    let mut v = AMATEUR_STADIUM;
+fn clear_stadium(team: &mut Team, second: bool, skill: i64, random: &mut Random) {
+    let level = team.level();
+    let mut v = match (second, level) {
+        (false, 0) => 800_000,
+        (false, 1) => 450_000,
+        (false, _) => 150_000,
+        (true, 0) => 400_000,
+        (true, 1) => 250_000,
+        (true, _) => AMATEUR_STADIUM,
+    };
+    let step = match level {
+        0 => 20_000,
+        1 => 10_000,
+        _ => AMATEUR_STADIUM_STEP,
+    };
     for _ in 0..skill.max(0) {
         if random.below(2) != 0 {
-            v -= AMATEUR_STADIUM_STEP;
+            v -= step;
         }
     }
     put::<i32>(team, 0x1b0, v.max(AMATEUR_STADIUM_LEAST));
@@ -1379,6 +1701,83 @@ fn plan_club(team: &mut Team, system: usize) {
     put::<i32>(team, 0x244, b);
 }
 
+/// The season tickets a planned club means to sell, which the walk sets
+/// at +0x124 (`FUN_0067324c` in `FUN_0042b589`, after the prices): its
+/// league's row of `DAT_008a0248` (from `DAT_0089dd50` by the cup
+/// system; 100 from the tenth level) times eight less the credit class
+/// (+0xec); by the discount +0x490 four fifths and a hundredth for each
+/// from twenty on, else two fifths and three hundredths each; a hundred
+/// and the league's oddness less the squad's rank (+0x107) in
+/// hundredths; 135 % for the title (flag 1), 120 % for the cup (2), 110 %
+/// (0x10), 115 % for promotion (4), 110 % for 0x1000 or 0x4000; five
+/// hundredths more for each of the board's verdict (+0x10e, signed); then
+/// the four classes' shares — twice the club's class (+0x11e0) and 3, 30
+/// and 10, the standing rest of a hundred — weighed by their prices
+/// against the reference ones (`FUN_0078aa63`), their sum in tenths kept
+/// within nought and fifteen, times it in tenths; at most what the
+/// stadium lets (`FUN_00719204`: +0x492 hundredths of its places, or the
+/// licence's spectators where bit 4 of +0x101 stands).
+const SEASON_TICKETS: usize = 0x124;
+const TICKET_BASES: [i32; 24] = [2000, 800, 150, 150, 150, 150, 2000, 800, 200, 100, 2000, 800, 4000, 800, 4000, 800, 3000, 2000, 1000, 1000, 1000, 4000, 2000, 0];
+const NO_LEAGUE_TICKETS: i32 = 100;
+const TICKET_DISCOUNT_AT: usize = 0x490;
+const SQUAD_RANK_AT: usize = 0x130;
+const TICKET_PRICES: [usize; 4] = [0x49c, 0x4a6, 0x4b0, 0x4ba];
+
+fn ticket_target(records: &Records, team: &Team, system: usize, capacity: i32) -> i32 {
+    let level = usize::from(team.level());
+    let mut t = if level < 10 {
+        let row = PLAN_ROWS_START.get(system).copied().unwrap_or(0) + level;
+        TICKET_BASES.get(row).copied().unwrap_or(0).wrapping_mul(8 - i32::from(team.credit_class()))
+    } else {
+        NO_LEAGUE_TICKETS
+    };
+    let discount = i32::from(club::<i16>(team, TICKET_DISCOUNT_AT));
+    t = if discount >= 20 { t.wrapping_mul(discount + 80) / 100 } else { t.wrapping_mul(discount * 3 + 40) / 100 };
+    let n = league_teams(records, team);
+    t = t.wrapping_mul(100 + n % 2 - i32::from(team.get::<u8>(SQUAD_RANK_AT))) / 100;
+    let flags = team.get::<u16>(FLAGS_AT);
+    for (bit, pct) in [(1u16, 135), (2, 120)] {
+        if flags & bit != 0 {
+            t = t.wrapping_mul(pct) / 100;
+        }
+    }
+    if flags & 0x10 != 0 {
+        t = t.wrapping_mul(11) / 10;
+    }
+    if flags & 4 != 0 {
+        t = t.wrapping_mul(115) / 100;
+    }
+    if flags & 0x5000 != 0 {
+        t = t.wrapping_mul(110) / 100;
+    }
+    t = t.wrapping_mul(i32::from(team.get::<i8>(VERDICT_AT)) * 5 + 100) / 100;
+    let class = i32::from(team.get::<u8>(CLUB_CLASS));
+    let price = |k: usize| club::<i16>(team, TICKET_PRICES[k]);
+    let [box_ref, side_ref, behind_ref, stand_ref] = crate::tickets::REFERENCE_PRICES;
+    let c = f64::from(class * 2);
+    let boxes = (c + 3.0) as f32;
+    let side = (c + 30.0) as f32;
+    let behind = (c + 10.0) as f32;
+    let standing = (100.0 - f64::from(boxes) - f64::from(behind) - f64::from(side)) as f32;
+    let w = |v: f32, k: usize, r: i32| (f64::from(crate::tickets::weight(price(k), r)) * f64::from(v)) as f32;
+    let (boxes, side, behind, standing) = (w(boxes, 3, box_ref), w(side, 2, side_ref), w(behind, 1, behind_ref), w(standing, 0, stand_ref));
+    let mut f = ((((f64::from(boxes) + f64::from(side)) + f64::from(behind)) + f64::from(standing)) / 10.0) as f32;
+    if f < 0.0 {
+        f = 0.0;
+    }
+    if f > 15.0 {
+        f = 15.0;
+    }
+    let t = crate::tickets::ftol(f64::from(t) * f64::from(f) / 10.0);
+    let room = if crate::licence::conditions(team) & crate::licence::SPECTATORS != 0 {
+        crate::licence::most_spectators(team)
+    } else {
+        i32::from(club::<i16>(team, FIFTY_AT)).wrapping_mul(capacity) / 100
+    };
+    t.min(room)
+}
+
 /// The clearing of one club (`FUN_00672839`, reached through
 /// `FUN_0042b589`): the season fields to nought, the sales plan's rows
 /// all its first. Beside it `FUN_0042b589` stands the attendance plan
@@ -1459,16 +1858,42 @@ pub fn open_season(records: &mut Records, random: &mut Random) {
 /// The new season as [`open_season`] opens it, when the game's rules are
 /// at hand: the kept countries' clubs taking new players where they are
 /// thin ([`crate::newplayer::for_kept_club`] by the contract and value
-/// tables) and the boards setting every club's goals before the walk plans
+/// tables), every club marking the men it counts on
+/// ([`crate::squad_rank::mark_counted_on`]) and the boards setting every club's goals before the walk plans
 /// the clubs by them ([`crate::season::open_goals`], `FUN_00772bee` in
-/// `FUN_0065e659`, which comes before `FUN_0042b2fc`).
+/// `FUN_0065e659`, which comes before `FUN_0042b2fc`). In a new game's
+/// first season the played clubs open by
+/// [`crate::first_season::open_country`] instead, goals and all.
 pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Option<&crate::season::Rules>) {
     let tables = rules.map(|r| (&r.contract, &r.value));
     roll_globals(&mut records.globals, random);
+    // The season's first day lays the day table down (`FUN_00675c1c`'s
+    // `FUN_00675eb3`) and copies today's pair of it to 0xb5cca0.
+    crate::world_day::fill_day_table(records);
+    let (year, of_year) = (records.globals.date()[2], records.globals.day_of_year());
+    records.globals.put::<u16>(0xb5cca0, year);
+    records.globals.put::<u16>(0xb5cca2, of_year);
     clear_objects(records);
+    // The first season's contracts (`FUN_0065e429`, while 0xb5cbc8 is 1).
+    if records.globals.seasons() == 1 && let Some(tables) = tables {
+        crate::rollover::first_contracts(records, tables, random);
+    }
     // The ranked leagues' clubs by their squads (`FUN_00778394`).
     crate::squad_rank::rank(records);
     crate::squad_rank::keep_scores(records);
+    if let Some((_, values)) = tables {
+        crate::squad_rank::mark_counted_on(records, values);
+    }
+    // The first season's played clubs open with their men's private lives,
+    // presidents, goals and search plans (`FUN_00774088`).
+    let first = records.globals.seasons() == 1;
+    if first && let Some(rules) = rules {
+        for country in crate::opponent::played_nations(records) {
+            crate::first_season::open_country(records, rules, country, random);
+        }
+        // Then the clubs of the countries not played (`FUN_00774963`).
+        crate::first_season::open_kept(records, rules, random);
+    }
     crate::finances::new_rates(&mut records.globals, random);
     crate::finances::settle_funds(records);
     crate::opponent::open_leagues(records);
@@ -1494,8 +1919,44 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     open_managers(records, random);
     crate::europe_entry::open_season(records, random);
     crate::cup_draw::draw(records, random);
-    if let Some(rules) = rules {
+    if let Some(rules) = rules
+        && !first
+    {
         crate::season::open_goals(records, rules, random);
+    }
+    // The staff markets and the pre-season's Turniere (`FUN_007719a6`),
+    // before the clubs' walk.
+    crate::staff_market::open_season(records, random);
+    crate::tournament::open_preseason(records, random);
+    // The first season's half of `FUN_0065e659` (`DAT_00b5cbc8` at one):
+    // the merchandises' weeks of delivery (`FUN_00613f70`; `FUN_00614477`,
+    // `FUN_006753f4` and `FUN_006815cf` draw nothing), the five lawyers'
+    // ranks with two swapped by a draw, the counters and player lists
+    // cleared, the national teams rebuilt (`FUN_006b93f2`) and the market
+    // opened (`FUN_00405f2f`); `FUN_006bc35f` and `FUN_00408fbd` between
+    // them draw nothing.
+    if first {
+        if let Some(rules) = rules {
+            crate::merchandise::open_weeks(records, &rules.merchandise, random);
+        }
+        crate::court::open_ranks(records, random);
+        // Sixty bytes at 0xb5df6c to nought, the season's player lists
+        // (`0xb0b6b8`) to 0xff, the word at 0xb5dfc0 to 0xffff, the least
+        // strength to one; 0xb5dfac would take 0xa3b35c, which the replica
+        // keeps where the save has it. The table at 0x89fe44, walked into
+        // 0xb5df6c and 0xb0b6b8, stands empty at a new game.
+        for at in (0xb5df6c..0xb5df6c + 0x3c).step_by(2) {
+            records.globals.put::<u16>(at, 0);
+        }
+        if let Some(rows) = records.block_mut(crate::statistics::LISTS)
+            && let Some(head) = rows.get_mut(..0x3c)
+        {
+            head.fill(0xff);
+        }
+        records.globals.put::<u16>(0xb5dfc0, 0xffff);
+        records.globals.set_least_strength(1);
+        crate::season_odds::open_national_teams(records, random);
+        crate::stock::open(records, random);
     }
     count_down_contracts(records);
     number_shirts(records, random);
@@ -1503,6 +1964,7 @@ pub fn open_season_with(records: &mut Records, random: &mut Random, rules: Optio
     clear_human_season(records);
     clear_bookings(records, random);
     keep_club_money(records);
+    walk_played_clubs(records);
 }
 
 /// The objects the new season clears whole (`FUN_0065e659`'s
@@ -1547,32 +2009,55 @@ const STANDING_MOST: i16 = 70;
 /// trainer and manager (team +0x9c, +0x9e, +0xa0), each with two
 /// contract years or more, a year less (the person's +0x2c), a season
 /// more at the club (+0x34) and his +0x36 halved — the new season then
-/// holds every person's +0x36 at nought, by a step not traced. (One with
-/// less: the original keeps him by chance — the new years it draws then
-/// go unsaved — or lets him go, the worse the club fell short of its
-/// goal, and the new season's staff market (`FUN_00409a3f`) fills the
-/// post; neither is built, he stays.)
+/// holds every person's +0x36 at nought, by a step not traced. One with
+/// less the club lets go by a draw of a hundred under 0, 30, 50 or 90
+/// as it fell short of its goal by no place, one, two, three and more
+/// (team +0x137, `DAT_00891240`), or at once while his +0x4e is set: his
+/// years nought, his post empty — the manager-trainer's taking the other
+/// two along — for the new season's staff market (`FUN_00409a3f`). Kept,
+/// the original draws him one to three more years that it never saves.
 const STAFF_YEARS: usize = 0x2c;
 const STAFF_SEASONS: usize = 0x34;
 const STAFF_HALVED: usize = 0x36;
+const STAFF_GOING: usize = 0x4e;
 const LAST_PERSON: u16 = 0x5db;
+const STAFF_VERDICT: usize = 0x137;
+const LET_GO: [u32; 4] = [0, 30, 50, 90];
+const LET_GO_DIE: u32 = 100;
+const KEPT_DIE: u32 = 3;
 
-fn close_staff(records: &mut Records) {
+fn close_staff(records: &mut Records, random: &mut Random) {
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
             let Some(team) = records.team(country, number) else { continue };
-            for id in team.staff() {
+            let short = usize::try_from(-i32::from(team.get::<i8>(STAFF_VERDICT))).unwrap_or(0).min(3);
+            for post in 0..3 {
+                let Some(team) = records.team(country, number) else { break };
+                let id = team.staff()[post];
                 if id == 0 || id > LAST_PERSON {
                     continue;
                 }
                 let Some(p) = records.persons.get_mut(usize::from(id)) else { continue };
                 let years = p.get::<u8>(STAFF_YEARS);
-                if years < 2 {
+                if years >= 2 {
+                    p.put::<u8>(STAFF_YEARS, years - 1);
+                    p.put::<u8>(STAFF_SEASONS, p.get::<u8>(STAFF_SEASONS).wrapping_add(1));
+                    p.put::<i16>(STAFF_HALVED, p.get::<i16>(STAFF_HALVED) / 2);
+                } else if p.get::<u8>(STAFF_GOING) == 0 && random.below(LET_GO_DIE) >= LET_GO[short] {
+                    random.below(KEPT_DIE);
                     continue;
+                } else {
+                    p.put::<u8>(STAFF_YEARS, 0);
+                    if let Some(team) = records.team_mut(country, number) {
+                        let mut staff = team.staff();
+                        match post {
+                            0 => staff = [0; 3],
+                            _ => staff[post] = 0,
+                        }
+                        team.set_staff(staff);
+                    }
                 }
-                p.put::<u8>(STAFF_YEARS, years - 1);
-                p.put::<u8>(STAFF_SEASONS, p.get::<u8>(STAFF_SEASONS).wrapping_add(1));
-                p.put::<i16>(STAFF_HALVED, p.get::<i16>(STAFF_HALVED) / 2);
+                crate::staff_market::store_person(records, id);
             }
         }
     }
@@ -1584,10 +2069,9 @@ fn close_staff(records: &mut Records) {
 /// below 60, two below 70, one below 80, one even chance in two below 85,
 /// up one even chance in two from 98 while it stands below 70; the
 /// played clubs' staff first ([`close_staff`]). (The rest of
-/// `FUN_00624e4f` — the comparison's marks, the staff's endings — is not
-/// built.)
+/// `FUN_00624e4f` — the comparison's marks — is not built.)
 pub fn close_managers(records: &mut Records, random: &mut Random) {
-    close_staff(records);
+    close_staff(records, random);
     for n in 0..usize::from(records.globals.humans()) {
         let Some(m) = records.managers.get_mut(n) else { continue };
         m.set_trainer_years(m.trainer_years().wrapping_add(1));
@@ -1714,6 +2198,73 @@ pub(crate) fn keep_club_money(records: &mut Records) {
         let Some(m) = records.managers.get_mut(n) else { continue };
         for (k, b) in money.into_iter().enumerate() {
             m.put::<u8>(MANAGER_MONEY + k, b);
+        }
+    }
+}
+
+/// The youth support a club's youth is classed by (club +0x1a8, team
+/// +0x420): above 600 000 rich (`DAT_00a3b340`), below 300 000 poor
+/// (`DAT_00a3b35c`), between them middling.
+const YOUTH_SUPPORT: usize = 0x1a8;
+const YOUTH_RICH: i32 = 600_000;
+const YOUTH_POOR: i32 = 300_000;
+/// A loan's flags and its end (years × 1000 + the day), in each of the
+/// eight loans from club +0x318, 0x18 apart; the bit of one in use.
+const LOANS_AT: usize = 0x318;
+const LOAN_SLOTS: usize = 8;
+const LOAN_STRIDE: usize = 0x18;
+const LOAN_FLAGS: usize = 0xf;
+const LOAN_END: usize = 0x14;
+const LOAN_IN_USE: u8 = 1;
+const LOAN_YEAR: i16 = 1000;
+/// What a club pays its reserve team (club +0x18c) and the reserve's other
+/// income it goes into (club +0x2c4); the reserve's number in the team
+/// record's second link (+0x873, `FUN_0063e7cf`).
+const OWN_STADIUM_MONEY: usize = 0x18c;
+const OTHER_INCOME: usize = 0x2c4;
+
+/// The played countries' clubs once more, behind the clubs' walk and the
+/// managers' copy of their money (`FUN_00775066`, `FUN_00774a99` per
+/// country, the main one first): every loan in use comes a year nearer
+/// its end, the club's youth is classed by its support
+/// ([`crate::youth_league::class_youth`]), and a club with a reserve team
+/// puts its +0x18c into the reserve's other income — which the clearing
+/// has just put to nought. The rating the walk reckons at the club
+/// object's +0x111 — ten, the cash in millions once it lies beyond half a
+/// million either way, the league's and the list place's points, five for
+/// the title or two for (`FUN_0069a2e5`) — never reaches the team record
+/// (`FUN_0063c908` stores no +0x111) and is not kept.
+pub(crate) fn walk_played_clubs(records: &mut Records) {
+    for country in crate::opponent::played_nations(records) {
+        let clubs = records.countries.team_count(usize::from(country)).max(0) as u16;
+        for number in 0..clubs {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            for k in 0..LOAN_SLOTS {
+                let at = LOANS_AT + k * LOAN_STRIDE;
+                if club::<u8>(team, at + LOAN_FLAGS) & LOAN_IN_USE != 0 {
+                    let end = club::<i16>(team, at + LOAN_END);
+                    put::<i16>(team, at + LOAN_END, end.wrapping_sub(LOAN_YEAR));
+                }
+            }
+            let support = club::<i32>(team, YOUTH_SUPPORT);
+            let class = if support > YOUTH_RICH {
+                1
+            } else if support < YOUTH_POOR {
+                3
+            } else {
+                2
+            };
+            let (reserve, money) = (team.linked()[1], club::<i32>(team, OWN_STADIUM_MONEY));
+            crate::youth_league::class_youth(records, country, usize::from(number), class);
+            // A link past the country's clubs names one of its amateur
+            // clubs (`FUN_0063dd1c` beyond the count), whose record keeps
+            // no income.
+            if reserve >= 0 && (reserve as u16) < clubs {
+                if let Some(r) = records.team_mut(country, reserve as u16) {
+                    let income = club::<i32>(r, OTHER_INCOME);
+                    put::<i32>(r, OTHER_INCOME, income.wrapping_add(money));
+                }
+            }
         }
     }
 }
@@ -1996,11 +2547,32 @@ const MOVED_BYTES: [usize; 2] = [0x106, 0x107];
 /// The human clubs' shirt sales, by slot (`DAT_00a51ea8`).
 const SHIRT_SALES: &str = "0xa51ea8";
 
+/// The squad's will as the season opens (`FUN_0069eeeb`, team +0x958):
+/// ten times its players' mean morale (club +0xb50's players' +0xca, the
+/// record's +0x296) less 900, within nought and 200; a club without
+/// players keeps its own.
+const WILL_PER_MORALE: i32 = 10;
+const WILL_MORALE_OFFSET: i32 = 900;
+
+fn squad_will(records: &Records, country: u16, number: u16) -> Option<i16> {
+    let team = records.team(country, number)?;
+    let morale: Vec<i32> = team.players().iter().filter_map(|&id| records.player(id)).map(|p| i32::from(p.morale())).collect();
+    let count = morale.len() as i32;
+    (count > 0).then(|| {
+        let sum: i32 = morale.iter().sum();
+        ((sum * WILL_PER_MORALE - count * WILL_MORALE_OFFSET) / count).clamp(0, i32::from(WILL_MOST)) as i16
+    })
+}
+
 fn clear_club_seasons(records: &mut Records) {
     let second_season = records.globals.seasons() > 1;
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let will = squad_will(records, country, number);
             let Some(team) = records.team_mut(country, number) else { continue };
+            if let Some(will) = will {
+                team.set_will_base(will);
+            }
             // A club gone up or down starts afresh at +0xfe … +0x107
             // (`FUN_0069da17`).
             if team.get::<u16>(SEASON_FLAGS) & MOVED != 0 {
@@ -2309,6 +2881,24 @@ mod club_season_tests {
             }
         }
         assert!(clubs > 200);
+        // The squad's will (`FUN_0069eeeb`): ten times the mean morale
+        // less 900, truncated, within nought and 200. (The original's
+        // turn moves the morale after it, so the kept save cannot check
+        // the club's own.)
+        let (country, number) = (crate::opponent::played_nations(&ours)[0], 0);
+        let ids = ours.team(country, number).unwrap().players();
+        let n = ids.len() as i32;
+        assert!(n > 1);
+        for (k, &id) in ids.iter().enumerate() {
+            ours.player_mut(id).unwrap().set_morale(if k == 0 { 120 } else { 100 });
+        }
+        assert_eq!(squad_will(&ours, country, number), Some((100 + 200 / n) as i16));
+        clear_club_seasons(&mut ours);
+        assert_eq!(ours.team(country, number).unwrap().will_base(), (100 + 200 / n) as i16);
+        for &id in &ids {
+            ours.player_mut(id).unwrap().set_morale(80);
+        }
+        assert_eq!(squad_will(&ours, country, number), Some(0));
         let (x, y) = (&ours.extras[0], &theirs.extras[0]);
         for (at, len) in HUMAN_SEASON_CLEARED.into_iter().chain(HUMAN_CLUB_ZEROS).chain([(0xb90, 2), (0x2564, 2)]) {
             for k in at..at + len {
@@ -2647,6 +3237,8 @@ mod tests {
             closed.teams[i].set_level(level);
             closed.teams[i].put::<u16>(FLAGS_AT, flags);
         }
+        // The new season is counted before the walk (`open_season`).
+        closed.globals.set_seasons(opened.globals.seasons());
         clear_bookings(&mut closed, &mut Random::new(1));
         for (k, &i) in played.iter().enumerate() {
             let (a, b) = (&closed.teams[i], &opened.teams[i]);
@@ -2905,7 +3497,7 @@ mod tests {
             .join("saves-kept");
         let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
         let (mut ours, theirs, before) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"), read("SeasonEnd364.an3"));
-        close_staff(&mut ours);
+        close_staff(&mut ours, &mut Random::new(5));
         let mut moved = 0;
         for id in 1..usize::from(LAST_PERSON) {
             let (Some(x), Some(y), Some(z)) = (ours.persons.get(id), theirs.persons.get(id), before.persons.get(id)) else { continue };
@@ -2916,6 +3508,56 @@ mod tests {
             }
         }
         assert!(moved > 250, "{moved}");
+    }
+
+    /// A staff man at his contract's last year: kept while his club met
+    /// its goal, let go at once while his +0x4e is set — the
+    /// manager-trainer taking the club's other two posts along — and,
+    /// short of the goal by three places, nine times in ten.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_staffs_last_years_end_by_the_clubs_season() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = || Records::from_save(Save::read(&keeps.join("SeasonEnd364.an3")).unwrap()).unwrap();
+        let before = read();
+        let country = crate::opponent::played_nations(&before)[0];
+        let number = 0;
+        let staff = [1000, 1001, 1002];
+        let set = |r: &mut Records, verdict: i8, going: u8| {
+            let team = r.team_mut(country, number).unwrap();
+            team.put::<i8>(STAFF_VERDICT, verdict);
+            team.set_staff(staff);
+            for id in staff {
+                let p = &mut r.persons[usize::from(id)];
+                p.put::<u8>(STAFF_YEARS, 1);
+                p.put::<u8>(STAFF_GOING, going);
+            }
+        };
+        let mut kept = read();
+        set(&mut kept, 2, 0);
+        close_staff(&mut kept, &mut Random::new(1));
+        assert_eq!(kept.team(country, number).unwrap().staff(), staff, "met its goal");
+        let mut gone = read();
+        set(&mut gone, 0, 1);
+        close_staff(&mut gone, &mut Random::new(1));
+        assert_eq!(gone.team(country, number).unwrap().staff(), [0; 3], "the manager-trainer takes all");
+        assert_eq!(gone.persons[usize::from(staff[0])].get::<u8>(STAFF_YEARS), 0);
+        assert_eq!(gone.block(&format!("0xbe3920[{}]", staff[0])).unwrap()[STAFF_YEARS - 0x20], 0, "saved");
+        assert_eq!(gone.persons[usize::from(staff[1])].get::<u8>(STAFF_YEARS), 1, "the others' records stand");
+        let mut lost = 0;
+        for seed in 0..200 {
+            let mut r = read();
+            set(&mut r, -5, 0);
+            close_staff(&mut r, &mut Random::new(seed));
+            if r.team(country, number).unwrap().staff()[0] == 0 {
+                lost += 1;
+            }
+        }
+        assert!((165..=195).contains(&lost), "{lost} of 200");
     }
 
     /// The new season's managers' year leaves the humans' last-match
@@ -2993,6 +3635,19 @@ mod tests {
         for at in (0xb5dfb0..0xb5dfba).chain([0xb5dfc4, 0xb5dfc5, 0xb5d1a4, 0xb5d1a5]) {
             assert_eq!(a.get::<u8>(at), b.get::<u8>(at), "globals {at:#x}");
         }
+        for at in [0xb5cca0, 0xb5cca2] {
+            assert_eq!(a.get::<u16>(at), b.get::<u16>(at), "today's pair, globals {at:#x}");
+        }
+        let (x, y) = (
+            closed.block(crate::world_day::DAY_TABLE).unwrap(),
+            opened.block(crate::world_day::DAY_TABLE).unwrap(),
+        );
+        assert_eq!(x[..0x14], y[..0x14], "the ten coming years' day offsets");
+        assert_eq!(
+            x[0x14..0x14 + 2000 * 4],
+            y[0x14..0x14 + 2000 * 4],
+            "the 2000 day pairs"
+        );
         for nation in opponent::played_nations(&closed) {
             for level in 0..closed.countries.leagues(usize::from(nation)).max(0) {
                 let (x, y) = (
@@ -3215,7 +3870,11 @@ mod tests {
             let fifths = club::<u16>(&theirs.teams[i], 0x4fc);
             let found = (0..200).any(|seed| {
                 let mut team = theirs.teams[i].clone();
-                plan_drawn(&mut team, skill, &mut Random::new(seed));
+                let mut random = Random::new(seed);
+                let tenths = random.below(2) as i32 + 7;
+                let more = random.below(2) as i32;
+                plan_drawn(&mut team, skill, tenths, more);
+                plan_rest_drawn(&mut team, &mut random);
                 fields.map(|at| club::<i32>(&team, at)) == want && club::<u16>(&team, 0x4fc) == fifths
             });
             assert!(found, "{i}: {want:?}");
@@ -3223,6 +3882,39 @@ mod tests {
             shared += i32::from(want[0] == 0);
         }
         assert!(count > 140 && shared > 0, "{count} planned, {shared} sharing");
+    }
+
+    /// The European television's offer is one of the original's draws:
+    /// on its first new-season day every planned club's +0x5e8, +0x5ec
+    /// and +0x5f0 are reproduced by a draw (`FUN_005b9a2a`), and they
+    /// stand apart from the clearing's two millions.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_european_tv_offer_is_one_of_the_originals_draws() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let country = i16::from(theirs.teams[i].country());
+            if country == 0 || !theirs.globals.played(country) || !planned(&theirs.teams[i]) {
+                continue;
+            }
+            let team = &theirs.teams[i];
+            let want = (club::<i32>(team, 0x5e8), club::<i32>(team, 0x5ec), club::<u8>(team, 0x5f0));
+            assert_ne!(want.0, 2_000_000, "{i}");
+            let found = (0..200).any(|seed| {
+                let mut ours = team.clone();
+                draw_european_tv(&mut ours, &mut Random::new(seed));
+                (club::<i32>(&ours, 0x5e8), club::<i32>(&ours, 0x5ec), club::<u8>(&ours, 0x5f0)) == want
+            });
+            assert!(found, "{i}: {want:?}");
+            count += 1;
+        }
+        assert!(count > 140, "{count} planned");
     }
 
     /// The main sponsor's number is one of the original's draws: on its
@@ -3348,6 +4040,36 @@ mod tests {
         assert!(kept > 1000 && same * 100 >= kept * 95, "{same} of {kept} kept as the original");
     }
 
+    /// The season tickets' target comes out as the original's: on its
+    /// first new-season day every planned club's +0x124 is what its
+    /// league, prices, rank, flags and stadium give.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_season_tickets_are_targeted_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let theirs = Records::from_save(Save::read(&keeps.join("NewSeason000.an3")).unwrap()).unwrap();
+        let mut count = 0;
+        for i in 0..theirs.teams.len() {
+            let team = &theirs.teams[i];
+            let country = i16::from(team.country());
+            if country == 0 || !theirs.globals.played(country) || !planned(team) {
+                continue;
+            }
+            let system = usize::from(theirs.countries.cup_system(usize::from(team.country())));
+            let capacity = theirs
+                .block(&format!("{STADIUMS}[{i}]"))
+                .and_then(|b| b.get(STADIUM_CAPACITY..STADIUM_CAPACITY + 4))
+                .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            assert_eq!(ticket_target(&theirs, team, system, capacity), club::<i32>(team, SEASON_TICKETS), "{i} season tickets");
+            count += 1;
+        }
+        assert!(count > 100, "{count} planned clubs");
+    }
+
     /// The team bonuses come out as the original's: on its first
     /// new-season day every computer club, the fields put to nought, is
     /// planned back to its rows and bonuses, and its season's expected
@@ -3383,10 +4105,17 @@ mod tests {
                 let want = club::<i32>(&theirs.teams[i], 0x1b0);
                 let found = (0..400).any(|seed| {
                     let mut t = team.clone();
-                    plan_amateur_stadium(&mut t, skill, &mut Random::new(seed));
+                    clear_stadium(&mut t, true, skill, &mut Random::new(seed));
                     club::<i32>(&t, 0x1b0) == want
                 });
                 assert!(found, "{i}: amateur stadium {want}, skill {skill}");
+                let want = club::<i32>(&theirs.teams[i], 0x1a4);
+                let found = (0..40).any(|seed| {
+                    let mut t = team.clone();
+                    clear_drawn(&mut t, skill, &mut Random::new(seed));
+                    club::<i32>(&t, 0x1a4) == want
+                });
+                assert!(found, "{i}: amateur drawn {want}, skill {skill}");
             }
             plan_bonuses(&mut team, system);
             // The expected bonuses by the +0x5c4 the season's end left.
@@ -3436,7 +4165,7 @@ mod tests {
             let mut seen_bytes: [std::collections::HashSet<u8>; 2] = Default::default();
             for seed in 0..4000 {
                 let mut team = t.clone();
-                sign_main_sponsor(&mut team, system, skill, held, capacity, &mut Random::new(seed));
+                sign_main_sponsor(&mut team, system, skill, held, capacity, true, &mut Random::new(seed));
                 for (k, &at) in words.iter().enumerate() {
                     seen_words[k].insert(club::<i32>(&team, at));
                 }
@@ -3452,5 +4181,233 @@ mod tests {
             count += 1;
         }
         assert!(count > 140, "{count}");
+    }
+
+    /// The played countries' clubs walked once more over the original's
+    /// turn (SeasonEnd364 rolled over by the replica against NewSeason000,
+    /// `FUN_00774a99`): every loan's end as the original's, and on both
+    /// sides each club's youth classed by its own support — the bytes 3 to
+    /// 8 of its stages 1, 2 or 3, the played bytes nought — and each
+    /// reserve team's other income its first team's +0x18c.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_new_season_walks_the_played_clubs_as_the_original() {
+        use a3_files::an3::Save;
+        let keeps = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"))
+            .parent()
+            .unwrap()
+            .join("saves-kept");
+        let read = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (mut ours, theirs) = (read("SeasonEnd364.an3"), read("NewSeason000.an3"));
+        let mut random = Random::new(5);
+        let drawn = crate::promotion::draw(&mut ours, &mut random);
+        crate::statistics::archive_leagues(&mut ours);
+        crate::promotion::take(&mut ours, &drawn);
+        open_season(&mut ours, &mut random);
+        const STAGES: usize = 0xb7eeea - 0xb77500 - 0x20;
+        let stages = |r: &Records, country: u16, n: usize| -> Vec<u8> {
+            let slot = r.countries.slot(country.into());
+            r.block(&format!("0xb77500[{slot}]")).unwrap()[STAGES + n * 0xc..STAGES + n * 0xc + 0xc].to_vec()
+        };
+        let (mut loans, mut classed, mut reserves) = (0, 0, 0);
+        for country in crate::opponent::played_nations(&theirs) {
+            let clubs = theirs.countries.team_count(usize::from(country));
+            for n in 0..clubs as u16 {
+                let (a, b) = (ours.team(country, n).unwrap(), theirs.team(country, n).unwrap());
+                for k in 0..LOAN_SLOTS {
+                    let at = LOANS_AT + k * LOAN_STRIDE;
+                    if club::<u8>(b, at + LOAN_FLAGS) & LOAN_IN_USE != 0 {
+                        assert_eq!(club::<i16>(a, at + LOAN_END), club::<i16>(b, at + LOAN_END), "{country}/{n} loan {k}");
+                        loans += 1;
+                    }
+                }
+                for (r, t, side) in [(&ours, a, "ours"), (&theirs, b, "theirs")] {
+                    let support = club::<i32>(t, YOUTH_SUPPORT);
+                    let class = if support > YOUTH_RICH { 1 } else if support < YOUTH_POOR { 3 } else { 2 };
+                    let s = stages(r, country, usize::from(n));
+                    assert_eq!(s[3..], [class, class, class, class, class, class, 0, 0, 0], "{side} {country}/{n} youth");
+                    let reserve = t.linked()[1];
+                    if reserve >= 0 && i16::from(reserve) < clubs {
+                        let income = club::<i32>(r.team(country, reserve as u16).unwrap(), OTHER_INCOME);
+                        if income == club::<i32>(t, OWN_STADIUM_MONEY) {
+                            reserves += 1;
+                        } else {
+                            // The original's Germany 85 pays its reserve 45
+                            // twice over, by a step not traced.
+                            assert_eq!((side, country, n), ("theirs", 14, 85), "{side} {country}/{n}'s reserve");
+                        }
+                    }
+                }
+                classed += 1;
+            }
+        }
+        assert!(classed > 200 && reserves == 9, "{loans} loans, {classed} clubs, {reserves} reserves");
+    }
+}
+
+#[cfg(test)]
+mod new_game {
+    use super::*;
+
+    /// The oracle's new game at its first turn (`runs/new-game/first-turn.an3`).
+    fn first_turn() -> Option<Records> {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return None;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return None;
+        }
+        Some(Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap())
+    }
+
+    /// The draws from `from` to `to`, none past `most`.
+    fn draws(from: &Random, to: &Random, most: usize) -> Option<usize> {
+        let mut count = from.clone();
+        (0..most).position(|_| {
+            if &count == to {
+                return true;
+            }
+            count.below(2);
+            false
+        })
+    }
+
+    /// A new game's staff markets and pre-season Turniere as the
+    /// original's (`FUN_007719a6` in the calculation, the oracle's new
+    /// game, its first-turn dump). The dump stands after it, so the test
+    /// first takes back what it wrote: the human club's co-trainer and
+    /// goalkeeper trainer (+0xa2, +0xa4) unhired, their contracts at
+    /// none; the goalkeeper trainers' asked years at none, as no walk
+    /// asked them before (the co-trainers' `FUN_00409a3f` had, in
+    /// `FUN_0065e659`); no club hosting a Turnier. From the generator as
+    /// the original's stood (trace index 775751), the co-trainers' market
+    /// made anew takes 31 newcomers by draws of 60, every goalkeeper
+    /// trainer of the band a salary and years, the human club one of each
+    /// (the keepers' of a market of one, a draw that moves nothing), and
+    /// Germany's clubs their 72 picks of the Turniere: markets, pool,
+    /// list and clubs come out as the original's, the generator where the
+    /// original's stood after (775896).
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_opens_its_staff_markets_and_turniere_as_the_original() {
+        let (Some(theirs), Some(mut ours)) = (first_turn(), first_turn()) else { return };
+        for t in ours.teams.iter_mut() {
+            t.put::<u8>(0x125, t.get::<u8>(0x125) & !1);
+        }
+        for k in 1..101 {
+            if let Some(b) = ours.block_mut(&format!("0xbe17f8[{k}]")) {
+                b[0x15] = 0;
+            }
+        }
+        let humans = crate::statistics::human_clubs(&ours);
+        assert!(!humans.is_empty());
+        for c in humans {
+            let t = ours.team_mut(u16::from(c.0), c.1 as u16).unwrap();
+            let (co, keeper) = (t.co_trainer(), t.second_coach());
+            assert!(co > 0 && keeper > 0, "the human club's posts filled");
+            t.set_co_trainer(0);
+            t.set_second_coach(0);
+            for (pool, id) in [("0xbe3920", co), ("0xbe17f8", keeper)] {
+                let b = ours.block_mut(&format!("{pool}[{id}]")).unwrap();
+                assert_eq!(b[0x0c], 1, "{pool}[{id}]'s year");
+                b[0x0c] = 0;
+            }
+            let p = ours.persons.get_mut(co as usize).unwrap();
+            let mut bytes = p.bytes().to_vec();
+            bytes[0x0c] = 0;
+            *p = crate::records::Person::new(&bytes).unwrap();
+        }
+        let mut random = Random::from_state(1_739_958_953, 1_508_417_667);
+        let start = random.clone();
+        crate::staff_market::open_season(&mut ours, &mut random);
+        assert_eq!(draws(&start, &random, 1000), Some(72), "the markets' draws");
+        crate::tournament::open_preseason(&mut ours, &mut random);
+        assert_eq!(random, Random::from_state(1_390_654_199, 816_249_522));
+        assert_eq!(draws(&start, &random, 1000), Some(144));
+        let mut names: Vec<String> = vec!["0x1c4be78".into()];
+        names.extend((0..5).flat_map(|k| [format!("0x8e27a0[{k}]"), format!("0x8e2490[{k}]")]));
+        names.extend((1..1500).map(|k| format!("0xbe3920[{k}]")));
+        names.extend((1..101).map(|k| format!("0xbe17f8[{k}]")));
+        for name in &names {
+            assert_eq!(ours.block(name), theirs.block(name), "{name}");
+        }
+        for (i, (a, b)) in ours.teams.iter().zip(&theirs.teams).enumerate() {
+            assert_eq!(a.bytes(), b.bytes(), "team {i}");
+        }
+        for (k, (a, b)) in ours.extras.iter().zip(&theirs.extras).enumerate() {
+            assert_eq!(a.bytes(), b.bytes(), "extra {k}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod new_game_bookings {
+    use super::*;
+
+    /// The oracle's new game at its first turn (`runs/new-game/first-turn.an3`).
+    fn first_turn() -> Option<Records> {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return None;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return None;
+        }
+        Some(Records::from_save(a3_files::an3::Save::read(&path).unwrap()).unwrap())
+    }
+
+    /// A new game's season bookings drawn as the original's
+    /// (`FUN_0042b2fc` in the calculation, the oracle's new game, its
+    /// first-turn dump; trace index 775896 to 778647). The dump stands
+    /// after the walk, so its clubs' shirt contracts are first taken back
+    /// to none, as a new game's stand before it. From the generator as
+    /// the original's stood, every one of the 2 741 moving draws comes
+    /// in the original's order — the clearing's +0x1a4 and the
+    /// manager's skill against +0x1b0 for each computer club, the
+    /// planned clubs' stadium tenths, sponsor (its first season's money
+    /// by a draw of four), shirt, boards, television, European
+    /// television, +0x1a4, price, +0x4fc and +0x9e4, then the 288 bands
+    /// of the kept countries' clubs (`FUN_00673131`) — and the generator
+    /// ends where the original's did; the kept clubs come out as the
+    /// original's, the planned clubs' signed contracts and drawn sums too.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_draws_its_bookings_as_the_original() {
+        let (Some(theirs), Some(mut ours)) = (first_turn(), first_turn()) else { return };
+        for t in ours.teams.iter_mut() {
+            put::<u8>(t, 0x5a9, 0);
+        }
+        let mut random = Random::from_state(1_390_654_199, 816_249_522);
+        let start = random.clone();
+        clear_bookings(&mut ours, &mut random);
+        assert_eq!(random, Random::from_state(283_834_103, 390_448_628));
+        let mut count = start;
+        assert_eq!((0..3000).position(|_| count == random || { count.below(2); false }), Some(2741), "the moving draws");
+        let bytes: [usize; 9] = [0x509, 0x50a, 0x5a0, 0x5a1, 0x5a8, 0x5a9, 0x5b0, 0x5b1, 0x5f0];
+        let words: [usize; 15] = [0x1a4, 0x4ec, 0x500, 0x510, 0x514, 0x518, 0x51c, 0x520, 0x524, 0x528, 0x5a4, 0x5e8, 0x5ec, 0x18c, 0x1a8];
+        let (mut kept, mut planned_clubs) = (0, 0);
+        for (i, (a, b)) in ours.teams.iter().zip(&theirs.teams).enumerate() {
+            let country = a.country();
+            if ours.countries.kind(usize::from(country)) == KEPT_KIND {
+                assert_eq!(a.bytes(), b.bytes(), "kept club {i}");
+                kept += 1;
+            } else if country != 0 && ours.globals.played(i16::from(country)) && planned(a) {
+                for at in bytes {
+                    assert_eq!(club::<u8>(a, at), club::<u8>(b, at), "club {i} +{at:#x}");
+                }
+                for at in words {
+                    assert_eq!(club::<i32>(a, at), club::<i32>(b, at), "club {i} +{at:#x}");
+                }
+                assert_eq!(club::<u16>(a, 0x4ea), club::<u16>(b, 0x4ea), "club {i} sponsor");
+                assert_eq!(club::<u16>(a, 0x4fc), club::<u16>(b, 0x4fc), "club {i} +0x4fc");
+                planned_clubs += 1;
+            }
+        }
+        assert_eq!((kept, planned_clubs), (288, 71));
     }
 }

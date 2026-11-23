@@ -234,7 +234,7 @@ const LAST: u16 = 0x80;
 /// The rule that gives a point more for three goals.
 const THREE_GOALS: u32 = 0x80;
 const BONUS_GOALS: i32 = 3;
-const TEAM_FLAGS: usize = 0x12a;
+pub(crate) const TEAM_FLAGS: usize = 0x12a;
 /// The tie-break by goals scored first.
 const GOALS_FIRST: i16 = 1;
 
@@ -1448,6 +1448,23 @@ impl Report {
         (self.byte(0xc) & 0x10 != 0).then(|| [self.byte(9), self.byte(8)])
     }
 
+    /// The half's score, home side's first (+0x12, +0x13).
+    pub fn half(&self) -> [u8; 2] {
+        [self.byte(0x12), self.byte(0x13)]
+    }
+
+    /// The record's flag byte (+0x1d): bit 0 a match not played, 0x80
+    /// extra time, 0x40 penalties.
+    pub fn state(&self) -> u8 {
+        self.byte(0x1d)
+    }
+
+    /// The TV station that showed it (+0x60f, see
+    /// [`crate::report::station_name`]).
+    pub fn station(&self) -> u8 {
+        self.byte(0x60f)
+    }
+
     /// Whether it went to extra time, to penalties.
     pub fn extra(&self) -> (bool, bool) {
         let flags = self.byte(0xc);
@@ -1603,8 +1620,8 @@ const RANKING_SEASONS: usize = 8;
 /// (`FUN_00423cad`): every country's seasons shift down by one, the oldest
 /// dropping out and the new one at naught, its total the last five summed
 /// anew (an empty row's at naught); then the rows by their totals, the
-/// highest first, by an exchange sort (`FUN_00423bd5`). (The human's notice,
-/// event 0xcf, is not built.)
+/// highest first, by an exchange sort (`FUN_00423bd5`). Its notice, event
+/// 0xcf, is dialog 301 ([`crate::cycle::dialogs::EUROPEAN_RANKING`]).
 pub fn roll_ranking(records: &mut Records) {
     let g = &mut records.globals;
     let float = |g: &crate::records::Globals, at: usize| f32::from_bits(g.get::<u32>(at));
@@ -1717,6 +1734,106 @@ fn crowd_list(block: Option<&[u8]>) -> Vec<Crowd> {
             }
         })
         .collect()
+}
+
+/// The row `FUN_00725d61` builds from a match record for both lists: the
+/// attendance at its +0x34, the ground's nation byte and owning id (the
+/// record's +0x28 and +0x2a), then the record's own first thirteen bytes —
+/// both sides' country, level byte and team, the goals at its +8 and the
+/// second result at its +0xa — and the low word of its +0xc, the family
+/// stamp's slot, whose stamp sits in the upper bytes and so reads nought;
+/// the last two bytes the builder never writes at all, as the insert
+/// copies the full 24-byte row while the frame holds only 22 — the kept
+/// saves carry whatever stood on the stack there (a league row 0x4fc, a
+/// national game 0xa6); the replica leaves them nought.
+fn crowd_row(level: u8, ground: (u8, u16), crowd: &Crowd) -> [u8; 0x18] {
+    let mut row = [0u8; 0x18];
+    row[0..4].copy_from_slice(&crowd.attendance.to_le_bytes());
+    row[4] = ground.0;
+    row[6..8].copy_from_slice(&ground.1.to_le_bytes());
+    row[8] = crowd.home.0;
+    row[9] = level;
+    row[0xa..0xc].copy_from_slice(&crowd.home.1.to_le_bytes());
+    row[0xc] = crowd.away.0;
+    row[0xd] = level;
+    row[0xe..0x10].copy_from_slice(&crowd.away.1.to_le_bytes());
+    row[0x10] = crowd.goals[0];
+    row[0x11] = crowd.goals[1];
+    row[0x12] = crowd.second[0];
+    row[0x13] = crowd.second[1];
+    row[0x14] = crowd.flags;
+    row
+}
+
+/// The list's insert (`FUN_006c5bac` on the vftable `0x831cb0`): a crowd
+/// no better than the twentieth's drops out; the new row takes the first
+/// place whose attendance it beats, the rows before that place shifting
+/// down over the weakest. A row of the very same attendance already stands
+/// in the list, the new one replaces it there, and only when that twin
+/// stands behind the place does the shift free the place as well. The
+/// saved list keeps twenty rows and no count of its own, so the shift
+/// simply loses the last row.
+fn insert_crowd(rows: &mut [u8], row: [u8; 0x18]) {
+    let att = |e: &[u8]| i32::from_le_bytes([e[0], e[1], e[2], e[3]]);
+    let at = |k: usize| k * 0x18;
+    let n = (rows.len() / 0x18).min(20);
+    let new = att(&row);
+    if n == 0 || new <= att(&rows[at(n - 1)..]) {
+        return;
+    }
+    let i = (0..n).find(|&k| new > att(&rows[at(k)..])).unwrap_or(n - 1);
+    match (0..n).find(|&k| att(&rows[at(k)..]) == new) {
+        // The twin stands at or before the place: it is simply replaced.
+        Some(j) if j <= i => rows[at(j)..at(j) + 0x18].copy_from_slice(&row),
+        // The twin stands behind it: it goes, and the rows before the
+        // place shift down over its old ground.
+        Some(j) => {
+            for k in (i + 1..=j).rev() {
+                rows.copy_within(at(k) - 0x18..at(k), at(k));
+            }
+            rows[at(i)..at(i) + 0x18].copy_from_slice(&row);
+        }
+        None => {
+            for k in (i + 1..n).rev() {
+                rows.copy_within(at(k) - 0x18..at(k), at(k));
+            }
+            rows[at(i)..at(i) + 0x18].copy_from_slice(&row);
+        }
+    }
+}
+
+/// A played match's crowd goes into the lists, as the day's settlement
+/// (`FUN_007108d3`) hands every open record of the day both to
+/// `FUN_0072540e` — which finds the league's list at `DAT_00af5d74` by the
+/// record's country and level bytes — and, always, to `FUN_0072544d` for
+/// the international list at `DAT_00af723c`. The record's family at +0x20
+/// decides the first of these: masked with `0x7f000000` it is compared
+/// against `0x3f` (0x712962), so only the league's family nought reaches
+/// the league's list — cup, league cup, supercup and Europe's games go to
+/// the international one alone. `into_league` carries that. A record settled a second time
+/// (its +0x24 no nought) never enters at all; the replica settles every
+/// match once.
+pub fn book_crowd(
+    records: &mut Records,
+    into_league: bool,
+    country: u16,
+    level: u8,
+    ground: (u8, u16),
+    crowd: Crowd,
+) {
+    if crowd.attendance == 0 {
+        return;
+    }
+    let row = crowd_row(level, ground, &crowd);
+    if into_league
+        && let Some(index) = league_of(records, country, level)
+        && let Some(list) = records.block_mut(&format!("0xaf5d74[{index}]"))
+    {
+        insert_crowd(list, row);
+    }
+    if let Some(list) = records.block_mut("0xaf723c") {
+        insert_crowd(list, row);
+    }
 }
 
 /// A country's all-time first-league figures (`FUN_0072b25b` mode 0):
@@ -2773,6 +2890,12 @@ pub fn open_lists(records: &mut Records, random: &mut Random) {
             }
         }
     }
+    draw_luck(records, random);
+}
+
+/// The season's thirty luck numbers (`FUN_0065e659`'s loop at 0x65e835,
+/// just before the lists are cleared): each drawn below 30.
+pub(crate) fn draw_luck(records: &mut Records, random: &mut Random) {
     let values = std::array::from_fn(|_| random.below(LUCK_BELOW) as i16);
     records.luck.set_values(values);
 }
@@ -3967,6 +4090,41 @@ pub fn scorers(records: &Records, country: u16, level: u8) -> Vec<LigaRow> {
 /// The table: with `rules` the penalty points and the point for three
 /// goals count.
 fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row> {
+    let mut rows = reckon_with(records, league, kind, rules, rules);
+    if league.played() != 0 {
+        sort(&mut rows, league.tie_break() == GOALS_FIRST);
+    }
+    rows
+}
+
+/// A league's table of `kind` without the penalty points, and without
+/// the sunk clubs sent to its bottom: `FUN_007293ea` with its third
+/// argument 0, as the table after the matchday asks for the home and the
+/// away table (`FUN_00729f35`) — `FUN_0072b9b9` then sorts by the
+/// figures alone.
+pub fn unpenalised_table(records: &Records, league: &League, kind: u8) -> Vec<Row> {
+    // The point for three goals stands on the league's rule alone
+    // (`FUN_00691b5f`), whatever the third argument.
+    let mut rows = reckon_with(records, league, kind, false, true);
+    if league.played() != 0 {
+        rows.sort_by(|a, b| {
+            let key = |r: &Row| {
+                let diff = r.goals_for - r.goals_against;
+                if league.tie_break() == GOALS_FIRST {
+                    [r.points, r.goals_for, diff, r.games]
+                } else {
+                    [r.points, diff, r.goals_for, r.games]
+                }
+            };
+            key(b).cmp(&key(a))
+        });
+    }
+    rows
+}
+
+/// The rows counted, not sorted: with `penalties` the penalty points
+/// taken off, with `bonus` the point for three goals given.
+fn reckon_with(records: &Records, league: &League, kind: u8, penalties: bool, bonus: bool) -> Vec<Row> {
     let n = league.teams();
     let country = league.country();
     let mut rows: Vec<Row> = (0..n)
@@ -3976,12 +4134,12 @@ fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row>
                 .ok()
                 .and_then(|t| records.team(country, t))
                 .map_or(0, |t| t.get::<u16>(TEAM_FLAGS));
-            let points = if rules { -PENALTY_POINTS * i32::from(flags & PENALTY) } else { 0 };
+            let points = if penalties { -PENALTY_POINTS * i32::from(flags & PENALTY) } else { 0 };
             Row { place, team, flags, points, ..Row::default() }
         })
         .collect();
     let (home_win, away_win) = league.win_points();
-    let three_goals = rules && league.flags() & THREE_GOALS != 0;
+    let three_goals = bonus && league.flags() & THREE_GOALS != 0;
     // One side's game: its goals and the other's, the points of a win.
     let count = |row: &mut Row, own: i32, other: i32, win: i32, bonus: bool| {
         if own > other {
@@ -4043,8 +4201,68 @@ fn reckon(records: &Records, league: &League, kind: u8, rules: bool) -> Vec<Row>
     for row in &mut rows {
         row.points = row.points.max(0);
     }
-    if league.played() != 0 {
-        sort(&mut rows, league.tie_break() == GOALS_FIRST);
+    rows
+}
+
+/// A play-off group's table (`FUN_006d75a9` of kind 0) from its record
+/// (`0x1baa1e0`'s 0x1d0 bytes): its clubs (+4 their count, +0xc on), each
+/// starting from its points at +0x1e on less three for each penalty of
+/// its flags (`flags_of`: team +0x12a, `FUN_0063e470`), then its fourteen matchdays'
+/// pairs of places (+0x60, 8 bytes a matchday) with the scores at +0xd0
+/// (0x20 a home side, 4 an away one; 0xff unplayed); no points below
+/// nought, and sorted only once a matchday is played (+0x1c).
+pub(crate) fn group_table(rec: &[u8], flags_of: impl Fn(i16) -> u16) -> Vec<Row> {
+    const COUNT: usize = 4;
+    const TEAMS: usize = 0xc;
+    const PLAYED: usize = 0x1c;
+    const POINTS: usize = 0x1e;
+    const SCHEDULE: usize = 0x60;
+    const MATCHDAYS: usize = 14;
+    const SCORES: usize = 0xd0;
+    let word = |at: usize| rec.get(at..at + 2).map_or(0, |w| i16::from_le_bytes([w[0], w[1]]));
+    let byte = |at: usize| rec.get(at).copied().unwrap_or(0xff);
+    let n = usize::try_from(word(COUNT)).unwrap_or(0).min(8);
+    let mut rows: Vec<Row> = (0..n)
+        .map(|i| {
+            let team = word(TEAMS + 2 * i);
+            let flags = flags_of(team);
+            let points = i32::from(word(POINTS + 2 * i)) - PENALTY_POINTS * i32::from(flags & PENALTY);
+            Row { place: i, team, points, flags, ..Row::default() }
+        })
+        .collect();
+    for md in 0..MATCHDAYS {
+        for a in (0..n).step_by(2) {
+            let (home, away) = (usize::from(byte(SCHEDULE + md * 8 + a)), usize::from(byte(SCHEDULE + md * 8 + a + 1)));
+            let at = SCORES + home * 0x20 + away * 4;
+            let (h, g) = (byte(at), byte(at + 1));
+            if h == 0xff || home >= n || away >= n {
+                continue;
+            }
+            let (h, g) = (i32::from(h), i32::from(g));
+            for (side, own, other) in [(home, h, g), (away, g, h)] {
+                let r = &mut rows[side];
+                r.games += 1;
+                r.goals_for += own;
+                r.goals_against += other;
+                match own.cmp(&other) {
+                    std::cmp::Ordering::Greater => {
+                        r.points += 3;
+                        r.won += 1;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        r.points += 1;
+                        r.drawn += 1;
+                    }
+                    std::cmp::Ordering::Less => r.lost += 1,
+                }
+            }
+        }
+    }
+    for row in &mut rows {
+        row.points = row.points.max(0);
+    }
+    if word(PLAYED) != 0 {
+        sort(&mut rows, false);
     }
     rows
 }
@@ -4803,6 +5021,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_crowd_insert_ranks_replaces_and_drops() {
+        let row = |att: i32, team: u8| {
+            let mut r = [0u8; 0x18];
+            r[0..4].copy_from_slice(&att.to_le_bytes());
+            r[8] = team;
+            r
+        };
+        let mut rows = vec![0u8; 20 * 0x18];
+        let held = |rows: &[u8], k: usize| i32::from_le_bytes(rows[k * 0x18..][0..4].try_into().unwrap());
+        let side = |rows: &[u8], k: usize| rows[k * 0x18 + 8];
+        // Better crowds shift in before the weaker ones; the twentieth
+        // place never fills past the list's twenty rows.
+        for att in [300, 800, 500] {
+            insert_crowd(&mut rows, row(att, att as u8));
+        }
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3)), (800, 500, 300, 0));
+        // The very same attendance replaces its twin where it stands: the
+        // twin at 500 sits before the place a new 500 would take.
+        insert_crowd(&mut rows, row(500, 7));
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3)), (800, 500, 300, 0));
+        assert_eq!(side(&rows, 1), 7);
+        // Without a twin the rows below the place shift down and the
+        // weakest loses its place.
+        insert_crowd(&mut rows, row(700, 9));
+        assert_eq!((held(&rows, 0), held(&rows, 1), held(&rows, 2), held(&rows, 3), held(&rows, 4)), (800, 700, 500, 300, 0));
+        // A full list keeps its twenty: a crowd no better than the
+        // weakest never enters at all.
+        for att in (1..=16).rev() {
+            insert_crowd(&mut rows, row(att, 0));
+        }
+        assert_eq!((held(&rows, 0), held(&rows, 19)), (800, 1));
+        insert_crowd(&mut rows, row(1, 5));
+        assert_eq!(side(&rows, 19), 0);
+    }
+
+    #[test]
     fn goal_graph_orders_and_scales() {
         // Two clubs level at the top keep the league's places, as the
         // exchange sort leaves them; the axis ends at the next 25.
@@ -5015,8 +5269,11 @@ mod tests {
     /// The season's end over the original's pair: the played clubs'
     /// strengths and places archived by the replica stand in SeasonEnd364
     /// byte for byte as NewSeason000 keeps them, so does the season's
-    /// strongest squad, and every player's goals by season but one's (whom
-    /// a step before, `FUN_0074d52b`, not built, takes from his club).
+    /// strongest squad, and every player's goals by season. A man who
+    /// ended his career went into the pool and came back as a new youth
+    /// under the same id and names (born anew, his history empty), so the
+    /// same man is the same names and birthday; none of the human's men
+    /// was on trial for `FUN_0074d52b` to send back first.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_season_end_keeps_the_clubs_strengths_and_places_as_the_original() {
@@ -5037,16 +5294,22 @@ mod tests {
             }
         }
         assert_eq!(ours.block(STRONGEST_AT), theirs.block(STRONGEST_AT), "the strongest squads");
-        let (mut same, mut differ) = (0, 0);
+        let (mut same, mut differ, mut reborn) = (0, 0, 0);
         for id in 1..crate::records::PLAYERS as u16 {
             let (Some(o), Some(x), Some(y)) = (before.player(id), ours.player(id), theirs.player(id)) else { continue };
-            if o.first_name() != y.first_name() {
+            if o.first_name() != y.first_name() || o.last_name() != y.last_name() {
                 continue;
             }
             let goals = |p: &Player| (0..SEASON_GOALS_LEN).map(|k| p.get::<u8>(SEASON_GOALS + k)).collect::<Vec<_>>();
+            if o.birthday() != y.birthday() {
+                assert!(goals(y).iter().all(|&g| g == 0), "{id} born anew with goals");
+                reborn += 1;
+                continue;
+            }
             if goals(x) == goals(y) { same += 1 } else { differ += 1 }
         }
-        assert!(same > 16000 && differ <= 1, "{same} players' goals as the original's, {differ} not");
+        assert!(same > 16000 && differ == 0, "{same} players' goals as the original's, {differ} not");
+        assert!(reborn >= 1, "the retired man of Germany's 66th born anew");
     }
 
     /// The season's end over the original's pair: archived by the replica,

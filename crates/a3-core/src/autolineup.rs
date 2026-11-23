@@ -645,36 +645,43 @@ const SHORT_STRENGTHS: [[i16; 4]; 3] = [[140, 500, 450, 450], [80, 200, 200, 250
 /// team's record (`FUN_006a18c2`), which the matches are scored by. The
 /// original does it every week and before the match days.
 pub fn computer_lineups(records: &mut crate::records::Records, data: &crate::data::Data) {
-    let tables = &data.rules.pitch;
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
-            let Some(team) = records.team(country, number) else { continue };
-            if team.humans()[0] != 0 {
-                continue;
-            }
-            let squad = team.players();
-            let level = team.level();
-            let mut club = crate::load::club_state_of(records, team, data);
-            co_trainer(tables, &mut club, FOREIGNERS | FREE);
-            bench(tables, &mut club);
-            let strengths = if squad.len() < FIELD {
-                SHORT_STRENGTHS[match level {
-                    0 => 0,
-                    1..6 => 1,
-                    _ => 2,
-                }]
-            } else {
-                tables.parts(&club.lineup, &club.players, &club.fitness).map(|p| p as i16)
-            };
-            let id = |k: Option<usize>| -> u16 { k.and_then(|k| squad.get(k).copied()).unwrap_or(0) };
-            let Some(team) = records.team_mut(country, number) else { continue };
-            team.set_lineup(club.lineup.field.map(id));
-            team.set_bench(club.lineup.bench.map(id));
-            team.set_spots(club.lineup.spots.map(|(x, y)| [x, y]));
-            team.set_formation(club.formation as u8);
-            team.set_strengths(strengths);
+            line_up_computer(records, data, country, number);
         }
     }
+}
+
+/// One club without a human trainer lined up as [`computer_lineups`] has
+/// it; the friendlies' and tournaments' walk does it for each such side
+/// of its games (`FUN_0042a702`).
+pub fn line_up_computer(records: &mut crate::records::Records, data: &crate::data::Data, country: u16, number: u16) {
+    let tables = &data.rules.pitch;
+    let Some(team) = records.team(country, number) else { return };
+    if team.humans()[0] != 0 {
+        return;
+    }
+    let squad = team.players();
+    let level = team.level();
+    let mut club = crate::load::club_state_of(records, team, data);
+    co_trainer(tables, &mut club, FOREIGNERS | FREE);
+    bench(tables, &mut club);
+    let strengths = if squad.len() < FIELD {
+        SHORT_STRENGTHS[match level {
+            0 => 0,
+            1..6 => 1,
+            _ => 2,
+        }]
+    } else {
+        tables.parts(&club.lineup, &club.players, &club.fitness).map(|p| p as i16)
+    };
+    let id = |k: Option<usize>| -> u16 { k.and_then(|k| squad.get(k).copied()).unwrap_or(0) };
+    let Some(team) = records.team_mut(country, number) else { return };
+    team.set_lineup(club.lineup.field.map(id));
+    team.set_bench(club.lineup.bench.map(id));
+    team.set_spots(club.lineup.spots.map(|(x, y)| [x, y]));
+    team.set_formation(club.formation as u8);
+    team.set_strengths(strengths);
 }
 
 #[cfg(test)]

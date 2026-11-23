@@ -23,7 +23,8 @@
 //! 0x876ed0: the top clubs' ties first). The entrants' season flags gain
 //! 0x8800 (`FUN_006d0b8a`).
 //!
-//! Left out: the cups' first season (`FUN_006cf031`), Germany's rules
+//! In the game's first season the clubs the files send to the cup come
+//! first, each of its league's class (`FUN_006cf031`). Left out: Germany's rules
 //! before 2000, the other main countries' own entrants
 //! (`FUN_006cf964`, `FUN_006cfc09`, `FUN_006d057c`, …, which fall back to
 //! the plain rule here). England's league cup is drawn the same way
@@ -151,6 +152,25 @@ impl Entrants {
     }
 }
 
+/// The game's first season (`DAT_00b5cbc8`).
+const FIRST_SEASON: u16 = 1;
+/// The team's flag of a club that plays the cup from its file (team
+/// +0x124, `FUN_0069d491`).
+const CUP_CLUB: u8 = 0x80;
+const CUP_FLAGS: usize = 0x124;
+
+/// The cups' first season (`FUN_006cf031`): before any league, every club
+/// of the country its file sends to the cup, in their order, each of the
+/// class of its league (the club's +0x105).
+fn enter_first_season(records: &Records, country: u16, entrants: &mut Entrants) {
+    for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+        let Some(team) = records.team(country, number) else { continue };
+        if team.get::<u8>(CUP_FLAGS) & CUP_CLUB != 0 {
+            entrants.enter(number as i16, team.level());
+        }
+    }
+}
+
 fn list(records: &Records, country: u16, level: u8) -> Vec<i16> {
     League::of(records, country, level).map_or_else(Vec::new, |l| (0..l.teams()).map(|i| l.team(i)).collect())
 }
@@ -196,6 +216,9 @@ fn draw_cup(records: &mut Records, country: u16, main: u16, random: &mut Random)
     let (case, rule) = if country == GERMANY && country == main { (3, 1) } else { (u8::from(clubs > 19) + 2, u16::from(country == GERMANY)) };
     let (kind, round, capacity) = setup(case, country == main);
     let mut entrants = Entrants { country: country as u8, capacity: usize::from(capacity), list: Vec::new() };
+    if records.globals.seasons() == FIRST_SEASON {
+        enter_first_season(records, country, &mut entrants);
+    }
     if country == GERMANY && country == main {
         for level in 0..2u8 {
             for team in list(records, country, level) {
@@ -456,6 +479,53 @@ mod tests {
                 assert_eq!(t.get::<u16>(0x110) & ENTERED, ENTERED, "{country}/{} entered", u16::from_le_bytes([e[2], e[3]]));
             }
         }
+    }
+
+    /// A new game's first cup rounds as the original's (the oracle's new
+    /// game, its first-turn dump): the generator as the original's stood
+    /// before `FUN_006cc3ff` there, replayed from the run's trace of draws
+    /// (`tools/probe/draws.py`, s1 41 from the loader's rand(), s2 the 20
+    /// of .data 31 draws on, 775,468 draws before), the clubs the files
+    /// send to the cup ahead of the leagues, every played country's cup
+    /// block comes out as the original's, in 283 draws.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_draws_its_first_cups_as_the_original() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        assert_eq!(ours.globals.seasons(), FIRST_SEASON);
+        let mut random = Random::from_state(1_916_268_493, 272_537_466);
+        let mut count = Random::from_state(1_916_268_493, 272_537_466);
+        let after = Random::from_state(1_739_958_953, 1_508_417_667);
+        let mut names = vec![LEAGUE_CUP.to_string()];
+        for country in crate::opponent::played_nations(&ours) {
+            let slot = ours.countries.slot(usize::from(country));
+            let name = format!("{CUPS_AT:#x}[{slot}]");
+            ours.block_mut(&name).unwrap().fill(0);
+            names.push(name);
+        }
+        draw(&mut ours, &mut random);
+        for name in &names {
+            assert_eq!(ours.block(name), theirs.block(name), "{name}");
+        }
+        let drawn = (0..1000).position(|_| {
+            if count == random {
+                return true;
+            }
+            count.below(2);
+            false
+        });
+        assert_eq!(drawn, Some(283));
+        assert_eq!(random, after);
     }
 
     /// England's league cup over the same turn: set up as the original's,

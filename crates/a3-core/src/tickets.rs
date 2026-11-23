@@ -699,6 +699,106 @@ pub fn price_step(table: &[i16], price: i16) -> usize {
     (0..last.saturating_sub(2)).find(|&i| price <= table[i]).unwrap_or(last.saturating_sub(2))
 }
 
+/// The season tickets sold and the running target of their daily sales
+/// (club +0x498, +0x22c), and where they book their money: the league's
+/// takings (+0x230).
+const SEASON_TICKETS_SOLD: usize = 0x498;
+const SALES_TARGET: usize = 0x22c;
+const BOOKED_LEAGUE: usize = 0x230;
+/// A season ticket's price in each class, boxes first: the boxes' own
+/// price, the others' group of prices at its +8 (club +0x4ba, +0x4b8,
+/// +0x4ae, +0x4a4).
+const SEASON_PRICES: [usize; 4] = [0x4ba, 0x4b8, 0x4ae, 0x4a4];
+/// A stadium's roofs (+0x60, a bit per stand) and the places under them
+/// that pay a third more on a season ticket: the standing of the four
+/// stands (bits 0 to 3), the seats behind the goals (+0x54, +0x56 by
+/// bits 2 and 3) and at the sides (+0x50, +0x52 by bits 0 and 1).
+const ROOFS: usize = 0x60;
+const STANDING_ROOFED: [(usize, u16); 4] = [(0x48, 0), (0x4a, 1), (0x4c, 2), (0x4e, 3)];
+const BEHIND_ROOFED: [(usize, u16); 2] = [(0x54, 2), (0x56, 3)];
+const SIDE_ROOFED: [(usize, u16); 2] = [(0x50, 0), (0x52, 1)];
+/// The season tickets sell in fives.
+const SEASON_TICKET_STEP: i32 = 5;
+
+/// The day's season ticket sales (`FUN_0071ba15`, run by the human
+/// clubs' day `FUN_0064f981` over the first six weeks of the season, for
+/// the main country and then the others played): every club short of its
+/// running target sells one to five hundredths of it, drawn, in whole
+/// fives; the target rises to what was sold where that passes it, and
+/// the money is booked ([`book_season_tickets`]).
+pub fn season_ticket_day(records: &mut Records, calendar: &Calendar, random: &mut crate::random::Random) {
+    let g = &records.globals;
+    let more = usize::try_from(g.more_count()).unwrap_or(0).min(g.more_countries().len());
+    let countries: Vec<i16> = std::iter::once(g.main_country()).chain(g.more_countries()[..more].iter().copied()).collect();
+    for country in countries {
+        let Ok(country) = u16::try_from(country) else { continue };
+        for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+            let Some(team) = records.team_mut(country, number) else { continue };
+            let sold = team.get::<i32>(SEASON_TICKETS_SOLD + CLUB_TO_TEAM);
+            let target = team.get::<i32>(SALES_TARGET + CLUB_TO_TEAM);
+            if sold >= target {
+                continue;
+            }
+            let share = (random.below(5) as i32 + 1).wrapping_mul(target) as u32 / 100;
+            let now = (share as i32 / SEASON_TICKET_STEP * SEASON_TICKET_STEP).wrapping_add(sold);
+            team.put::<i32>(SEASON_TICKETS_SOLD + CLUB_TO_TEAM, now);
+            if target < now {
+                team.put::<i32>(SALES_TARGET + CLUB_TO_TEAM, now);
+            }
+            book_season_tickets(records, calendar, country, number, now.wrapping_sub(sold));
+        }
+    }
+}
+
+/// What a day's season tickets bring (`FUN_0071bb26`), for a club whose
+/// stadium holds places: the tickets split over the four classes as the
+/// gates are, each class at its season price, the roofed places of the
+/// three cheaper ones a third dearer, the season tickets' discount off,
+/// times the marks of the club's home league matches of the season; the
+/// manager of a human's club keeps his share of the gate back for the
+/// black cash box (`FUN_0069c90c`, `FUN_0069c869`) and the league's
+/// takings get the gate's share of the rest.
+fn book_season_tickets(records: &mut Records, calendar: &Calendar, country: u16, number: u16, sold: i32) {
+    let Some(team) = records.team(country, number) else { return };
+    let club = Club { records, team, country: team.country(), number: team.number() };
+    let Some(stadium) = club.stadium() else { return };
+    if long(stadium, CAPACITY) <= 0 {
+        return;
+    }
+    let marks = crate::opponent::fixture_days(records, calendar, team)
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.home)
+        .fold(0f32, |w, (i, _)| w + MARK_MULTIPLIERS[matchday_mark(team, i as i32 + 1)]);
+    let b = split(&club, sold, sold);
+    let roofs = word(stadium, ROOFS) as u16;
+    let dearer = |places: &[(usize, u16)]| {
+        let (mut open, mut roofed) = (0i32, 0i32);
+        for &(at, bit) in places {
+            let n = i32::from(word(stadium, at) as u16);
+            if roofs & (1 << bit) != 0 { roofed += n } else { open += n }
+        }
+        if open + roofed < 1 { 1.0 } else { f64::from(open + roofed * 4 / 3) / f64::from(open + roofed) }
+    };
+    let paid = |k: usize| f64::from(b[k][0].wrapping_mul(i32::from(club.i16_(SEASON_PRICES[k]))));
+    let v = paid(3) * dearer(&STANDING_ROOFED) + paid(2) * dearer(&BEHIND_ROOFED) + paid(1) * dearer(&SIDE_ROOFED) + paid(0);
+    let v = ftol(v * f64::from(100 - i32::from(club.i16_(DISCOUNT))) / PERCENT);
+    let gross = ftol(f64::from(v) * f64::from(marks));
+    let human = usize::from(team.humans()[0]);
+    let kept = human
+        .checked_sub(1)
+        .and_then(|m| records.managers.get(m))
+        .map_or(0, |m| ftol(f64::from(gross as f32) * f64::from(m.gate_kept())))
+        .max(0);
+    if let Some(m) = human.checked_sub(1).and_then(|m| records.managers.get_mut(m)) {
+        m.set_black_cash(m.black_cash().wrapping_add(kept));
+    }
+    if let Some(t) = records.team_mut(country, number) {
+        let old = t.get::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM);
+        t.put::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM, old.wrapping_add(gross.wrapping_sub(kept).wrapping_mul(86) / 100));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,5 +813,63 @@ mod tests {
         assert_eq!(price_step(&standing, 40), 33);
         assert_eq!(price_step(&price_table(3), 150), 50);
         assert_eq!(price_step(&price_table(2), 43), 33);
+    }
+
+    /// Every club's season tickets of a day book what the original's
+    /// did: over the oracle's week from Probe1 (`tools/oracle/check.sh`,
+    /// a dump after each day's close), each club the day sold to — the
+    /// tickets it sold read off the next dump — takes on its league's
+    /// takings what that dump has, and its human's manager the black
+    /// money.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn the_season_tickets_book_as_the_originals() {
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle dumps of Probe1's week among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let dumps = std::path::PathBuf::from(oracle).join("runs/check/save-a");
+        if !dumps.join("day-042.an3").exists() {
+            eprintln!("no oracle dumps of Probe1's week among the saves; tools/oracle/check.sh writes them");
+            return;
+        }
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let dump = |day: u16| {
+            Records::from_save(a3_files::an3::Save::read(&dumps.join(format!("day-{day:03}.an3"))).unwrap()).unwrap()
+        };
+        let sold_at = SEASON_TICKETS_SOLD + CLUB_TO_TEAM;
+        let mut booked = 0;
+        for day in 36..=42u16 {
+            let (before, after) = (dump(day - 1), dump(day));
+            let mut ours = dump(day - 1);
+            for (i, (b, a)) in before.teams.iter().zip(&after.teams).enumerate() {
+                let sold = a.get::<i32>(sold_at).wrapping_sub(b.get::<i32>(sold_at));
+                // What a club short of its target can sell: one to five
+                // hundredths of it, in fives.
+                let target = b.get::<i32>(SALES_TARGET + CLUB_TO_TEAM);
+                let can: Vec<i32> = (1..=5)
+                    .map(|k| (k * target) as u32 / 100)
+                    .map(|v| v as i32 / SEASON_TICKET_STEP * SEASON_TICKET_STEP)
+                    .collect();
+                if b.get::<i32>(sold_at) < target {
+                    assert!(can.contains(&sold), "day {day}, team {i}: {sold} sold of {target}, not one of {can:?}");
+                } else {
+                    assert_eq!(sold, 0, "day {day}, team {i} at its target sold");
+                }
+                if sold == 0 {
+                    continue;
+                }
+                book_season_tickets(&mut ours, &data.calendar, u16::from(b.country()), u16::from(b.number()), sold);
+                let takings = |t: &Team| t.get::<i32>(BOOKED_LEAGUE + CLUB_TO_TEAM);
+                assert_eq!(takings(&ours.teams[i]), takings(a), "day {day}, team {i}: {sold} sold");
+                booked += 1;
+            }
+            for (m, (o, a)) in ours.managers.iter().zip(&after.managers).enumerate() {
+                assert_eq!(o.black_cash(), a.black_cash(), "day {day}, manager {m}");
+            }
+        }
+        eprintln!("{booked} sales of season tickets booked over the week");
+        assert!(booked > 7, "{booked} clubs sold season tickets over the week");
     }
 }

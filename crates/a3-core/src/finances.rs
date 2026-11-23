@@ -601,8 +601,9 @@ const PLAN_OTHER_COSTS: [usize; 5] = [0x90, 0x98, 0xa0, 0xe8, 0x8c];
 /// club's season block copied into its extra data, the kept accounts'
 /// other costs set to the plan's with the departments, and from the
 /// second season on the mark that a last season stands. The season start's
-/// negotiations it then opens (`CSaisonstartVerhandlungen`, the European
-/// TV talks) are not built.
+/// negotiations it then opens (`CSaisonstartVerhandlungen`) the cycle asks
+/// for, the talks left unticked signed by
+/// [`crate::settlement::sign_left_talks`].
 pub fn keep_last_season(records: &mut Records) {
     let second = records.globals.seasons() > 1;
     for n in 0..usize::from(records.globals.humans()) {
@@ -621,6 +622,42 @@ pub fn keep_last_season(records: &mut Records) {
             extra.put::<i16>(HAS_LAST_SEASON, 1);
         }
     }
+}
+
+/// The season start's talks a human manager may lead himself (dialog 422,
+/// `CSaisonstartVerhandlungen`, controls 0x889-0x88c, 0x179b, 0x179c): the
+/// main sponsor, the boards, the kit, the player bonuses, the souvenirs
+/// and the European television. Each box starts ticked when the
+/// preparation is normal (`DAT_00b5d152` 5, `FUN_0053ae10`); a contract
+/// with years left (club +0x509, +0x5a1, +0x5b1, +0x5a9) turns its box off
+/// and unticked, and so does a club out of Europe (team +0x110 0x4000,
+/// `FUN_0069a2e5`) the television's (`FUN_0053b05b`). The bonuses' box is
+/// always open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeasonTalk {
+    pub ticked: bool,
+    pub open: bool,
+}
+
+const SEASON_TALK_CONTRACTS: [Option<usize>; 6] = [Some(0x509), Some(0x5a1), Some(0x5b1), None, Some(0x5a9), None];
+const NORMAL_PREPARATION: u8 = 5;
+const IN_EUROPE: u16 = 0x4000;
+
+/// A club in Europe this season (team +0x110 0x4000, `FUN_0069a2e5`).
+pub fn in_europe(team: &Team) -> bool {
+    team.get::<u16>(0x110) & IN_EUROPE != 0
+}
+
+pub fn season_talks(team: &Team, preparation: u8) -> [SeasonTalk; 6] {
+    let ticked = preparation == NORMAL_PREPARATION;
+    std::array::from_fn(|k| {
+        let open = match SEASON_TALK_CONTRACTS[k] {
+            Some(at) => team.get::<u8>(at + CLUB_TO_TEAM) == 0,
+            None if k == 5 => in_europe(team),
+            None => true,
+        };
+        SeasonTalk { ticked: ticked && open, open }
+    })
 }
 
 /// The slots of last season's figures (the screen's "Vergleich mit
@@ -786,6 +823,18 @@ pub fn dissolve(team: &mut Team, deposit: &Deposit) {
         team.put(at(LOSSES), team.get::<i32>(at(LOSSES)).wrapping_sub(i32::MAX));
     }
     team.put(deposit_at(deposit.slot, DEPOSIT_IN_USE), 0u8);
+}
+
+/// Every deposit in use with a partner dissolved, as when its club's
+/// manager ends his career (`FUN_00648847`, from `FUN_005e0147(club, 3)`
+/// with bit 2): the six slots at +0x3d8 whose +0x13 bit 0 is set and whose
+/// partner (+0x12) is not nought, each through [`dissolve`].
+pub fn dissolve_all(team: &mut Team, fund_prices: [i32; 5]) {
+    for deposit in deposits_of(team, fund_prices) {
+        if deposit.partner != 0 {
+            dissolve(team, &deposit);
+        }
+    }
 }
 
 /// The day of the quarter the bank counts from: thirty days a month
@@ -1373,6 +1422,25 @@ mod season_tests {
         assert_eq!(team.get::<i64>(at(deposit + 8)), 442_500);
         assert_eq!((team.get::<i16>(at(deposit + 0x10)), team.get::<i16>(at(deposit + 0x14))), (1000, 0));
         assert_eq!(deposits(&team, [FUND_START; 5]), 442_500, "worth the same at the new prices");
+    }
+
+    /// A career's end dissolves the deposits with a partner: a gain is
+    /// other income, a deposit with partner nought stays (`FUN_00648847`).
+    #[test]
+    fn a_career_end_dissolves_the_partnered_deposits() {
+        let mut team = Team::new(&vec![0u8; Team::SIZE]).unwrap();
+        for (k, partner) in [(0, 2u8), (1, 0)] {
+            let d = 0x3d8 + ENTRY * k;
+            team.put::<u8>(at(d + 0x13), 1);
+            team.put::<u8>(at(d + 0x12), partner);
+            team.put::<i64>(at(d), 300_000);
+            team.put::<i64>(at(d + 8), 300_000);
+            team.put::<i16>(at(d + 0x10), 1000);
+        }
+        dissolve_all(&mut team, [1000, 1000, 1200, 1000, 1000]);
+        assert_eq!(team.get::<i32>(at(GAINS)), 60_000);
+        assert_eq!(team.get::<u8>(at(0x3d8 + 0x13)), 0);
+        assert_eq!(team.get::<u8>(at(0x3d8 + ENTRY + 0x13)), 1, "no partner, kept");
     }
 
     /// Over the original's pair (SeasonEnd364 → NewSeason000): its new

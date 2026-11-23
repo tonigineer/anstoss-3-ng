@@ -29,7 +29,7 @@ use crate::value::ValueTables;
 /// The regeneration table (`DAT_00b68ea8`): 9000 entries of the id, the
 /// class and the main position; each class's range (`DAT_00b5cc08`,
 /// `DAT_00b5cc44`).
-const REGENERATION: &str = "0xb68ea8";
+pub(crate) const REGENERATION: &str = "0xb68ea8";
 const ENTRIES: usize = 9000;
 const CLASS_FROM: usize = 0xb5cc08;
 const CLASS_TO: usize = 0xb5cc44;
@@ -41,7 +41,7 @@ const BEGAN_COUNTRY: usize = 0x164;
 const BEGAN_TEAM: usize = 0x166;
 
 /// Each country's class (`DAT_0089de50`).
-const COUNTRY_CLASS: [u8; 117] = [
+pub(crate) const COUNTRY_CLASS: [u8; 117] = [
     0, 11, 25, 11, 3, 1, 14, 4, 5, 15, 4, 13, 4, 16, 0, 4, 1, 23, 16, 17, 2, 23, 11, 18, 6, 1, 17, 19, 3, 1,
     13, 11, 1, 4, 25, 23, 11, 23, 2, 3, 11, 4, 22, 1, 11, 1, 20, 7, 4, 4, 21, 5, 4, 22, 23, 3, 12, 8, 24, 9,
     11, 26, 26, 4, 13, 26, 11, 10, 23, 27, 4, 1, 5, 1, 11, 18, 25, 25, 11, 25, 25, 11, 4, 11, 11, 11, 2, 4,
@@ -89,6 +89,13 @@ const CLUB_CLASS: usize = 0x875;
 /// The seasons count the rollover keeps (R+0x161), the retiring byte and
 /// the picks.
 const SEASONS: usize = 0x161;
+
+/// A class's range of the regeneration table (`DAT_00b5cc08`,
+/// `DAT_00b5cc44`).
+pub(crate) fn class_range(records: &Records, class: usize) -> (i16, i16) {
+    let g = &records.globals;
+    (g.get::<i16>(CLASS_FROM + 2 * class), g.get::<i16>(CLASS_TO + 2 * class))
+}
 
 fn entry(table: &[u8], k: usize) -> (i16, u8) {
     let at = 4 * k;
@@ -306,7 +313,7 @@ fn abilities(p: &mut Player, plain: bool, random: &mut Random) {
 
 /// A language more (`FUN_00705d4c`): the country's bit in R+0x216, his
 /// language problems gone.
-fn speaks(p: &mut Player, country: u8) {
+pub(crate) fn speaks(p: &mut Player, country: u8) {
     let bit = LANGUAGE.get(usize::from(country)).copied().unwrap_or(0);
     p.put::<u16>(0x216, p.get::<u16>(0x216) | (1 << (bit & 0x1f)));
     p.set_problems(p.problems() & 0xf3);
@@ -378,6 +385,14 @@ pub(crate) fn make(
 
 /// His birthday for an age of `age` on the game's day (`FUN_00675923`).
 fn born(records: &Records, p: &mut Player, age: i32, random: &mut Random) {
+    let (d, m, y) = birth_date(records, age, random);
+    p.set_birth_day(d);
+    p.set_birth_month(m);
+    p.set_birth_year(y);
+}
+
+/// The day, month and year of such a birthday.
+pub(crate) fn birth_date(records: &Records, age: i32, random: &mut Random) -> (u8, u8, u16) {
     let [day, month, year] = records.globals.date();
     let m = random.below(12) + 1;
     let d = random.below(MONTH_DAYS[m as usize]) + 1;
@@ -389,9 +404,276 @@ fn born(records: &Records, p: &mut Player, age: i32, random: &mut Random) {
     } else {
         base
     };
-    p.set_birth_day(d as u8);
-    p.set_birth_month(m as u8);
-    p.set_birth_year(y as u16);
+    (d as u8, m as u8, y as u16)
+}
+
+/// A new youth's age: 13 and four more drawn; one under this is of
+/// strength 1 to 3, an older one of 3 to 5.
+const YOUTH_FROM: u32 = 13;
+const YOUTH_AGES: u32 = 5;
+const YOUNG_YOUTH: u32 = 15;
+/// One in five is born abroad, in any of the 116 countries.
+const ABROAD_ODDS: u32 = 5;
+const NATIONS: u32 = 0x74;
+/// Born abroad (R+0x282's bit, `FUN_00705861`).
+const BORN_ABROAD: u8 = 0x10;
+/// The planned youth support (club +0x2b0) a youth's talent is drawn by.
+pub(crate) const YOUTH_SUPPORT: usize = 0x2b0 + crate::finances::CLUB_TO_TEAM;
+/// The youth support kept of last season (club +0x1a8, team +0x420), what
+/// the new game's new youths are drawn by.
+const SUPPORT_KEPT: usize = 0x420;
+/// R+0x1b4's bits a new youth may come with (`FUN_0070018a`,
+/// `FUN_006ffffb`, `FUN_006fff76`), and R+0x161.
+const RARE_BIT: u32 = 0x4000;
+const SMOKES: u32 = 0x800;
+const OVERWEIGHT: u32 = 0x20;
+/// The youth stations' kinds by class (C, B, A).
+const YOUTH_STATION: u8 = 9;
+
+/// A new youth for a computer club's youth team (`FUN_0066c0c2`; a human
+/// club's draws more bits, not built), while it holds under fifteen with
+/// those moved up (`FUN_004d7940`): 13 to 17 years, one in five of a
+/// nation drawn, of a position drawn, made by the club's youth support
+/// (`FUN_0066b6c6`) and fresh, with no contract, salary or seasons; of
+/// strength 1 to 3 under fifteen, else 3 to 5; R+0x26f at 8, one in 150
+/// with R+0x1b4's 0x4000; his nation's language; his station as a youth
+/// of his class, into the youth team; his foot; over fifteen a smoker
+/// one in five and overweight one in twelve and a half; one in twenty
+/// onto the youth list.
+pub(crate) fn youth_for(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
+    let (youths, moved_up) = crate::youth::youths(records, country, number);
+    if youths.len() + moved_up >= crate::youth::FULL {
+        return None;
+    }
+    let age = random.below(YOUTH_AGES) + YOUTH_FROM;
+    let (day, month, year) = birth_date(records, age as i32, random);
+    let nation = if random.below(ABROAD_ODDS) == 0 { random.below(NATIONS) as u8 + 1 } else { country };
+    let position = DRAWN_POSITIONS[random.below(12) as usize];
+    let worth = records.team(u16::from(country), number)?.get::<i32>(YOUTH_SUPPORT);
+    let id = make(records, (country, number as i16), position, worth, true, random)?;
+    let start = records.globals.start_year();
+    {
+        let p = records.player_mut(id)?;
+        freshen(p, random);
+        p.set_nation(nation);
+        if nation != country {
+            p.set_manner(p.manner() | BORN_ABROAD);
+        }
+        p.set_birth_day(day);
+        p.set_birth_month(month);
+        p.set_birth_year(year);
+        p.set_contract(start);
+        p.set_salary(0);
+        p.put::<u8>(SEASONS, 0);
+        let strength = random.below(3) as u8 + if age < YOUNG_YOUTH { 1 } else { 3 };
+        p.set_strength(strength);
+        p.set_retiring(8);
+        if random.below(150) == 0 {
+            p.set_shown(p.shown() | RARE_BIT);
+        }
+        speaks(p, nation);
+    }
+    let class = crate::youth::class(records, id) as u8;
+    crate::deals::open_youth_station(records, id, (country, number as i16), YOUTH_STATION + class);
+    crate::youth::join_youth(records, (country, number), id);
+    let p = records.player_mut(id)?;
+    p.set_picks(0);
+    foot(p, random);
+    if age > YOUNG_YOUTH {
+        if random.below(100) < 20 {
+            p.set_shown(p.shown() | SMOKES);
+        }
+        if random.below(100) < 8 {
+            p.set_shown(p.shown() | OVERWEIGHT);
+        }
+    }
+    if random.below(20) == 0 {
+        crate::youth::add_prospect(records, id, (country, number));
+    }
+    Some(id)
+}
+
+/// A new amateur is 20 and nine more drawn.
+const AMATEUR_FROM: u32 = 20;
+const AMATEUR_AGES: u32 = 10;
+/// R+0x271: his status known (bits 6 and 7 at 1), the status in bits 4
+/// and 5 (0 "Stammspieler" to 2 "Starspieler").
+pub(crate) const STATUS_KNOWN: u8 = 0x40;
+pub(crate) const STATUS_MASK: u8 = 0x30;
+pub(crate) const STATUS_SHIFT: u8 = 4;
+pub(crate) const STATUS_MOST: u8 = 2;
+/// The strengths an amateur of a status is drawn to, by a draw of a
+/// hundred (`FUN_0040767a`, `DAT_008769b4`): the first band strength 1.
+const STATUS_STRENGTH: [[u32; 8]; 3] = [
+    [20, 25, 25, 15, 10, 5, 0, 0],
+    [10, 15, 25, 25, 15, 7, 3, 0],
+    [0, 7, 13, 31, 31, 12, 6, 2],
+];
+
+/// An amateur's status (`FUN_00706ccf`).
+pub(crate) fn status(p: &Player) -> u8 {
+    (p.picks() & STATUS_MASK) >> STATUS_SHIFT
+}
+
+/// His status set, within 0 and 2 (`FUN_00706ced`).
+pub(crate) fn set_status(p: &mut Player, status: i32) {
+    let status = status.clamp(0, i32::from(STATUS_MOST)) as u8;
+    p.set_picks((p.picks() & !STATUS_MASK) | (status << STATUS_SHIFT));
+}
+
+/// A strength for a status (`FUN_0040767a`).
+fn status_strength(status: u8, random: &mut Random) -> u8 {
+    let row = STATUS_STRENGTH[usize::from(status.min(STATUS_MOST))];
+    let mut r = random.below(100);
+    let mut k = 0;
+    while k < row.len() && row[k] <= r {
+        r -= row[k];
+        k += 1;
+    }
+    k as u8 + 1
+}
+
+/// A new amateur for a club's pool (`FUN_006c41b1`'s tail; the new game's
+/// `FUN_0066bb26` makes his like): one in five of a nation drawn, of a
+/// position drawn, his record wiped (`FUN_0066ce4d`) and fresh
+/// (`FUN_0070745a`), 20 to 29, with no side positions, contract or
+/// salary, R+0x26f at 8, his status known at the lowest and his strength
+/// drawn by it (`FUN_00706b1e`), his nation's language; among the pool's
+/// amateurs (`FUN_00407c58`) with an amateur's station at the club
+/// (`FUN_00707c3f`).
+pub(crate) fn amateur_for(records: &mut Records, (country, number): (u8, u16), random: &mut Random) -> Option<u16> {
+    let nation = if random.below(ABROAD_ODDS) == 0 { random.below(NATIONS) as u8 + 1 } else { country };
+    let position = DRAWN_POSITIONS[random.below(12) as usize];
+    let id = pick_id(records, nation, number as i16, Some(position), random)?;
+    {
+        let p = records.player_mut(id)?;
+        freshen(p, random);
+        p.set_nation(nation);
+        if nation != country {
+            p.set_manner(p.manner() | BORN_ABROAD);
+        }
+    }
+    let age = random.below(AMATEUR_AGES) + AMATEUR_FROM;
+    let (day, month, year) = birth_date(records, age as i32, random);
+    let start = records.globals.start_year();
+    {
+        let p = records.player_mut(id)?;
+        p.set_birth_day(day);
+        p.set_birth_month(month);
+        p.set_birth_year(year);
+        p.set_positions([position, 0, 0]);
+        p.set_contract(start);
+        p.set_salary(0);
+        p.set_retiring(8);
+        p.set_picks(STATUS_KNOWN);
+        p.set_strength(status_strength(0, random));
+        speaks(p, nation);
+    }
+    let [mut up, mut amateurs] = crate::youth::pool(records, country, number);
+    up.retain(|&q| q != id);
+    if !amateurs.contains(&id) && amateurs.len() < crate::youth::POOL {
+        amateurs.push(id);
+    }
+    crate::deals::open_amateur_station(records, id, (country, number as i16));
+    crate::youth::store_pool(records, country, number, &[up, amateurs]);
+    Some(id)
+}
+
+/// What the new game's first day gives every club of the countries played
+/// besides opening its men (`FUN_0066bb26`, only when the season is the
+/// first): two new youths, of a position drawn and made by the club's
+/// youth support of last season (`FUN_0066b6c6`), fresh again, the first
+/// 13 to 15 and the second 14 to 17, of a strength one to three, their
+/// talent of half a million, one in 150 rare, onto the club's running
+/// list of players while that holds under twenty (not onto the club's
+/// own list) and onto its youth station of their age at July (under 15,
+/// under 17, else); and if the club keeps no reserve team and
+/// its pool holds under five players, one amateur more: one in five of a
+/// nation drawn, of a position drawn, 20 to 29, with no side positions,
+/// contract or salary, his talent of half a million, R+0x26f at 8, his
+/// status known at the lowest and his strength drawn by it, his nation's
+/// and the club's language, his foot, content; among the pool's amateurs
+/// with an amateur's station at the club.
+pub(crate) fn renew_club(
+    records: &mut Records,
+    (country, number): (u8, u16),
+    random: &mut Random,
+) {
+    let Some(team) = records.team(u16::from(country), number) else { return };
+    let worth = team.get::<i32>(SUPPORT_KEPT);
+    for young in 0..2 {
+        let position = DRAWN_POSITIONS[random.below(12) as usize];
+        let Some(id) = make(records, (country, number as i16), position, worth, true, random) else {
+            continue;
+        };
+        if let Some(p) = records.player_mut(id) {
+            freshen(p, random);
+        }
+        let age = if young == 0 { random.below(3) + YOUTH_FROM } else { random.below(4) + 14 } as i32;
+        let year = i32::from(records.globals.date()[2]);
+        let Some(mut p) = records.player(id).cloned() else { continue };
+        born(records, &mut p, age, random);
+        p.set_strength(random.below(3) as u8 + 1);
+        p.set_talent(talent_for(WORTH_PER_CLASS, random));
+        if random.below(150) == 0 {
+            p.set_shown(p.shown() | RARE_BIT);
+        }
+        let age = year - i32::from(p.birth_year()) + i32::from(p.birth_month() < 7);
+        let class = usize::from(age >= 15) + usize::from(age >= 17);
+        if let Some(slot) = records.player_mut(id) {
+            *slot = p;
+        }
+        crate::deals::open_youth_station(records, id, (country, number as i16), YOUTH_STATION + class as u8);
+        // The youth joins the club's running squad list (`FUN_0066ae46`,
+        // while it holds under twenty, a copy of its record at
+        // `DAT_00b71b48` written back there) — not the club's own list,
+        // which stays as it was; his club's country and number go onto him.
+        if let Some(p) = records.player_mut(id) {
+            p.set_club([country, number as u8]);
+        }
+    }
+    let Some(team) = records.team(u16::from(country), number) else { return };
+    if team.linked() != [-1, -1] {
+        return;
+    }
+    let [moved_up, amateurs] = crate::youth::pool(records, country, number);
+    if moved_up.len() + amateurs.len() >= crate::youth::POOL {
+        return;
+    }
+    let nation = if random.below(ABROAD_ODDS) == 0 { random.below(NATIONS) as u8 + 1 } else { country };
+    let position = DRAWN_POSITIONS[random.below(12) as usize];
+    let Some(id) = pick_id(records, nation, number as i16, Some(position), random) else { return };
+    if let Some(p) = records.player_mut(id) {
+        freshen(p, random);
+        p.set_nation(nation);
+        if nation != country {
+            p.set_manner(p.manner() | BORN_ABROAD);
+        }
+    }
+    let age = (random.below(AMATEUR_AGES) + AMATEUR_FROM) as i32;
+    let (day, month, year) = birth_date(records, age, random);
+    if let Some(p) = records.player_mut(id) {
+        p.set_birth_day(day);
+        p.set_birth_month(month);
+        p.set_birth_year(year);
+        p.set_positions([position, 0, 0]);
+        p.set_talent(talent_for(WORTH_PER_CLASS, random));
+        p.set_retiring(8);
+        p.set_picks(0);
+        p.set_picks(p.picks() | STATUS_KNOWN);
+        p.set_strength(status_strength(0, random));
+        speaks(p, nation);
+        speaks(p, country);
+        foot(p, random);
+        p.put::<u8>(0x353, 10);
+    }
+    let [mut up, mut amateurs] = crate::youth::pool(records, country, number);
+    up.retain(|&q| q != id);
+    if !amateurs.contains(&id) && amateurs.len() < crate::youth::POOL {
+        amateurs.push(id);
+    }
+    crate::deals::open_amateur_station(records, id, (country, number as i16));
+    crate::youth::store_pool(records, country, number, &[up, amateurs]);
 }
 
 /// Fresh terms for a new player at a club (`FUN_00709e88`): his salary as he

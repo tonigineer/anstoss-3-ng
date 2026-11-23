@@ -30,6 +30,14 @@ const YEARS_AT: u32 = 0x8a7934;
 const YEAR_CLASSES: usize = 3;
 const MONTHS_AT: u32 = 0x89e220;
 const MONTHS: usize = 13;
+/// The countries `FUN_0076e55c` marks (0x89dfc8, one byte for each of
+/// 0x75; meaning not traced): a seller there gets less.
+const MARKED_AT: u32 = 0x89dfc8;
+const COUNTRIES: usize = 0x75;
+/// `FUN_0076efbb`'s odds of a bid's league bits, three levels a row
+/// for the strengths 0 to 14.
+const LEAGUE_ODDS_AT: u32 = 0x8a78d8;
+const LEAGUE_ODDS: usize = 15;
 /// What contentment adds to the will to stay, by its level (the table at
 /// 0x8819b4).
 const CONTENT: [i32; 4] = [15, 0, -15, -35];
@@ -62,6 +70,8 @@ pub struct ContractTables {
     weights: Vec<[f64; 4]>,
     years: Vec<[f32; 4]>,
     months: Vec<u8>,
+    marked: Vec<u8>,
+    league_odds: Vec<[i16; 3]>,
 }
 
 impl ContractTables {
@@ -93,7 +103,25 @@ impl ContractTables {
             weights: weights.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
             years: years.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect(),
             months: exe.bytes(MONTHS_AT, MONTHS)?.to_vec(),
+            marked: exe.bytes(MARKED_AT, COUNTRIES)?.to_vec(),
+            league_odds: exe
+                .u16s(LEAGUE_ODDS_AT, 3 * LEAGUE_ODDS)?
+                .chunks(3)
+                .map(|c| [c[0] as i16, c[1] as i16, c[2] as i16])
+                .collect(),
         })
+    }
+
+    /// The luck below which a bid's terms take the bidder's league
+    /// (`FUN_0076efbb`, the table at 0x8a78d8): by the man's strength and
+    /// the league's level up to 2.
+    pub fn league_odds(&self, strength: u16, level: u16) -> i16 {
+        self.league_odds.get(usize::from(strength)).map_or(0, |r| r[usize::from(level.min(2))])
+    }
+
+    /// Whether a country is marked at 0x89dfc8.
+    pub fn marked_country(&self, country: u8) -> bool {
+        self.marked.get(usize::from(country)).is_some_and(|&m| m != 0)
     }
 }
 
@@ -445,7 +473,13 @@ impl ContractTables {
     /// The same over the new contract's years, the later counting by his
     /// age (`FUN_00709b5f`).
     pub fn satisfaction(&self, p: &Signee, club: &Club, t: &Terms) -> i32 {
-        let v = self.terms(p, club, t, 0) as f32;
+        self.offer_value(p, club, t, 0)
+    }
+
+    /// The same for terms with a signing fee in thousands (`FUN_00709c52`
+    /// → `FUN_00709b5f`, the fee its fourth argument).
+    pub fn offer_value(&self, p: &Signee, club: &Club, t: &Terms, signing: i32) -> i32 {
+        let v = self.terms(p, club, t, signing) as f32;
         let n = i32::from(t.years);
         if n < 1 {
             return v as i32;
@@ -462,35 +496,7 @@ impl ContractTables {
     /// Whether he takes one year more on his terms (`FUN_004b784c`): sure,
     /// never, or by luck below `chance` in a hundred.
     pub fn extension(&self, p: &Signee, club: &Club) -> Extension {
-        let count = if p.position == GOALKEEPER { KEEPER_BITS } else { BITS };
-        let bits = |w: u16| (0..count).filter(|&b| w & (1 << b) != 0).count() as i32;
-        let mut need = i32::from(p.strength) + 100 + bits(p.good) + bits(p.bad);
-        if p.form > 12 {
-            need += 8;
-        }
-        if p.form > 15 {
-            need += 2;
-        }
-        if club.played > 10 {
-            let g = if p.season_weeks == 0 {
-                100
-            } else {
-                i32::from(p.season_form) * 10 / i32::from(p.season_weeks)
-            };
-            let g = (f64::from(g) / 10.0) as f32;
-            if g > 12.0 {
-                need += ftol((f64::from(g) - 12.0) * 5.0);
-            }
-        }
-        if p.age < 25 {
-            need += (25 - p.age) * 3;
-        }
-        if p.retiring {
-            need += 20;
-        }
-        if p.traits[1] & DIFFICULT != 0 {
-            need += 20;
-        }
+        let need = will(p, club, i32::from(p.strength));
         let m = CONTENT.get(p.content_level).copied().unwrap_or(0);
         let t = Terms { years: p.terms.years + 1, ..p.terms };
         let w = self.satisfaction(p, club, &t);
@@ -502,6 +508,73 @@ impl ContractTables {
         }
         Extension::No
     }
+}
+
+/// What a player's will to stay asks of new terms (`FUN_004b784c`, the
+/// end of `FUN_005b7add`): his strength, as the caller weighs it, and a
+/// hundred, his good and bad abilities, his form, his season's form once
+/// ten matchdays are played, his youth, retiring and being difficult.
+fn will(p: &Signee, club: &Club, strength: i32) -> i32 {
+    let count = if p.position == GOALKEEPER { KEEPER_BITS } else { BITS };
+    let bits = |w: u16| (0..count).filter(|&b| w & (1 << b) != 0).count() as i32;
+    let mut need = strength + 100 + bits(p.good) + bits(p.bad);
+    if p.form > 12 {
+        need += 8;
+    }
+    if p.form > 15 {
+        need += 2;
+    }
+    if club.played > 10 {
+        let g = if p.season_weeks == 0 {
+            100
+        } else {
+            i32::from(p.season_form) * 10 / i32::from(p.season_weeks)
+        };
+        let g = (f64::from(g) / 10.0) as f32;
+        if g > 12.0 {
+            need += ftol((f64::from(g) - 12.0) * 5.0);
+        }
+    }
+    if p.age < 25 {
+        need += (25 - p.age) * 3;
+    }
+    if p.retiring {
+        need += 20;
+    }
+    if p.traits[1] & DIFFICULT != 0 {
+        need += 20;
+    }
+    need
+}
+
+/// What a poaching talk's player asks (`FUN_005b7add`, +0x1da8 and
+/// +0x1daa): the will to leave his club, his strength counting half again,
+/// and how content he is there (`DAT_008819b4` by `FUN_00770877`).
+pub fn poaching_will(p: &Signee, club: &Club) -> (i32, i32) {
+    let need = will(p, club, i32::from(p.strength) * 3 / 2);
+    (need, CONTENT.get(p.content_level).copied().unwrap_or(0))
+}
+
+/// The patience a poaching talk starts with (+0x1dac).
+pub const POACHING_PATIENCE: i16 = 7;
+
+/// One "Verhandeln" in a poaching talk (`OnClicked_IDC_VVERL_STD_
+/// VERHANDELN_005b8ae8`): the offer's value less his contentment must
+/// reach his will, and the value four fifths of his floor (+0x99);
+/// otherwise his patience shrinks by 4, 3, 2 or 1 as the value falls
+/// short below 71, 81, 91 per cent of the will. `None` is agreed.
+pub fn haggle(value: i32, (need, content): (i32, i32), floor: u8, patience: i16) -> Option<i16> {
+    if value - content >= need && value >= i32::from(floor) * 8 / 10 {
+        return None;
+    }
+    let share = if need < 1 { 1 } else { value * 100 / need };
+    let less = match share {
+        ..71 => 4,
+        71..81 => 3,
+        81..91 => 2,
+        _ => 1,
+    };
+    Some(patience - less)
 }
 
 /// A player's answer to a year more.
@@ -689,4 +762,21 @@ pub fn book_extension(
         );
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::haggle;
+
+    #[test]
+    fn a_poaching_offer_agrees_or_costs_patience_by_how_short_it_falls() {
+        // Will 150, contentment 15: 165 agrees, but not under the floor.
+        assert_eq!(haggle(165, (150, 15), 0, 7), None);
+        assert_eq!(haggle(165, (150, 15), 210, 7), Some(6));
+        // 164 is 109 %: one off; 120 is 80 %: three; 100 is 66 %: four.
+        assert_eq!(haggle(164, (150, 15), 0, 7), Some(6));
+        assert_eq!(haggle(135, (150, 15), 0, 7), Some(5));
+        assert_eq!(haggle(120, (150, 15), 0, 7), Some(4));
+        assert_eq!(haggle(100, (150, 15), 0, 2), Some(-2));
+    }
 }

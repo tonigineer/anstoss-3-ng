@@ -4,11 +4,14 @@
 
 pub mod adpcm;
 pub mod an3;
+pub mod avi;
 pub mod bitmap_font;
 pub mod cpr;
 pub mod exe;
 pub mod help;
+pub mod interview;
 pub mod jpeg;
 pub mod rch;
+pub mod saq;
 pub mod sav;
 pub mod sks;

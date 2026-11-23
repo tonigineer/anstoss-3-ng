@@ -356,6 +356,22 @@ pub fn division(records: &Records, calendar: &Calendar, club: (u8, i16)) -> i16 
     World { records, calendar, week: 0 }.level(club)
 }
 
+/// Whether a club has a match near the day (`FUN_006777a8`), as the
+/// friendlies' draws and the tournaments' fill ask it.
+pub(crate) fn busy(records: &Records, calendar: &Calendar, club: (u8, i16), day: i16) -> bool {
+    World { records, calendar, week: 0 }.busy(club, day)
+}
+
+/// Whether two clubs lie less than fifty apart (`FUN_0067792f`).
+pub(crate) fn near(records: &Records, calendar: &Calendar, a: (u8, i16), b: (u8, i16)) -> bool {
+    World { records, calendar, week: 0 }.near(a, b)
+}
+
+/// A club abroad for a club of `own` (`FUN_00434ff9`).
+pub(crate) fn club_abroad(records: &Records, calendar: &Calendar, own: u8, random: &mut Random) -> Option<(u8, i16)> {
+    abroad_pick(&World { records, calendar, week: 0 }, own, random)
+}
+
 /// The asking club, as its club object has it.
 struct Own {
     club: (u8, i16),
@@ -636,6 +652,20 @@ pub fn friendlies(records: &Records) -> Vec<Friendly> {
         .filter_map(|k| block.get(LIST_ENTRIES + k * LIST_ENTRY..LIST_ENTRIES + (k + 1) * LIST_ENTRY))
         .map(Friendly::read)
         .collect()
+}
+
+/// A friendly's goals into every entry of its id (`FUN_0075f733`,
+/// `FUN_0062555e`).
+pub(crate) fn set_goals(records: &mut Records, id: u32, (home, away): (u8, u8)) {
+    let Some(block) = records.block_mut(LIST_AT) else { return };
+    let count = usize::try_from(i16::from_le_bytes([block[0], block[1]])).unwrap_or(0).min(LIST_MOST);
+    for k in 0..count {
+        let at = LIST_ENTRIES + k * LIST_ENTRY;
+        if block.get(at..at + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == id) {
+            block[at + 0xe] = home;
+            block[at + 0xf] = away;
+        }
+    }
 }
 
 /// Whether the club has a friendly booked on the day (`FUN_006250b9`).

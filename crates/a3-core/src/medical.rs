@@ -19,6 +19,10 @@ const KINDS_AT: u32 = 0x8ac340;
 const KIND_SIZE: usize = 10;
 const KINDS: usize = 95;
 const INJECTION_BYTE: usize = 6;
+const BASE_DAYS_BYTE: usize = 1;
+const WEIGHT_BYTE: usize = 5;
+/// The knock bits a kind gives instead of an injury, 0 for an injury.
+const KNOCK_BITS_BYTE: usize = 8;
 
 /// Bits of a player's knocks (`Player::knocks`): an operation due, the
 /// injection, the three knocks he plays on with.
@@ -26,8 +30,8 @@ pub const OPERATION_DUE: u16 = 0x0800;
 pub const INJECTION: u16 = 0x1000;
 pub const KNOCKS: u16 = 0xe000;
 const GLANDULAR_FEVER: u16 = 0x2000;
-const ACHILLES: u16 = 0x4000;
-const GROIN: u16 = 0x8000;
+pub const ACHILLES: u16 = 0x4000;
+pub const GROIN: u16 = 0x8000;
 /// The operations: the kind of injury each turns into, and for how long.
 const ACHILLES_OPERATION: (u8, i32) = (65, 56);
 const GROIN_OPERATION: (u8, i32) = (66, 42);
@@ -36,12 +40,39 @@ pub const WEEK: i32 = 7;
 
 pub struct MedicalTables {
     injection: Vec<bool>,
+    /// Each kind's base days (+1) and its weight in a random injury (+5).
+    base_days: Vec<u8>,
+    weights: Vec<u8>,
+    /// The knock bits (+8), 0 for a kind that puts him out.
+    knock_bits: Vec<u16>,
 }
 
 impl MedicalTables {
     pub fn load(exe: &Exe) -> io::Result<Self> {
         let kinds = exe.bytes(KINDS_AT, KIND_SIZE * KINDS)?;
-        Ok(Self { injection: kinds.chunks(KIND_SIZE).map(|k| k[INJECTION_BYTE] != 0).collect() })
+        Ok(Self {
+            injection: kinds.chunks(KIND_SIZE).map(|k| k[INJECTION_BYTE] != 0).collect(),
+            base_days: kinds.chunks(KIND_SIZE).map(|k| k[BASE_DAYS_BYTE]).collect(),
+            weights: kinds.chunks(KIND_SIZE).map(|k| k[WEIGHT_BYTE]).collect(),
+            knock_bits: kinds
+                .chunks(KIND_SIZE)
+                .map(|k| u16::from_le_bytes([k[KNOCK_BITS_BYTE], k[KNOCK_BITS_BYTE + 1]]))
+                .collect(),
+        })
+    }
+
+    /// How long an injury of this kind lasts at the best care, in days.
+    pub fn base_days(&self, kind: u8) -> u8 {
+        self.base_days.get(usize::from(kind)).copied().unwrap_or(0)
+    }
+
+    /// How likely a random injury is of this kind.
+    pub fn knock_bits(&self, kind: usize) -> u16 {
+        self.knock_bits.get(kind).copied().unwrap_or(0)
+    }
+
+    pub fn weight(&self, kind: u8) -> u8 {
+        self.weights.get(usize::from(kind)).copied().unwrap_or(0)
     }
 
     /// Whether an injury of this kind lets a player play with an injection.
@@ -215,15 +246,24 @@ pub fn operate(records: &mut Records, squad: &[(u16, i32)]) -> Vec<(u16, i32)> {
 
 /// Puts a player out for `days` from today: the year and day of the year he
 /// is fit again.
-fn injure_for(records: &mut Records, id: u16, days: i32) {
-    let [_, _, year] = records.globals.date();
-    let year_days = i32::from(records.globals.year_days());
-    let end = i32::from(records.globals.day_of_year()) + days;
-    let to =
-        if end < year_days { [year, end as u16] } else { [year + 1, (end - year_days) as u16] };
+pub(crate) fn injure_for(records: &mut Records, id: u16, days: i32) {
+    let to = date_in(&records.globals, days);
     if let Some(r) = records.players.get_mut(usize::from(id)) {
         r.set_injured_to(to);
     }
+}
+
+/// The year and day of the year `days` from today, the years after this
+/// one counted at 365 days as [`crate::load::days_to`] reads them back.
+pub(crate) fn date_in(globals: &crate::records::Globals, days: i32) -> [u16; 2] {
+    let [_, _, year] = globals.date();
+    let year_days = i32::from(globals.year_days());
+    let end = i32::from(globals.day_of_year()) + days;
+    if end < year_days {
+        return [year, end as u16];
+    }
+    let rest = end - year_days;
+    [year + 1 + (rest / 365) as u16, (rest % 365) as u16]
 }
 
 #[cfg(test)]

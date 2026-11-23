@@ -56,6 +56,10 @@ pub struct GameState {
     /// (`DAT_01ba4c7c`, which `FUN_006c511b` marks): the week's end takes
     /// them out of the game.
     pub leaving: Vec<(usize, (u8, u8, u16))>,
+    /// The humans waiting to join the running game, as the dressing room's
+    /// "Neueinstieg" queued them (`0x1ba4b88`): the week's start takes them
+    /// in.
+    pub joining: Vec<crate::newgame::Trainer>,
     /// How long and how often the game is played (`zeit.saq`).
     pub play: crate::playtime::PlayTime,
 }

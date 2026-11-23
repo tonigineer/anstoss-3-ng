@@ -50,6 +50,10 @@ const CHART_STEP: u32 = 6;
 /// Ids for the tiles the week screen marks its elapsed days with, which the
 /// game draws itself.
 const DAY_TILE: u16 = 9900;
+/// The week's dial: its background art draws the orange circle in the
+/// corner, the replica only gives its click area this id of its own.
+const WEEK_DIAL: u16 = 9932;
+const DIAL: (f32, f32, f32, f32) = (600.0, 448.0, 640.0, 478.0);
 
 /// Texts by id.
 const WEEK_HOME: u16 = 2843;
@@ -104,11 +108,20 @@ pub(crate) fn compose(dialogs: &mut HashMap<u16, Dialog>) {
                 c
             }));
         }
+        screen.controls.insert(0, super::caption(screen.frame, WEEK_CAPTION, String::new()));
         let (w, h) = (DAY_TILE_SIZE.0 as f32, DAY_TILE_SIZE.1 as f32);
         screen.controls.extend(DAY_TILE_TOPS.iter().enumerate().map(|(day, &top)| Control {
             rect: Rect::new(0.0, top, w, top + h),
             ..bitmap(Vec2::ZERO, 0.0, DAY_TILE + day as u16)
         }));
+        // The week's dial of an orange circle in its bottom right corner,
+        // which its background art already draws: clicking it breaks into
+        // the running week (`FUN_00710839`), and the day walks on.
+        let (left, top, right, bottom) = DIAL;
+        screen.controls.push(Control {
+            rect: Rect::new(left, top, right, bottom),
+            ..bitmap(Vec2::ZERO, 0.0, WEEK_DIAL)
+        });
         dialogs.insert(id, screen);
     }
 }
@@ -175,34 +188,103 @@ impl Screen for Week {
         self.timer = 0.0;
         let Some(season) = &cx.state.season else { return };
         self.start = season.day;
+        if let Some(records) = cx.state.records.as_ref() {
+            let title = week_title(cx.game, records, season.day);
+            set(view, cx.dialog, WEEK_CAPTION, title);
+        }
         show_week(view, cx.dialog, cx.game, season, cx.state.records.as_ref());
-        // The week runs by itself; none of its buttons does anything yet.
+        if let Some(dial) = control(cx.dialog, WEEK_DIAL) {
+            view.set_clickable(dial, true);
+        }
+        // The week runs by itself; only its dial walks a day, and none of
+        // its buttons does anything yet.
         super::mark_inert(view, cx.dialog, |_| false);
     }
 
-    /// A day has run: its tile lights up, the panels move on.
+    /// A day has run: its tile lights up, the panels move on — the day's
+    /// tile only once the tournaments' screens it left are seen, which the
+    /// original shows while the day runs.
     fn again(&mut self, cx: &mut Cx, view: &mut View, _: Args) -> bool {
         self.timer = (self.timer - DAY_SECS).max(0.0);
         let Some(season) = &cx.state.season else { return true };
-        for day in 0..(season.day - self.start).min(WEEK_DAYS) {
-            if let Some(tile) = control(cx.dialog, DAY_TILE + day as u16) {
-                view.controls[tile].hidden = false;
-            }
-        }
+        let running = usize::from(!season.tournament_screens.is_empty());
+        self.light(cx, view, (season.day - self.start).saturating_sub(running));
         show_panels(view, cx.dialog, cx.game, season, cx.state.records.as_ref());
         true
     }
 
-    fn input(&mut self, _: &mut Cx, _: &mut View, _: Target, _: bool) -> Outcome {
+    /// The week's own dial walks the day on at once: what the day left to
+    /// be seen comes up first, then it moves on (`FUN_00710839` breaks
+    /// into the running week, `FUN_0062a959` moves the day).
+    fn input(&mut self, cx: &mut Cx, _: &mut View, target: Target, pressed: bool) -> Outcome {
+        if pressed
+            && control(cx.dialog, WEEK_DIAL).is_some_and(|dial| {
+                matches!(target, Target::Control(i) | Target::Button(i) if i == dial)
+            })
+        {
+            self.timer = DAY_SECS;
+        }
+        Outcome::Stay
+    }
+
+    /// The last tournament screen seen, the day's tile lights up.
+    fn answer(&mut self, cx: &mut Cx, view: &mut View, _: Reply) -> Outcome {
+        if let Some(season) = &cx.state.season
+            && season.tournament_screens.is_empty()
+        {
+            self.light(cx, view, season.day - self.start);
+        }
         Outcome::Stay
     }
 
     fn tick(&mut self, cx: &mut Cx, _: &mut View, seconds: f32) -> Outcome {
+        // A Turnier's draw or results the day left come up over the week,
+        // one after the other, as the original's events 0x9f and 0xa0 do.
+        if let Some(season) = cx.state.season.as_mut()
+            && !season.tournament_screens.is_empty()
+        {
+            let (dialog, id) = season.tournament_screens.remove(0);
+            return Outcome::Popup(super::Request::with(dialog, Args::Tournament(id)));
+        }
         self.timer += seconds;
         if cx.state.season.is_none() || self.timer < DAY_SECS {
             return Outcome::Stay;
         }
         Outcome::Close(Reply::Ok)
+    }
+}
+
+/// The week's caption (`CAblaufWoche`'s init): text 1626 "ANSTOSS 3 -
+/// Woche von %s bis %s" with its first and its last day, each its weekday
+/// and date (`FUN_00676008`: text 1776 "%1, %2.%3.%4", the weekdays from
+/// text 1779 by the day modulo seven).
+const WEEK_CAPTION: u16 = 9931;
+const WEEK_TITLE: u16 = 1626;
+const DATE_TEXT: u16 = 1776;
+const WEEKDAY_TEXTS: u16 = 1779;
+
+fn week_title(game: &Game, records: &Records, start: usize) -> String {
+    let date = |day: usize| {
+        records.globals.date_of(day as i16).map_or_else(String::new, |d| {
+            use chrono::Datelike;
+            game.text(DATE_TEXT)
+                .replace("%1", game.text(WEEKDAY_TEXTS + (day % 7) as u16))
+                .replace("%2", &d.day().to_string())
+                .replace("%3", &d.month().to_string())
+                .replace("%4", &d.year().to_string())
+        })
+    };
+    game.text(WEEK_TITLE).replacen("%s", &date(start), 1).replacen("%s", &date(start + WEEK_DAYS - 1), 1)
+}
+
+impl Week {
+    /// The tiles of the days run so far lit.
+    fn light(&self, cx: &Cx, view: &mut View, days: usize) {
+        for day in 0..days.min(WEEK_DAYS) {
+            if let Some(tile) = control(cx.dialog, DAY_TILE + day as u16) {
+                view.controls[tile].hidden = false;
+            }
+        }
     }
 }
 

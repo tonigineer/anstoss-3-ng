@@ -222,8 +222,7 @@ impl Talk<'_> {
 
     /// The worst he did this week or last, 1 to 4 (`FUN_00702e05`).
     fn offence(&self) -> u8 {
-        let offences = self.r().offences();
-        (1..=4).rev().find(|&k| offences & (0x11 << (k - 1)) != 0).unwrap_or(0)
+        crate::discipline::recent_offence(self.r())
     }
 
     /// Whether he would inform on his team-mates (`FUN_0048fb13`,

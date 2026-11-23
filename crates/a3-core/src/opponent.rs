@@ -34,7 +34,7 @@ pub fn kind(records: &Records, country: u16, level: u8) -> Kind {
 
 /// The nations the game can be played in, whose stadiums it keeps even when
 /// they are not played (`DAT_0089ddd8`).
-const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
+pub(crate) const PLAYABLE: [u16; 11] = [14, 16, 20, 24, 28, 47, 51, 57, 59, 63, 67];
 
 /// A club's stadium (`FUN_00638335`, the two branches the dialogs reach).
 pub fn stadium(records: &Records, country: u16, number: u16) -> Option<&Stadium> {
@@ -201,6 +201,11 @@ impl<'a> League<'a> {
         usize::try_from(self.i16_at(0)).unwrap_or(0)
     }
 
+    /// How many go down at its season's end (G+0x20).
+    pub fn relegations(&self) -> i16 {
+        self.i16_at(0x20)
+    }
+
     /// Its matchdays in all (G+2).
     pub fn matchdays(&self) -> usize {
         self.rows()
@@ -358,6 +363,19 @@ impl<'a> League<'a> {
         self.i16_at(0x1a) > 0
     }
 
+    /// Whether the league splits in two groups after its regular rounds
+    /// (G+0x1c, the object's +0x6c; `FUN_00690a9e`).
+    pub fn split(&self) -> i16 {
+        self.i16_at(0x1c)
+    }
+
+    /// Its regular rounds' matchdays (`FUN_0068fd13`): twice the teams
+    /// less two, or four times less four once G+0x1a is set at all.
+    pub fn regular_matchdays(&self) -> usize {
+        let teams = self.teams();
+        if self.i16_at(0x1a) == 0 { (teams * 2).saturating_sub(2) } else { (teams * 4).saturating_sub(4) }
+    }
+
     /// The team number at a place in the league.
     pub fn team(&self, place: usize) -> i16 {
         self.i16_at(0x22 + 2 * place)
@@ -440,8 +458,12 @@ pub fn open_leagues(records: &mut Records) {
                     usize::from(i16_at(0x1a) > 0) + 1,
                 )
             };
-            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x18) {
-                s.copy_from_slice(&0i16.to_le_bytes());
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x16..LEAGUE_FIELDS + 0x1a) {
+                s.copy_from_slice(&[0, 0, 0, 0]);
+            }
+            // The Toto's first scorer of the season goes with it too.
+            if let Some(s) = block.get_mut(LEAGUE_FIELDS + 0x1a04..LEAGUE_FIELDS + 0x1a06) {
+                s.copy_from_slice(&0u16.to_le_bytes());
             }
             for home in 0..teams {
                 for away in 0..(teams * rounds).min(RESULT_ROW / 4) {
@@ -685,6 +707,50 @@ pub fn archived_result(
     Some(archive.result(i, if second { j + archive.teams() } else { j }))
 }
 
+/// What a's games of the seasons gone by say against b, as the pre-match
+/// walk weighs them (`FUN_0040c5e0`): from the fifth season on, two
+/// clubs of one country, over the archived seasons `10 − seasons <
+/// season < 10`, in the main country the league both played in that
+/// season, a more country's club its own; a point up for each kept game
+/// whose first byte beats its second, one down the other way. Both
+/// searches of the archive's list look for a's number (0x40c710 and
+/// 0x40c767 both read `0x103(param_1)`), so the game read is a's row
+/// against itself, which no season plays.
+pub(crate) fn home_tally(records: &Records, a: &Team, b: &Team) -> i16 {
+    let seasons = i32::from(records.globals.seasons());
+    if seasons < 5 || a.country() != b.country() {
+        return 0;
+    }
+    let main = a.country() as i16 == records.globals.main_country();
+    let mut tally = 0i16;
+    for season in 0..ARCHIVE_SEASONS {
+        if season as i32 <= 10 - seasons {
+            continue;
+        }
+        let league = if main {
+            match archived_league(records, a.number(), season) {
+                Some(l) if Some(l) == archived_league(records, b.number(), season) => l,
+                _ => continue,
+            }
+        } else {
+            // FUN_00676c5d, then FUN_00677a97's 6 + its place
+            match more_league(records, a.country().into()) {
+                Some(l) => l,
+                None => continue,
+            }
+        };
+        let Some(archive) = archived(records, league, season) else { continue };
+        let Some(i) = archive.place_of(a.number()) else { continue };
+        let (x, y) = archive.result(i, i);
+        if y < x {
+            tally += 1;
+        } else if x < y {
+            tally -= 1;
+        }
+    }
+    tally
+}
+
 /// The club's games of the seasons gone by, against every club of the
 /// archived league it played in that season (`FUN_0040cfde`, from
 /// `FUN_0040c97b`'s loop over the seasons `10 − seasons < season < 10`):
@@ -925,11 +991,32 @@ const UEFA_PAIRINGS: usize = 0x20;
 const UEFA_STARTS: [usize; 8] = [0, 50, 98, 122, 138, 146, 150, 152];
 
 pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
+    let Some([(champions_code, champions_info), (uefa_code, uefa_info)]) = europe_codes(records, team) else {
+        return EuropeStand::NotIn;
+    };
+    let mut stand = match champions_code {
+        0 | -1 => EuropeStand::NotIn,
+        c if c > 0 => EuropeStand::In(0, CHAMPIONS_ROUNDS[c as usize], champions_info),
+        c => EuropeStand::Out(0, CHAMPIONS_ROUNDS[c.unsigned_abs() as usize]),
+    };
+    // The UEFA cup's finder, where it finds the club, has the say.
+    if uefa_code > 0 {
+        stand = EuropeStand::In(1, UEFA_ROUNDS[uefa_code as usize], uefa_info);
+    } else if uefa_code < 0 {
+        stand = EuropeStand::Out(1, UEFA_ROUNDS[uefa_code.unsigned_abs() as usize]);
+    }
+    stand
+}
+
+/// The codes the European cups' finders give a club, each with the
+/// opponent it found: the Champions League's (`FUN_0042451e`) and the
+/// UEFA cup's (`FUN_0042462b`); none without the cups' records.
+pub(crate) fn europe_codes(records: &Records, team: &Team) -> Option<[(i16, Option<Id>); 2]> {
     let club = (team.country(), i16::from(team.number()));
     let (entrants, champions, uefa) =
         (records.block(ENTRANTS_AT), records.block(CHAMPIONS_AT), records.block(UEFA_AT));
     let (Some(entrants), Some(champions), Some(uefa)) = (entrants, champions, uefa) else {
-        return EuropeStand::NotIn;
+        return None;
     };
     let id = |data: &[u8], at: usize| -> Id {
         data.get(at..at + 4).map_or((0, 0), |b| (b[0], i16::from_le_bytes([b[2], b[3]])))
@@ -1003,14 +1090,9 @@ pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
         }
     };
 
-    let mut stand = match champions_code {
-        0 | -1 => EuropeStand::NotIn,
-        c if c > 0 => EuropeStand::In(0, CHAMPIONS_ROUNDS[c as usize], info),
-        c => EuropeStand::Out(0, CHAMPIONS_ROUNDS[c.unsigned_abs() as usize]),
-    };
+    let champions_info = info;
 
-    // The UEFA cup (`FUN_0042462b`), by the Champions League's stage first;
-    // where it finds the club it has the say.
+    // The UEFA cup (`FUN_0042462b`), by the Champions League's stage first.
     let limit = entrants
         .get(DIRECT_LIMIT..DIRECT_LIMIT + 2)
         .map_or(0, |b| i16::from_le_bytes([b[0], b[1]]));
@@ -1034,10 +1116,5 @@ pub fn europe_stand(records: &Records, team: &Team) -> EuropeStand {
         let r = (0..UEFA_STARTS.len() - 1).rev().find(|&k| UEFA_STARTS[k] <= i).unwrap_or(0) as i16;
         if r < records.globals.uefa_round() { -(r + 1) } else { r + 1 }
     };
-    if uefa_code > 0 {
-        stand = EuropeStand::In(1, UEFA_ROUNDS[uefa_code as usize], info);
-    } else if uefa_code < 0 {
-        stand = EuropeStand::Out(1, UEFA_ROUNDS[uefa_code.unsigned_abs() as usize]);
-    }
-    stand
+    Some([(champions_code, champions_info), (uefa_code, info)])
 }

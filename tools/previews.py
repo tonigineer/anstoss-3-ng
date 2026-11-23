@@ -92,8 +92,11 @@ AREAS = {
                 for i, d in [(0, 399), (1, 412), (3, 195), (4, 85)]],
     "comparison": [(*bar(2, 78), 78), (*bar(2, 78, "now choose 5618 1"), 78),
                    (*bar(2, 78, "now choose 5618 1", "now click at 93 248"), 78),
-                   # "Gegner" shows the opponent's own squad (476).
+                   # "Gegner" shows the opponent's own squad (476), and a
+                   # right click on a row puts its info item up.
                    (*bar(2, 78, "now press 5664", "until dialog 476"), 476),
+                   (*bar(2, 78, "now press 5664", "until dialog 476",
+                         "now rclick 5261 row 0"), 476),
                    # A right click on his keeper shows his info (399).
                    (*bar(2, 78, "now rclick 5631", "until dialog 399"), 399)],
     "tactics": [(*bar(3, 271), 271)],

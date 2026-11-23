@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 
-use a3_files::an3::Save;
+use a3_files::an3::{Block, Form, Save};
 use a3_files::sav::cp1252;
 use chrono::NaiveDate;
 
@@ -123,6 +123,15 @@ pub(crate) fn text(bytes: &[u8], len: usize) -> String {
     cp1252(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
 }
 
+/// Writes text into a record's field as Windows-1252, NUL-padded, the
+/// last byte kept for the NUL.
+fn put_text(field: &mut [u8], name: &str) {
+    let bytes: Vec<u8> = name.chars().map(|c| a3_files::bitmap_font::to_cp1252(c).unwrap_or(b'?')).collect();
+    let n = bytes.len().min(field.len().saturating_sub(1));
+    field[..n].copy_from_slice(&bytes[..n]);
+    field[n..].fill(0);
+}
+
 /// Players: ids 0 to 17005, 0 none; a thousand to a block of the save.
 pub const PLAYERS: usize = 17006;
 const PLAYERS_PER_BLOCK: usize = 1000;
@@ -226,6 +235,11 @@ record! {
     /// of the kinds 3–4, 5–10 and 12–15 (the line-up's object +0x54, +0x59,
     /// +0x5f, +0x61).
     0x253 => league_matches, set_league_matches: u8;
+    /// The league matches he stood in — the line-up's object +0xc2,
+    /// which its post-match update (`FUN_00744496`) bumps together with
+    /// +0x54 exactly while he stood; code 82 weighs it against half the
+    /// matchdays played.
+    0x276 => matches_stood, set_matches_stood: u8;
     /// Two counts the cohesion takes from the league matches: the first,
     /// those he came on in as a substitute.
     0x254 => league_less, set_league_less: [u8; 2];
@@ -329,6 +343,11 @@ record! {
     /// Problems: gambled away at the president's (low two bits), with the
     /// language (bits 2 and 3).
     0x27f => problems, set_problems: u8;
+    /// His standing with the school, bits 3 and 4 (`FUN_00706523`): 0 at
+    /// school, 1 with a teacher who hates football, 2 with one who backs
+    /// him, 3 the school done (`FUN_007064f6`); only 1 and 2 are set, by
+    /// `FUN_0070654a` in the schoolboy's news.
+    0x280 => school, set_school: u8;
     /// Names, from the first names of the nation at +0x286: his partner's,
     /// an affair's, his children's.
     0x283 => partner_name, set_partner_name: u8;
@@ -425,6 +444,9 @@ record! {
     Team, 0x990 - HEADER, base HEADER;
     /// The co-trainer, 0 none (the club object's +0x84).
     0xa2 => co_trainer, set_co_trainer: i16;
+    /// The second coach, 0 none (the club object's +0x86, a person of
+    /// `0xbe17f8` up to 100).
+    0xa4 => second_coach, set_second_coach: i16;
     /// The computer club's staff, by person ([`Person`]): a manager who is
     /// also trainer, a trainer, a manager (the club object's +0x7e …).
     0x9c => staff, set_staff: [u16; 3];
@@ -489,6 +511,15 @@ record! {
     0xcf => intensity_states, set_intensity_states: u8;
     0xc7 => anti_offside, set_anti_offside: u8;
     0xc8 => set_pieces, set_set_pieces: u16;
+    /// A sixth tactic level 0 to 5, of no known name (the club
+    /// object's +0xa5; see `crate::settlement`, and the week's bulk
+    /// training in `crate::computer_training`, which teaches it with
+    /// the tricks).
+    0xcb => tactic_extra, set_tactic_extra: u8;
+    /// The side's strength on the day its last match's kick-off reckoned
+    /// (the club object's +0xdf2, `FUN_006f6fc7`), which the results'
+    /// moods and respect weigh.
+    0x304 => day_strength, set_day_strength: i16;
     /// Before the next match: bit 0x800 a training camp, bit 0x1000 a
     /// team meeting (the club object's +0xdf8).
     0x308 => training_flags, set_training_flags: u32;
@@ -566,6 +597,9 @@ record! {
     0x1ec => set_piece, set_set_piece: u16;
     /// The respect the team is held in, 0 to 200 (the club object's +0x92).
     0xb6 => respect, set_respect: i16;
+    /// The shareholders' last vote, in percent of the club's shares: for,
+    /// and against (the club object's +0x90, +0x91; `FUN_00406baf`).
+    0xb2 => votes, set_votes: [u8; 2];
     /// The team's will to win as it stands, before the manager's part,
     /// [`Team::will_to_win`] (`FUN_0069ee6d`).
     0x958 => will_base, set_will_base: i16;
@@ -687,6 +721,16 @@ record! {
     /// How many past seasons' transfer balances are kept
     /// ([`Extra::transfers`]).
     0x202c => transfer_count, set_transfer_count: i16;
+    /// The men of the club's last match the interview names (`DAT_00a58920`:
+    /// `FUN_0069fbee` reads them, `FUN_0069fc6e` writes them; -1 more than
+    /// one): the worst, its own scorer of a penalty, the keeper, the foe's
+    /// one scorer, its first man booked, its one man in state ten, the
+    /// best, and its last man booked for a hard foul
+    /// ([`crate::interview`]). The pre-match walk empties them.
+    0x8a8 => match_men, set_match_men: [i16; 8];
+    /// The player sold this week above `DAT_00a3b308`, and his strength
+    /// (`FUN_0069fd5a`; the week's end clears them).
+    0x293a => big_sale, set_big_sale: [u16; 2];
 }
 
 /// One past season as the Saisonbilanzen page lists it (0x18 bytes): its
@@ -962,9 +1006,15 @@ record! {
     0x2e => birth_day, set_birth_day: u8;
     0x2f => birth_month, set_birth_month: u8;
     0x30 => birth_year, set_birth_year: u16;
+    /// His position as a player, the main one of the player standing for
+    /// him (`FUN_006a3fc7` copies it to his player's +0x21d).
+    0x32 => position, set_position: u8;
     /// His abilities at every level, seven a row: the fourth his authority
     /// (`Autorität`).
     0x34 => abilities, set_abilities: [[i16; 7]; 16];
+    /// His nerves, 0 to 100 (the manager object's +0x32, `FUN_006be903`
+    /// clamps them; the personal page's 5568).
+    0x11e => nerves, set_nerves: i16;
     /// His years as a trainer ("Trainerjahre", the manager object's +0x38).
     0x124 => trainer_years, set_trainer_years: i16;
     /// The black cash box (the manager object's +0xec …, `FUN_006a426b`
@@ -993,6 +1043,15 @@ record! {
     0x17c => signed_day, set_signed_day: u8;
     0x17d => signed_month, set_signed_month: u8;
     0x17e => signed_year, set_signed_year: u16;
+    /// Next to the board's confidence a small count (the manager
+    /// object's +0x94, `FUN_006a426b`): the training day's player
+    /// events act at code 8 once it stands at four and the manager's
+    /// standing (`FUN_006a61e5`) below ten — the club's fit men then
+    /// lose condition.  What lifts the count is not followed (meaning
+    /// not traced further). The word behind it (+0x96) the interview's
+    /// facts read under ten and at nought (meaning not traced).
+    0x180 => unrest_count, set_unrest_count: i16;
+    0x182 => second_count, set_second_count: i16;
     /// The national team he manages, by country number, 0 when he manages
     /// none: the manager object's +0x17e6, whose name the honours page
     /// writes with text 5566 (ERFOLGE.md, `FUN_006a426b`).
@@ -1009,6 +1068,11 @@ record! {
     /// the list), the screen his turn starts on in bits 6 and 7, the
     /// short-term training as pictures in bit 8.
     0x212c => options, set_options: u32;
+    /// How often his reports of other humans' players to the association
+    /// were followed up (`f_2130`, raised to two at most by
+    /// `FUN_006a662d`): from three on the doping screen refuses another
+    /// (`FUN_006a660b`, `FUN_00517588`).
+    0x2130 => doping_reports, set_doping_reports: i16;
     /// The transfer list's filters: the least strength shown, the
     /// leagues or country, all, new or the club's own players
     /// (TRANSFERLISTE.md).
@@ -1054,6 +1118,14 @@ record! {
     /// The two counts of titles the highscore lists add up (the manager
     /// object's +0xdc and +0xde, `FUN_00656e9b`).
     0x210 => titles, set_titles: [i16; 2];
+    /// Two running figures the stations' rows carry when he leaves a club
+    /// (the manager object's +0xe0 and +0xe2, `FUN_006fddfe`), never shown.
+    0x214 => station_figures, set_station_figures: [i16; 2];
+    /// What the hub shows him over a 3D picture at his next turn, by bit:
+    /// bits 0 to 20 the records he broke, 0x4000000, 0x8000000 and
+    /// 0x10000000 three more events; cleared at that turn (the manager
+    /// object's +0xe4, [`crate::render`]).
+    0x218 => render_events, set_render_events: u32;
     /// The game's difficulty, in the low seven bits: it pulls every mark
     /// of the comparison this way or that (`FUN_006a64c7`).
     0x114 => difficulty, set_difficulty: u16;
@@ -1121,6 +1193,22 @@ impl Manager {
                 (name, spots.map(|[x, y]| (x, y)))
             })
             .collect()
+    }
+
+    /// Writes one of his formations whole, its name and spots, as a new
+    /// manager gets the game's own (`FUN_00696d87`).
+    pub fn set_formation(&mut self, formation: usize, name: &str, spots: [(i16, i16); 11]) {
+        let at = FORMATIONS_AT + formation * FORMATION_SIZE;
+        put_text(&mut self.0[at..at + FORMATION_NAME], name);
+        self.set_formation_spots(formation, spots);
+    }
+
+    /// Writes one of his week templates, its name and sessions, as a new
+    /// manager gets the game's own (`FUN_0074bfa8`).
+    pub fn set_template(&mut self, template: usize, name: &str, week: [u8; 21]) {
+        let at = TEMPLATES_AT + template * TEMPLATE_SIZE;
+        put_text(&mut self.0[at..at + TEMPLATE_NAME], name);
+        self.put(at + TEMPLATE_NAME, week);
     }
 
     /// Keeps where the eleven stand in one of his formations.
@@ -1264,6 +1352,18 @@ impl Manager {
 
     pub fn last_name(&self) -> String {
         text(&self.0[MANAGER_LAST_NAME.0..], MANAGER_LAST_NAME.1)
+    }
+
+    /// Empties the record for a newcomer and writes his names in
+    /// (`FUN_006a3b61`'s two `strcpy`).
+    pub fn clear_with_names(&mut self, first: &str, last: &str) {
+        self.0.fill(0);
+        for ((at, len), name) in [(MANAGER_FIRST_NAME, first), (MANAGER_LAST_NAME, last)] {
+            // Latin-1 stands in for Windows-1252 in the letters a name has.
+            let bytes: Vec<u8> = name.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
+            let n = bytes.len().min(len - 1);
+            self.0[at..at + n].copy_from_slice(&bytes[..n]);
+        }
     }
 
     /// The file of his portrait in the game's `portrait` folder (+0x1f20,
@@ -1488,9 +1588,9 @@ record! {
     0xb5cbe0 => day_of_year, set_day_of_year: u16;
     /// Days in this year.
     0xb5cca4 => year_days, set_year_days: u16;
-    /// The European ranking: fifteen countries, a row of 0x24 bytes each
-    /// starting with the country (`DAT_00b5d1a8`).
-    0xb5d1a8 => ranking, set_ranking: [u8; 15 * 0x24];
+    /// The European ranking: 0x25 countries, a row of 0x24 bytes each
+    /// starting with the country (`DAT_00b5d1a8`, `memset` 0x534).
+    0xb5d1a8 => ranking, set_ranking: [u8; 37 * 0x24];
     /// A player for each position whose market value counts a fifth more,
     /// by id.
     0xb5dfd0 => stars, set_stars: [u16; 11];
@@ -1715,6 +1815,20 @@ pub struct SeasonMark {
     pub date: (u8, u8, u16),
 }
 
+/// One man's line in a club's book of the week's gained and lost
+/// abilities: the entry's id and the bits of what he gained and lost
+/// since the week began (the entries of `DAT_00ae3570`, read as three
+/// shorts in the original's stride of `0xe`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct WeekAbility {
+    pub id: u16,
+    pub gained: u16,
+    pub lost: u16,
+}
+
+/// The book's room: the original loops its entries over `0..0x32`.
+const WEEK_ABILITIES: usize = 0x32;
+
 /// A savegame's records, and the save itself for everything not read into
 /// them yet.
 pub struct Records {
@@ -1735,6 +1849,11 @@ pub struct Records {
     pub individual: Vec<IndividualStore>,
     /// The human managers' notepad pages, by slot.
     pub notes: Vec<Note>,
+    /// The human clubs' books of abilities gained and lost since the
+    /// week's start, by slot. Runtime only: the original keeps these at
+    /// `DAT_00ae3550`, outside the save, and `to_save` writes nothing
+    /// back.
+    pub abilities_week: Vec<Vec<WeekAbility>>,
     pub luck: Luck,
     /// The pool of names the players' names point into.
     pub names: Vec<String>,
@@ -1813,6 +1932,7 @@ impl Records {
             calendars,
             individual,
             notes,
+            abilities_week: (0..MANAGERS).map(|_| Vec::new()).collect(),
             luck,
             names,
             persons,
@@ -1820,6 +1940,13 @@ impl Records {
             foreign_stadiums,
             save,
         })
+    }
+
+    /// The records a new game starts from, before `FUN_00686684` and
+    /// `FUN_0068716b` read the data files into them: every block of the
+    /// save blank ([`Save::blank`]).
+    pub fn blank() -> Self {
+        Self::from_save(Save::blank()).expect("a blank save has every block the records read")
     }
 
     /// The save with the records written back into their blocks.
@@ -1928,6 +2055,11 @@ impl Records {
         self.block(&format!("0xa4de58[{n}]"))
     }
 
+    /// The same, to change.
+    pub fn career_mut(&mut self, n: usize) -> Option<&mut [u8]> {
+        self.block_mut(&format!("0xa4de58[{n}]"))
+    }
+
     pub fn season_marks(&self) -> Vec<SeasonMark> {
         const ENTRY: usize = 0x40;
         let Some(block) = self.block("0x1ba9f38") else { return Vec::new() };
@@ -1943,6 +2075,27 @@ impl Records {
                 Some(SeasonMark { name: text(e, 0x34), points, club, date })
             })
             .collect()
+    }
+
+    /// Cut one more empty `size`-byte page onto the `CPtrList` at `at`,
+    /// as `FUN_0043736a` allocates a node at the chain's end: the save
+    /// counts the pages named `0x…[n]` and writes that count, so the new
+    /// page goes after the last one it has — or after `follows`, the
+    /// block the layout puts before the list, where it has none.
+    pub fn add_page(&mut self, at: u32, follows: &str, size: usize) {
+        let head = format!("{at:#x}[");
+        let count = (0..).find(|n| !self.save.blocks.iter().any(|b| b.name == format!("{head}{n}]"))).unwrap();
+        let last = self
+            .save
+            .blocks
+            .iter()
+            .rposition(|b| b.name.starts_with(&head))
+            .or_else(|| self.save.blocks.iter().position(|b| b.name == follows))
+            .unwrap_or(0);
+        self.save.blocks.insert(
+            last + 1,
+            Block { name: format!("{head}{count}]"), offset: 0, size: 0, form: Form::Stored, data: vec![0; size] },
+        );
     }
 
     /// The same, to change.
@@ -1969,6 +2122,13 @@ impl Records {
         let bytes = self.block(&format!("{REFEREE_AT:#x}[{id}]"))?;
         let name = u16::from_le_bytes([*bytes.get(2)?, *bytes.get(3)?]);
         Some((self.name(name), *bytes.get(5)?, *bytes.get(6)?))
+    }
+
+    /// A referee's country (his record's +4, `FUN_0063161e`), the foreign
+    /// men's own.
+    pub fn referee_country(&self, id: i16) -> Option<u8> {
+        let id = usize::try_from(id).ok().filter(|id| (1..=REFEREES).contains(id))?;
+        self.block(&format!("{REFEREE_AT:#x}[{id}]"))?.get(4).copied()
     }
 
     /// Whether a referee takes money (his record's +8, which the black
@@ -2094,6 +2254,61 @@ impl Records {
         let slots = self.globals.slots();
         self.managers.iter().zip(slots).filter(|(_, slot)| *slot > 0).map(|(manager, _)| manager)
     }
+
+    /// The club in a slot's book of abilities gained and lost since the
+    /// week's start (`DAT_00ae3550 + (slot - 1) * 0x2dc`).
+    pub fn abilities_week(&self, slot: u8) -> &[WeekAbility] {
+        Self::week_slot(slot).and_then(|i| self.abilities_week.get(i)).map_or(&[], Vec::as_slice)
+    }
+
+    /// The index of a slot's book, if the slot holds a human club (the
+    /// gates `FUN_00643633` and `FUN_00643673` demand the club's slot
+    /// byte at +0x11de).
+    fn week_slot(slot: u8) -> Option<usize> {
+        usize::from(slot).checked_sub(1).filter(|&i| i < MANAGERS)
+    }
+
+    /// Book that a man gained or lost an ability this week: the bit of
+    /// the ability drawn onto his entry, opening an entry if he has none
+    /// (`FUN_006432bc` and `FUN_0064337d`, which end at the book's
+    /// fifty entries).
+    fn note_ability(&mut self, slot: u8, id: u16, gained: bool, ability: u16) {
+        let Some(i) = Self::week_slot(slot) else { return };
+        Self::book(&mut self.abilities_week[i], id, gained, ability);
+    }
+
+    fn book(book: &mut Vec<WeekAbility>, id: u16, gained: bool, ability: u16) {
+        let bit = (1u32 << (ability & 0x1f)) as u16;
+        match book.iter().position(|e| e.id == id) {
+            Some(at) if gained => book[at].gained |= bit,
+            Some(at) => book[at].lost |= bit,
+            None if book.len() < WEEK_ABILITIES => book.push(WeekAbility {
+                id,
+                gained: if gained { bit } else { 0 },
+                lost: if gained { 0 } else { bit },
+            }),
+            None => {}
+        }
+    }
+
+    /// Book that a man gained an ability this week (`FUN_006432bc`'s
+    /// writer behind the gate `FUN_00643633`).
+    pub fn ability_gained(&mut self, slot: u8, id: u16, ability: u16) {
+        self.note_ability(slot, id, true, ability);
+    }
+
+    /// Book that a man lost an ability this week (`FUN_0064337d`'s
+    /// writer behind the gate `FUN_00643673`).
+    pub fn ability_lost(&mut self, slot: u8, id: u16, ability: u16) {
+        self.note_ability(slot, id, false, ability);
+    }
+
+    /// End a club's book of the week (`FUN_006436b3`'s clear).
+    pub fn clear_abilities_week(&mut self, slot: u8) {
+        if let Some(i) = Self::week_slot(slot) {
+            self.abilities_week[i].clear();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2101,6 +2316,15 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn a_new_games_records_start_blank() {
+        let records = Records::blank();
+        assert_eq!((records.players.len(), records.teams.len(), records.managers.len()), (PLAYERS, TEAMS, MANAGERS));
+        assert!(records.players.iter().all(|player| player.bytes().iter().all(|&b| b == 0)));
+        assert!(records.teams.iter().all(|team| team.name().is_empty()));
+        assert!(a3_files::an3::compare(&records.to_save(), &Save::blank()).blocks.is_empty());
+    }
 
     #[test]
     fn fields_read_and_write_little_endian() {
@@ -2175,6 +2399,38 @@ mod tests {
         assert_eq!(extra.transfers().first().unwrap().0, 2001);
         let sponsors = extra.sponsors();
         assert_eq!((sponsors[0].0, sponsors.last().copied().unwrap()), (2022, (2071, 500)));
+    }
+
+    /// The book of the week draws one entry per man: gained and lost bits
+    /// merge onto his entry, the same ability booked twice stays one bit,
+    /// and past fifty men the book takes nothing (`FUN_006432bc` and
+    /// `FUN_0064337d` loop their entries over `0..0x32`).
+    #[test]
+    fn the_weeks_book_draws_one_entry_per_man() {
+        let mut book = Vec::new();
+        Records::book(&mut book, 100, false, 4);
+        Records::book(&mut book, 100, true, 1);
+        Records::book(&mut book, 100, false, 4);
+        Records::book(&mut book, 7, true, 15);
+        assert_eq!(
+            book,
+            [
+                WeekAbility { id: 100, gained: 1 << 1, lost: 1 << 4 },
+                WeekAbility { id: 7, gained: 1 << 15, lost: 0 },
+            ][..]
+        );
+        for id in 1..=WEEK_ABILITIES as u16 {
+            Records::book(&mut book, id, false, 0);
+        }
+        assert_eq!(book.len(), WEEK_ABILITIES, "the whole book holds fifty men");
+        assert!(!book.iter().any(|e| e.id == 50), "the fifty-first man goes unread");
+        Records::book(&mut book, 999, true, 0);
+        assert_eq!(book.len(), WEEK_ABILITIES, "past fifty the book is full");
+        // A slot outside the humans' four books holds nothing and books
+        // nothing (`FUN_00643633`'s gate reads the club's slot byte).
+        assert_eq!(Records::week_slot(0), None);
+        assert_eq!(Records::week_slot(1), Some(0));
+        assert_eq!(Records::week_slot(MANAGERS as u8 + 1), None);
     }
 
     #[test]

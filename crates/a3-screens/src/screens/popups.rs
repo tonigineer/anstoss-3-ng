@@ -129,6 +129,18 @@ impl Screen for Notice {
         set(view, cx.dialog, super::discipline::CAPTION_ID, caption);
         let text = match args {
             Args::Text(text) => cx.game.text(text).to_owned(),
+            Args::TextAtClub(text, country, number) => {
+                let name = cx.game.club_name(cx.state.records.as_ref(), country, number);
+                let caption = format!("{} - {name}", cx.game.text(NOTICE_CAPTION));
+                set(view, cx.dialog, super::discipline::CAPTION_ID, caption);
+                cx.game.text(text).to_owned()
+            }
+            Args::ClubAlert { title, text, country, number } => {
+                let name = cx.game.club_name(cx.state.records.as_ref(), country, number);
+                let caption = cx.game.text(title).replacen("%s", &name, 1);
+                set(view, cx.dialog, super::discipline::CAPTION_ID, caption);
+                cx.game.text(text).to_owned()
+            }
             Args::Message(at) => cx.game.rules.messages.get(&at).cloned().unwrap_or_default(),
             Args::Texts(first, second) => match first {
                 0 => cx.game.text(second).to_owned(),
@@ -149,6 +161,17 @@ impl Screen for Notice {
                 }
                 let name = cx.state.records.as_ref().and_then(|r| r.known_as(player));
                 cx.game.text(text).replacen("%s", &name.unwrap_or_default(), 1)
+            }
+            Args::PlayerMove { title, text, player } => {
+                set(view, cx.dialog, super::discipline::CAPTION_ID, cx.game.text(title).to_owned());
+                let records = cx.state.records.as_ref();
+                let name = records.and_then(|r| r.known_as(player)).unwrap_or_default();
+                let text = cx.game.text(text).replacen("%s", &name, 1);
+                let club = records.and_then(|r| r.player(player)).map(|r| r.club());
+                match club.and_then(|[country, number]| Some((cx.game.world.slot_of(country.into())?, number))) {
+                    Some((slot, number)) => cx.game.with_club(&text, (slot, usize::from(number))),
+                    None => text,
+                }
             }
             Args::TextForDate(text, day) => {
                 let year = cx.state.season.as_ref().map_or(0, |s| s.year);

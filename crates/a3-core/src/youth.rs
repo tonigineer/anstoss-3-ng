@@ -4,6 +4,7 @@
 //! §1–3 in the RE repo).
 
 use crate::data::Data;
+use crate::event_text::{Fill, Posted};
 use crate::records::{Player, Records};
 use crate::season::ClubState;
 
@@ -36,7 +37,7 @@ const SEASON_MONTH: u8 = 7;
 /// A club's amateur pool (`0x8dd4c8[i]`, from +0x20): five who moved up,
 /// then five amateurs.
 const POOL_AT: u32 = 0x8dd4c8;
-const POOL: usize = 5;
+pub(crate) const POOL: usize = 5;
 
 /// The youth talks booked (`0x1c53b88`, from +0x20): a count, then
 /// entries of 10 bytes from +2, the player first (`FUN_00763b0c`).
@@ -135,10 +136,73 @@ pub fn youths(records: &Records, country: u8, number: u16) -> (Vec<u16>, usize) 
     (ids, usize::try_from(word(block, MOVED_UP)).unwrap_or(0))
 }
 
+/// The youths a club made this season (the block's byte 6, the youth
+/// team's +0x2c): at most three (`FUN_006c3500`), none again at the
+/// season's end (`FUN_006b4727`).
+const MADE: usize = 6;
+pub(crate) const MOST_MADE: u8 = 3;
+
+pub(crate) fn made(records: &Records, country: u8, number: u16) -> u8 {
+    team_block(country, number, records)
+        .and_then(|b| records.block(&b).and_then(|b| b.get(MADE).copied()))
+        .unwrap_or(MOST_MADE)
+}
+
+pub(crate) fn set_made(records: &mut Records, country: u8, number: u16, n: u8) {
+    let Some(name) = team_block(country, number, records) else { return };
+    if let Some(b) = records.block_mut(&name).and_then(|b| b.get_mut(MADE)) {
+        *b = n;
+    }
+}
+
+/// Into a club's youth team while it holds under twenty, his club its
+/// (`FUN_0066ae46`), the team stored (`FUN_0063937e`).
+pub(crate) fn join_youth(records: &mut Records, (country, number): (u8, u16), id: u16) -> bool {
+    let (mut ids, _) = youths(records, country, number);
+    if ids.len() >= MOST {
+        return false;
+    }
+    ids.push(id);
+    if let Some(r) = records.player_mut(id) {
+        r.set_club([country, number as u8]);
+    }
+    store(records, country, number, &ids);
+    true
+}
+
+/// Onto the youth list unless he is on it, in its first free slot, with
+/// his club and today (`FUN_00763fbd`).
+pub(crate) fn add_prospect(records: &mut Records, id: u16, (country, number): (u8, u16)) {
+    let today = records.globals.day();
+    let Some(block) = records.block_mut(&format!("{LIST_AT:#x}")) else { return };
+    let slots = (0..LIST_SIZE).filter(|s| block.len() >= (s + 1) * ENTRY);
+    let mut free = None;
+    for slot in slots {
+        let have = word(block, slot * ENTRY) as u16;
+        if have == id {
+            return;
+        }
+        if have == 0 && free.is_none() {
+            free = Some(slot);
+        }
+    }
+    let Some(slot) = free else { return };
+    let at = slot * ENTRY;
+    block[at..at + 2].copy_from_slice(&id.to_le_bytes());
+    block[at + 2] = country;
+    block[at + 4..at + 6].copy_from_slice(&number.to_le_bytes());
+    block[at + 6..at + 8].copy_from_slice(&today.to_le_bytes());
+}
+
 /// His youth class by his birthday: 0 C, 1 B, 2 A (`FUN_0066b0c1`).
 pub fn class(records: &Records, id: u16) -> usize {
+    class_in(records, id, i32::from(records.globals.start_year()))
+}
+
+/// His youth class counted in the season of `year`.
+pub(crate) fn class_in(records: &Records, id: u16, year: i32) -> usize {
     let Some(r) = records.player(id) else { return 0 };
-    let mut age = i32::from(records.globals.start_year()) - i32::from(r.birth_year());
+    let mut age = year - i32::from(r.birth_year());
     if r.birth_month() < SEASON_MONTH {
         age += 1;
     }
@@ -229,6 +293,11 @@ pub(crate) fn leave_youth(records: &mut Records, (country, number): (u8, u16), i
     if let Some(r) = records.players.get_mut(usize::from(id)) {
         r.put(YOUTH_GOALS, 0u8);
     }
+}
+
+/// His youth goals gone (`FUN_00706cb1`).
+pub(crate) fn clear_goals(r: &mut Player) {
+    r.put(YOUTH_GOALS, 0u8);
 }
 
 /// His goals as a youth or an amateur of the pool.
@@ -350,7 +419,7 @@ pub fn pool(records: &Records, country: u8, number: u16) -> [Vec<u16>; 2] {
 }
 
 /// Stores a club's pool (`FUN_00408036`).
-fn store_pool(records: &mut Records, country: u8, number: u16, lists: &[Vec<u16>; 2]) {
+pub(crate) fn store_pool(records: &mut Records, country: u8, number: u16, lists: &[Vec<u16>; 2]) {
     let Some(i) = records.team_index(country.into(), number) else { return };
     let Some(block) = records.block_mut(&format!("{POOL_AT:#x}[{i}]")) else { return };
     for (n, list) in lists.iter().enumerate() {
@@ -456,16 +525,60 @@ const TRIAL_BITS: u8 = YOUTH_TRIAL | AMATEUR_TRIAL;
 /// its count of those moved up one less, the amateur back among the
 /// pool's amateurs out of those moved up (`FUN_00407c58`). After each the
 /// original looks through the squad again from its second man, so those
-/// before him have their weeks halved once more. (The message the club
-/// gets, texts 4155 and 4156 through `FUN_005f1eaf`, is not built.)
+/// before him have their weeks halved once more. Each man gone back is
+/// told to his club as event 99 (`FUN_0074d2b5`'s `FUN_005f1eaf`), the
+/// amateurs first, "Ihr Amateurspieler %s trainiert ab jetzt wieder in
+/// Ihrer Amateurabteilung." (text 4155), then the youths, "Ihr
+/// Jugendspieler %s trainiert ab jetzt wieder in Ihrer A-Jugend!" (4156),
+/// each in the order they went. The season's end sends them back without
+/// a word (`FUN_0074d52b` → `FUN_0074d27f`): its caller drops the posts.
 pub fn end_trials(
     records: &mut Records,
     clubs: &mut std::collections::BTreeMap<(usize, usize), ClubState>,
     world: &crate::world::World,
     all: bool,
-) {
+) -> Vec<Posted> {
+    let mut posted = Vec::new();
     for (country, number) in crate::statistics::human_clubs(records) {
         let Ok(number) = u16::try_from(number) else { continue };
+        let back = end_club_trials(records, clubs, world, country, number, all);
+        let club = (u16::from(country), number);
+        for (ids, text) in [(back.amateurs, AMATEUR_BACK), (back.youths, YOUTH_BACK)] {
+            posted.extend(ids.into_iter().map(|id| Posted { club, code: TRIAL_EVENT, text, fill: Fill::GameNamed(id) }));
+        }
+    }
+    posted
+}
+
+/// The event code of a trial's end (`FUN_0074d2b5`).
+pub const TRIAL_EVENT: u16 = 99;
+/// "Ihr Amateurspieler %s trainiert ab jetzt wieder …"
+/// (`IDS_AMATEURSPIELER_WIEDER`).
+const AMATEUR_BACK: u16 = 4155;
+/// "Ihr Jugendspieler %s trainiert ab jetzt wieder …"
+/// (`IDS_JUGENDSPIELER_WIEDER`).
+const YOUTH_BACK: u16 = 4156;
+
+/// The men a club's trials sent back, each list in the order they went
+/// (`FUN_0074ceb1`'s two lists).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SentBack {
+    pub amateurs: Vec<u16>,
+    pub youths: Vec<u16>,
+}
+
+/// [`end_trials`] for one club (`FUN_0074ceb1`), `all` sending everyone
+/// on trial back at once (`FUN_0074d27f(club, 1)`).
+pub fn end_club_trials(
+    records: &mut Records,
+    clubs: &mut std::collections::BTreeMap<(usize, usize), ClubState>,
+    world: &crate::world::World,
+    country: u8,
+    number: u16,
+    all: bool,
+) -> SentBack {
+    let mut back = SentBack::default();
+    {
         let key = clubs.keys().copied().find(|&(slot, index)| {
             index == usize::from(number) && world.country(slot).is_some_and(|c| c.nation == u16::from(country))
         });
@@ -505,6 +618,7 @@ pub fn end_trials(
                 team.set_bench(bench);
             }
             if amateur {
+                back.amateurs.push(id);
                 let [mut up, mut amateurs] = pool(records, country, number);
                 up.retain(|&a| a != id);
                 if !amateurs.contains(&id) && amateurs.len() < POOL {
@@ -512,6 +626,7 @@ pub fn end_trials(
                 }
                 store_pool(records, country, number, &[up, amateurs]);
             } else {
+                back.youths.push(id);
                 let (mut ids, _) = youths(records, country, number);
                 if ids.len() < MOST {
                     ids.push(id);
@@ -532,6 +647,7 @@ pub fn end_trials(
             k = 1;
         }
     }
+    back
 }
 
 #[cfg(test)]
@@ -570,11 +686,15 @@ mod tests {
         let up = 1 + usize::from(amateur.is_some());
         assert_eq!(records.team(14, number).unwrap().players().len(), squad_before + up);
         for weeks in [4, 2, 1] {
-            end_trials(&mut records, &mut clubs, &data.world, false);
+            assert!(end_trials(&mut records, &mut clubs, &data.world, false).is_empty());
             assert_eq!(records.player(youth).unwrap().picks() & TRIAL_MASK, weeks);
             assert!(records.team(14, number).unwrap().players().contains(&youth));
         }
-        end_trials(&mut records, &mut clubs, &data.world, false);
+        let posted = end_trials(&mut records, &mut clubs, &data.world, false);
+        let told = |id, text| Posted { club: (14, number), code: TRIAL_EVENT, text, fill: Fill::GameNamed(id) };
+        let mut expected: Vec<Posted> = amateur.map(|a| told(a, AMATEUR_BACK)).into_iter().collect();
+        expected.push(told(youth, YOUTH_BACK));
+        assert_eq!(posted, expected);
         let squad = records.team(14, number).unwrap().players();
         assert_eq!(squad.len(), squad_before);
         assert_eq!(clubs[&key].players.len(), squad_before);

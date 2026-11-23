@@ -1,0 +1,1914 @@
+//! Being a national coach (NATIONALMANNSCHAFT.md in the RE repo): whether
+//! the national team plays this week, giving the job up, looking for
+//! foreign players to talk into changing their nation, and arranging his
+//! team's friendlies in the international windows.
+
+use crate::calendar::Calendar;
+use crate::load;
+use crate::records::Records;
+use crate::season_odds::{NATIONAL_COUNT, NATIONAL_SQUAD, NATIONAL_TEAMS, NATIONS, NATION_STRENGTH};
+
+/// A national team's record (`0xa9d660[nation]`, its data 0x20 in): the
+/// coach's number, twice (club +0x8a and +0x8b when it is loaded), and the
+/// day of its next match (the club's +0xb44, a team's +0x250).
+const COACH: usize = 0xa8 - 0x20;
+const NEXT_DAY: usize = 0x250 - 0x20;
+/// Set, any match still to come counts as this week's (`DAT_00b5dfc4`,
+/// what sets it is not known; TRAINING-KURZ.md).
+const ANY_DAY_AHEAD: usize = 0xb5dfc4;
+/// A human's national key, eight bytes each by his number: the nation and
+/// the team's number, 200 (`FUN_006b9755`).
+const KEY_NATION: usize = 0xb5d172;
+const KEY_TEAM: usize = 0xb5d174;
+const KEY: usize = 8;
+
+/// Why a coach left (`FUN_006fdf90`'s second argument): he resigned.
+pub const RESIGNED: u8 = 4;
+/// Fit players a coach must have for his team's match this week before the
+/// turn may end (`FUN_00650b84` asm 0x652467 and `FUN_0065270d` asm
+/// 0x652a0d, `0x11 < count`); a player counts as hurt once he has been
+/// out for a week, his +0x2c at 7 days or more.
+const FIT_ENOUGH: usize = 18;
+const FIT_DAYS: i32 = 7;
+/// The year calendar's international row: `FUN_00629d80` reads it at
+/// `DAT_008914e0 + day * 4` and keeps the flag in its top byte; of those,
+/// 0x04000000 ("Nat.-Freund.") and 0x08000000 ("WM-Quali") mark an
+/// international window (`FUN_0067dc44`).
+const INTERNATIONAL_ROW: usize = 0;
+const WINDOW_FLAGS: [u32; 2] = [0x0400_0000, 0x0800_0000];
+
+/// A national team's saved block, if `nation` is a nation.
+fn team_block(records: &Records, nation: i16) -> Option<&[u8]> {
+    if !usize::try_from(nation).is_ok_and(|n| n < NATIONS) {
+        return None;
+    }
+    records.block(&format!("{NATIONAL_TEAMS:#x}[{nation}]"))
+}
+
+/// Whether the national team of `nation` plays this week (`FUN_0067db00`):
+/// its next match after the week's first day and before the next week's,
+/// or, with `DAT_00b5dfc4` set, any match still to come.
+pub fn plays_this_week(records: &Records, nation: i16) -> bool {
+    let Some(team) = team_block(records, nation) else {
+        return false;
+    };
+    let next = i16::from_le_bytes([team[NEXT_DAY], team[NEXT_DAY + 1]]);
+    let today = records.globals.get::<i16>(0xb5cbd4);
+    let week = records.globals.week_start();
+    (records.globals.get::<i32>(ANY_DAY_AHEAD) != 0 && next >= today)
+        || (week < next && i32::from(next) < i32::from(week) + 7)
+}
+
+/// The most a coach may name (`FUN_0051b6fe`'s cap, the count
+/// `FUN_0051ca6c` calls full): 0x16.
+pub const SQUAD_MOST: usize = 0x16;
+
+/// The squad the team block keeps: its count at +0x112 and the ids at
+/// +0x1f2, the loaded club's list at its +0xe2 and +0xb50.
+pub fn squad_ids(records: &Records, nation: i16) -> Vec<u16> {
+    let Some(team) = team_block(records, nation) else {
+        return Vec::new();
+    };
+    let count = i16::from_le_bytes([team[NATIONAL_COUNT], team[NATIONAL_COUNT + 1]]).max(0) as usize;
+    (0..count)
+        .filter_map(|k| team.get(NATIONAL_SQUAD + 2 * k..NATIONAL_SQUAD + 2 * k + 2))
+        .map(|w| u16::from_le_bytes([w[0], w[1]]))
+        .collect()
+}
+
+/// Call `id` up into a squad the picker holds beside its dialog
+/// (`FUN_0051b6fe`): nothing for id 0, nothing once 22 are named or he
+/// already stands in the list; else he lands after the last player whose
+/// main position does not beat his — the loop compares the handle's +3,
+/// the byte the cache copies from the record's +0x21d (`FUN_00636638`),
+/// the first of his positions, and shifts every bigger one along — so
+/// the list runs keepers first, strikers last.  Answers whether he went
+/// in.
+pub fn call_up(squad: &mut Vec<u16>, records: &Records, id: u16) -> bool {
+    if id == 0 || squad.len() >= SQUAD_MOST || squad.contains(&id) {
+        return false;
+    }
+    // A record the save does not keep reads position 0, under every
+    // real one; the original reads the byte off the handle it loads.
+    let position = records.player(id).map_or(0, |p| p.positions()[0]);
+    let position_of = |&id: &u16| records.player(id).map_or(0, |p| p.positions()[0]);
+    squad.push(0);
+    let mut at = squad.len() - 1;
+    while at > 0 && position_of(&squad[at - 1]) > position {
+        squad.swap(at, at - 1);
+        at -= 1;
+    }
+    squad[at] = id;
+    true
+}
+
+/// Send `id` home from a squad the picker holds (`FUN_0051b819`): he
+/// must stand in it, and then every copy of him goes, the rest shifting
+/// down.  Answers whether any did.
+pub fn send_home(squad: &mut Vec<u16>, id: u16) -> bool {
+    let was = squad.len();
+    squad.retain(|&player| player != id);
+    squad.len() != was
+}
+
+/// Write the picked squad back into the team's block, as the menu's
+/// `FUN_0063df96` copies the loaded club's list into the record: the
+/// count at +0x112 and the ids at +0x1f2, the ids past the count left
+/// standing as the original leaves them.
+pub fn set_squad(records: &mut Records, nation: i16, squad: &[u16]) {
+    if !usize::try_from(nation).is_ok_and(|n| n < NATIONS) {
+        return;
+    }
+    let Some(team) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) else {
+        return;
+    };
+    team[NATIONAL_COUNT..NATIONAL_COUNT + 2].copy_from_slice(&(squad.len() as i16).to_le_bytes());
+    for (k, &id) in squad.iter().enumerate() {
+        let at = NATIONAL_SQUAD + 2 * k;
+        if at + 2 > team.len() {
+            break;
+        }
+        team[at..at + 2].copy_from_slice(&id.to_le_bytes());
+    }
+}
+
+/// How many of the national squad are fit (`FUN_00650b84` asm 0x652426
+/// and `FUN_0065270d` asm 0x6529cb: the club's squad list at its +0xe2 —
+/// record 0x112 and 0x1f2 — one counted while his days of injury at his
+/// +0x2c stand below a week).
+pub fn fit_squad(records: &Records, nation: i16) -> usize {
+    squad_ids(records, nation)
+        .into_iter()
+        .filter(|&player| {
+            records
+                .player(player)
+                .is_some_and(|p| load::days_to(&records.globals, p.injured_to()) < FIT_DAYS)
+        })
+        .count()
+}
+
+/// Whether the week's Wednesday is an international day (`FUN_0067dc44`'s
+/// first gate over `FUN_00629d80`): row 0 of the calendar, its top byte
+/// one of the window flags, on `DAT_00b5cbd6 + 3`.  `FUN_00629d80` also
+/// blanks the flag 0x02000000 under some condition (`FUN_0067bbed`);
+/// either way it is no window.
+pub fn window_wednesday(calendar: &Calendar, week_start: i16) -> bool {
+    let wednesday = (i32::from(week_start) + 3).max(0) as usize;
+    WINDOW_FLAGS.contains(&(calendar.entry(INTERNATIONAL_ROW, wednesday) & 0x7f00_0000))
+}
+
+/// The week hub's gate when its turn ends (`CMyStartDialog::FUN_00650b84`
+/// asm 0x6523d3; NATIONALMANNSCHAFT.md §4.3): a coach of a nation, a
+/// window on the week's Wednesday, his team playing this week, and fewer
+/// than 18 fit in his squad — the turn does not end; the hub shows its
+/// alert (text 4966) and code −1600 opens his menu again (`FUN_0051db39`).
+/// What the original does for a big enough squad instead, and between —
+/// `FUN_006bca8c` and `FUN_0063a317` marking the squad's players for the
+/// match — is club state the replica keeps nowhere, as in `internationals`.
+pub fn squad_blocks_turn(records: &Records, calendar: &Calendar, nation: i16) -> bool {
+    window_wednesday(calendar, records.globals.week_start())
+        && plays_this_week(records, nation)
+        && fit_squad(records, nation) < FIT_ENOUGH
+}
+
+/// The same gate on the hub of a coach without a club (`FUN_0065270d`
+/// asm 0x65292f): it asks nothing of the calendar and alerts for nothing,
+/// only code −1600 back to his menu.
+pub fn squad_blocks_clubless_turn(records: &Records, nation: i16) -> bool {
+    plays_this_week(records, nation) && fit_squad(records, nation) < FIT_ENOUGH
+}
+
+/// The human in `slot` gives up his national team (`FUN_006b9872`): the
+/// team's coach bytes and his key cleared, the nation off his record, the
+/// last national station of his career closed for `reason`. The table of
+/// who coaches whom at `0x1ba43b8` stays as it is, as in the original.
+pub fn leave(records: &mut Records, slot: usize, reason: u8) {
+    let id = slot + 1;
+    let nation = records.globals.get::<u8>(KEY_NATION + id * KEY);
+    if nation != 0
+        && let Some(team) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]"))
+    {
+        team[COACH] = 0;
+        team[COACH + 1] = 0;
+    }
+    records.globals.put::<u8>(KEY_NATION + id * KEY, 0);
+    records.globals.put::<u16>(KEY_TEAM + id * KEY, 0);
+    if let Some(manager) = records.managers.get_mut(slot) {
+        manager.set_national_team(0);
+    }
+    crate::career::left_national_team(records, slot, reason);
+}
+
+/// A human manager's record: his season's points (+0x1f74, which
+/// `FUN_006d6264` writes at the season's end through `FUN_006a5580` and
+/// `FUN_006a55a8` reads) and how far his national team came (+0x1f76,
+/// `FUN_006a55ec` from `FUN_0067e660`, read by `FUN_006a55ca`); and the
+/// national contract `FUN_006a566c` sets: 1, the salary, the bonus per
+/// round.
+pub(crate) const SEASON_POINTS: usize = 0x1f74;
+const NATIONAL_STAGE: usize = 0x1f76;
+const CONTRACT_SET: usize = 0x1f78;
+const CONTRACT_SALARY: usize = 0x1f7c;
+const CONTRACT_BONUS: usize = 0x1f80;
+/// The mode whose humans are listed only above standing 8
+/// (`DAT_00b5cbc6`).
+const LISTED_MODE: i16 = 9;
+/// The most nations that offer a human their team (`FUN_006b9c81`'s
+/// `local_e < 10`).
+pub const OFFERS_MOST: usize = 10;
+
+/// What one nation offers in dialog 356 (`CNationaltrainerWerden`, its
+/// +0x1b98, +0x1bf4 and +0x1c30 by row).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Terms {
+    pub nation: i16,
+    pub salary: i32,
+    pub bonus: i32,
+}
+
+/// The national coaches' turn of an even year (`FUN_006b9c81`, in the new
+/// season's block before `FUN_0067c02f`): from the second season on, in
+/// even start years only, every human leaves his national team
+/// (`FUN_006b9872`, reason 0), and those standing above 8 — or every one
+/// outside mode 9 — are listed, strongest first (an exchange sort on
+/// the standing). Each listed one is offered, at most ten, his own nation
+/// first when his national team came past the first stage (+0x1f76 > 1)
+/// and he had one; then by his standing over the ranking's rows, his own
+/// nation never again: 8 to 10, with 400 season points or the stage past
+/// 1, rows 8..15 a third of the times and 15..25 half; 11 with 700
+/// points or the stage from 3 rows 0..20 a third (else as 8); 12 to 15
+/// with 1000 points or the stage from 4 rows 0..15 a third (else as 11);
+/// below 8 with the stage past 2 rows 4..15 a fifth and 15..25 half. The
+/// rows' draws stand where the original's are, some before the full
+/// count is asked. The humans with offers, by their slot, in the list's
+/// order (message 0xc2 each, `FUN_006c0102`, shown at once).
+pub fn draw_offers(records: &mut Records, random: &mut crate::random::Random) -> Vec<(usize, Vec<i16>)> {
+    if records.globals.get::<i16>(SEASON_AT) <= 1 || records.globals.start_year() % 2 != 0 {
+        return Vec::new();
+    }
+    // (slot, standing, season points, stage, his nation)
+    let mut listed: Vec<(usize, i32, i16, i16, i16)> = Vec::new();
+    let mode = records.globals.mode();
+    for slot in 0..usize::from(records.globals.humans()) {
+        let Some(m) = records.managers.get(slot) else { continue };
+        let standing = m.standing();
+        if standing > 8 || mode != LISTED_MODE {
+            listed.push((slot, standing, m.get(SEASON_POINTS), m.get(NATIONAL_STAGE), m.national_team()));
+        }
+        leave(records, slot, 0);
+    }
+    for i in 0..listed.len() {
+        for j in i + 1..listed.len() {
+            if listed[i].1 < listed[j].1 {
+                listed.swap(i, j);
+            }
+        }
+    }
+    let rows: Vec<i16> = (0..25).map(|k| records.globals.get::<i16>(RANKING_AT + k * RANKING_ROW)).collect();
+    let mut out = Vec::new();
+    for &(slot, standing, points, stage, own) in &listed {
+        let mut nations = Vec::new();
+        if stage > 1 && own > 0 {
+            nations.push(own);
+        }
+        // Rows `from..to`, each drawn `below(k)`; `full_first` asks the
+        // count before the draw, as the later rows do.
+        let mut offer = |from: usize, to: usize, k: u32, full_first: bool, nations: &mut Vec<i16>| {
+            for &row in &rows[from..to] {
+                if full_first && nations.len() >= OFFERS_MOST {
+                    continue;
+                }
+                if row != 0 && row != own && random.below(k) == 0 && nations.len() < OFFERS_MOST {
+                    nations.push(row);
+                }
+            }
+        };
+        let eight = points >= 400 || stage > 1;
+        let eleven = points >= 700 || stage >= 3;
+        let twelve = points >= 1000 || stage >= 4;
+        let tier = match standing {
+            8..=10 => 8,
+            11 => if eleven { 11 } else { 8 },
+            12..=15 => if twelve { 12 } else if eleven { 11 } else { 8 },
+            _ => 0,
+        };
+        match tier {
+            8 if eight => {
+                offer(8, 15, 3, false, &mut nations);
+                offer(15, 25, 2, true, &mut nations);
+            }
+            11 => offer(0, 20, 3, false, &mut nations),
+            12 => offer(0, 15, 3, false, &mut nations),
+            0 if (0..8).contains(&standing) && stage > 2 => {
+                offer(4, 15, 5, false, &mut nations);
+                offer(15, 25, 2, true, &mut nations);
+            }
+            _ => {}
+        }
+        if !nations.is_empty() {
+            out.push((slot, nations));
+        }
+    }
+    out
+}
+
+/// The first offer of each nation as dialog 356 opens
+/// (`CNationaltrainerWerden::FUN_0051fcd9`, seven rounds apiece to
+/// bargain): its flag at +0x1b2c stands set from the turn, so a nation
+/// whose strength byte (`DAT_00ae6223`) is below 8 pays (5..10) × 50,000
+/// and a bonus of (1..4) × 25,000, a stronger one (5..11) × 100,000 and
+/// (4..7) × 25,000 (`DAT_00a3b38c`, `DAT_00a3b37c`, `DAT_00a3b3a4`).
+pub fn first_terms(records: &Records, nations: &[i16], random: &mut crate::random::Random) -> Vec<Terms> {
+    nations
+        .iter()
+        .filter(|&&n| n > 0)
+        .map(|&nation| {
+            let strength = records.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + nation as usize);
+            let (salary, bonus) = if strength < 8 {
+                let salary = (random.below(5) as i32 + 6) * 50_000;
+                (salary, (random.below(3) as i32 + 1) * 25_000)
+            } else {
+                let salary = (random.below(6) as i32 + 5) * 100_000;
+                (salary, (random.below(3) as i32 + 4) * 25_000)
+            };
+            Terms { nation, salary, bonus }
+        })
+        .collect()
+}
+
+/// The human in `slot` takes the national team of `nation` on `terms`,
+/// as the turn closes his dialog's OK (`FUN_006b9c81`'s last loop): he
+/// leaves once more (`FUN_006b9872`, reason 0), becomes its coach
+/// (`FUN_006b9755`: the team's coach bytes and his key, nation and 200,
+/// the nation on his record, a national station of his career
+/// `FUN_006fdb68`) and has the contract (`FUN_006a566c`). The national
+/// club's own refresh behind it (`FUN_006a25c2` … `FUN_006b95ab`) is
+/// club state the replica rebuilds from the records.
+pub fn take(records: &mut Records, slot: usize, terms: Terms) {
+    leave(records, slot, 0);
+    let nation = terms.nation;
+    if !(1..NATIONS as i16).contains(&nation) {
+        return;
+    }
+    let id = slot + 1;
+    if let Some(team) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) {
+        team[COACH] = id as u8;
+        team[COACH + 1] = id as u8;
+    }
+    records.globals.put::<u8>(KEY_NATION + id * KEY, nation as u8);
+    records.globals.put::<u16>(KEY_TEAM + id * KEY, 200);
+    if let Some(m) = records.managers.get_mut(slot) {
+        m.set_national_team(nation);
+    }
+    crate::career::joined_national_team(records, slot, nation as u8);
+    if let Some(m) = records.managers.get_mut(slot) {
+        m.put::<i32>(CONTRACT_SET, 1);
+        m.put::<i32>(CONTRACT_SALARY, terms.salary);
+        m.put::<i32>(CONTRACT_BONUS, terms.bonus);
+    }
+}
+
+/// The talks about changing nation, as the coach's human slot keeps them
+/// in the save (`FUN_00634f89`'s source, the block standing at
+/// `DAT_00a55728` = the slot's object at `0xa55708` plus 0x20, which the
+/// save leaves out): an i16 count at the block's +0 and 20 entries of
+/// six bytes from +2 — the player, the flags and the day
+/// (`FUN_006b8b51` writes all three, today at `DAT_00b5cbd4`).  The flags
+/// say how far it came: 1 the first word ("Vorgespräch", text 3475), 2
+/// the offer ("Angebot", 3476) and 4 his answer ("Entscheidung", 3477).
+const TALKS_AT: u32 = 0xa55708;
+const TALKS_COUNT: usize = 0;
+const TALKS_FIRST: usize = 2;
+const TALK: usize = 6;
+const TALKS_MOST: usize = 0x14;
+/// His answer, whatever it was: set, the coach is sent away when he
+/// picks the player again (the click's alert 3474).
+pub const ANSWERED: u8 = 4;
+/// How many talks a coach may have on his slate before his association
+/// refuses any more (`FUN_0051f715`'s gate on the copied count, alert
+/// 3479): ten, the eleventh entry already alerts.
+pub const TALKS_ALLOWED: usize = 10;
+
+fn word(b: &[u8], at: usize) -> i16 {
+    i16::from_le_bytes([b[at], b[at + 1]])
+}
+
+fn put16(b: &mut [u8], at: usize, v: i16) {
+    b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// What has been said to `player` in the talks of the human in `slot`
+/// (`FUN_006b8f5f`): the flags of his entry over all twenty, 0 while he
+/// stands in none — the id 0 the search never lists reads 0 as well.
+pub fn talk_flags(records: &Records, slot: usize, player: u16) -> u8 {
+    if player == 0 {
+        return 0;
+    }
+    records.block(&format!("{TALKS_AT:#x}[{slot}]")).map_or(0, |b| {
+        (0..TALKS_MOST)
+            .find(|&k| word(b, TALKS_FIRST + k * TALK) as u16 == player)
+            .map_or(0, |k| b[TALKS_FIRST + k * TALK + 2])
+    })
+}
+
+/// How many talks the coach has on his slate (the count `FUN_00634f89`
+/// copies to the front of its copy, and the search's click counts).
+pub fn talk_count(records: &Records, slot: usize) -> usize {
+    records
+        .block(&format!("{TALKS_AT:#x}[{slot}]"))
+        .map_or(0, |b| usize::try_from(word(b, TALKS_COUNT)).unwrap_or(0).min(TALKS_MOST))
+}
+
+/// The talks as the overview reads them (`CEinbuergerungsgespraeche`'s
+/// fill, `FUN_0048dad5`, over all twenty of `FUN_00634f89`'s copy): the
+/// entries that hold a player, in the save's order — the id 0 of the
+/// free ones stands for no talk — with each one's flags.
+pub fn talks(records: &Records, slot: usize) -> Vec<(u16, u8)> {
+    records.block(&format!("{TALKS_AT:#x}[{slot}]")).map_or_else(Vec::new, |b| {
+        (0..TALKS_MOST)
+            .filter_map(|k| {
+                let id = word(b, TALKS_FIRST + k * TALK) as u16;
+                (id != 0).then(|| (id, b[TALKS_FIRST + k * TALK + 2]))
+            })
+            .collect()
+    })
+}
+
+/// The players picked for those talks, shared by the human coaches
+/// (`0x1c53d98`; `FUN_007635f7`): an i16 count and up to 50 entries of
+/// six bytes — the player, the day of the talk and the coach's human id
+/// (his record's +0x1a).
+const SEARCH_AT: u32 = 0x1c53d98;
+const SEARCH: usize = 6;
+const SEARCH_MOST: usize = 0x32;
+
+/// Whether this very coach has picked `player` for a talk already
+/// (`FUN_00763518`, the click's first gate, alert 3478): an entry
+/// naming him and the coach's id after the day.
+pub fn searched(records: &Records, coach: u16, player: u16) -> bool {
+    records.block(&format!("{SEARCH_AT:#x}")).is_some_and(|b| {
+        let count = usize::try_from(word(b, 0)).unwrap_or(0).min(SEARCH_MOST);
+        (0..count).any(|k| {
+            word(b, 2 + k * SEARCH) as u16 == player && word(b, 2 + k * SEARCH + 4) as u16 == coach
+        })
+    })
+}
+
+/// `player` on `day` for the coach `coach` into the search list
+/// (`FUN_007635f7`): false when he stands in it already — under any
+/// coach — or when the list is full at 50; else the entry goes after the
+/// last and the count grows.
+pub fn book_search(records: &mut Records, player: u16, day: i16, coach: u16) -> bool {
+    let Some(b) = records.block_mut(&format!("{SEARCH_AT:#x}")) else {
+        return false;
+    };
+    let count = usize::try_from(word(b, 0)).unwrap_or(0).min(SEARCH_MOST);
+    if (0..count).any(|k| word(b, 2 + k * SEARCH) as u16 == player) || count >= SEARCH_MOST {
+        return false;
+    }
+    let e = 2 + count * SEARCH;
+    if b.len() < e + SEARCH {
+        return false;
+    }
+    put16(b, e, player as i16);
+    put16(b, e + 2, day);
+    put16(b, e + 4, coach as i16);
+    put16(b, 0, count as i16 + 1);
+    true
+}
+
+/// The friendlies the coach arranges (`CNationalFreundschaftsspiel`):
+/// three slots, one per friendly day of the year.
+pub const FRIENDLY_SLOTS: usize = 3;
+/// The national coaches' friendly records: the `(coach - 1)`-th of the
+/// four blocks at `0xa55978`, the coach's number read off his team's
+/// block (`FUN_0063b3c2`, `FUN_0063b488` and `FUN_0063b598` all stop at a
+/// 0 there).  The block's data holds three slots of three six-byte
+/// candidates from +0, a slot every `0x12` (what `FUN_0063b3c2` copies);
+/// the entry booked per slot at +0x36, which `FUN_0063b510` writes back
+/// on OK; and the played scores as u32 at +0x44, four past the slot.
+const FRIENDLY_RECORDS: u32 = 0xa55978;
+const FRIENDLY_CANDIDATES: usize = 0x0;
+const FRIENDLY_CAND_SLOT: usize = 0x12;
+const FRIENDLY_BOOKED: usize = 0x36;
+const FRIENDLY_SCORES: usize = 0x44;
+const FRIENDLY_PICK: usize = 6;
+/// What a slot's score holds while it was not played (`FUN_0063b598`):
+/// 0xff in its low byte.
+const NO_SCORE: u8 = 0xff;
+
+/// One candidate or booked friendly, the six bytes the record keeps
+/// (`FUN_0063b3c2` and `FUN_0063b488` copy them whole): the land at byte
+/// 0 — 0 for no opponent —, the team behind the name at +2, 200 for the
+/// national team, and two bytes at +4 the dialog never reads.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct FriendlyPick(pub [u8; FRIENDLY_PICK]);
+
+impl FriendlyPick {
+    /// The land the opponent plays for, 0 for no one.
+    pub fn land(&self) -> u8 {
+        self.0[0]
+    }
+
+    /// His team's number behind the name, 200 the national team.
+    pub fn team(&self) -> i16 {
+        i16::from_le_bytes([self.0[2], self.0[3]])
+    }
+}
+
+fn friendly_picks(b: &[u8], at: usize) -> [FriendlyPick; FRIENDLY_SLOTS] {
+    let mut picks = [FriendlyPick::default(); FRIENDLY_SLOTS];
+    for (k, pick) in picks.iter_mut().enumerate() {
+        let at = at + k * FRIENDLY_PICK;
+        if let Some(bytes) = b.get(at..at + FRIENDLY_PICK) {
+            pick.0.copy_from_slice(bytes);
+        }
+    }
+    picks
+}
+
+/// The coach's number in his team's block (`COACH`, read by the record
+/// copy's gates): 1 to 4, 0 where the save names no coach.
+pub fn coach_number(records: &Records, nation: i16) -> u8 {
+    team_block(records, nation).map_or(0, |team| team[COACH])
+}
+
+/// The coach's friendly record, if a coach is named and the save keeps
+/// the block.
+fn friendly_record(records: &Records, nation: i16) -> Option<&[u8]> {
+    let coach = usize::from(coach_number(records, nation));
+    (coach != 0)
+        .then(|| records.block(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)))
+        .flatten()
+}
+
+/// The candidates the dialog offers its three slots (`FUN_0063b3c2`):
+/// three six-byte picks per slot out of the record — none for a coach
+/// the record does not name.
+pub fn friendly_candidates(records: &Records, nation: i16) -> [[FriendlyPick; FRIENDLY_SLOTS]; FRIENDLY_SLOTS] {
+    let mut slots = [[FriendlyPick::default(); FRIENDLY_SLOTS]; FRIENDLY_SLOTS];
+    if let Some(b) = friendly_record(records, nation) {
+        for (k, slot) in slots.iter_mut().enumerate() {
+            *slot = friendly_picks(b, FRIENDLY_CANDIDATES + k * FRIENDLY_CAND_SLOT);
+        }
+    }
+    slots
+}
+
+/// What stands booked per slot today (`FUN_0063b488`'s copy).
+pub fn friendly_booked(records: &Records, nation: i16) -> [FriendlyPick; FRIENDLY_SLOTS] {
+    friendly_record(records, nation).map_or([FriendlyPick::default(); FRIENDLY_SLOTS], |b| friendly_picks(b, FRIENDLY_BOOKED))
+}
+
+/// OK's write-back (`FUN_0063b510`): the three entries as the dialog
+/// holds them, into the record's +0x36 — even one the coach spun away
+/// from, which the dialog only cleared on screen.
+pub fn set_friendly_booked(records: &mut Records, nation: i16, booked: &[FriendlyPick; FRIENDLY_SLOTS]) {
+    let coach = usize::from(coach_number(records, nation));
+    if coach == 0 {
+        return;
+    }
+    let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) else {
+        return;
+    };
+    for (k, pick) in booked.iter().enumerate() {
+        let at = FRIENDLY_BOOKED + k * FRIENDLY_PICK;
+        if at + FRIENDLY_PICK <= b.len() {
+            b[at..at + FRIENDLY_PICK].copy_from_slice(&pick.0);
+        }
+    }
+}
+
+/// The slot's score once played (`FUN_0063b598`): none while its low
+/// byte stands 0xff or the record names no coach; else the two bytes.
+pub fn friendly_score(records: &Records, nation: i16, slot: usize) -> Option<(u8, u8)> {
+    let at = FRIENDLY_SCORES + 4 * (slot + 1);
+    let raw = friendly_record(records, nation)?.get(at..at + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()))?;
+    (raw as u8 != NO_SCORE).then(|| (raw as u8, (raw >> 8) as u8))
+}
+
+/// The three friendly dates of the year (`FUN_0062ab93`): the first
+/// three days of the calendar's international row whose flag is the
+/// friendly flag, in their order.
+pub fn friendly_dates(calendar: &Calendar) -> [usize; FRIENDLY_SLOTS] {
+    let mut days = [0; FRIENDLY_SLOTS];
+    let mut found = 0;
+    for day in 0..crate::calendar::DAYS {
+        if found == FRIENDLY_SLOTS {
+            break;
+        }
+        if calendar.entry(INTERNATIONAL_ROW, day) & 0x7f00_0000 == 0x0400_0000 {
+            days[found] = day;
+            found += 1;
+        }
+    }
+    days
+}
+
+/// The coach's lists of the best by position, `0xa55e76` in his record
+/// (`FUN_0069d3dd` writes them, `FUN_0069d359` reads them): ten
+/// positions of `0x78` bytes, fifteen entries of eight in each — the
+/// player's id, his club's country at +2 and number at +4, his strength
+/// on the position at +6 (`FUN_006a144e`).
+const BESTS: usize = 0xa55e76 - 0xa55998;
+const BESTS_GROUP: usize = 0x78;
+const BESTS_ENTRY: usize = 8;
+const BESTS_SLOTS: usize = 15;
+const BESTS_POSITIONS: usize = 10;
+/// A list counts its fourteen best; the fifteenth slot holds the last
+/// pushed out, and a newcomer must beat him (`FUN_00427494`).
+const BESTS_KEPT: usize = 14;
+/// The picker's bests list shows the first ten of the group
+/// (`FUN_0051c33f`).
+pub const BESTS_SHOWN: usize = 10;
+/// R+0x26f and R+0x271 bit 1 (L+0xb3, L+0xb6): what bars him from the
+/// national team's lists, its meaning not traced.
+const NO_NATIONAL: u8 = 2;
+
+/// One entry of a bests list.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Best {
+    pub id: u16,
+    pub country: u8,
+    pub number: u16,
+    pub strength: i16,
+}
+
+/// The four human coaches' lists the week's market fills
+/// (`FUN_0042958d`'s locals at -0x1410, -0x150 and -0x100): a nation
+/// their coach's number — the first of the 32 bytes from `DAT_00b5d17a`,
+/// the later coach of a nation winning —, each coach his ten positions'
+/// lists and counts, empty every week.
+pub struct Bests {
+    coach: [u8; NATIONS],
+    lists: [[[Best; BESTS_SLOTS]; BESTS_POSITIONS]; 4],
+    counts: [[usize; BESTS_POSITIONS]; 4],
+}
+
+impl Bests {
+    pub fn new(records: &Records) -> Self {
+        let mut coach = [0; NATIONS];
+        for k in 0..4 {
+            let nation = usize::from(records.globals.get::<u8>(KEY_NATION + (k + 1) * KEY));
+            if nation != 0 {
+                if let Some(c) = coach.get_mut(nation) {
+                    *c = k as u8 + 1;
+                }
+            }
+        }
+        Bests {
+            coach,
+            lists: [[[Best::default(); BESTS_SLOTS]; BESTS_POSITIONS]; 4],
+            counts: [[0; BESTS_POSITIONS]; 4],
+        }
+    }
+
+    /// A club's squad, last of its week's business (`FUN_00427494`):
+    /// each player of a coached nation not barred goes into his coach's
+    /// list of his main position while it counts under fourteen or he
+    /// beats the fifteenth slot, behind every one as strong as he is.
+    pub fn offer(&mut self, records: &Records, pitch: &crate::lineup::Tables, (country, number): (u16, u16)) {
+        let Some(team) = records.team(country, number) else { return };
+        for id in team.players() {
+            let Some(record) = records.player(id) else { continue };
+            if record.retiring() & NO_NATIONAL != 0 {
+                continue;
+            }
+            let Some(&coach) = self.coach.get(usize::from(record.nation())).filter(|&&c| c != 0) else {
+                continue;
+            };
+            let position = record.positions()[0];
+            if !(1..=BESTS_POSITIONS as u8).contains(&position) {
+                continue;
+            }
+            let player = load::player(records, record);
+            let strength = pitch.strength_at(&player, load::fitness(record), position) as i16;
+            let (k, p) = (usize::from(coach) - 1, usize::from(position) - 1);
+            let (list, count) = (&mut self.lists[k][p], &mut self.counts[k][p]);
+            if *count >= BESTS_KEPT && list[BESTS_KEPT].strength >= strength {
+                continue;
+            }
+            let mut at = *count;
+            while at > 0 && list[at - 1].strength < strength {
+                list[at] = list[at - 1];
+                at -= 1;
+            }
+            list[at] = Best { id, country: country as u8, number, strength };
+            if *count < BESTS_KEPT {
+                *count += 1;
+            }
+        }
+    }
+
+    /// The lists into the coaches' records (`FUN_0042958d`'s last loop,
+    /// `FUN_0069d3dd`): for each human with a nation, the list and the
+    /// record of the coach his nation's team names, none where it names
+    /// none.
+    pub fn store(&self, records: &mut Records) {
+        for k in 0..4 {
+            let nation = records.globals.get::<u8>(KEY_NATION + (k + 1) * KEY);
+            if nation == 0 {
+                continue;
+            }
+            let coach = usize::from(coach_number(records, i16::from(nation)));
+            if !(1..=4).contains(&coach) {
+                continue;
+            }
+            let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) else {
+                continue;
+            };
+            if b.len() < BESTS + BESTS_POSITIONS * BESTS_GROUP {
+                continue;
+            }
+            for (p, list) in self.lists[coach - 1].iter().enumerate() {
+                for (j, e) in list.iter().enumerate() {
+                    let at = BESTS + p * BESTS_GROUP + j * BESTS_ENTRY;
+                    b[at..at + 2].copy_from_slice(&e.id.to_le_bytes());
+                    b[at + 2] = e.country;
+                    b[at + 3] = 0;
+                    b[at + 4..at + 6].copy_from_slice(&e.number.to_le_bytes());
+                    b[at + 6..at + 8].copy_from_slice(&e.strength.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+/// A group's list as the coach's record keeps it, all fifteen slots;
+/// empty for a group outside 1 to 10 or a coach the team does not name
+/// (`FUN_0069d359` zeroing its copy).
+pub fn bests(records: &Records, nation: i16, group: i32) -> Vec<Best> {
+    let coach = usize::from(coach_number(records, nation));
+    let Some(b) = (1..=4).contains(&coach).then(|| records.block(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1))).flatten() else {
+        return Vec::new();
+    };
+    let Some(p) = usize::try_from(group).ok().filter(|g| (1..=BESTS_POSITIONS).contains(g)).map(|g| g - 1) else {
+        return Vec::new();
+    };
+    (0..BESTS_SLOTS)
+        .filter_map(|j| {
+            let at = BESTS + p * BESTS_GROUP + j * BESTS_ENTRY;
+            let e = b.get(at..at + BESTS_ENTRY)?;
+            Some(Best {
+                id: u16::from_le_bytes([e[0], e[1]]),
+                country: e[2],
+                number: u16::from_le_bytes([e[4], e[5]]),
+                strength: i16::from_le_bytes([e[6], e[7]]),
+            })
+        })
+        .collect()
+}
+
+/// The days still to come holding an international window
+/// (`FUN_0062abfe`): from the day after today to the year's end, those
+/// whose flag is one of the window flags — at most eight — kept as the
+/// row has them, its low six bits the friendly slot or the match.
+pub fn upcoming_days(calendar: &Calendar, today: usize) -> Vec<(i16, u32)> {
+    ((today + 1)..crate::calendar::DAYS)
+        .filter_map(|day| {
+            let flag = calendar.entry(INTERNATIONAL_ROW, day);
+            WINDOW_FLAGS.contains(&(flag & 0x7f00_0000)).then(|| (day as i16, flag))
+        })
+        .take(8)
+        .collect()
+}
+
+/// The international dates the save keeps (`0x1ba07c0`): six entries of
+/// `0xda` bytes each, a count of nations at +0 (at most 0x40) and those
+/// nations as u16 from +2; the played and scheduled pairings from +0x9e,
+/// ten six-byte columns of three pairs — every byte an index into the
+/// entry's nations (`FUN_006b8149`).
+const DATE_ENTRIES: u32 = 0x1ba07c0;
+const DATE_ENTRY: usize = 0xda;
+const DATE_NATIONS: usize = 2;
+const DATE_PAIRS: usize = 0x9e;
+const DATE_ENTRY_MOST: usize = 6;
+const DATE_NATIONS_MOST: usize = 0x40;
+
+/// The index of the date entry naming `nation` (`OnInit`'s scan of the
+/// six), none when no entry holds it.
+pub fn date_entry(records: &Records, nation: i16) -> Option<usize> {
+    records.block(&format!("{DATE_ENTRIES:#x}")).and_then(|b| {
+        (0..DATE_ENTRY_MOST).find(|&idx| {
+            let Some(e) = b.get(idx * DATE_ENTRY..idx * DATE_ENTRY + DATE_ENTRY) else {
+                return false;
+            };
+            let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+            (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+        })
+    })
+}
+
+/// The pairings in one column of the entry's pair rows (`FUN_006b8149`):
+/// its three pairs of nations, a pair dropped when an index points past
+/// the entry's count.
+pub fn international_pairs(records: &Records, entry: usize, column: usize) -> Vec<(i16, i16)> {
+    (0..3).filter_map(|k| international_pair(records, entry, column, k)).collect()
+}
+
+/// The `k`-th pair of one column (`FUN_006b8149`), none when an index
+/// points past the entry's count.
+fn international_pair(records: &Records, entry: usize, column: usize, k: usize) -> Option<(i16, i16)> {
+    let e = records.block(&format!("{DATE_ENTRIES:#x}"))?.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY)?;
+    let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+    let at = DATE_PAIRS + column * 6 + k * 2;
+    let (a, b) = (usize::from(*e.get(at)?), usize::from(*e.get(at + 1)?));
+    (a < count && b < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * b)))
+}
+
+/// The qualifiers' calendar every group copies to its +0x9e
+/// (`DAT_008a32c0`, `FUN_006b7cf3`): ten matchdays of three pairs, each
+/// a pair of the group's slots.
+const QUALIFIER_SCHEDULE: [u8; 0x3c] = [
+    0, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 0, 0, 2, 3, 5, 1, 4, 1, 5, 2, 4, 3, 0, 0, 4, 2, 5, 3, 1, //
+    1, 0, 3, 2, 5, 4, 2, 1, 4, 3, 0, 5, 2, 0, 5, 3, 4, 1, 5, 1, 4, 2, 0, 3, 4, 0, 5, 2, 1, 3,
+];
+/// The tournaments' hosts by year (`DAT_00ae6298[(year % 100) / 2]`).
+const HOSTS_AT: usize = 0xae6298;
+/// The European ranking the pots come from (`DAT_00b5d1a8`, 0x24 a row):
+/// its first twelve, the next twelve and the last thirteen
+/// (`FUN_0067bce4` with 6, 4 and 3).
+const RANKING_AT: usize = 0xb5d1a8;
+const RANKING_ROW: usize = 0x24;
+const POTS: [(usize, usize); 3] = [(0, 0xc), (0xc, 0x18), (0x18, 0x25)];
+/// The tournament's knockout round, none till it starts (`DAT_00b5dfc0`).
+const KNOCKOUT_ROUND: usize = 0xb5dfc0;
+const SEASON_AT: usize = 0xb5cbc8;
+/// A group's results from +0xe, six rows of six four-byte cells, 0xff
+/// while unplayed (`FUN_006b7cb3`).
+const GROUP_RESULTS: usize = 0xe;
+const GROUP_RESULTS_LEN: usize = 0x90;
+const GROUP_SIZE: usize = 6;
+const GROUP_RESULT_ROW: usize = 0x18;
+const GROUP_MATCHDAY: usize = 6;
+/// The first season's qualifiers played at once (`FUN_0067c02f`'s odd
+/// year): five matchdays, by the goals of `DAT_008a3338` — a row by the
+/// home nation's strength byte halved, up to 6, a cell by the away
+/// nation's: the home goals' range and the away goals', then the home
+/// goals' least and the away goals'; past seven goals in all the fewer
+/// are taken off the more.
+const FIRST_MATCHDAYS: usize = 5;
+const FIRST_LEVELS: usize = 7;
+const FIRST_GOALS_MOST: i16 = 7;
+const FIRST_GOALS: [[[i16; 4]; FIRST_LEVELS]; FIRST_LEVELS] = [
+    [[3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 0], [2, 4, 0, 0], [2, 2, 0, 1], [2, 3, 0, 2], [2, 3, 0, 3]],
+    [[4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 0], [3, 3, 0, 1], [3, 3, 0, 2], [2, 3, 0, 3]],
+    [[5, 3, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 4, 0, 0], [3, 4, 0, 1], [2, 3, 0, 2]],
+    [[5, 2, 1, 0], [5, 2, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 3, 0, 0], [3, 3, 0, 1], [3, 3, 0, 2]],
+    [[5, 2, 2, 0], [5, 2, 1, 0], [5, 3, 0, 0], [4, 2, 0, 0], [3, 2, 0, 0], [3, 2, 0, 1], [3, 3, 0, 1]],
+    [[5, 2, 2, 0], [5, 2, 2, 0], [5, 2, 1, 0], [5, 3, 1, 0], [4, 2, 0, 0], [4, 2, 0, 0], [3, 3, 0, 0]],
+    [[4, 1, 3, 0], [4, 2, 3, 0], [5, 2, 2, 0], [5, 3, 2, 0], [5, 3, 1, 0], [4, 2, 0, 0], [4, 2, 0, 0]],
+];
+
+/// The qualifying groups drawn at the turn of an even year
+/// (`FUN_0067c02f`, the new season's block of `FUN_006da3a9`): from the
+/// second season on the odd years keep theirs. The tournament two years
+/// on has its host left out (`DAT_00ae6298[((year + 2) % 100) / 2]`); the
+/// six groups start empty with their calendar, and the slots fill in turn
+/// — slot k is group k mod 6, place k / 6: first the European nations the
+/// humans coach (`FUN_0067c602`, the manager's +0x17e6) drawn among
+/// themselves, then the ranking's first twelve, its next twelve and its
+/// last thirteen, each drawn at random and the drawn one's place taken by
+/// the pot's last (`FUN_0067bf0f`). Each group then closes up its empty
+/// places and counts the rest (`FUN_006b82f7`), and the knockout round
+/// stands at none. The first season (`DAT_00b5cbc8` up to 1, a new
+/// game's calculation) draws even in an odd year: the qualifiers of the
+/// coming year's tournament, its host the one left out, and every group
+/// plays its first five matchdays at once by the nations' strength
+/// (`FIRST_GOALS`): each pair of the calendar whose slots both hold a
+/// nation, the home goals drawn before the away goals, and past seven
+/// goals in all the fewer taken off the more and set to none; the result
+/// goes to the cell of the two nations' places (`FUN_006b81fd`).
+pub fn draw_qualifiers(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
+    let year = i32::from(records.globals.start_year());
+    let odd = year % 2 != 0;
+    if records.globals.get::<i16>(SEASON_AT) > 1 && odd {
+        return;
+    }
+    let ahead = if odd { 1 } else { 2 };
+    let host = i16::from(records.countries.get::<u8>(HOSTS_AT + usize::try_from((year + ahead) % 100 / 2).unwrap_or(0)));
+    let strength: Vec<u8> = (0..NATIONS).map(|n| records.countries.get::<u8>(NATION_STRENGTH + n)).collect();
+    let level = |n: i16| usize::from(usize::try_from(n).ok().and_then(|n| strength.get(n)).copied().unwrap_or(0) >> 1).min(FIRST_LEVELS - 1);
+    records.globals.put::<u16>(KNOCKOUT_ROUND, 0xffff);
+    let mut humans: Vec<i16> = records
+        .managers
+        .iter()
+        .take(usize::from(records.globals.humans()))
+        .map(|m| m.national_team())
+        .filter(|&n| n != 0 && n != host && usize::try_from(n).ok().and_then(|n| european.get(n)).copied().unwrap_or(false))
+        .collect();
+    let mut pots: Vec<Vec<i16>> = POTS
+        .iter()
+        .map(|&(from, to)| {
+            (from..to)
+                .map(|row| records.globals.get::<i16>(RANKING_AT + row * RANKING_ROW))
+                .filter(|&n| n != 0 && n != host && !humans.contains(&n))
+                .collect()
+        })
+        .collect();
+    let Some(groups) = records.block_mut(&format!("{DATE_ENTRIES:#x}")) else {
+        return;
+    };
+    for g in 0..QUALIFYING_GROUPS {
+        let Some(e) = groups.get_mut(g * DATE_ENTRY..(g + 1) * DATE_ENTRY) else {
+            return;
+        };
+        e.fill(0);
+        put16(e, 0, GROUP_SIZE as i16);
+        e[GROUP_RESULTS..GROUP_RESULTS + GROUP_RESULTS_LEN].fill(0xff);
+        e[DATE_PAIRS..DATE_PAIRS + QUALIFIER_SCHEDULE.len()].copy_from_slice(&QUALIFIER_SCHEDULE);
+    }
+    let mut slot = 0;
+    for (k, pot) in pots.iter_mut().enumerate() {
+        while !pot.is_empty() || (k == 0 && !humans.is_empty()) {
+            let from = if humans.is_empty() { &mut *pot } else { &mut humans };
+            let nation = from.swap_remove(random.below(from.len() as u32) as usize);
+            // A place past the sixth runs into the results, as there.
+            let at = (slot % QUALIFYING_GROUPS) * DATE_ENTRY + DATE_NATIONS + (slot / QUALIFYING_GROUPS) * 2;
+            if let Some(w) = groups.get_mut(at..at + 2) {
+                w.copy_from_slice(&nation.to_le_bytes());
+            }
+            slot += 1;
+        }
+    }
+    for g in 0..QUALIFYING_GROUPS {
+        let e = &mut groups[g * DATE_ENTRY..(g + 1) * DATE_ENTRY];
+        let count = usize::try_from(word(e, 0)).unwrap_or(0);
+        let kept: Vec<i16> = (0..count).map(|k| word(e, DATE_NATIONS + 2 * k)).filter(|&n| n != 0).collect();
+        for (k, &n) in kept.iter().enumerate() {
+            put16(e, DATE_NATIONS + 2 * k, n);
+        }
+        put16(e, 0, kept.len() as i16);
+        for k in kept.len()..GROUP_SIZE {
+            put16(e, DATE_NATIONS + 2 * k, 0);
+        }
+        if !odd {
+            continue;
+        }
+        let place = |e: &[u8], n: i16| (0..kept.len()).find(|&k| word(e, DATE_NATIONS + 2 * k) == n).unwrap_or(0);
+        for pair in QUALIFIER_SCHEDULE[..FIRST_MATCHDAYS * GROUP_MATCHDAY].chunks(2) {
+            let (home, away) = (word(e, DATE_NATIONS + 2 * usize::from(pair[0])), word(e, DATE_NATIONS + 2 * usize::from(pair[1])));
+            if home == 0 || away == 0 {
+                continue;
+            }
+            let [home_range, away_range, home_least, away_least] = FIRST_GOALS[level(home)][level(away)];
+            let mut goals = random.below(home_range as u32) as i16 + home_least;
+            let mut against = random.below(away_range as u32) as i16 + away_least;
+            if goals + against > FIRST_GOALS_MOST {
+                if against < goals {
+                    goals -= against;
+                    against = 0;
+                } else {
+                    against -= goals;
+                    goals = 0;
+                }
+            }
+            let at = GROUP_RESULTS + place(e, home) * GROUP_RESULT_ROW + place(e, away) * 4;
+            e[at..at + 4].copy_from_slice(&[goals as u8, against as u8, 0, 0]);
+        }
+    }
+}
+
+/// Whether entry `entry` of the international dates names `nation`
+/// (`FUN_006b7d18`).
+fn entry_holds(records: &Records, entry: usize, nation: i16) -> bool {
+    let Some(e) = records.block(&format!("{DATE_ENTRIES:#x}")).and_then(|b| b.get(entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY)) else {
+        return false;
+    };
+    let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+    (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+}
+
+/// A national team's next-match fields in its block (the loaded club's
+/// +0xb44 to +0xb4f, a team's +0x250 on): the day, the opponent's land and
+/// team (200 a national team), where it is played (0 at home), its kind
+/// and its referee.
+const NEXT_COUNTRY: usize = 0x252 - 0x20;
+const NEXT_NUMBER: usize = 0x254 - 0x20;
+const NEXT_VENUE: usize = 0x256 - 0x20;
+const NEXT_KIND: usize = 0x258 - 0x20;
+const NEXT_REFEREE: usize = 0x25a - 0x20;
+/// The kinds `FUN_0062c90e` gives a national team's next match: a
+/// qualifier, a friendly, a match of the tournament.
+pub const NEXT_QUALIFIER: u8 = 12;
+pub const NEXT_FRIENDLY: u8 = 13;
+pub const NEXT_TOURNAMENT: u8 = 14;
+/// The flags of the international row the finder reads: a tournament's
+/// day, a friendly's (its low two bits the slot), a qualifier's (its low
+/// six bits the matchday).
+const TOURNAMENT_FLAG: u32 = 0x0200_0000;
+const FRIENDLY_FLAG: u32 = 0x0400_0000;
+const QUALIFIER_FLAG: u32 = 0x0800_0000;
+/// The international dates' first six entries are the qualifying groups,
+/// the next eight the tournament's (`0x1ba0cfc`), and its knockout ties
+/// follow from `0x1ba13cc`, fourteen bytes each, the home side's four
+/// bytes first.
+const QUALIFYING_GROUPS: usize = 6;
+const TOURNAMENT_GROUPS: usize = 8;
+const KNOCKOUT_TIES: usize = 0x1ba13cc - 0x1ba07e0;
+const KNOCKOUT_TIE: usize = 0xe;
+/// The knockout rounds by their day's number (`FUN_0067ee05`'s calls of
+/// `FUN_0067ecd4`): the last sixteen, only in a world cup's year, then
+/// the quarter-finals, semi-finals and final — the first tie and how many.
+const KNOCKOUTS: [(usize, usize); 4] = [(0, 8), (8, 4), (12, 2), (14, 1)];
+/// What `FUN_0063b488` leaves in the finder's six bytes for a nation no
+/// human coaches: it copies nothing, and the stack the team's loader left
+/// behind holds the nation at +0 and -1 at +4 (NewSeason000), so every
+/// such team counts its first friendly as booked against itself.
+const UNBOOKED_LEFTOVER: [u8; 2] = [0xff, 0xff];
+
+/// A national team's next match as `FUN_0062c90e` writes it: the day, the
+/// opponent's four bytes (the second only where the original copies all
+/// four), where it is played where the original writes it, and the kind.
+struct NationNext {
+    day: i16,
+    land: u8,
+    pad: Option<u8>,
+    team: i16,
+    venue: Option<i16>,
+    kind: u8,
+}
+
+/// Whether a human coaches `nation` (`FUN_00677428` with 200: the four
+/// humans' national keys from `FUN_006b990d`).
+fn human_coached(records: &Records, nation: i16) -> bool {
+    (1..=4).any(|id| i16::from(records.globals.get::<u8>(KEY_NATION + id * KEY)) == nation && records.globals.get::<u16>(KEY_TEAM + id * KEY) == 200)
+}
+
+/// The national team's next match from the day after `today` to the
+/// year's last (`FUN_0062c90e`): on a friendly's day the slot booked —
+/// for a nation without a human coach the loader's leftover — on a
+/// qualifier's day its pairing in the first of the six groups that names
+/// it (the column the matchday's, five on in an odd year), on a
+/// tournament's day of an odd year its group's first two pairings or its
+/// knockout tie (`FUN_0067ee05`).
+fn nation_next(records: &Records, calendar: &Calendar, nation: i16, today: usize) -> Option<NationNext> {
+    let year = i32::from(records.globals.start_year() as i16);
+    for day in today + 1..crate::calendar::DAYS {
+        let code = calendar.entry(INTERNATIONAL_ROW, day);
+        let at = |land: i16, venue: i16, kind: u8| NationNext { day: day as i16, land: land as u8, pad: None, team: 200, venue: Some(venue), kind };
+        match code & 0x7f00_0000 {
+            FRIENDLY_FLAG => {
+                let slot = (code & 3) as usize;
+                let pick = if coach_number(records, nation) != 0 {
+                    friendly_booked(records, nation).get(slot).map_or([0; FRIENDLY_PICK], |p| p.0)
+                } else if slot == 0 {
+                    [nation as u8, 0, 0, 0, UNBOOKED_LEFTOVER[0], UNBOOKED_LEFTOVER[1]]
+                } else {
+                    [0; FRIENDLY_PICK]
+                };
+                if pick[0] != 0 {
+                    return Some(NationNext {
+                        day: day as i16,
+                        land: pick[0],
+                        pad: Some(pick[1]),
+                        team: i16::from_le_bytes([pick[2], pick[3]]),
+                        venue: Some(i16::from_le_bytes([pick[4], pick[5]])),
+                        kind: NEXT_FRIENDLY,
+                    });
+                }
+            }
+            QUALIFIER_FLAG => {
+                let column = (code & 0x3f) as usize + (year % 2) as usize * 5;
+                if let Some(group) = (0..QUALIFYING_GROUPS).find(|&g| entry_holds(records, g, nation)) {
+                    for (home, away) in (0..3).filter_map(|k| international_pair(records, group, column, k)) {
+                        if home == nation {
+                            return Some(at(away, 0, NEXT_QUALIFIER));
+                        }
+                        if away == nation {
+                            return Some(at(home, 1, NEXT_QUALIFIER));
+                        }
+                    }
+                }
+            }
+            TOURNAMENT_FLAG if year % 2 == 1 => {
+                let round = (code & 0x3f) as usize;
+                if round < 3 {
+                    let Some(group) = (QUALIFYING_GROUPS..QUALIFYING_GROUPS + TOURNAMENT_GROUPS).find(|&g| entry_holds(records, g, nation)) else { continue };
+                    for (home, away) in (0..2).filter_map(|k| international_pair(records, group, round, k)) {
+                        // The group's matches write no ground.
+                        let other = if home == nation { away } else if away == nation { home } else { continue };
+                        return Some(NationNext { venue: None, ..at(other, 0, NEXT_TOURNAMENT) });
+                    }
+                } else if let Some(&(first, count)) = KNOCKOUTS.get(round - 3) {
+                    // The last sixteen are played only in a world cup's year
+                    // (`FUN_0067bb89`).
+                    if round == 3 && year % 4 != 1 {
+                        continue;
+                    }
+                    let Some(dates) = records.block(&format!("{DATE_ENTRIES:#x}")) else { continue };
+                    let ours = |side: &[u8]| i16::from(side[0]) == nation && u16::from_le_bytes([side[2], side[3]]) == 200;
+                    for t in first..first + count {
+                        let Some(tie) = dates.get(KNOCKOUT_TIES + t * KNOCKOUT_TIE..KNOCKOUT_TIES + t * KNOCKOUT_TIE + 8) else { break };
+                        let (side, venue) = if ours(&tie[0..4]) {
+                            (&tie[4..8], 0)
+                        } else if ours(&tie[4..8]) {
+                            (&tie[0..4], 1)
+                        } else {
+                            continue;
+                        };
+                        return Some(NationNext {
+                            day: day as i16,
+                            land: side[0],
+                            pad: Some(side[1]),
+                            team: i16::from_le_bytes([side[2], side[3]]),
+                            venue: Some(venue),
+                            kind: NEXT_TOURNAMENT,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The entries a friendly record clears at the turn (`FUN_0063b678`):
+/// the nine candidates and the three booked, back to back from +0.
+const FRIENDLY_ENTRIES: usize = 12;
+/// The nations the turn may offer (`FUN_006b9929`'s loop, 1 to 0x73).
+const FRIENDLY_NATIONS: std::ops::Range<usize> = 1..0x74;
+/// The pools by a nation's strength byte (`DAT_00ae6223`): from 9 the
+/// strong (the pool's +0x1da, `FUN_006bded0`), from 6 the middling
+/// (+0xf0, `FUN_006bdf10`), from 3 the weak (+6, `FUN_006bdf50`); below 3
+/// a nation is never offered.
+const STRONG_FROM: u8 = 9;
+const MIDDLING_FROM: u8 = 6;
+const WEAK_FROM: u8 = 3;
+/// The managers whose national keys the turn reads (`FUN_006b990d`: the
+/// 32 bytes from `DAT_00b5d17a`, numbers 1 to 4).
+const KEYED_MANAGERS: std::ops::RangeInclusive<usize> = 1..=4;
+
+/// The friendlies offered anew at the turn (`FUN_006b9929`, the new
+/// season's block of `FUN_006da3a9`, after `FUN_0067c02f`). First the four
+/// coaches' records clear (`FUN_0063b678`): every candidate and booked
+/// entry's land and team to 0, the scores unplayed. Then every nation from
+/// 1 to 0x73 that none of the four humans coaches goes, in its order,
+/// into the pool of its strength, and for each human with a nation, slot
+/// by slot, three candidates are drawn without putting back
+/// (`FUN_006bde10`: one at random, the pool's last taking its place) —
+/// the first from the strong, else the middling, else the weak; the
+/// second middling, strong, weak; the third weak, middling, strong; 0
+/// when all are empty. Each is the land, 200 for its national team and a
+/// coin at +4 (`FUN_0078a810(2)`, the three after the three lands); they
+/// land in the record of the coach his nation's team names
+/// (`FUN_0063b305`), none where it names none — the draws made all the
+/// same.
+pub fn draw_friendlies(records: &mut Records, random: &mut crate::random::Random) {
+    for k in 0..4 {
+        if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{k}]")) {
+            if b.len() <= FRIENDLY_SCORES + 4 * FRIENDLY_SLOTS {
+                continue;
+            }
+            for e in 0..FRIENDLY_ENTRIES {
+                let at = FRIENDLY_CANDIDATES + e * FRIENDLY_PICK;
+                b[at] = 0;
+                put16(b, at + 2, 0);
+            }
+            for slot in 0..FRIENDLY_SLOTS {
+                b[FRIENDLY_SCORES + 4 * (slot + 1)] = NO_SCORE;
+            }
+        }
+    }
+    let coached: Vec<u8> = KEYED_MANAGERS.map(|id| records.globals.get::<u8>(KEY_NATION + id * KEY)).collect();
+    // The pools: weak, middling, strong.
+    let mut pools: [Vec<u8>; 3] = Default::default();
+    for nation in FRIENDLY_NATIONS {
+        if coached.contains(&(nation as u8)) {
+            continue;
+        }
+        let strength = records.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + nation);
+        let pool = if strength >= STRONG_FROM {
+            2
+        } else if strength >= MIDDLING_FROM {
+            1
+        } else if strength >= WEAK_FROM {
+            0
+        } else {
+            continue;
+        };
+        pools[pool].push(nation as u8);
+    }
+    let take = |pools: &mut [Vec<u8>; 3], order: [usize; 3], random: &mut crate::random::Random| -> u8 {
+        for pool in order {
+            let pool = &mut pools[pool];
+            if !pool.is_empty() {
+                let at = random.below(pool.len() as u32) as usize;
+                return pool.swap_remove(at);
+            }
+        }
+        0
+    };
+    for nation in coached.into_iter().filter(|&n| n != 0) {
+        for slot in 0..FRIENDLY_SLOTS {
+            let lands = [
+                take(&mut pools, [2, 1, 0], random),
+                take(&mut pools, [1, 2, 0], random),
+                take(&mut pools, [0, 1, 2], random),
+            ];
+            let mut picks = [FriendlyPick::default(); FRIENDLY_SLOTS];
+            for (pick, land) in picks.iter_mut().zip(lands) {
+                pick.0 = [land, 0, 200, 0, 0, 0];
+            }
+            for pick in &mut picks {
+                pick.0[4..6].copy_from_slice(&(random.below(2) as u16).to_le_bytes());
+            }
+            let coach = usize::from(coach_number(records, i16::from(nation)));
+            if coach == 0 {
+                continue;
+            }
+            if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{}]", coach - 1)) {
+                for (k, pick) in picks.iter().enumerate() {
+                    let at = FRIENDLY_CANDIDATES + slot * FRIENDLY_CAND_SLOT + k * FRIENDLY_PICK;
+                    if at + FRIENDLY_PICK <= b.len() {
+                        b[at..at + FRIENDLY_PICK].copy_from_slice(&pick.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every national team's next match noted anew at the new season
+/// (`FUN_00630c9f`'s loop over nations 1 to 116, `FUN_0062c90e`): the day,
+/// the opponent's land and team, the kind and the referee cleared, then
+/// the match found written. A human coach's team has its referee drawn
+/// for the match (`FUN_00424407`, not built), and keeps the one it had.
+pub fn note_next_matches(records: &mut Records, calendar: &Calendar, today: usize) {
+    for nation in 1..NATIONS as i16 {
+        if team_block(records, nation).is_none() {
+            continue;
+        }
+        let next = nation_next(records, calendar, nation, today);
+        let human = human_coached(records, nation);
+        let Some(b) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) else { continue };
+        if b.len() < NEXT_REFEREE + 2 {
+            continue;
+        }
+        put16(b, NEXT_DAY, 0);
+        b[NEXT_COUNTRY] = 0;
+        put16(b, NEXT_NUMBER, 0);
+        b[NEXT_KIND] = 0;
+        if !(human && next.is_some()) {
+            put16(b, NEXT_REFEREE, 0);
+        }
+        if let Some(m) = next {
+            put16(b, NEXT_DAY, m.day);
+            b[NEXT_COUNTRY] = m.land;
+            if let Some(pad) = m.pad {
+                b[NEXT_COUNTRY + 1] = pad;
+            }
+            put16(b, NEXT_NUMBER, m.team);
+            if let Some(venue) = m.venue {
+                put16(b, NEXT_VENUE, venue);
+            }
+            b[NEXT_KIND] = m.kind;
+        }
+    }
+}
+
+/// The successes at the big tournaments (`CInfoNationalteam`'s table,
+/// which its `OnInit` copies out with a 0x5418-byte `memcpy`): 117
+/// records of 0xb8 bytes at `0xa7c260` — the row count, the year
+/// counter at +2 (shown as its +1, stepping by 2 for a country with
+/// national teams and by 4 without), ten result ids at +4 and ten
+/// coach names of sixteen bytes at +0x18.  Nothing in the exe writes
+/// the table, and no save block reaches it — save A's last two blocks
+/// end at 0xa7c21c, just short — so it stands zero and the dialog's
+/// list stays empty for every land (screen c1-item4-erfolge); the walk
+/// is ported for the day the tournaments themselves are simulated.
+const RESULTS_AT: u32 = 0xa7c260;
+const RESULTS_MOST: usize = 117;
+const RESULT_RECORD: usize = 0xb8;
+const RESULT_ROWS: usize = 10;
+/// The two contests' texts ("Europameisterschaft", "Weltmeisterschaft")
+/// and the first of the seven result texts, "nicht qualifiziert" to
+/// "Finale gewonnen": the record's ids count up from it (4190..4196).
+pub const EUROPEAN_CUP: u16 = 4188;
+pub const WORLD_CUP: u16 = 4189;
+pub const FIRST_RESULT: u16 = 4190;
+
+/// One tournament a land's team took part in, as the info dialog reads
+/// it into a row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Success {
+    pub year: i32,
+    pub contest: u16,
+    pub result: u16,
+    pub coach: String,
+}
+
+/// `land`'s tournament rows, newest first (`FUN_004cb3b2`): the slots
+/// walked down from the counted one.  With national teams behind the
+/// land (`DAT_0089e0b8[land]`), a row is a Weltmeisterschaft when the
+/// counter leaves 0 or 1 mod 4 (`FUN_004cb372`) and an
+/// Europameisterschaft else, and the counter steps by 2; without,
+/// every row is a Weltmeisterschaft and it steps by 4.
+pub fn successes(records: &Records, land: i16) -> Vec<Success> {
+    let (Some(all), Ok(n)) = (records.block(&format!("{RESULTS_AT:#x}")), usize::try_from(land))
+    else {
+        return Vec::new();
+    };
+    if n >= RESULTS_MOST {
+        return Vec::new();
+    }
+    all.get(n * RESULT_RECORD..n * RESULT_RECORD + RESULT_RECORD)
+        .map_or_else(Vec::new, |r| rows(r, records.countries.has_teams(n)))
+}
+
+/// The big flags' names by land (`FUN_0069608b`'s pointer table at
+/// `0x8a4890`, 117 of them): the info dialog loads
+/// `gross/<name>.bmp` from the flags' archive, and the land it falls
+/// back to outside 1..=116 is the 76th, the catch-all "Wel".
+pub fn flag_names(exe: &a3_files::exe::Exe) -> std::io::Result<Vec<String>> {
+    (0..117u32)
+        .map(|n| {
+            let at = a3_files::cpr::u32_at(exe.bytes(0x8a4890 + 4 * n, 4)?, 0)?;
+            let raw = exe.bytes(at, 40)?;
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            Ok(a3_files::sav::cp1252(&raw[..end]))
+        })
+        .collect()
+}
+
+/// The walk of one record, as the dialog's filler runs it.
+fn rows(record: &[u8], has_team: bool) -> Vec<Success> {
+    let count = usize::try_from(word(record, 0)).unwrap_or(0).min(RESULT_ROWS);
+    let mut counter = word(record, 2);
+    let mut out = Vec::new();
+    for slot in (0..count).rev() {
+        let contest = if !has_team || counter.rem_euclid(4) <= 1 { WORLD_CUP } else { EUROPEAN_CUP };
+        let result = FIRST_RESULT + u16::try_from(word(record, 4 + slot * 2)).unwrap_or(0);
+        let coach = a3_files::sav::cp1252(
+            record[0x18 + slot * 0x10..].split(|&b| b == 0).next().unwrap_or_default(),
+        );
+        out.push(Success { year: i32::from(counter) + 1, contest, result, coach });
+        counter -= if has_team { 2 } else { 4 };
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use a3_files::an3::Save;
+    use std::path::PathBuf;
+
+    /// The bests lists the original kept in S2c and S2late, a coach of
+    /// nation 23: built again from their squads in the week's order —
+    /// the kept countries, then the played ones — the same men stand in
+    /// all fifteen slots of all ten positions, the last pushed out among
+    /// them; their strengths moved with the form of the days since the
+    /// week's start, a few tenths, and with them some neighbours' order.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_bests_lists_are_built_as_the_original() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let pitch = crate::data::Data::load(&dir).unwrap().rules.pitch;
+        for name in ["S2c.an3", "S2late.an3"] {
+            let path = dir.parent().unwrap().join("saves-kept").join(name);
+            let Ok(save) = Save::read(&path) else { continue };
+            let mut records = Records::from_save(save).unwrap();
+            let saved: Vec<Vec<Best>> = (1..=10).map(|g| bests(&records, 23, g)).collect();
+            assert!(saved[0].iter().any(|e| e.id != 0), "{name} keeps no list");
+            let mut built = Bests::new(&records);
+            let kept: Vec<u16> = (1..0x75).filter(|&c| records.countries.kind(c) == 2).map(|c| c as u16).collect();
+            for country in kept.into_iter().chain(crate::opponent::played_nations(&records)) {
+                for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
+                    built.offer(&records, &pitch, (country, number));
+                }
+            }
+            if let Some(b) = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[0]")) {
+                b[BESTS..BESTS + BESTS_POSITIONS * BESTS_GROUP].fill(0);
+            }
+            built.store(&mut records);
+            for g in 1..=10 {
+                let (built, saved) = (bests(&records, 23, g), &saved[g as usize - 1]);
+                let set = |l: &[Best]| {
+                    let mut v: Vec<_> = l.iter().map(|e| (e.id, e.country, e.number)).collect();
+                    v.sort();
+                    v
+                };
+                assert_eq!(set(&built), set(saved), "{name}, position {g}");
+                assert!(built.windows(2).all(|w| w[0].id == 0 || w[1].id == 0 || w[0].strength >= w[1].strength));
+                for e in &built {
+                    let was = saved.iter().find(|s| s.id == e.id).unwrap();
+                    assert!((e.strength - was.strength).abs() <= 4, "{name}, position {g}: {e:?} against {was:?}");
+                }
+            }
+            assert!(bests(&records, 23, 0).is_empty() && bests(&records, 23, 11).is_empty());
+        }
+    }
+
+    /// The talks' table and the search list over the original's save
+    /// (`FUN_006b8f5f`, `FUN_00763518` and `FUN_007635f7`): the flags
+    /// read from all twenty entries, counted ones or not; the search
+    /// takes a player once under any coach, remembers which coach for
+    /// its alert, and the count grows with the entry.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_search_takes_him_once_and_the_talks_read_his_flags() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves; the oracle's copy has it");
+            return;
+        }
+        let mut records = Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let country = (1..0x75u16)
+            .find(|&c| records.countries.team_count(usize::from(c)) > 0)
+            .unwrap();
+        let players = records.team(country, 0).unwrap().players();
+        let (player, other) = (players[0], players[1]);
+        // One entry, at the fifth, over a count left at 0.
+        let today = records.globals.day() as i16;
+        {
+            let b = records.block_mut(&format!("{TALKS_AT:#x}[0]")).unwrap();
+            b[TALKS_FIRST..TALKS_FIRST + TALKS_MOST * TALK].fill(0);
+            put16(b, TALKS_COUNT, 0);
+            let e = TALKS_FIRST + 5 * TALK;
+            put16(b, e, player as i16);
+            b[e + 2] = 3;
+            put16(b, e + 4, today);
+        }
+        assert_eq!(talk_flags(&records, 0, player), 3, "the scan runs over all twenty");
+        assert_eq!(talk_flags(&records, 0, other), 0);
+        assert_eq!(talk_flags(&records, 0, 0), 0, "id 0 is asked about in neither direction");
+        assert_eq!(talk_count(&records, 0), 0, "the count stands where it was");
+        // The search list: one coach's pick, then another's.
+        assert!(book_search(&mut records, player, 40, 1));
+        assert!(searched(&records, 1, player));
+        assert!(!searched(&records, 2, player), "no other coach has picked him");
+        assert!(!book_search(&mut records, player, 44, 2), "he stands in the list already");
+        assert!(book_search(&mut records, other, 41, 2));
+        let b = records.block(&format!("{SEARCH_AT:#x}")).unwrap();
+        assert_eq!(word(b, 0), 2);
+        assert_eq!((word(b, 2), word(b, 4), word(b, 6)), (player as i16, 40, 1));
+        assert_eq!((word(b, 8), word(b, 10), word(b, 12)), (other as i16, 41, 2));
+        assert!(searched(&records, 2, other));
+    }
+
+    /// The picker's list over the original's save (`FUN_0051b6fe` and
+    /// `FUN_0051b819`): a called-up player lands after the last one whose
+    /// main position does not beat his — keepers first, not by age — the
+    /// list stops at 22, takes neither id 0 nor one already in it, and
+    /// sends home every copy of the player it removes; `FUN_0063df96`'s
+    /// write-back comes back through `squad_ids` as written, the ids past
+    /// the count standing where they were.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_picker_inserts_by_main_position_and_writes_back() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves; the oracle's copy has it");
+            return;
+        }
+        let mut records = Records::from_save(Save::read(&path).unwrap()).unwrap();
+        // A first club's players, a second club's to reach past the cap;
+        // their main positions, the byte the cache copies at +0x21d.
+        let country = (1..0x75u16)
+            .filter(|&c| records.countries.kind(usize::from(c)) != 0)
+            .find(|&c| {
+                records.countries.team_count(usize::from(c)) > 1
+                    && records.block(&format!("{NATIONAL_TEAMS:#x}[{c}]")).is_some_and(|b| {
+                        b.len() >= NATIONAL_SQUAD + 2 * (SQUAD_MOST + 1)
+                    })
+            })
+            .unwrap();
+        let name = format!("{NATIONAL_TEAMS:#x}[{country}]");
+        let mut ids = records.team(country, 0).unwrap().players();
+        ids.extend(records.team(country, 1).unwrap().players());
+        ids.sort();
+        ids.dedup();
+        let position = |id: u16| records.player(id).map_or(0, |p| p.positions()[0]);
+        let keeper = *ids.iter().find(|&&id| position(id) == 1).unwrap();
+        let last = *ids.iter().max_by_key(|&&id| position(id)).unwrap();
+        let mut squad = Vec::new();
+        assert!(call_up(&mut squad, &records, last));
+        assert!(call_up(&mut squad, &records, keeper));
+        assert_eq!(squad, [keeper, last], "the keeper went in behind the outfielder");
+        // The middle one: after the last entry not beating his position.
+        let mid = *ids
+            .iter()
+            .find(|&&id| {
+                let p = position(id);
+                id != keeper && id != last && p > 1 && p <= position(last)
+            })
+            .unwrap();
+        let before = squad.iter().filter(|&&id| position(id) <= position(mid)).count();
+        assert!(call_up(&mut squad, &records, mid));
+        assert_eq!(squad.iter().position(|&id| id == mid), Some(before));
+        assert!(!call_up(&mut squad, &records, mid), "he stands in it already");
+        assert!(!call_up(&mut squad, &records, 0), "id 0 goes nowhere");
+        // The cap: 22 named, nothing more, every pair in order.
+        for &id in &ids {
+            call_up(&mut squad, &records, id);
+        }
+        assert_eq!(squad.len(), SQUAD_MOST);
+        assert!(squad.windows(2).all(|w| position(w[0]) <= position(w[1])));
+        assert_eq!(squad.iter().collect::<std::collections::HashSet<_>>().len(), SQUAD_MOST);
+        assert!(!call_up(&mut squad, &records, *ids.last().unwrap()));
+        // Home, and home again for a player listed twice.
+        let gone = squad[0];
+        assert!(send_home(&mut squad, gone));
+        assert!(!send_home(&mut squad, gone));
+        squad.extend([gone, gone]);
+        assert!(send_home(&mut squad, gone));
+        assert!(!squad.contains(&gone));
+        // The write-back and its round trip; the id past the count stands.
+        let at = NATIONAL_SQUAD + 2 * squad.len();
+        let stale = records.block(&name).unwrap()[at..at + 2].to_vec();
+        set_squad(&mut records, country as i16, &squad);
+        let team = records.block(&name).unwrap();
+        assert_eq!(i16::from_le_bytes([team[NATIONAL_COUNT], team[NATIONAL_COUNT + 1]]), squad.len() as i16);
+        assert_eq!(team[at..at + 2].to_vec(), stale);
+        assert_eq!(squad_ids(&records, country as i16), squad);
+    }
+
+    /// The friendly record of a coach poked into the save
+    /// (`FUN_0063b3c2`, `FUN_0063b488`, `FUN_0063b510` and
+    /// `FUN_0063b598`): three candidates per slot and what stands
+    /// booked read from their offsets; the score only past its 0xff; the
+    /// write-back lands where `FUN_0063b510` puts it; a nation without a
+    /// coach reads nothing anywhere.  The date entries' pairs come out of
+    /// the raw bytes of `0x1ba07c0` as `FUN_006b8149` reads them.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_friendly_record_holds_candidates_booked_and_scores() {
+        let dir = PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves; the oracle's copy has it");
+            return;
+        }
+        let mut records = Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let nation = (1..0x75i16)
+            .find(|&n| team_block(&records, n).is_some())
+            .unwrap();
+        records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")).unwrap()[COACH] = 2;
+        {
+            let b = records.block_mut(&format!("{FRIENDLY_RECORDS:#x}[1]")).unwrap();
+            for k in 0..FRIENDLY_SLOTS {
+                for p in 0..FRIENDLY_SLOTS {
+                    let at = FRIENDLY_CANDIDATES + k * FRIENDLY_CAND_SLOT + p * FRIENDLY_PICK;
+                    b[at] = (p + 1) as u8;
+                    b[at + 2] = 200;
+                }
+                let at = FRIENDLY_BOOKED + k * FRIENDLY_PICK;
+                b[at..at + FRIENDLY_PICK].fill(0);
+            }
+            b[FRIENDLY_BOOKED] = 3;
+            b[FRIENDLY_BOOKED + 2] = 200;
+            b[FRIENDLY_SCORES + 4] = 0xff;
+            b[FRIENDLY_SCORES + 8] = 3;
+            b[FRIENDLY_SCORES + 9] = 1;
+            b[FRIENDLY_SCORES + 12] = 0xff;
+        }
+        let cands = friendly_candidates(&records, nation);
+        assert_eq!(cands[0][2].land(), 3);
+        assert_eq!(cands[2][0].team(), 200);
+        let booked = friendly_booked(&records, nation);
+        assert_eq!((booked[0].land(), booked[0].team()), (3, 200));
+        assert_eq!(booked[1], FriendlyPick::default(), "the free slots stand at 0");
+        assert_eq!(friendly_score(&records, nation, 0), None, "0xff is no score");
+        assert_eq!(friendly_score(&records, nation, 1), Some((3, 1)));
+        assert_eq!(friendly_score(&records, nation, 2), None);
+        // The write-back of a spun-away pick, which the original still
+        // books: the second slot takes the third candidate.
+        let mut booked = friendly_booked(&records, nation);
+        booked[1] = cands[1][2];
+        set_friendly_booked(&mut records, nation, &booked);
+        assert_eq!(&records.block(&format!("{FRIENDLY_RECORDS:#x}[1]")).unwrap()[FRIENDLY_BOOKED + FRIENDLY_PICK..FRIENDLY_BOOKED + 2 * FRIENDLY_PICK], &cands[1][2].0);
+        assert_eq!(friendly_booked(&records, nation)[1], cands[1][2]);
+        // No coach, no record.
+        records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")).unwrap()[COACH] = 0;
+        assert_eq!(friendly_booked(&records, nation), [FriendlyPick::default(); FRIENDLY_SLOTS]);
+        assert_eq!(friendly_candidates(&records, nation)[0], [FriendlyPick::default(); FRIENDLY_SLOTS]);
+        assert_eq!(friendly_score(&records, nation, 1), None);
+        // The date entries: an entry naming a nation, and its pairs by
+        // their bytes.
+        if let Some(b) = records.block(&format!("{DATE_ENTRIES:#x}")) {
+            let entry = (0..DATE_ENTRY_MOST).find(|&idx| {
+                let e = &b[idx * DATE_ENTRY..idx * DATE_ENTRY + DATE_ENTRY];
+                let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+                (0..count).any(|k| word(e, DATE_NATIONS + 2 * k) == nation)
+            });
+            assert_eq!(date_entry(&records, nation), entry, "the scan finds the same entry");
+            if let Some(entry) = entry {
+                let e = &b[entry * DATE_ENTRY..entry * DATE_ENTRY + DATE_ENTRY];
+                let count = usize::try_from(word(e, 0)).unwrap_or(0).min(DATE_NATIONS_MOST);
+                for column in 0..10 {
+                    let want: Vec<(i16, i16)> = (0..3)
+                        .filter_map(|k| {
+                            let at = DATE_PAIRS + column * 6 + k * 2;
+                            let (a, c) = (usize::from(e[at]), usize::from(e[at + 1]));
+                            (a < count && c < count).then(|| (word(e, DATE_NATIONS + 2 * a), word(e, DATE_NATIONS + 2 * c)))
+                        })
+                        .collect();
+                    assert_eq!(international_pairs(&records, entry, column), want, "column {column}");
+                }
+            }
+        }
+    }
+
+    /// The walk of `FUN_004cb3b2` over a crafted record: rows newest
+    /// first, the contest by the counter's remainder mod 4 and its step,
+    /// the result ids counting up from 4190 and the coaches cut at their
+    /// NUL — and, without national teams behind the land, every row a
+    /// Weltmeisterschaft with the counter leaping by 4.
+    #[test]
+    fn the_walk_reads_the_rows_newest_first() {
+        let mut record = [0u8; RESULT_RECORD];
+        record[0..2].copy_from_slice(&3i16.to_le_bytes());
+        record[2..4].copy_from_slice(&2004i16.to_le_bytes());
+        for (slot, id) in [(2, 0i16), (1, 5), (0, 6)] {
+            record[4 + slot * 2..6 + slot * 2].copy_from_slice(&id.to_le_bytes());
+        }
+        for (slot, name) in [(2, "Völler"), (1, "Löw"), (0, "Klinsmann")] {
+            let at = 0x18 + slot * 0x10;
+            let bytes: Vec<u8> = name
+                .chars()
+                .map(|c| a3_files::bitmap_font::to_cp1252(c).unwrap_or(b'?'))
+                .collect();
+            record[at..at + bytes.len()].copy_from_slice(&bytes);
+        }
+        let named = rows(&record, true);
+        assert_eq!(
+            named,
+            [
+                Success { year: 2005, contest: WORLD_CUP, result: FIRST_RESULT, coach: "Völler".into() },
+                Success { year: 2003, contest: EUROPEAN_CUP, result: FIRST_RESULT + 5, coach: "Löw".into() },
+                Success { year: 2001, contest: WORLD_CUP, result: FIRST_RESULT + 6, coach: "Klinsmann".into() },
+            ]
+        );
+        let once = {
+            let mut r = [0u8; RESULT_RECORD];
+            r[0..2].copy_from_slice(&2i16.to_le_bytes());
+            r[2..4].copy_from_slice(&2006i16.to_le_bytes());
+            rows(&r, false)
+        };
+        assert_eq!(
+            once,
+            [
+                Success { year: 2007, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
+                Success { year: 2003, contest: WORLD_CUP, result: FIRST_RESULT, coach: String::new() },
+            ]
+        );
+    }
+
+    /// The friendlies offered at the turn as the original offered them on
+    /// NewSeason000 (its human coaching nation 23): the coach's record
+    /// holds three slots of three candidates whose lands come out of the
+    /// same strength pools, place by place, as the original's — nine
+    /// lands, none drawn twice, none coached, none below strength 3 —,
+    /// each the national team with a coin at +4; the booked entries and
+    /// scores stand cleared, the other records as the original's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_friendlies_are_offered_out_of_the_original_pools() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves");
+            return;
+        }
+        let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let (mut ours, theirs) = (load(), load());
+        for k in 0..4 {
+            let b = ours.block_mut(&format!("{FRIENDLY_RECORDS:#x}[{k}]")).unwrap();
+            for e in 0..FRIENDLY_ENTRIES {
+                b[e * FRIENDLY_PICK] = 0x55;
+                put16(b, e * FRIENDLY_PICK + 2, 0x5555);
+            }
+            for slot in 0..FRIENDLY_SLOTS {
+                b[FRIENDLY_SCORES + 4 * (slot + 1)] = 7;
+            }
+        }
+        draw_friendlies(&mut ours, &mut crate::random::Random::new(3));
+        let coach = usize::from(coach_number(&theirs, 23));
+        assert_ne!(coach, 0, "nation 23 names its coach");
+        let strength = |n: u8| theirs.countries.get::<u8>(crate::season_odds::NATION_STRENGTH + usize::from(n));
+        let pool = |n: u8| match strength(n) {
+            s if s >= STRONG_FROM => 2,
+            s if s >= MIDDLING_FROM => 1,
+            _ => 0,
+        };
+        for k in 0..4 {
+            let name = format!("{FRIENDLY_RECORDS:#x}[{k}]");
+            let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+            if k + 1 != coach {
+                assert_eq!(a[..0x54], b[..0x54], "record {k} as the original's");
+                continue;
+            }
+            let (mut x, mut y) = (Vec::new(), Vec::new());
+            for e in 0..9 {
+                let (p, q) = (&a[e * FRIENDLY_PICK..(e + 1) * FRIENDLY_PICK], &b[e * FRIENDLY_PICK..(e + 1) * FRIENDLY_PICK]);
+                assert_eq!((p[1], word(p, 2)), (0, 200), "candidate {e}");
+                assert!(word(p, 4) < 2, "candidate {e}'s coin");
+                assert!(p[0] != 23 && strength(p[0]) >= WEAK_FROM, "candidate {e}'s land {}", p[0]);
+                assert_eq!(pool(p[0]), pool(q[0]), "candidate {e}: ours {} theirs {}", p[0], q[0]);
+                x.push(p[0]);
+                y.push(q[0]);
+            }
+            x.sort_unstable();
+            x.dedup();
+            assert_eq!(x.len(), 9, "no land drawn twice");
+            assert!(!y.contains(&23));
+            assert_eq!(a[0x36..0x54], b[0x36..0x54], "booked and scores as the original's");
+        }
+    }
+
+    /// The original's new season (NewSeason000) noted again from its own
+    /// groups and bookings, the fields standing as SeasonEnd364 left them:
+    /// every national team's next match comes out as the original's — the
+    /// human coach's qualifier, the rest's first friendly against the
+    /// loader's leftover — but for the referee the original draws.
+    /// The qualifiers drawn at the turn as the original drew them on
+    /// NewSeason000 (season 2, 2026, its human coaching nation 23): six
+    /// groups of six with their calendar and no result, the human's nation
+    /// first in the first group, each pair of places holding the same pot
+    /// of the ranking as the original's; the tournament's groups stand. An
+    /// odd year keeps its groups.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_qualifiers_draw_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let path = dir.parent().unwrap().join("saves-kept/NewSeason000.an3");
+        if !path.exists() {
+            eprintln!("no NewSeason000 among the kept saves");
+            return;
+        }
+        let load = || Records::from_save(Save::read(&path).unwrap()).unwrap();
+        let (mut ours, theirs) = (load(), load());
+        let data = crate::data::Data::load(&dir).unwrap();
+        let name = format!("{DATE_ENTRIES:#x}");
+        ours.block_mut(&name).unwrap()[..QUALIFYING_GROUPS * DATE_ENTRY].fill(0x55);
+        ours.globals.put::<u16>(KNOCKOUT_ROUND, 7);
+        draw_qualifiers(&mut ours, &data.rules.pitch.european, &mut crate::random::Random::new(3));
+        let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+        assert_eq!(a[QUALIFYING_GROUPS * DATE_ENTRY..], b[QUALIFYING_GROUPS * DATE_ENTRY..], "the tournament's groups stand");
+        assert_eq!(ours.globals.get::<u16>(KNOCKOUT_ROUND), 0xffff);
+        // Slot k is group k mod 6, place k / 6; each slot's nation comes
+        // from the same pot as the original's: the human's, then the
+        // ranking's rows below 12, 24 and 37.
+        let drawn = |blk: &[u8]| -> Vec<i16> {
+            (0..36).map(|k| word(&blk[(k % QUALIFYING_GROUPS) * DATE_ENTRY..], DATE_NATIONS + 2 * (k / QUALIFYING_GROUPS))).collect()
+        };
+        let pot = |n: i16| {
+            if n == 23 {
+                return 0;
+            }
+            let row = (0..0x25).position(|row| theirs.globals.get::<i16>(RANKING_AT + row * RANKING_ROW) == n).expect("ranked");
+            1 + POTS.iter().position(|&(from, to)| (from..to).contains(&row)).unwrap()
+        };
+        for g in 0..QUALIFYING_GROUPS {
+            let (x, y) = (&a[g * DATE_ENTRY..(g + 1) * DATE_ENTRY], &b[g * DATE_ENTRY..(g + 1) * DATE_ENTRY]);
+            assert_eq!(word(x, 0), 6);
+            assert_eq!(x[GROUP_RESULTS..], y[GROUP_RESULTS..], "group {g}'s results and calendar");
+        }
+        let (mut x, mut y) = (drawn(a), drawn(b));
+        assert_eq!(x[0], 23, "the human's nation leads");
+        assert_eq!(x.iter().map(|&n| pot(n)).collect::<Vec<_>>(), y.iter().map(|&n| pot(n)).collect::<Vec<_>>());
+        x.sort_unstable();
+        y.sort_unstable();
+        assert_eq!(x, y, "the same 36 nations");
+        let mut odd = load();
+        odd.globals.set_start_year(2027);
+        let before = odd.block(&name).unwrap().to_vec();
+        draw_qualifiers(&mut odd, &data.rules.pitch.european, &mut crate::random::Random::new(3));
+        assert_eq!(odd.block(&name).unwrap(), &before[..]);
+    }
+
+    /// A new game's first qualifiers as the original's (the oracle's new
+    /// game, its first-turn dump): from the generator as it stood before
+    /// `FUN_0067c02f` there (trace index 775,209), the six groups are drawn
+    /// for the coming year's tournament and their first five matchdays
+    /// played, every group's block as the original's, in the trace's 216
+    /// calls of the draw.
+    #[test]
+    #[ignore = "reads the oracle's dumps from $ANSTOSS3_ORACLE"]
+    fn a_new_game_draws_and_plays_its_first_qualifiers_as_the_original() {
+        use crate::random::Random;
+        let (Some(oracle), Some(dir)) = (std::env::var_os("ANSTOSS3_ORACLE"), std::env::var_os("ANSTOSS3_DIR")) else {
+            eprintln!("no oracle dump of a new game's first turn among the saves: ANSTOSS3_ORACLE or ANSTOSS3_DIR is not set");
+            return;
+        };
+        let path = std::path::PathBuf::from(oracle).join("runs/new-game/first-turn.an3");
+        if !path.exists() {
+            eprintln!("no oracle dump of a new game's first turn among the saves");
+            return;
+        }
+        let dump = a3_files::an3::Save::read(&path).unwrap();
+        let (mut ours, theirs) = (Records::from_save(dump.clone()).unwrap(), Records::from_save(dump).unwrap());
+        assert!(ours.globals.get::<i16>(SEASON_AT) <= 1);
+        let data = crate::data::Data::load(std::path::Path::new(&dir)).unwrap();
+        let name = format!("{DATE_ENTRIES:#x}");
+        ours.block_mut(&name).unwrap()[..QUALIFYING_GROUPS * DATE_ENTRY].fill(0x55);
+        ours.globals.put::<u16>(KNOCKOUT_ROUND, 7);
+        let start = Random::from_state(114_273_025, 1_000_248_502);
+        let mut random = start.clone();
+        draw_qualifiers(&mut ours, &data.rules.pitch.european, &mut random);
+        let (a, b) = (ours.block(&name).unwrap(), theirs.block(&name).unwrap());
+        for g in 0..QUALIFYING_GROUPS {
+            let at = g * DATE_ENTRY;
+            assert_eq!(a[at..at + DATE_ENTRY], b[at..at + DATE_ENTRY], "qualifying group {g}");
+        }
+        assert_eq!(ours.globals.get::<u16>(KNOCKOUT_ROUND), theirs.globals.get::<u16>(KNOCKOUT_ROUND));
+        let mut count = start.clone();
+        let drawn = (0..1000).position(|_| {
+            if count == random {
+                return true;
+            }
+            count.below(2);
+            false
+        });
+        // The trace's 216 calls less the three pots' last nations, taken
+        // with a range of one, which leaves the generator as it stands.
+        assert_eq!(drawn, Some(213));
+        assert_eq!(random, Random::from_state(1_176_319_081, 871_609_509));
+    }
+
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_nations_next_matches_come_out_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let (end, mut b, n) = (load("SeasonEnd364.an3"), load("NewSeason000.an3"), load("NewSeason000.an3"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let fields = NEXT_DAY..NEXT_REFEREE + 2;
+        for nation in 1..NATIONS as i16 {
+            let name = format!("{NATIONAL_TEAMS:#x}[{nation}]");
+            let before = end.block(&name).unwrap()[fields.clone()].to_vec();
+            b.block_mut(&name).unwrap()[fields.clone()].copy_from_slice(&before);
+        }
+        note_next_matches(&mut b, &data.calendar, 0);
+        let (mut qualifiers, mut friendlies) = (0, 0);
+        for nation in 1..NATIONS as i16 {
+            let (x, y) = (team_block(&b, nation).unwrap(), team_block(&n, nation).unwrap());
+            let upto = if human_coached(&n, nation) { NEXT_REFEREE } else { NEXT_REFEREE + 2 };
+            assert_eq!(x[NEXT_DAY..upto], y[NEXT_DAY..upto], "nation {nation}");
+            qualifiers += usize::from(y[NEXT_KIND] == NEXT_QUALIFIER);
+            friendlies += usize::from(y[NEXT_KIND] == NEXT_FRIENDLY);
+        }
+        assert!(qualifiers >= 1 && friendlies > 100, "{qualifiers} {friendlies}");
+    }
+    /// The original's turn from SeasonEnd364 to NewSeason000 made its
+    /// human (standing 9, 6009 season points) coach of nation 23 for
+    /// 600,000 and 125,000 a round through dialog 356: the offer rule
+    /// lists him with the points the season end leaves and lets him go,
+    /// and taking 23 on the same day leaves the team, his key, his record
+    /// and his career's national stations as the original's.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn a_taken_national_offer_lands_as_the_original() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        if !keeps.join("SeasonEnd364.an3").exists() || !keeps.join("NewSeason000.an3").exists() {
+            eprintln!("no SeasonEnd364 or NewSeason000 among the saves");
+            return;
+        }
+        let load = |name: &str| Records::from_save(Save::read(&keeps.join(name)).unwrap()).unwrap();
+        let new = load("NewSeason000.an3");
+        let prepared = || {
+            let mut end = load("SeasonEnd364.an3");
+            end.globals.set_date(new.globals.date());
+            end.globals.put::<i16>(SEASON_AT, new.globals.get::<i16>(SEASON_AT));
+            end.globals.set_start_year(new.globals.start_year());
+            end.managers[0].put::<i16>(SEASON_POINTS, new.managers[0].get::<i16>(SEASON_POINTS));
+            end
+        };
+        let mut end = prepared();
+        let mut offered = Vec::new();
+        for seed in 0..40 {
+            let mut r = prepared();
+            let offers = draw_offers(&mut r, &mut crate::random::Random::new(seed));
+            assert!(offers.iter().all(|(slot, n)| *slot == 0 && !n.is_empty() && n.len() <= OFFERS_MOST));
+            offered.extend(offers.into_iter().flat_map(|(_, n)| n));
+        }
+        assert!(offered.contains(&23), "{offered:?}");
+        let ranks: Vec<i16> = (8..25).map(|k| end.globals.get::<i16>(RANKING_AT + k * RANKING_ROW)).collect();
+        assert!(offered.iter().all(|n| ranks.contains(n)), "{offered:?}");
+        take(&mut end, 0, Terms { nation: 23, salary: 600_000, bonus: 125_000 });
+        let (x, y) = (team_block(&end, 23).unwrap(), team_block(&new, 23).unwrap());
+        assert_eq!(x[COACH..COACH + 2], y[COACH..COACH + 2]);
+        for at in [KEY_NATION + KEY, KEY_TEAM + KEY] {
+            assert_eq!(end.globals.get::<u16>(at) & 0xff, new.globals.get::<u16>(at) & 0xff, "{at:#x}");
+        }
+        let (a, b) = (&end.managers[0], &new.managers[0]);
+        assert_eq!(a.national_team(), 23);
+        for at in [CONTRACT_SET, CONTRACT_SALARY, CONTRACT_BONUS] {
+            assert_eq!(a.get::<i32>(at), b.get::<i32>(at), "{at:#x}");
+        }
+        let (c, d) = (end.career(0).unwrap(), new.career(0).unwrap());
+        assert_eq!(c[0x1c0..0x1c2], d[0x1c0..0x1c2], "national jobs");
+        assert_eq!(c[0x1c3], d[0x1c3], "national stations");
+        assert_eq!(c[0x624..0x624 + 0x1c * 20], d[0x624..0x624 + 0x1c * 20], "the stations");
+    }
+}

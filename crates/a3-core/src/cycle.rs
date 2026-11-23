@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::data::Data;
 use crate::load;
 use crate::medical;
+use crate::national;
 use crate::newgame::{self, Mode, Setup};
 use crate::random::Random;
 use crate::records::Records;
@@ -39,6 +40,21 @@ pub mod dialogs {
     pub const NAMES: u16 = 212;
     pub const CLUB: u16 = 304;
     pub const NATIONAL_TEAM: u16 = 352;
+    pub const NATIONAL_MENU: u16 = 355;
+    /// The coach putting together his national squad
+    /// (`CNationalkaderZusammenstellen`).
+    pub const NATIONAL_SQUAD: u16 = 357;
+    /// The coach looking for a foreign player to talk into changing his
+    /// nation (`CNationalSpielerSuchen`).
+    pub const NATIONAL_SEARCH: u16 = 351;
+    /// The overview of his naturalization talks (`CEinbuergerungsgespraeche`).
+    pub const NATIONAL_TALKS: u16 = 471;
+    /// The coach arranging his team's friendlies in the international
+    /// windows (`CNationalFreundschaftsspiel`).
+    pub const NATIONAL_FRIENDLY: u16 = 354;
+    /// The successes of every nation's teams at the big tournaments
+    /// (`CInfoNationalteam`).
+    pub const NATIONAL_INFO: u16 = 472;
     pub const ABILITIES: u16 = 374;
     pub const BIRTHDAY: u16 = 491;
     pub const SETTINGS: u16 = 256;
@@ -47,6 +63,15 @@ pub mod dialogs {
     pub const FAILED: u16 = 102;
     pub const SIGNED: u16 = 104;
     pub const NOTICE: u16 = 380;
+    /// A Turnier's draw and its results, for a human taking part.
+    pub const TOURNAMENT_DRAW: u16 = 298;
+    pub const TOURNAMENT_RESULT: u16 = 299;
+    /// A hall's results, for a human taking part.
+    pub const HALL_RESULT: u16 = 94;
+    /// The betting shop's report of the matchday just paid
+    /// (`CWettauswertung`); it comes up for every human the settlement
+    /// left a section marked for (`FUN_0077f1b8` kind 1).
+    pub const BET_REPORT: u16 = 409;
     pub const QUESTION: u16 = 384;
     pub const WAIT: u16 = 381;
     pub const OFFICE: u16 = 483;
@@ -92,6 +117,10 @@ pub mod dialogs {
     /// each player's own training, its sixth.
     pub const LONG_TRAINING: u16 = 345;
     pub const INDIVIDUAL_TRAINING: u16 = 347;
+    /// The abilities gained and lost over the week (`CFaehigkeitenWoche`),
+    /// which the turns show for a human club whose book of the week has
+    /// entries.
+    pub const WEEK_ABILITIES: u16 = 364;
     /// The ability a player is to work on, chosen from those he lacks.
     pub const ABILITY_CHOICE: u16 = 365;
     /// The year calendar, the bar's seventh symbol; the week planner, its
@@ -156,12 +185,20 @@ pub mod dialogs {
     pub const APPOINTMENTS: u16 = 25;
     pub const WATCH_LIST: u16 = 27;
     pub const WATCHED_PLAYER: u16 = 28;
+    /// Which human clubs join a talk from the week-start form of 25
+    /// (`CAnVerhandlungenTeilnehmen`).
+    pub const JOIN_TALKS: u16 = 376;
     /// The balance sheet's deposits, its loans, a loan paid back, the
     /// bank's refusal.
     pub const INVESTMENTS: u16 = 16;
     pub const LOANS: u16 = 335;
     pub const REPAYMENT: u16 = 138;
     pub const NO_CREDIT: u16 = 24;
+    /// The alert of a human club out of a talk on its day: "ANSTOSS 3 -
+    /// Achtung %s!" over the bank's refusal or the full squad.
+    pub const ALERT_FOR: u16 = 2917;
+    pub const BANK_NO_CREDIT: u16 = 2918;
+    pub const SQUAD_FULL: u16 = 2919;
     pub const TRAINING_PICTURES: u16 = 513;
     pub const UNIT_CHOICE: u16 = 362;
     /// "Sind Sie sicher?" before the training strip writes, reads or
@@ -174,11 +211,86 @@ pub mod dialogs {
     /// A talk with a player, on the day it was booked for.
     pub const TALK: u16 = 461;
     pub const VISIT: u16 = 210;
+    /// A poaching talk with another club's player on its day,
+    /// `CVerhandlungAbwerbeversuch` (`IDD_VERTRAGSVERLAENGERUNG_SPIELER_STANDARD`).
+    pub const POACHING_TALK: u16 = 319;
+    /// A transfer's fee talked over with its human seller,
+    /// `CVerhandlungUeberAbloese` (`IDD_VERHANDLUNG_UEBER_ABLOESE`).
+    pub const FEE_TALK: u16 = 308;
+    /// The year calendar's open day, `IDD_TAG_DER_OFFENEN_TUER`.
+    pub const OPEN_DAY: u16 = 270;
+    /// The tables after the matchday, `CTabelleNachDemSpiel`
+    /// (`IDD_TABELLE_NACH_DEM_SPIEL`).
+    pub const TABLES_AFTER: u16 = 269;
+    /// The interview after the match, `CInterviewDialog`
+    /// (`IDD_INTERVIEW`).
+    pub const INTERVIEW: u16 = 383;
+    /// The match report after the match, `CSpielberichtStandard`
+    /// (`IDD_SPIELBERICHT_STANDARD`).
+    pub const MATCH_REPORT: u16 = 332;
+    /// The last information before the match, `CInfoseiteHaupt`
+    /// (`IDD_INFOSEITE_HAUPT`), with a page `CInfoseiteSpiel` a match.
+    pub const PREMATCH: u16 = 96;
+    /// Half time of a human club's match, `CHalbzeitpause`
+    /// (`IDD_HALBZEIT`), and the talk behind it, `CHalbzeitAnsprache`
+    /// (`IDD_HALBZEIT_ANSPRACHE`).
+    pub const HALFTIME: u16 = 93;
+    pub const HALFTIME_TALK: u16 = 499;
+    /// The doping control after the match, `CDopingAusgabe`
+    /// (`IDD_DOPING_AUSGABE`).
+    pub const DOPING_CONTROL: u16 = 41;
+    /// The careers the season's end closes, `CMitTraenen`
+    /// (`IDD_MIT_TRAENEN`, event 0xcd).
+    pub const FAREWELLS: u16 = 152;
+    /// The players' development, a page each human club, `CAufwertung`
+    /// (`IDD_AUFWERTUNG`, event 0xca).
+    pub const DEVELOPMENT: u16 = 22;
+    /// The European ranking the season's end rolled on,
+    /// `CUefa5Jahreswertung` (`IDD_UEFA`, event 0xcf).
+    pub const EUROPEAN_RANKING: u16 = 301;
+    /// The cup results after the matchday, `CPokalNachSpieltag`
+    /// (`IDD_POKAL_NACH_DEM_SPIEL`).
+    pub const CUP_RESULTS: u16 = 161;
+    /// The association's court on its planner day, `CGerichtDialog`
+    /// (`IDD_GERICHT`).
+    pub const COURT: u16 = 89;
+    /// The question over a fine the day's news asks its manager,
+    /// `CEreignisFrage` (event 0xfd posted and waited for,
+    /// `FUN_00650669`); the camp group's choice shares this window
+    /// (dialog 50).
+    pub const EVENT_QUESTION: u16 = 50;
+    /// The season's new goal at the turn
+    /// (`IDD_VERTRAGSKONDITIONEN_SAISONWECHSEL`, `FUN_005bebe0`'s 0x17b).
+    pub const SEASON_GOAL: u16 = 379;
+    /// A nation's offer of its team at an even year's turn
+    /// (`IDD_NATIONALTRAINER_WERDEN`, `CNationaltrainerWerden`, event
+    /// 0xc2).
+    pub const NATIONAL_OFFER: u16 = 356;
+    /// The new contract terms after a promotion or relegation
+    /// (`IDD_VERTRAGSKONDITIONEN_LIGAWECHSEL`, `FUN_005be00a`'s 0x13a).
+    pub const NEW_TERMS: u16 = 314;
+    /// The season start's negotiations the manager leads himself
+    /// (`IDD_SAISONSTART_VERHANDLUNGEN`, `CSaisonstartVerhandlungen`).
+    pub const SEASON_START_TALKS: u16 = 422;
+    /// The European television's talks a manager leads himself
+    /// (`IDD_VERHANDLUNGEN_UEFA_CUP`, `CDiVerhandlungenUefa`).
+    pub const EURO_TV_TALKS: u16 = 475;
+    /// The season's preparation (`CVorbereitung`).
+    pub const SEASON_PREPARATION: u16 = 419;
+    /// The overviews of the season's start (`CSaisonstartAuslosungen`).
+    pub const SEASON_OVERVIEWS: u16 = 420;
 }
+
+/// The option at `DAT_00b5d19a` that leaves the first season's
+/// preparation and overviews to the computer.
+const QUICK_START_OPTION: usize = 0xb5d19a;
 
 use self::dialogs::*;
 
 /// The start menu's entries, in order.
+/// The season tickets sell and the boards are let while the half weeks
+/// since the season's start stand below this (`DAT_00b5cbd2 < 0xc`).
+const PRESEASON_HALF_WEEKS: u16 = 12;
 const NEW_GAME: usize = 0;
 const LOAD_GAME: usize = 1;
 const HOST_NEW: usize = 2;
@@ -187,6 +299,10 @@ const JOIN: usize = 4;
 const SCORES: usize = 5;
 /// "Niemand hat Sie mehr im Angebot": every offer is gone.
 const NO_ONE_LEFT: u16 = 5053;
+/// "Sie haben für das anstehende Länderspiel nicht genügend Spieler in
+/// ihrem Nationalkader!": the week hub's alert when its coach's squad is
+/// too small for his team's match this week.
+const NOT_ENOUGH_PLAYERS: u16 = 4966;
 /// Clubs from this class on have the grand office.
 const GRAND_CLASS: i64 = 5;
 /// The manager's choice of the office over the menu bar.
@@ -194,6 +310,23 @@ const OFFICE_MENU: u8 = 1;
 /// The manager's choice of the text menu over the menu bar.
 const TEXT_MENU_CHOICE: u8 = 2;
 const WEEK_DAYS: usize = 7;
+/// Whether the game shows the tournaments' screens (`DAT_00b5d14f`).
+const TOURNAMENT_SCREENS: usize = 0xb5d14f;
+/// The game's switch for the Spielbericht after the match (byte 0x07 of
+/// the switches at `0xb5d13c`, `DAT_00b5d143`), on at 1.
+const REPORT_SWITCH: usize = 0x07;
+/// From this day of the season the report follows every match; before it
+/// only with the preparation normal (5) or "nur Pflichtspiele" (12)
+/// (`FUN_006ef262`, `DAT_00b5d152`).
+const REPORTS_FROM: usize = 42;
+const FULL_PREPARATIONS: [u8; 2] = [5, 12];
+
+/// Whether the day's match reports open their dialog (`FUN_006ef262`
+/// posting event 0xce, `FUN_00551818` opening it).
+fn reports_shown(records: &Records, day: usize) -> bool {
+    (day >= REPORTS_FROM || FULL_PREPARATIONS.contains(&records.globals.preparation()))
+        && records.globals.game_options()[REPORT_SWITCH] == 1
+}
 /// The game option "Spielankündigung vor jedem Spiel" (its byte among the
 /// switches at `0xb5d13c`), on; how many days ahead it announces a match.
 const ANNOUNCE_OPTION: usize = 2;
@@ -210,6 +343,9 @@ const LEAGUE_MATCH: u8 = 2;
 /// A talk booked in the week planner, and the talk itself.
 const TALK: u8 = 0x19;
 const TALK_DIALOG: u16 = dialogs::TALK;
+/// An event entry of the year calendars, and the open day's number in it.
+const CALENDAR_EVENT: u8 = 8;
+const OPEN_DAY_EVENT: u16 = 6;
 /// A sick visit booked in the week planner; what the week calls each.
 const VISIT: u8 = 0x0b;
 const TALK_TEXT: u16 = 4230;
@@ -279,6 +415,14 @@ pub enum Args {
     /// season end posts to every human club opens it (`FUN_006742e0`,
     /// `FUN_004a141c`).
     Statement,
+    /// A main screen opened from the office or the text menu: without the
+    /// bar and with its OK, which leads back to that menu — every hub
+    /// clears the request's bar byte before it opens either menu
+    /// (`FUN_00650b84`, the turn before a match `FUN_00652a86` 0x652dc6,
+    /// `FUN_0065337e`, `FUN_00653bab`, `FUN_0065427a`), and its loop head
+    /// opens the menu again on any code the screen answers. Built for the
+    /// tactics (dialog 271, `FUN_0058a915`).
+    FromMenu,
     /// The world map of the training camps' places, for a camp from a day.
     CampDay(usize),
     /// The choice of a friendly's opponent, for a day.
@@ -288,6 +432,13 @@ pub enum Args {
     TournamentDay { day: usize, kind: u8 },
     /// One's own tournament to invite clubs to, by its id.
     OwnTournament { id: u32, day: usize, kind: u8 },
+    /// A tournament to show, by its id.
+    Tournament(u32),
+    /// A friendly offered to another human's club: the club, whether the
+    /// asking club plays away, the day.
+    FriendlyAsk { country: u8, number: i16, away: bool, day: usize },
+    /// A human's club invited to a tournament of one's own.
+    TournamentInvite { id: u32, country: u8, number: i16 },
     /// A camp's place to confirm, from 0, and its first day.
     Camp { place: usize, day: usize },
     /// The choice among a group's other places, from 0: up to three.
@@ -300,6 +451,52 @@ pub enum Args {
     Player(usize),
     /// A player of the game, by his record's id.
     Record(u16),
+    /// A player of the game, and the club (country, number) a popup about
+    /// him is for: its caption ends in the club's name.
+    RecordAt(u16, u8, i16),
+    /// A notice's text for a club, its caption "ANSTOSS 3 - Achtung! -
+    /// <club>" (`FUN_0043e49f`).
+    TextAtClub(u16, u8, i16),
+    /// The week's appointments as the week start shows them, for all
+    /// humans at once (25 with +0xd94 set).
+    WeekStart,
+    /// The human clubs that may join a talk (376): up to four, by country
+    /// and number.
+    JoinClubs { clubs: [(u8, i16); 4], count: u8 },
+    /// The leagues the table after the matchday steps through, by country
+    /// and level (the list at 0x1c2efd0 the dialog copies, `FUN_007291e4`).
+    Tables { leagues: [(u16, u8); crate::matches::TABLES_MOST], count: u8 },
+    /// The human clubs whose match reports the Spielbericht after the
+    /// match shows, the first opened, the others by their crests
+    /// (`FUN_00551818`'s list, the dialog's +0x3328).
+    Reports { clubs: [(u8, i16); 4], count: u8 },
+    /// The doping control of a human's club after the match
+    /// (`DAT_00a2e0b8`).
+    Doping(crate::doping_control::Control),
+    /// The human clubs' men whose careers the season's end closes
+    /// (`DAT_00a321f4`).
+    Farewells(crate::rollover::Farewells),
+    /// A case the association's court heard (`DAT_00a3b44c`).
+    Court(crate::court::Case),
+    /// The question over a fine the day's news left standing: the man
+    /// seen at it and his club (`FUN_005f29bc` kind 1, `CEreignisFrage`);
+    /// the reply names the row chosen, the dialog's OK the first.
+    EventQuestion(crate::fine_question::Question),
+    /// The new contract terms of the season's turn
+    /// (`CVertragskonditionenNeu`): its flag, set on a promotion and
+    /// clear on a relegation.
+    NewTerms { promoted: bool },
+    /// The nations offering a human their team at an even year's turn,
+    /// each with its first terms (dialog 356's rows).
+    NationalOffers { terms: [crate::national::Terms; crate::national::OFFERS_MOST], count: u8 },
+    /// The day's national cups for the cup results (the block at
+    /// `0xa3b488`).
+    CupResults(crate::cup_results::CupDay),
+    /// A day's event for its window (the block at `0xa2f6d8`).
+    Event(crate::event_text::Posted),
+    /// A record the current manager broke, for its window over the 3D
+    /// picture (`DAT_00a321fc`, kind 5).
+    Render(crate::render::Broken),
     /// Which player to watch a week: dialog 281 asking for one of the
     /// club's own, none excluded, "keiner" among them.
     WeekPlayer,
@@ -310,6 +507,21 @@ pub enum Args {
     Texts(u16, u16),
     /// A text by its id, with a player's name for its `%s`.
     TextFor(u16, u16),
+    /// A notice with its own title, its text with a player's name for its
+    /// `%s` and his club's phrases (`v1` … `V20`), by ids.
+    PlayerMove {
+        title: u16,
+        text: u16,
+        player: u16,
+    },
+    /// A notice whose title (by id) takes a club's name for its `%s`, over
+    /// a text by its id (`FUN_0043ddb9`).
+    ClubAlert {
+        title: u16,
+        text: u16,
+        country: u8,
+        number: i16,
+    },
     /// A text by its id, with the date of a day of the season for its
     /// `%s`.
     TextForDate(u16, usize),
@@ -373,6 +585,9 @@ pub enum Args {
         fair_fee: i32,
         option: i32,
         fair_option: i32,
+        /// The club the terms are shown for from the week-start form,
+        /// whose name the caption ends in.
+        club: Option<(u8, i16)>,
     },
     /// The builder's offer (text 4812): its price, the weeks and the weeks
     /// it comes to, and the cost in all.
@@ -592,11 +807,31 @@ impl Cycle {
             return Ok(());
         }
         let seed = (self.seed)();
+        let started = {
+            let state = self.state();
+            newgame::log(&self.data.world, &state.setup);
+            newgame::start(&self.data, &state.setup, seed)
+        };
+        let (records, random) = match started {
+            Ok((records, random)) => (records, random),
+            Err(err) => {
+                warn!("new game: {err}");
+                return Ok(());
+            }
+        };
+        let mut season = load::season(&records, &self.data, random);
+        // The hold on the market's roll is the load's (`DAT_00b5cc04`,
+        // `CDiLoad`); a game calculated from its files has none.
+        season.week_hold = false;
+        // The first season's offers, which the original's calculation
+        // builds along with the season (`new-game-exact-start-calc-offers`
+        // has its taking); the replica's stand-in until then.
+        crate::jobs::offer_jobs(&mut season, &self.data.world, &self.data.rules);
         {
             let mut state = self.state();
-            newgame::log(&self.data.world, &state.setup);
-            state.season = Some(newgame::calculate(&self.data, &state.setup, seed));
+            state.season = Some(season);
             state.play.game_loaded(0);
+            state.records = Some(records);
         }
         self.job_offers()?;
         self.weeks(true)
@@ -638,6 +873,44 @@ impl Cycle {
         Ok(())
     }
 
+    /// The humans queued to join take their slots at the week's start
+    /// (`FUN_006c5005`), each with the offers of the clubs in want of a
+    /// manager — the original lets him wait for the offers of a running
+    /// season, which are not built; the first season's stand in for them.
+    fn newcomers(&mut self) -> Result<(), Gone> {
+        let joined = {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            let queue = std::mem::take(&mut state.joining);
+            let Some(season) = state.season.as_mut() else { return Ok(()) };
+            let mut joined = Vec::new();
+            for trainer in &queue {
+                let Some(at) =
+                    crate::joining::join(season, state.records.as_mut(), &self.data.rules, trainer)
+                else {
+                    continue;
+                };
+                for j in &mut joined {
+                    if *j >= at {
+                        *j += 1;
+                    }
+                }
+                joined.push(at);
+            }
+            if !joined.is_empty() {
+                crate::jobs::offer_jobs_to(season, &self.data.world, &self.data.rules, &joined);
+            }
+            joined
+        };
+        if joined.is_empty() {
+            return Ok(());
+        }
+        let current = self.season(|s| s.current).unwrap_or(0);
+        self.job_offers()?;
+        self.season(|s| s.current = current.min(s.managers.len().saturating_sub(1)));
+        Ok(())
+    }
+
     /// Makes the next manager with offers the current one; whether there is
     /// one.
     fn next_with_offers(&self) -> bool {
@@ -671,12 +944,33 @@ impl Cycle {
     /// The current manager signs the offer on `tab` as it stands.
     fn sign(&self, tab: usize) {
         let data = &self.data;
-        self.season(|s| {
+        let club = self.season(|s| s.managers[s.current].offers.get(tab).map(|o| o.club));
+        if let Some(club) = club.flatten() {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            let Some(s) = state.season.as_mut() else { return };
             let current = s.current;
-            if let Some(club) = s.managers[current].offers.get(tab).map(|o| o.club) {
-                s.take_club(&data.world, &data.rules, current, club);
+            s.take_club(&data.world, &data.rules, current, club);
+            // A game loaded from its records: the manager's record names
+            // the club he is under contract with, and the club is followed
+            // as the records hold it.
+            if let Some(records) = state.records.as_mut()
+                && let Some(slot) = records.human_slot(current)
+                && let Some(nation) = data.world.country(club.0).map(|c| c.nation)
+            {
+                let manager = &mut records.managers[slot];
+                manager.set_status(load::HIRED);
+                manager.set_country(nation);
+                manager.set_team(club.1 as u16);
+                if let Some(team) = records.team_mut(nation, club.1 as u16) {
+                    let [_, second] = team.humans();
+                    team.set_humans([slot as u8 + 1, second]);
+                }
+                if let Some(followed) = load::club(records, data, club) {
+                    s.clubs.insert(club, followed);
+                }
             }
-        });
+        }
     }
 
     /// The managers who have a turn this week, in their order
@@ -698,55 +992,168 @@ impl Cycle {
         .unwrap_or_default()
     }
 
+    /// The abilities gained and lost over the week: before a turn, a
+    /// human club whose book has entries shows its dialog
+    /// (`CFaehigkeitenWoche`, built and run by `CMyStartDialog`'s
+    /// `FUN_00499e7f` in the week's open block).  An empty book shows
+    /// nothing and waits for nothing: the dialog's `OnInit` ends it
+    /// itself at once when the first entry reads 0 (`FUN_007a0d38(1)`).
+    fn week_abilities(&mut self) -> Result<(), Gone> {
+        let club = self.season(|s| {
+            let (country, number) = s.manager()?.club?;
+            let nation = self.data.world.country(country)?.nation;
+            Some((nation, u16::try_from(number).ok()?))
+        });
+        let Some((nation, number)) = club.flatten() else { return Ok(()) };
+        let guard = self.state();
+        let book = guard
+            .records
+            .as_ref()
+            .and_then(|records| {
+                let slot = records.team(nation, number).map_or(0, |t| t.human());
+                (!records.abilities_week(slot).is_empty()).then_some(slot)
+            });
+        drop(guard);
+        if book.is_some() {
+            self.ok(WEEK_ABILITIES)?;
+        }
+        Ok(())
+    }
+
     /// The season week by week: the autosave's wait screen, every human
     /// manager's turn, and the week running day by day — until the week of
     /// the first match, which is not played yet. A loaded game starts with
     /// the turns, as the original's does (its cycle's case 2).
     fn weeks(&mut self, mut wait: bool) -> Result<(), Gone> {
         loop {
+            // The turns begin on the week's first day, which the planner,
+            // the market and the contract talks count from
+            // (`FUN_006da3a9`'s state 1: `DAT_00b5cbd6 = DAT_00b5cbd4`).
+            // A loaded game first shows its turn again on the saved day
+            // itself (the load opens 147); that short week then ends at
+            // the day boundary below, where the turns here keep counting
+            // from — the saved week's own start stands until then.
+            if wait {
+                let mut guard = self.state();
+                if let Some(records) = guard.records.as_mut() {
+                    let today = records.globals.day();
+                    records.globals.set_week_start(today as i16);
+                    // Past the season's first half week the shareholders
+                    // vote (`DAT_00b5cbd2 != 0` → `FUN_00751d76` →
+                    // `FUN_00406baf`).
+                    if records.globals.half_weeks() != 0 {
+                        crate::stock::vote(records);
+                        // The block closes with the ticker's told jobs
+                        // dropped (`FUN_00751180`).
+                        if let Some(season) = guard.season.as_mut() {
+                            crate::career::drop_told(&mut season.job_notes);
+                        }
+                    }
+                }
+            }
+            if wait {
+                self.newcomers()?;
+            }
             self.statement()?;
             if wait {
                 self.ask(Request::new(WAIT))?;
+                // The week's appointments for all humans, before the
+                // turns: the week block queues code 0x88 behind the
+                // autosave's when the appointments hold any, with the
+                // preparation 5 or from day 42 (`FUN_006da3a9` at
+                // 0x6da86a, `FUN_00762149`); the start dialog opens 25
+                // with +0xd94 set (`FUN_0047c449`). Its option byte
+                // `DAT_00b5d142` is taken at its default, 1.
+                let due = self.state().records.as_ref().is_some_and(|r| {
+                    (r.globals.preparation() == NORMAL_PREPARATION || r.globals.day() >= 42)
+                        && !crate::transfers::appointments(r).is_empty()
+                });
+                if due {
+                    self.ask(Request::with(APPOINTMENTS, Args::WeekStart))?;
+                }
             }
             wait = true;
             for manager in self.turns() {
                 self.season(|s| s.current = manager);
+                self.week_abilities()?;
                 if !self.turn()? {
                     return Ok(());
                 }
             }
+            // The week's end stands at the week's boundary, not behind
+            // the turn: the original's cycle gates the blocks on
+            // `DAT_00b5cbd4 % 7 == 0` (`FUN_006da3a9`'s states 1, 2 and
+            // the 4 below them). A game loaded in the middle of its week
+            // — save "Toni", day 62 of the week from 56 — therefore runs
+            // none of them on its saved day; its first week end, and its
+            // next turn with the week's dialog 147 back at 63, came in
+            // the trace of 7 Nov.
+            let at_week_start = self.season(|s| s.day % WEEK_DAYS == 0).unwrap_or(true);
+            let mut trials = Vec::new();
             // The week's end first rolls the market (`FUN_00405c5e`):
             // every entry takes its price for the new week and the mean
             // of them moves the market's index. A freshly loaded game
             // holds that roll back (`DAT_00b5cc04`, `CDiLoad`) until its
             // advance sales below clear the hold — the traced original
             // week end, running just after a load, rolled no market.
-            {
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
                     (state.season.as_mut(), state.records.as_mut())
                 {
                     if !season.week_hold {
+                        // The week's end looks first at its last day's
+                        // matches (`FUN_006da3a9`'s case 2 polling
+                        // `FUN_0062a325` on the day six on): each league
+                        // playing then draws its pair for the doping
+                        // control, the list going on to `FUN_0078046d`
+                        // (unported). After a load the poll runs before
+                        // the turn's screen, its draws from the seed the
+                        // loader takes from `rand()`, so the replica's
+                        // fresh seed stands for them.
+                        crate::matches::list_day(
+                            records,
+                            &self.data.calendar,
+                            season.day + 6,
+                            &mut season.random,
+                        );
                         // The clubs' week on the transfer market comes
                         // first (`FUN_0042958d`): last years weighed,
                         // retirements announced.
-                        crate::transfer_week::week(records, &mut season.random);
+                        // Its youths poached from a human club are told
+                        // (`FUN_006c41b1`'s `FUN_005f0556`), with the
+                        // trials' ends below.
+                        trials = crate::transfer_week::week(records, &self.data.rules, &mut season.random);
                         // The human clubs' trials go on a week, or end
-                        // (`FUN_0064e25b`).
-                        crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false);
+                        // (`FUN_0064e25b`), each man gone back told to
+                        // his club below.
+                        trials.extend(crate::youth::end_trials(records, &mut season.clubs, &self.data.world, false));
                         // It forgets the last friendlies more than six
                         // weeks gone (`FUN_0043539b`).
                         crate::friendly::forget_last_friendlies(records, season.day as i16);
+                        // The week's negotiations and the court's day go
+                        // into the human clubs' planners (`FUN_0072d850`).
+                        crate::court::book_week(records);
                         crate::stock::roll_week(records, season.day as i32, &mut season.random);
                     }
                 }
             }
+            // The trials' ends come up as the week's block posts them
+            // (`FUN_0074d2b5`'s `FUN_005f1eaf`, the window waiting).
+            self.day_events(trials)?;
             // The week's end opens the advance sales of each human club's
             // league matches of the next four weeks (`FUN_0064e40f` ->
-            // `FUN_0077d4ea`), drawing as the original does; the sales
-            // clear the load's hold (`DAT_00b5cc04`).
-            {
+            // `FUN_0077d4ea`), and a record just opened sells at once
+            // (`FUN_0077c1d5`'s `FUN_0077bfbd`). The load's hold
+            // (`DAT_00b5cc04`, `CDiLoad`) covers the market block above
+            // and nothing after its clear: `FUN_0064e40f` clears the hold
+            // right before the club loop that keeps forms and opens these
+            // sales, so the traced original's first draw after `now
+            // random` was here — one far match's percent, `FUN_0078ab55`
+            // drawing below(2) and giving 1, one percent of a demand of
+            // 18.8 thousand sold right away.
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
@@ -754,6 +1161,14 @@ impl Cycle {
                 {
                     let today = season.day as i32;
                     let held = season.week_hold;
+                    // The rolling autosaves, after the turns: the week's
+                    // end writes them right before it clears the load's
+                    // hold, so the week a game was loaded in keeps none
+                    // (`FUN_0064e40f` → `FUN_006ecfeb`).
+                    if !held {
+                        self.autosave(records, season.day / WEEK_DAYS);
+                    }
+                    season.week_hold = false;
                     // The human clubs' players keep their forms for the
                     // trend (`FUN_007863d0`), and each human manager a
                     // copy of his club's money (`FUN_0078605e`), as the
@@ -761,6 +1176,15 @@ impl Cycle {
                     crate::season::keep_forms(records, &mut season.clubs, &self.data.world);
                     crate::settlement::keep_club_money(records);
                     for club in crate::statistics::human_clubs(records) {
+                        // The week's book of gained and lost abilities
+                        // ends with the week (`FUN_0064e40f`'s
+                        // `FUN_006436b3`, right before the advance
+                        // sales); what the days below record shows at the
+                        // next boundary, before this clears it again.
+                        let slot = records
+                            .team(u16::from(club.0), club.1 as u16)
+                            .map_or(0, |t| t.human());
+                        records.clear_abilities_week(slot);
                         crate::presale::week_end(
                             records,
                             &self.data.calendar,
@@ -769,8 +1193,12 @@ impl Cycle {
                             &mut season.random,
                             &self.data.presale,
                         );
+                        // The week's big sale is forgotten
+                        // (`FUN_0064e40f`'s `FUN_0069fd5a(0, 0)`).
+                        if let Some(extra) = usize::from(slot).checked_sub(1).and_then(|s| records.extras.get_mut(s)) {
+                            extra.set_big_sale([0, 0]);
+                        }
                     }
-                    season.week_hold = false;
                     // The computer clubs line up for the new week
                     // (`FUN_0064e40f`'s `FUN_0042a76e`), so the week's
                     // games are scored by their squads as they stand.
@@ -786,7 +1214,11 @@ impl Cycle {
             // (`FUN_006c5190`), and the highscores show them (its event
             // 0xb0) — unless no human is left: then the game ends as "Spiel
             // beenden" ends it, by its flag 4, before the event shows.
-            let (ended, left) = self.careers_end();
+            let (ended, left) = if at_week_start {
+                self.careers_end()
+            } else {
+                (false, true)
+            };
             if !left {
                 return Err(Gone);
             }
@@ -797,7 +1229,7 @@ impl Cycle {
             // humans' clubs with the recipients' other income, and
             // empties the week's store so its givers may give again
             // (`FUN_006eeda7`).
-            {
+            if at_week_start {
                 let mut guard = self.state();
                 let state = &mut *guard;
                 if let (Some(season), Some(records)) =
@@ -811,26 +1243,106 @@ impl Cycle {
                 return Ok(());
             };
             self.ask(Request::new(week))?;
-            for _ in 0..WEEK_DAYS {
-                self.appointments()?;
-                let week_start = {
+            // Days until the week's boundary: seven for a week that
+            // opened at one, and the rest of its own week for a loaded
+            // game standing mid-week — the `start` flag below fires on
+            // `day % 7 == 0`, where the turns begin again.
+            loop {
+                // The day walked; its booked open day's dialog comes up in
+                // the walk's middle, once the day's training is done and
+                // before the friendlies and the news (`open_events_on`
+                // below): the traced original showed it right after the
+                // training's last draw.
+                let walked = self.season(|s| s.day).unwrap_or(0);
+                let mut slots = None;
+                let mut posted = Vec::new();
+                let mut winter = false;
+                {
                     let mut guard = self.state();
                     let state = &mut *guard;
-                    state.season.as_mut().map(|season| {
+                    if let Some(season) = state.season.as_mut() {
+                        // The day's match list is drawn before the human
+                        // clubs' day (`FUN_006da3a9`'s case 3,
+                        // `FUN_0062a325(day)` into `0x1baf714`), each
+                        // league playing drawing its doping pair; once the
+                        // day's routine is done it is drawn again, and the
+                        // matches take that second list.
+                        if let Some(records) = state.records.as_ref() {
+                            crate::matches::list_day(records, &self.data.calendar, season.day, &mut season.random);
+                        }
                         // The human clubs' day starts it (`FUN_0064f981`):
-                        // the event gates, then the day's ticket sales.
+                        // on the second weekday the computer clubs'
+                        // own week first, then the event gates, then
+                        // the day's ticket sales.
                         let today = season.day as i32;
-                        let slots =
+                        if today % 7 == 1 {
+                            // The bulk draws from the shared dice, so
+                            // its draws come in the original's order
+                            // (`FUN_0074ca91`).
+                            if let Some(records) = state.records.as_mut() {
+                                crate::computer_training::week(
+                                    records,
+                                    &self.data.rules.computer_training,
+                                    &self.data.rules.training,
+                                    season.date(),
+                                    &mut season.random,
+                                );
+                            }
+                        }
+                        let gates =
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
+                        slots = Some(gates);
                         if let Some(records) = state.records.as_mut() {
+                            // The dated private lives run their day just
+                            // before the headline (`FUN_005f0428` in
+                            // `FUN_0064f981`): a page whose newest
+                            // booking lies wholly in the past is spent,
+                            // today's booked weddings marry the man and
+                            // go out, and today's booked births are born,
+                            // posted and taken out of the list again.
+                            let booked = crate::bookings::today(records);
+                            crate::bookings::drop_past(records, booked);
+                            for id in crate::bookings::todays(records, booked, crate::bookings::WEDDING) {
+                                crate::news::wedding(records, id);
+                                crate::bookings::unbook(records, id, booked, crate::bookings::WEDDING);
+                            }
+                            for id in crate::bookings::todays(records, booked, crate::bookings::BIRTH) {
+                                crate::news::born(records, id, &mut posted, &mut season.random);
+                                crate::bookings::unbook(records, id, booked, crate::bookings::BIRTH);
+                            }
+                            // The day's headline goes to the paper
+                            // before its events (`FUN_0078a0f5`); it
+                            // draws nothing.
+                            season.headlines.publish(records);
                             // The half week ticks first, the winter break
                             // developing the players at its 56th
                             // (`FUN_006da3a9`'s state 4).
-                            crate::development::half_week(records, today, &mut season.random);
+                            if let Some(report) = crate::development::half_week(records, today, &mut season.random) {
+                                winter = !report.is_empty();
+                                season.development = report;
+                            }
                             crate::presale::day(records, today, &mut season.random, &self.data.presale);
+                            // The week's first day starts with the men's
+                            // extra shifts and youth rounds and the
+                            // week's slips settled, before the day's loop
+                            // (`FUN_00747144`, `FUN_00786285`).
+                            if today % 7 == 0 {
+                                crate::training_day::week_start(
+                                    records,
+                                    &self.data.rules.discipline.mood,
+                                    &mut season.random,
+                                );
+                            }
+                            // Over the first six weeks the season tickets
+                            // sell and the perimeter boards are let
+                            // (`FUN_006da3a9` hands `FUN_0064f981` the
+                            // half weeks below 12).
+                            if records.globals.half_weeks() < PRESEASON_HALF_WEEKS {
+                                crate::tickets::season_ticket_day(records, &self.data.calendar, &mut season.random);
+                                crate::human_day::let_boards(records, today, &mut season.random);
+                            }
                             // The day's training at the human clubs
-                            // follows the sales (`FUN_00749508`), and the
-                            // day's news its second club loop.
+                            // follows the sales (`FUN_00749508`).
                             let date = season.date();
                             crate::training_day::day(
                                 records,
@@ -838,45 +1350,325 @@ impl Cycle {
                                 &self.data.world,
                                 today,
                                 date,
-                                &slots,
-                                &mut season.random,
-                            );
-                            // The day of the world closes it
-                            // (`FUN_006504b6` with the weekday); the
-                            // original's day of matches and its job
-                            // steps stand between, unported.
-                            crate::world_day::day(
-                                records,
-                                today.rem_euclid(7),
+                                (
+                                    &self.data.rules.discipline.mood,
+                                    &self.data.rules.medical,
+                                    &self.data.rules.league,
+                                    &self.data.rules.individual,
+                                    &self.data.rules.year,
+                                ),
+                                &mut season.recent_events,
+                                &mut posted,
                                 &mut season.random,
                             );
                         }
-                        season.pass_day();
-                        season.day += 1;
-                        // The day's league games: where the original lets
-                        // its clubs play them on the pitch, the replica
-                        // scores them into the league blocks and their
-                        // clubs' records — the human's game among them,
-                        // its 3D match being out of the replica's scope.
-                        if let Some(records) = state.records.as_mut() {
-                            crate::matches::play_day(
+                    }
+                }
+                // The winter break's development comes up first, posted
+                // at the half week's tick (`FUN_0040f99c(1)`, event 0xca).
+                if winter {
+                    self.ask(Request::new(DEVELOPMENT))?;
+                }
+                // The training's events come up as they happen, before
+                // the booked ones (`FUN_005ef5cb`, event 0xfc).
+                self.day_events(posted)?;
+                self.open_events_on(walked)?;
+                // The day's talks and the planners' appointments follow
+                // the human clubs' training and the day's events
+                // (`FUN_0064f981` 0x650285 `FUN_0076cb3e`, 0x650295
+                // `FUN_0072fd53`), before the friendlies.
+                self.appointments()?;
+                // The betting shop's report of the matchday just paid
+                // opens for every human the settlement marked a section
+                // for (`FUN_0077f1b8` kind 1), on the half week the
+                // settlement ran.
+                if walked % 7 == 0 {
+                    let report = {
+                        let mut guard = self.state();
+                        let state = &mut *guard;
+                        match (state.records.as_ref(), state.season.as_ref()) {
+                            (Some(records), Some(season)) => (0..season.managers.len())
+                                .filter(|&m| season.managers[m].club.is_some())
+                                .filter_map(|m| {
+                                    records
+                                        .human_slot(m)
+                                        .filter(|&h| crate::betting::report_open(records, h))
+                                        .map(|_| m)
+                                })
+                                .collect::<Vec<usize>>(),
+                            _ => Vec::new(),
+                        }
+                    };
+                    for manager in report {
+                        self.season(|s| s.current = manager);
+                        self.ask(Request::with(BET_REPORT, Args::None))?;
+                    }
+                }
+                let mut tables = Vec::new();
+                let mut reported = Vec::new();
+                let mut controls = Vec::new();
+                let mut cups = None;
+                let mut news = Vec::new();
+                let mut news_controls = Vec::new();
+                let mut fine_questions = Vec::new();
+                {
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
+                        let today = walked as i32;
+                        // The day's friendlies and tournaments
+                        // (`FUN_007615bb`): a Turnier's draw and its
+                        // results come up for the humans taking part
+                        // where the option shows them (`DAT_00b5d14f`,
+                        // events 0x9f and 0xa0).
+                        let shown = crate::exhibition::play_day(&self.data, records, today as i16, &mut season.random);
+                        if records.globals.get::<u8>(TOURNAMENT_SCREENS) == 1 {
+                            let drawn = shown.drawn.into_iter().map(|id| (dialogs::TOURNAMENT_DRAW, id));
+                            let results = shown.results.into_iter().map(|id| (dialogs::TOURNAMENT_RESULT, id));
+                            let halls = shown.halls.iter().map(|h| (dialogs::HALL_RESULT, h.id));
+                            season.tournament_screens.extend(drawn.chain(results).chain(halls));
+                            season.halls.extend(shown.halls);
+                        }
+                        // The day's news: `FUN_0064f981`'s second club
+                        // loop, after the friendlies.
+                        // What it tells comes up before the day's
+                        // matches (`FUN_005f1eaf`, the window waiting).
+                        if let Some(gates) = &slots {
+                            news = crate::training_day::news(
                                 records,
-                                &self.data.world,
-                                &self.data.calendar,
-                                season,
+                                today,
+                                gates,
+                                &mut season.recent_events,
+                                &self.data.rules.first_season,
+                                &self.data.rules.league,
+                                &self.data.rules.discipline.mood,
+                                &self.data.world.nation_kinds,
+                                &|club| crate::training_day::units_today(&season.clubs, &self.data.world, club, today),
+                                (&mut season.reported, &mut news_controls, &mut fine_questions),
+                                &mut season.random,
                             );
-                            // The youth leagues play beside them
-                            // (`FUN_0062a959`, after the day's matches).
+                        }
+                        // The day's league games, behind its routine and
+                        // on its own day: where the original lets its
+                        // clubs play them on the pitch, the replica scores
+                        // them into the league blocks and their clubs'
+                        // records — the human's game among them, its 3D
+                        // match being out of the replica's scope. The
+                        // routine done, the day's list is drawn again and
+                        // played (`FUN_0062a325(day)`, `FUN_00710839` when
+                        // it holds any): its marks are the doping pairs
+                        // the matches take.
+                        let listed = crate::matches::list_day(records, &self.data.calendar, season.day, &mut season.random);
+                        // The last information before the humans'
+                        // matches is taken as they stand before the
+                        // first is played (`FUN_006ef296`'s records,
+                        // `FUN_006fa448`), the crowd once they are.
+                        let fixtures = crate::matches::human_fixtures(
+                            records,
+                            &self.data.world,
+                            &self.data.calendar,
+                            season.day,
+                        );
+                        let mut pages = if crate::prematch::live(records, season.day) {
+                            crate::prematch::pages(records, &self.data, season, &fixtures)
+                        } else {
+                            Vec::new()
+                        };
+                        // The breaks at half time likewise, one for
+                        // each human side (`FUN_0064987a`).
+                        let mut breaks = crate::halftime::breaks(records, season.day, &fixtures);
+                        // A camp booked before the match works on
+                        // each side as the day's matches begin, home
+                        // first (`FUN_006ef296`'s `FUN_0059a2ea`).
+                        for (sides, _) in &fixtures {
+                            for &side in sides {
+                                crate::training_day::camp_before_match(
+                                    records,
+                                    &mut season.clubs,
+                                    &self.data.world,
+                                    side,
+                                    &self.data.rules.discipline.mood,
+                                    &mut season.random,
+                                );
+                            }
+                        }
+                        let played = crate::matches::play_day(records, &self.data, season, &listed);
+                        crate::prematch::crowds(&mut pages, &played.faced);
+                        season.prematch = pages;
+                        crate::halftime::scores(&mut breaks, &played.faced);
+                        season.halftime = breaks;
+                        season.halftime_at = 0;
+                        // The matchday's end lists the leagues for
+                        // the table after it (`FUN_007108d3`'s
+                        // `FUN_00729216`), once the results stand.
+                        tables = crate::matches::tables_after(records, &played.leagues);
+                        // The reports of the humans' matches stand
+                        // written (`FUN_00550f29`); the Spielbericht
+                        // follows from the season's 42nd day, before
+                        // it only with a full preparation
+                        // (`FUN_006ef262`, event 0xce), and only with
+                        // the game's switch for it on (`FUN_00551818`).
+                        if reports_shown(records, season.day) {
+                            reported = played.reported.clone();
+                        }
+                        // The doping controls of the humans' clubs
+                        // (event 0xcb each, `FUN_005dae5f`).
+                        controls = played.controls.clone();
+                        // The day's cup rounds, their next drawn
+                        // (`FUN_0062eac3`, event 0xc9).
+                        cups = crate::cup_results::day(records, &self.data.calendar, season.day);
+                        // The clubs note their next matches anew
+                        // (`FUN_0062c74b`'s `FUN_0062bfc9`), a cup tie
+                        // among them opening its sales record.
+                        crate::year::note_next_matches(records, &self.data, season.day, &mut season.random);
+                        // The interview after a human's match
+                        // (`FUN_007108d3`'s tail, `FUN_00660a72`): the
+                        // first match that draws one, its questions
+                        // read anew from the file.
+                        let mut fixtures = crate::interview::fixtures(records, &played.leagues);
+                        fixtures.extend(played.cups.iter().copied());
+                        if let Some(due) = crate::interview::due(records, &fixtures, &mut season.random) {
+                            season.interview = crate::interview::Interview::begin(
+                                records,
+                                &self.data.rules,
+                                a3_files::interview::load(&self.data.dir),
+                                due,
+                                &mut season.interview_recent,
+                                &mut season.random,
+                            );
+                        }
+                    }
+                }
+                self.day_events(news)?;
+                // A reported club's positive control (event 0xcb from
+                // `FUN_005db227`), posted in the day's news.
+                for control in news_controls {
+                    self.ask(Request::with(DOPING_CONTROL, Args::Doping(control)))?;
+                }
+                // A man seen eating too much (the food news' case 4,
+                // `FUN_005f29bc` kind 1): the window of `CEreignisFrage`
+                // waits for the club's manager and his row; its OK leaves
+                // the answer at nought, the first row.
+                for q in fine_questions {
+                    let row = match self.ask(Request::with(EVENT_QUESTION, Args::EventQuestion(q)))? {
+                        Reply::Choice(row) => row,
+                        _ => 0,
+                    };
+                    if let Some(records) = self.state().records.as_mut() {
+                        crate::fine_question::answer(records, &q, row);
+                    }
+                }
+                // The matches' dialogs come up as `FUN_00710839` posts
+                // them, on the day they are played, before the youth
+                // leagues and the world's day move it on.
+                // The last information before the match (event 0x74,
+                // `FUN_004cb878`): a page for each human club's match.
+                if self.state().season.as_ref().is_some_and(|s| !s.prematch.is_empty()) {
+                    self.ask(Request::new(PREMATCH))?;
+                    if let Some(season) = self.state().season.as_mut() {
+                        season.prematch.clear();
+                    }
+                }
+                // Half time of each human side's match (event 0xb6,
+                // `FUN_0064a816`): the break until it is done, then the
+                // talk, whose line OK keeps.
+                let breaks = self.state().season.as_ref().map_or(0, |s| s.halftime.len());
+                for at in 0..breaks {
+                    self.season(|s| s.halftime_at = at);
+                    self.ask(Request::new(HALFTIME))?;
+                    if let Reply::Choice(talk) = self.ask(Request::new(HALFTIME_TALK))? {
+                        self.season(|s| {
+                            if let Some(b) = s.halftime.get_mut(at) {
+                                b.talk = u8::try_from(talk).unwrap_or(0);
+                            }
+                        });
+                    }
+                }
+                // The doping control's results (event 0xcb, dialog 41),
+                // one for each human club tested.
+                for control in controls {
+                    self.ask(Request::with(DOPING_CONTROL, Args::Doping(control)))?;
+                }
+                // The match report first (event 0xce), its clubs' crests
+                // to step between them.
+                if !reported.is_empty() {
+                    let mut clubs = [(0, 0); 4];
+                    for (slot, &club) in clubs.iter_mut().zip(&reported) {
+                        *slot = club;
+                    }
+                    let count = reported.len().min(clubs.len()) as u8;
+                    self.ask(Request::with(MATCH_REPORT, Args::Reports { clubs, count }))?;
+                }
+                // The table after the matchday, its leagues one by one
+                // (event 200, `FUN_00729370`).
+                if !tables.is_empty() {
+                    let mut leagues = [(0, 0); crate::matches::TABLES_MOST];
+                    for (slot, &league) in leagues.iter_mut().zip(&tables) {
+                        *slot = league;
+                    }
+                    let count = tables.len() as u8;
+                    self.ask(Request::with(TABLES_AFTER, Args::Tables { leagues, count }))?;
+                }
+                // The cup results behind it (event 0xc9, `FUN_0052b2bf`).
+                if let Some(cups) = cups {
+                    self.ask(Request::with(CUP_RESULTS, Args::CupResults(cups)))?;
+                }
+                // The interview behind it (event 0x126, dialog 383): the
+                // dialog plays it through; the reporter keeps his mood.
+                if self.state().season.as_ref().is_some_and(|s| s.interview.is_some()) {
+                    self.ask(Request::new(INTERVIEW))?;
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut())
+                        && let Some(interview) = season.interview.take()
+                    {
+                        interview.finish(records);
+                    }
+                }
+                let week_start = {
+                    let mut guard = self.state();
+                    let state = &mut *guard;
+                    state.season.as_mut().map(|season| {
+                        let today = walked as i32;
+                        if let Some(records) = state.records.as_mut() {
+                            // The youth leagues play behind the matches
+                            // (`FUN_0062a959`), the nations their owed
+                            // international dates on the weekdays 3 and
+                            // 6 (`FUN_006bd980`).
                             crate::youth_league::play_day(
                                 records,
                                 &self.data.calendar,
                                 season.day,
                                 &mut season.random,
                             );
-                            // The clubs note their next matches anew
-                            // (`FUN_0062c74b`'s `FUN_0062bfc9`).
-                            crate::year::note_next_matches(records, &self.data.calendar, season.day);
+                            crate::internationals::play_day(
+                                records,
+                                today,
+                                &mut season.random,
+                            );
+                            // The day of the world closes it
+                            // (`FUN_006504b6` with the weekday); the
+                            // original's job steps stand between,
+                            // unported.
+                            crate::world_day::day(
+                                records,
+                                today.rem_euclid(7),
+                                &mut season.random,
+                            );
                         }
+                        // The followed clubs stand as the day left their
+                        // records; only a new game, which keeps none yet,
+                        // passes its day on the replica's own model.
+                        match state.records.as_ref() {
+                            Some(records) => season.follow_records(records, &self.data),
+                            None => season.pass_day(),
+                        }
+                        season.day += 1;
+                        // The day's match clears the load's hold
+                        // (`DAT_00b5cc04 = 0` in `FUN_006da3a9`'s case
+                        // 3): the boundary's block below then rolls the
+                        // market even in the week a game was loaded in.
+                        season.week_hold = false;
                         let start = season.day % WEEK_DAYS == 0;
                         if start {
                             season.begin_week();
@@ -884,13 +1676,18 @@ impl Cycle {
                         start.then_some(season.day / WEEK_DAYS)
                     })
                 };
-                if let Some(Some(weeks)) = week_start
+                if let Some(Some(_)) = week_start
                     && let Some(records) = self.state().records.as_mut()
                 {
                     crate::noracsa::age_requests(records);
-                    self.autosave(records, weeks);
                 }
                 self.ask(Request::new(week))?;
+                // The week's boundary was reached: turns, week's end and
+                // days come round again. (Without a season the loop ends
+                // too — it cannot walk any more days.)
+                if !matches!(week_start, Some(None)) {
+                    break;
+                }
             }
         }
     }
@@ -929,7 +1726,7 @@ impl Cycle {
             return Ok(());
         }
         self.season(|s| s.statement = true);
-        {
+        let closing = {
             // The leagues draw next season's clubs (`FUN_006b24f2`), the
             // seasons go into their archive and the first leagues' into
             // the all-time tables, the clubs take their season's flags
@@ -940,14 +1737,36 @@ impl Cycle {
             // season-end block).
             let mut guard = self.state();
             let state = &mut *guard;
+            match (state.season.as_mut(), state.records.as_mut()) {
+                (Some(season), Some(records)) => {
+                    let drawn = crate::promotion::draw(records, &mut season.random);
+                    crate::promotion::count(records);
+                    // Every trial at the human clubs ends with the season
+                    // (`FUN_0074d52b`), told to no one.
+                    let _ = crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
+                    crate::statistics::archive_strengths(records);
+                    season.development = crate::development::develop_played(records, false, &mut season.random);
+                    Some((drawn, crate::rollover::farewells(records), !season.development.is_empty()))
+                }
+                _ => None,
+            }
+        };
+        // The players' development comes up first, a page each human
+        // club (`FUN_0040f99c` posting event 0xca).
+        if let Some((_, _, true)) = &closing {
+            self.ask(Request::new(DEVELOPMENT))?;
+        }
+        // The careers about to end are told next, every human club's on
+        // a page of one notice (`FUN_0066d435` posting event 0xcd ahead of
+        // its retirements).
+        if let Some((_, Some(farewells), _)) = &closing {
+            self.ask(Request::with(FAREWELLS, Args::Farewells(*farewells)))?;
+        }
+        let rolled = closing.is_some();
+        if let Some((drawn, _, _)) = closing {
+            let mut guard = self.state();
+            let state = &mut *guard;
             if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
-                let drawn = crate::promotion::draw(records, &mut season.random);
-                crate::promotion::count(records);
-                // Every trial at the human clubs ends with the season
-                // (`FUN_0074d52b`).
-                crate::youth::end_trials(records, &mut season.clubs, &self.data.world, true);
-                crate::statistics::archive_strengths(records);
-                crate::development::develop_played(records, false, &mut season.random);
                 crate::rollover::retire_announced(records, &mut season.random);
                 crate::statistics::archive_leagues(records);
                 crate::statistics::fold_eternal(records);
@@ -964,6 +1783,18 @@ impl Cycle {
                 let rules = &self.data.rules;
                 crate::free_agents::place(records, &agents, (&rules.contract, &rules.value), &mut season.random);
                 crate::settlement::settle_season(records, &self.data.rules.league);
+                // The humans whose club the season's books put up count the
+                // promotion in their own career records (`FUN_006b4e2f`
+                // reading the promoted flag `FUN_006b2e88` set, between the
+                // settlement and the managers' season end).
+                crate::career::promotions(records);
+                // The season's flags and places move the managers' standing
+                // and season marks (`FUN_0041786a`) right before the
+                // managers' season end, which folds those marks and counts
+                // the season's points into the season records
+                // (`FUN_00624e4f` → `FUN_00624ad4`).
+                crate::standing::season_end(records);
+                crate::evaluation::close_season(records, &self.data, clock_date());
                 crate::settlement::close_managers(records, &mut season.random);
                 crate::statistics::roll_ranking(records);
                 // The transfer list closes the season (`FUN_00428fa2`).
@@ -973,6 +1804,10 @@ impl Cycle {
                 // the replica's settlement reckons the closed tables
                 // itself, so they take them behind it.
                 crate::promotion::take(records, &drawn);
+                // The humans' contracts turn a year against the leagues
+                // the new season plays in, as the original's leagues hold
+                // them by its managers' season end (`FUN_00624ad4`).
+                crate::career::turn_years(records);
             }
         }
         let humans = self.season(|s| {
@@ -985,12 +1820,20 @@ impl Cycle {
             self.season(|s| s.current = manager);
             self.ask(Request::with(FINANCES, Args::Statement))?;
         }
+        // The rolled ranking is told once, to all at the table, behind the
+        // statements (`FUN_00423cad` posting event 0xcf after its sort,
+        // dialog 301 by `FUN_005b0432`).
+        if rolled {
+            self.ask(Request::new(EUROPEAN_RANKING))?;
+        }
         // The new season's first day follows the statements, where the
         // original's season-end block hands the game to its new-season
         // block (`FUN_006da3a9`): the counters roll, the July calendar
         // stands, the leagues open and the clubs' bookings clear
         // ([`crate::settlement::open_season`]) — the game walks on from
         // the new season's day 0.
+        let mut told = Vec::new();
+        let mut offers = Vec::new();
         {
             let mut guard = self.state();
             let state = &mut *guard;
@@ -999,6 +1842,59 @@ impl Cycle {
             {
                 let rules = &self.data.rules;
                 crate::settlement::open_season_with(records, &mut season.random, Some(rules));
+                // An even year's national coaches leave their teams and
+                // hear the nations' offers (`FUN_006b9c81`).
+                offers = crate::national::draw_offers(records, &mut season.random);
+            }
+        }
+        // Each offered human's dialog 356 opens at once, in the list's
+        // order, its first terms drawn as it opens; OK takes the chosen
+        // nation (`FUN_006b9c81`'s last loop), before the qualifiers'
+        // draw reads who coaches whom.
+        for (slot, nations) in std::mem::take(&mut offers) {
+            let asked = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                match (state.season.as_mut(), state.records.as_ref()) {
+                    (Some(season), Some(records)) => {
+                        let slots = records.globals.slots();
+                        let manager = slots[..slot.min(slots.len())].iter().filter(|&&s| s > 0).count();
+                        let firsts = crate::national::first_terms(records, &nations, &mut season.random);
+                        let mut terms = [crate::national::Terms::default(); crate::national::OFFERS_MOST];
+                        for (t, f) in terms.iter_mut().zip(&firsts) {
+                            *t = *f;
+                        }
+                        season.current = manager;
+                        Some((terms, firsts.len().min(crate::national::OFFERS_MOST) as u8))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((terms, count)) = asked else { continue };
+            let reply = self.ask(Request::with(NATIONAL_OFFER, Args::NationalOffers { terms, count }))?;
+            if let Reply::Choice(k) = reply
+                && let Some(&chosen) = terms[..usize::from(count)].get(k)
+                && let Some(records) = self.state().records.as_mut()
+            {
+                crate::national::take(records, slot, chosen);
+            }
+        }
+        {
+            let mut guard = self.state();
+            let state = &mut *guard;
+            if let (Some(season), Some(records)) =
+                (state.season.as_mut(), state.records.as_mut())
+            {
+                let rules = &self.data.rules;
+                // An even year draws the qualifying groups of the
+                // tournament two years on (`FUN_0067c02f`).
+                crate::national::draw_qualifiers(records, &rules.pitch.european, &mut season.random);
+                // The human coaches' friendlies are offered anew out of
+                // the nations no human coaches (`FUN_006b9929`).
+                crate::national::draw_friendlies(records, &mut season.random);
+                // The season's grounds are drawn: the supercups', the
+                // Ligapokal's, the cup and European finals' (`FUN_0078fc80`).
+                crate::year::draw_grounds(records, &mut season.random);
                 // Its computer clubs line up for the season
                 // (`FUN_0077655c`'s `FUN_0042a76e`).
                 crate::autolineup::computer_lineups(records, &self.data);
@@ -1011,9 +1907,25 @@ impl Cycle {
                 // The humans' calendars start empty and take their clubs'
                 // fixtures of the season (`FUN_00775219`, `FUN_0072f6f3`).
                 crate::year::open_season(records, &self.data.calendar);
+                // `FUN_006fd8e7` builds each human's year calendar so once
+                // more after the grounds' draw (`FUN_0072f568`, the same
+                // `FUN_0072e5d0` fixtures, his week planner emptied), which
+                // the one build here already stands for.
+                // The humans due their contract's word (`FUN_0066a946`,
+                // message 0x10b) have the sums moved with the league;
+                // each one's dialog follows the turn, by his place among
+                // the humans.
+                let slots = records.globals.slots();
+                told = crate::career::season_terms(records)
+                    .into_iter()
+                    .map(|(slot, terms)| (slots[..slot].iter().filter(|&&s| s > 0).count(), terms))
+                    .collect();
                 // Every club notes its first match of the season
                 // (`FUN_0062dfa3(0)`'s `FUN_0062bfc9`).
-                crate::year::note_next_matches(records, &self.data.calendar, 0);
+                crate::year::note_next_matches(records, &self.data, 0, &mut season.random);
+                // And every national team its own (`FUN_00630c9f`'s
+                // `FUN_0062c90e`).
+                crate::national::note_next_matches(records, &self.data.calendar, 0);
                 // The human clubs' squads changed with the turn — players
                 // gone, new ones come — so each club the season follows
                 // stands anew as its records now have it, as a load would
@@ -1024,10 +1936,72 @@ impl Cycle {
                         season.clubs.insert(key, club);
                     }
                 }
+                // The humans' players' appointments of the year
+                // (`FUN_006a8371`, last in the block).
+                crate::rollover::appointments(records, &mut season.random);
+                // The ticker of jobs drops its told entries
+                // (`FUN_00751180`, after `FUN_0062def0`).
+                crate::career::drop_told(&mut season.job_notes);
                 season.year = i32::from(records.globals.start_year());
                 season.day = 0;
                 season.statement = false;
             }
+        }
+        // `CMyStartDialog::FUN_0066aa06` on message 0x10b runs each told
+        // human's dialog modally (`FUN_007a0bfd`): the season's goal
+        // (`CVertragskonditionenSaisonwechsel`, dialog 379) where his club
+        // stayed, the new terms (`CVertragskonditionenNeu`, dialog 314,
+        // flag 1 promoted, 0 relegated) where it moved.
+        for (manager, terms) in told {
+            self.season(|s| s.current = manager);
+            let request = match terms {
+                crate::career::SeasonTerms::Goal => Request::new(SEASON_GOAL),
+                crate::career::SeasonTerms::Promoted => Request::with(NEW_TERMS, Args::NewTerms { promoted: true }),
+                crate::career::SeasonTerms::Relegated => Request::with(NEW_TERMS, Args::NewTerms { promoted: false }),
+            };
+            self.ask(request)?;
+        }
+        // Each human club's manager then has the season start's event 0x82
+        // (`FUN_00671c60`, one entry per club of `FUN_006355f4` for the
+        // manager at club +0x8b, run in turn by `CMyStartDialog::
+        // FUN_00671d57`): the negotiations he leads himself (dialog 422),
+        // whose ticks come back one bit each, those he leaves signed by
+        // the computer (`FUN_006741be`), the European TV talks behind
+        // them where he keeps those and his club is in Europe
+        // (`CDiVerhandlungenUefa`, dialog 475) — and the season's
+        // preparation (dialog 419), unless it is the first season and the
+        // option at `DAT_00b5d19a` leaves it to the computer
+        // (`FUN_0042b589`, `FUN_00409d99`). Under the same condition the
+        // overviews of the season's start follow once (event 0x130,
+        // `FUN_0062def0` → `CMyStartDialog::FUN_0062de93`, dialog 420).
+        let (humans, quick) = {
+            let state = self.state();
+            let quick = state
+                .records
+                .as_ref()
+                .is_some_and(|r| r.globals.seasons() == 1 && r.globals.get::<i16>(QUICK_START_OPTION) != 0);
+            let humans = state.season.as_ref().map_or_else(Vec::new, |s| {
+                (0..s.managers.len()).filter(|&m| s.managers[m].club.is_some()).collect::<Vec<usize>>()
+            });
+            (humans, quick)
+        };
+        for manager in humans {
+            self.season(|s| s.current = manager);
+            let ticks = match self.ask(Request::new(SEASON_START_TALKS))? {
+                Reply::Choice(ticks) => ticks,
+                _ => 0,
+            };
+            let ticked: [bool; 6] = std::array::from_fn(|k| ticks >> k & 1 != 0);
+            if self.leave_talks(manager, ticked) {
+                self.ask(Request::new(EURO_TV_TALKS))?;
+                self.on_club(manager, crate::settlement::book_european_tv);
+            }
+            if !quick {
+                self.ask(Request::new(SEASON_PREPARATION))?;
+            }
+        }
+        if !quick {
+            self.ask(Request::new(SEASON_OVERVIEWS))?;
         }
         Ok(())
     }
@@ -1046,10 +2020,10 @@ impl Cycle {
         if !autosave_due(&records.globals.game_options(), weeks) {
             return;
         }
-        let fresh = self.data.dir.join("saves").join("Autos.an3");
+        let fresh = self.data.saves.join("Autos.an3");
         match records.to_save().to_bytes_stored() {
             Ok(bytes) => {
-                if let Err(err) = roll_autosaves(&self.data.dir.join("saves"), &bytes) {
+                if let Err(err) = roll_autosaves(&self.data.saves, &bytes) {
                     warn!("{}: {err}", fresh.display());
                 }
             }
@@ -1063,8 +2037,9 @@ impl Cycle {
     /// closed, the humans after him moving up in the order, the clubs that
     /// engaged him for next season and the other humans' +0x1b0 naming him
     /// let go of him (`FUN_006a40ce`), his club no longer followed as a
-    /// human's. His club's own goodbye (`FUN_006da1ac`, reason 4) and the
-    /// national team's (`FUN_006b9872`) are not built. Whether a career
+    /// human's. The national team lets him go first (`FUN_006b9872`,
+    /// reason 0); of his club's own goodbye (`FUN_006da1ac`, reason 4)
+    /// only its notice is built (`FUN_005dfec7`). Whether a career
     /// ended, and whether a human is left.
     fn careers_end(&self) -> (bool, bool) {
         let mut guard = self.state();
@@ -1111,6 +2086,30 @@ impl Cycle {
             }
             for &(slot, _) in &slots {
                 let Some(slot) = slot else { continue };
+                crate::national::leave(records, slot, 0);
+                // His club's goodbye (`FUN_006da1ac(manager, club, 1, 4,
+                // 0x80)`, only with a club, manager +0x1e): so far the
+                // notice of it (`FUN_005dfec7`) and the end of his last
+                // club station in his career (`FUN_006fddfe`, reason 4)
+                // and what leaving costs him (`FUN_006d9f70`), and the
+                // club and its players let go (`FUN_006d9fa1`), and his
+                // contract's end with his flat sold (`FUN_006da008`),
+                // and the club's deposits dissolved (`FUN_005e0147`), and
+                // the table of the human clubs rebuilt (`FUN_00635503`),
+                // and the club put on the ticker of jobs (`FUN_005df799`).
+                let manager = &records.managers[slot];
+                if manager.country() != 0 {
+                    let club = (manager.country() as u8, manager.team());
+                    let notice = crate::goodbye::notice(records, slot, club, 4, 3, 0x80, 0);
+                    season.notices.post(notice);
+                    crate::career::left_club(records, slot, 4);
+                    crate::career::leaving_costs(records, slot, (club.0, club.1 as u16));
+                    crate::career::release_club(records, &mut season.clubs, &self.data.world, (club.0, club.1 as u16));
+                    crate::career::end_contract(records, slot, true);
+                    crate::career::dissolve_deposits(records, (club.0, club.1 as u16));
+                    crate::career::rebuild_human_clubs(records);
+                    crate::career::post_vacancy(&mut season.job_notes, slot, (club.0, club.1 as u16), 3);
+                }
                 leave(records, slot);
             }
         }
@@ -1133,6 +2132,165 @@ impl Cycle {
         (true, left)
     }
 
+    /// The day's poaching talks, before the planners' pump
+    /// (`FUN_0076cb3e` from the day loop `FUN_0064f981`): its first step
+    /// zeroes the day's messages and talks (`FUN_0076fac0`), then every
+    /// poaching appointment of the day leaves the list, and a human
+    /// buyer's talk puts "Verhandlung" and the manager's name in the
+    /// week's message and the player in his talk of the day
+    /// (`FUN_0076aca0`, text 5048 via `FUN_0064f456`). Its message 0xa6
+    /// opens the talk itself in that manager's turn (`FUN_0076ad3b`,
+    /// `CVerhandlungAbwerbeversuch`), whose OK writes the talk agreed
+    /// (kind 3, `FUN_0076ac2e`); after the day's messages, managers 1 to 4
+    /// in turn act on a talk agreed (`FUN_0076aeb8`).
+    fn poaching_talks(&self) -> Result<(), Gone> {
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let Some(season) = state.season.as_mut() else { return Ok(()) };
+        season.planner_message = None;
+        season.day_talks = Default::default();
+        let Some(records) = state.records.as_mut() else { return Ok(()) };
+        let Ok(day) = i16::try_from(season.day) else { return Ok(()) };
+        let mut talks = Vec::new();
+        for (player, human) in crate::transfers::poaching_day(records, day) {
+            let slot = usize::from(human) - 1;
+            if let Some(talk) = season.day_talks.get_mut(slot) {
+                talk.player = player;
+            }
+            let n = (0..season.managers.len()).find(|&n| records.human_slot(n) == Some(slot));
+            if let Some(manager) = n.and_then(|n| season.managers.get(n)) {
+                season.planner_message =
+                    Some((CONTRACT_TALK_TEXT, manager.last_name.clone()));
+            }
+            if let Some(n) = n {
+                talks.push((n, slot, player));
+            }
+        }
+        drop(guard);
+        for (n, slot, player) in talks {
+            self.season(|s| s.current = n);
+            let reply = self.ask(Request::with(POACHING_TALK, Args::Record(player)))?;
+            if reply == Reply::Ok
+                && let Some(talk) = self.season(|s| s.day_talks.get_mut(slot).cloned()).flatten()
+            {
+                // The dialog left its agreed offer in the talk's terms.
+                let agreed = crate::transfers::DayTalk { kind: crate::transfers::AGREED, ..talk };
+                self.season(|s| s.day_talks[slot] = agreed);
+            }
+        }
+        self.season(|s| s.current = 0);
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) else {
+            return Ok(());
+        };
+        for slot in 0..season.day_talks.len() {
+            let buyer = records
+                .teams
+                .iter()
+                .find(|t| usize::from(t.human()) == slot + 1)
+                .map(|t| (t.country(), i16::from(t.number())));
+            if let Some(buyer) = buyer {
+                let talk = season.day_talks[slot].clone();
+                crate::transfers::after_poaching(records, &mut season.random, &talk, buyer);
+            }
+        }
+        // The day's last loop: the loan talks leave the list and a loan no
+        // human bids for finds its computer club (`FUN_00682814`); the
+        // move itself and the human's bargaining (0x9b) are not built.
+        // A human club out of a talk is told why at once (message 0x11f).
+        let mut told = Vec::new();
+        if let Ok(day) = i16::try_from(season.day) {
+            crate::transfers::loan_day(records, day, &mut told);
+        }
+        drop(guard);
+        self.purchase_talks(&mut told)?;
+        for d in told {
+            let text = if d.squad_full { SQUAD_FULL } else { BANK_NO_CREDIT };
+            let args = Args::ClubAlert { title: ALERT_FOR, text, country: d.club.0, number: d.club.1 };
+            self.ask(Request::with(NOTICE, args))?;
+        }
+        Ok(())
+    }
+
+    /// The day's purchase talks one by one (`FUN_0076cb3e`'s last loop),
+    /// a fee talk a round at a time: the seller's — his dialog 308 with a
+    /// human manager, `FUN_0076e018` for a computer one — then the
+    /// bidder's, and on an agreed fee the move (`FUN_0070ca69`; the
+    /// failed talk's dialog 0xa7 not built) (`FUN_00768638` asm
+    /// 0x7698d1–0x769b0b).
+    fn purchase_talks(&self, told: &mut Vec<crate::transfers::Dropout>) -> Result<(), Gone> {
+        let rules = &self.data.rules;
+        loop {
+            let next = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) else {
+                    return Ok(());
+                };
+                let Ok(day) = i16::try_from(season.day) else { return Ok(()) };
+                crate::transfers::next_purchase_talk(
+                    records,
+                    &mut season.random,
+                    (&rules.contract, &rules.value),
+                    &rules.medical,
+                    &self.data.world.nation_kinds,
+                    day,
+                    told,
+                )
+            };
+            let Some((player, talk)) = next else { return Ok(()) };
+            if let Some(talk) = talk.filter(|t| t.fee.is_some()) {
+                let fee = talk.fee.clone().expect("fee talk");
+                self.season(|s| s.fee_talk = Some(fee));
+                let mut ended = None;
+                loop {
+                    // The seller's turn: his dialog with a human
+                    // manager, `FUN_0076e018`'s turn for a computer one.
+                    let human = self
+                        .season(|s| s.fee_talk.as_ref().is_some_and(|f| f.managers[0] != 0))
+                        .unwrap_or(false);
+                    if human {
+                        self.ask(Request::new(FEE_TALK))?;
+                    }
+                    ended = self
+                        .season(|s| {
+                            let fee = s.fee_talk.as_mut()?;
+                            if fee.managers[0] == 0 {
+                                fee.computer_seller_turn(&mut s.random);
+                            }
+                            fee.after_seller().or_else(|| fee.bidder_turn(&mut s.random))
+                        })
+                        .flatten();
+                    if ended.is_some() {
+                        break;
+                    }
+                }
+                let fee = self.season(|s| s.fee_talk.take()).flatten();
+                if let (Some(fee), Some(crate::fee_talk::Ending::Agreed(money))) = (fee, ended) {
+                    // The human seller agreed: he moves on the winner's
+                    // terms.
+                    let terms = talk
+                        .winner
+                        .filter(|&k| k > 0)
+                        .and_then(|k| talk.offers.get(k - 1))
+                        .map(|o| o.terms);
+                    if let Some(terms) = terms {
+                        let mut guard = self.state();
+                        let state = &mut *guard;
+                        if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
+                            crate::transfers::move_for_fee(records, &mut season.random, &fee, money as u32, &terms);
+                        }
+                    }
+                }
+            }
+            let mut guard = self.state();
+            if let Some(records) = guard.records.as_mut() {
+                crate::transfers::close_purchase_talk(records, player);
+            }
+        }
+    }
+
     /// What the managers booked for today in their planners with a player
     /// still in their squads, manager by manager (`FUN_0072fd53`): a talk
     /// opens in its manager's turn (`FUN_0048ddbe`); a sick visit happens
@@ -1143,7 +2301,29 @@ impl Cycle {
     /// manager with one stays on the week screen.
     fn appointments(&self) -> Result<(), Gone> {
         let managers = self.season(|s| s.managers.len()).unwrap_or(0);
+        self.poaching_talks()?;
         for n in 0..managers {
+            // The association's court sits for the manager's club
+            // (`FUN_00628309`, its planner's +4 the bans it hears).
+            let court = {
+                let mut state = self.state();
+                let state = &mut *state;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_ref())
+                else {
+                    return Ok(());
+                };
+                season.current = n;
+                records.human_slot(n).and_then(|slot| {
+                    let booked = records.planners.get(slot)?.day(season.day);
+                    let manager = records.managers.get(slot)?;
+                    (booked.kind == crate::court::COURT && manager.country() != 0)
+                        .then(|| ((manager.country() as u8, manager.team() as i16), booked.player))
+                })
+            };
+            if let Some((club, kind)) = court {
+                self.court(club, kind)?;
+                continue;
+            }
             let booked = {
                 let mut state = self.state();
                 let state = &mut *state;
@@ -1152,9 +2332,6 @@ impl Cycle {
                     return Ok(());
                 };
                 season.current = n;
-                if n == 0 {
-                    season.planner_message = None;
-                }
                 let manager = &season.managers[n];
                 let last_name = manager.last_name.clone();
                 let club = manager.club;
@@ -1243,6 +2420,99 @@ impl Cycle {
         Ok(())
     }
 
+    /// The court's sitting for a club: each case it tells opens dialog 89
+    /// at once (event 0xa3 run by `FUN_006c03ba`), its OK or Nein the
+    /// answer to an appeal's question; a computer club takes the lawyers'
+    /// advice.
+    fn court(&self, club: (u8, i16), kind: u16) -> Result<(), Gone> {
+        let mut hearing = crate::court::Hearing::new(club, kind);
+        loop {
+            let case = {
+                let mut guard = self.state();
+                let state = &mut *guard;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut())
+                else {
+                    return Ok(());
+                };
+                hearing.next(records, &mut season.random)
+            };
+            let Some(case) = case else { return Ok(()) };
+            let yes = if case.shown {
+                self.ask(Request::with(COURT, Args::Court(case)))? == Reply::Ok
+            } else {
+                case.advised
+            };
+            if let Some(records) = self.state().records.as_mut() {
+                crate::court::answer(records, &case, yes);
+            }
+        }
+    }
+
+    /// What the year calendars booked on the day just walked, manager by
+    /// manager: save A's day 63 holds the open day, entry kind 8 with the
+    /// open day's number 6 where a talk's would name the player. The
+    /// dialog comes up in that day's walk, after the day's training and
+    /// before its games; its constructor draws nothing. The eight draws
+    /// of 9 or 10 the traced original makes at the load, before the turn's
+    /// screen, are not the open day's but the week end's look at its last
+    /// day's matches ([`crate::matches::list_day`]), left out after a load.
+    /// The day's posted events, each in the window its text fits
+    /// (`FUN_005f2234`); none in the first season's quiet days
+    /// (`FUN_005ef56c`).
+    fn day_events(&self, posted: Vec<crate::event_text::Posted>) -> Result<(), Gone> {
+        if posted.is_empty() {
+            return Ok(());
+        }
+        let Some(texts) = a3_files::saq::EventTexts::load(&self.data.dir) else { return Ok(()) };
+        // The game's own texts (the dialog file's string table) only for
+        // the posts that take one.
+        let game = if posted.iter().any(|p| matches!(p.fill, crate::event_text::Fill::GameNamed(_))) {
+            a3_files::rch::load_string_table(&self.data.dir.join("deb/MeineDialoge.rch")).unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let game = |id: u16| game.get(&id).cloned().unwrap_or_default();
+        for p in posted {
+            let dialog = {
+                let state = self.state();
+                let Some(records) = state.records.as_ref() else { return Ok(()) };
+                if crate::event_text::quiet(records) {
+                    return Ok(());
+                }
+                crate::event_text::make(records, &texts, &game, &self.data.rules.words.first_names, &p).dialog()
+            };
+            self.ask(Request::with(dialog, Args::Event(p)))?;
+        }
+        Ok(())
+    }
+
+    fn open_events_on(&self, day: usize) -> Result<(), Gone> {
+        let managers = self.season(|s| s.managers.len()).unwrap_or(0);
+        for n in 0..managers {
+            let booked = {
+                let mut state = self.state();
+                let state = &mut *state;
+                let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_ref())
+                else {
+                    return Ok(());
+                };
+                season.current = n;
+                records
+                    .human_slot(n)
+                    .and_then(|slot| records.calendars.get(slot))
+                    .is_some_and(|c| {
+                        let entry = c.day(day);
+                        entry.kind == CALENDAR_EVENT && entry.player == OPEN_DAY_EVENT
+                    })
+            };
+            if booked {
+                self.ask(Request::new(OPEN_DAY))?;
+            }
+        }
+        self.season(|s| s.current = 0);
+        Ok(())
+    }
+
     /// The week after the turns: its screen. The week of a match now runs
     /// with the rest — the league matchdays are played as the days pass.
     fn start_week(&self, season: &mut Season) -> u16 {
@@ -1261,6 +2531,11 @@ impl Cycle {
         if let Some(announcement) = self.announcement() {
             self.ask(Request::new(announcement))?;
         }
+        // Then the records he broke, a window each over the 3D picture
+        // (`FUN_00650b84` asm 0x65116f).
+        for broken in self.records_broken() {
+            self.ask(Request::with(crate::render::RENDER, Args::Render(broken)))?;
+        }
         // A manager with a note on his page reads it before his turn screen:
         // the hub opens the notepad, and only then its own dialog — office,
         // text menu or line-up, all guarded by the same `strlen`
@@ -1269,10 +2544,21 @@ impl Cycle {
         if self.a_note_waits() {
             self.ask(Request::new(NOTEPAD))?;
         }
+        // The office and the text menu open the screens without the bar,
+        // and the screen's OK leads back to them (`FUN_00652a86`'s loop
+        // head, request byte 0 nought); built for the tactics alone.
+        let menu = [OFFICE, GRAND_OFFICE, TEXT_MENU].contains(&screen).then_some(screen);
+        let mut args = Args::None;
         loop {
-            match self.ask(Request::new(screen))? {
+            match self.ask(Request::with(screen, args))? {
                 Reply::Goto(next) => {
+                    let from_menu = menu == Some(screen);
                     screen = self.season(|s| line_up_view(s, next)).unwrap_or(next);
+                    args = if from_menu && screen == TACTICS { Args::FromMenu } else { Args::None };
+                }
+                Reply::Ok if args == Args::FromMenu => {
+                    screen = menu.unwrap_or(screen);
+                    args = Args::None;
                 }
                 // "Spiel beenden": the career ends as "Karriereende" ends
                 // it, at once, and the cycle with it — and the program,
@@ -1285,7 +2571,42 @@ impl Cycle {
                 // "Neues Spiel": its flag 8 ends the game cycle, and the
                 // main loop goes back to the start menu (`FUN_00788115`).
                 Reply::NewGame => return Ok(false),
-                _ => return Ok(true),
+                _ => {
+                    // The turn does not end for a national coach whose
+                    // squad is too small for his team's match this week:
+                    // the week hub asks an international window on the
+                    // week's Wednesday too, alerts with text 4966, and
+                    // code −1600 opens his menu again (`FUN_00650b84` asm
+                    // 0x6523d3); the hub of a coach without a club gates
+                    // on the match alone and alerts for nothing
+                    // (`FUN_0065270d` asm 0x65292f).
+                    let (nation, club) = self
+                        .season(|s| s.manager().map(|m| (m.national_team, m.club.is_some())))
+                        .flatten()
+                        .unwrap_or((None, true));
+                    let blocked = nation.is_some_and(|nation| {
+                        let guard = self.state();
+                        guard.records.as_ref().is_some_and(|records| {
+                            if club {
+                                national::squad_blocks_turn(
+                                    records,
+                                    &self.data.calendar,
+                                    nation as i16,
+                                )
+                            } else {
+                                national::squad_blocks_clubless_turn(records, nation as i16)
+                            }
+                        })
+                    });
+                    if !blocked {
+                        return Ok(true);
+                    }
+                    if club {
+                        self.ask(Request::with(NOTICE, Args::Text(NOT_ENOUGH_PLAYERS)))?;
+                    }
+                    screen = NATIONAL_MENU;
+                    args = Args::None;
+                }
             }
         }
     }
@@ -1311,6 +2632,40 @@ impl Cycle {
         if manager.club.is_some() { line_up_view(season, LINEUP) } else { DRESSING_ROOM }
     }
 
+    /// Works on a manager's club's record, by its index among the teams.
+    fn on_club<T>(&self, manager: usize, work: impl FnOnce(&mut Records, usize) -> T) -> Option<T> {
+        let mut state = self.state();
+        let (slot, number) = state.season.as_ref()?.managers.get(manager)?.club?;
+        let nation = self.data.world.country(slot)?.nation;
+        let records = state.records.as_mut()?;
+        let i = records.team_index(nation, u16::try_from(number).ok()?)?;
+        Some(work(records, i))
+    }
+
+    /// The season start's talks a manager left unticked, signed by the
+    /// computer (`FUN_006741be`); whether the European TV talks follow —
+    /// their box ticked and the club in Europe (team +0x110 0x4000,
+    /// `FUN_0069a2e5`) —, the offer's two sums then cleared for them
+    /// (`FUN_00671d57`: club +0x5e8, +0x5ec).
+    fn leave_talks(&self, manager: usize, ticked: [bool; 6]) -> bool {
+        let mut state = self.state();
+        let state = &mut *state;
+        let Some(season) = state.season.as_mut() else { return false };
+        let Some((slot, number)) = season.managers.get(manager).and_then(|m| m.club) else { return false };
+        let Some(nation) = self.data.world.country(slot).map(|c| c.nation) else { return false };
+        let Some(records) = state.records.as_mut() else { return false };
+        let Some(i) = u16::try_from(number).ok().and_then(|n| records.team_index(nation, n)) else { return false };
+        crate::settlement::sign_left_talks(records, i, ticked, &mut season.random);
+        let team = &mut records.teams[i];
+        let talks = ticked[5] && crate::finances::in_europe(team);
+        if talks {
+            for at in [0x5e8, 0x5ec] {
+                team.put::<i32>(at + crate::finances::CLUB_TO_TEAM, 0);
+            }
+        }
+        talks
+    }
+
     /// The announcement the current manager's turn opens with, if any: the
     /// game's switch for it on (`0xb5d13e`), and his club's next match
     /// within a week of today (club +0xb46, +0xb44) — 358 for a league
@@ -1327,6 +2682,25 @@ impl Cycle {
             && team.next_day() < today + ANNOUNCE_AHEAD;
         let league = team.next_kind() == LEAGUE_MATCH;
         due.then_some(if league { LEAGUE_ANNOUNCEMENT } else { MATCH_ANNOUNCEMENT })
+    }
+
+    /// The records the current manager broke that open their windows, his
+    /// word of them cleared: the club manager's hub alone looks
+    /// (`FUN_00650b84`), not the clubless one (`FUN_0065270d`) nor the
+    /// turns before the matches (`FUN_00652a86`) — save "Toni", saved in
+    /// such a turn with the record set, opens on its line-up in the
+    /// original and shows the record at the next turn.
+    fn records_broken(&self) -> Vec<crate::render::Broken> {
+        let mut guard = self.state();
+        let state = &mut *guard;
+        let (Some(season), Some(records)) = (state.season.as_ref(), state.records.as_mut()) else {
+            return Vec::new();
+        };
+        if season.before_match || season.manager().and_then(|m| m.club).is_none() {
+            return Vec::new();
+        }
+        let Some(slot) = records.human_slot(season.current) else { return Vec::new() };
+        crate::render::take_broken(records, slot)
     }
 
     /// Whether the current manager left text on his notepad page: what
@@ -1467,6 +2841,17 @@ fn leave(records: &mut Records, slot: usize) {
             team.put(ENGAGED_WITH_AT, 0i16);
         }
     }
+}
+
+/// The PC's clock date, as `GetSystemTime` gives it (UTC): day, month,
+/// year (`FUN_006d4d20`).
+fn clock_date() -> (u8, u8, u16) {
+    use chrono::Datelike;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let today = chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default().date_naive();
+    (today.day() as u8, today.month() as u8, today.year() as u16)
 }
 
 #[cfg(test)]

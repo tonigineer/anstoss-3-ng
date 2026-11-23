@@ -204,7 +204,7 @@ impl ClubSearch {
 
 /// A name as `_stricmp` compares it in the C locale: ASCII letters folded,
 /// the bytes of Windows-1252 above them.
-fn stricmp(name: &str) -> Vec<u32> {
+pub(crate) fn stricmp(name: &str) -> Vec<u32> {
     name.chars()
         .map(|c| if c.is_ascii() { u32::from(c.to_ascii_lowercase()) } else { u32::from(c) })
         .collect()

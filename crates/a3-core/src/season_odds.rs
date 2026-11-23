@@ -313,13 +313,51 @@ fn european_odds(records: &mut Records) {
 const TOURNAMENTS: [usize; 2] = [0x1a94, 0x1c66];
 const NATION_ODDS: usize = 0xea;
 const NATIONS_MOST: usize = 115;
-const NATIONS: usize = 0x75;
+pub(crate) const NATIONS: usize = 0x75;
 /// A nation's strength byte (`DAT_00ae6223`), and the national teams'
 /// records (`0xa9d660` + nation × 0x990, a team's layout).
-const NATION_STRENGTH: usize = 0xae6223;
-const NATIONAL_TEAMS: u32 = 0xa9d660;
-const NATIONAL_COUNT: usize = 0x112 - 0x20;
-const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
+pub(crate) const NATION_STRENGTH: usize = 0xae6223;
+pub(crate) const NATIONAL_TEAMS: u32 = 0xa9d660;
+pub(crate) const NATIONAL_COUNT: usize = 0x112 - 0x20;
+pub(crate) const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
+
+/// The new season's national teams (`FUN_006b93f2`, a new game's first
+/// season): twelve draws for each nation from 1 to 0x74 — its cohesion
+/// from 30 to 60, eight style points of 1 to 3 each, a mood of −20 to 20
+/// and two confidence bonuses of 80 to 110 — and the formation of nought
+/// with the tactics bytes 3, 4, 2 and 0x10 and the confidence floor of
+/// 100 laid down between them. What is missing: the eight style setters
+/// (`FUN_00698598` to `FUN_00698bde`) and the mood's array write
+/// (`FUN_0069efe8`) work on tables the save keeps elsewhere.
+pub(crate) fn open_national_teams(records: &mut Records, random: &mut crate::random::Random) {
+    for nation in 1..NATIONS {
+        let cohesion = random.below(0x1f) as u8 + 0x1e;
+        for _ in 0..8 {
+            random.below(3);
+        }
+        random.below(0x29);
+        let bonus = random.below(0x29) as u8 + 0x50;
+        let f_0a0 = random.below(0x29) as u8 + 0x50;
+        let Some(b) = records.block_mut(&format!("{NATIONAL_TEAMS:#x}[{nation}]")) else {
+            continue;
+        };
+        let some = |b: &mut [u8], at: usize, v: u8| {
+            if let Some(byte) = b.get_mut(at) {
+                *byte = v;
+            }
+        };
+        // A club record's field +f stands at the block's byte f − 0x20.
+        some(b, 0x1f0 - 0x20, 0); // the formation (`Club::formation`)
+        some(b, 0x1ee - 0x20, cohesion); // its cohesion
+        some(b, 0x92 - 0x20, 100);
+        some(b, 0x9e - 0x20, bonus); // the board's confidence bonus
+        some(b, 0xa8 - 0x20, 3);
+        some(b, 0xa9 - 0x20, 4);
+        some(b, 0xaa - 0x20, 2);
+        some(b, 0xac - 0x20, 0x10);
+        some(b, 0xa0 - 0x20, f_0a0);
+    }
+}
 
 /// The tournaments' odds (`FUN_0077713a`, `FUN_0077f776` for each): the
 /// European championship's nations, then every nation for the world cup.
@@ -328,7 +366,7 @@ const NATIONAL_SQUAD: usize = 0x1f2 - 0x20;
 /// times and a draw below ten; below 120 the cube of its distance below
 /// 130 over a hundred and a draw below five, beyond 140 less it, under
 /// 1.1 a draw from 1.1 to 1.5.
-fn nation_odds(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
+pub(crate) fn nation_odds(records: &mut Records, european: &[bool], random: &mut crate::random::Random) {
     let played = crate::opponent::played_nations(records);
     for (list_at, nations) in TOURNAMENTS.into_iter().zip([
         (0..NATIONS).filter(|&n| european.get(n).copied().unwrap_or(false)).collect::<Vec<_>>(),

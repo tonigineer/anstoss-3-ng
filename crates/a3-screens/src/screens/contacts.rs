@@ -487,8 +487,7 @@ impl AliensOffice {
 
 /// Rejecting a referee (dialog 398 `CSchiriAblehnen`, KONTAKTE.md §7.1):
 /// none or one of the country's forty, the one refused so far in red. OK
-/// keeps the choice; a new one makes a headline — the replica has no
-/// newspaper yet, but draws its number all the same.
+/// keeps the choice; a new one makes a headline for the next day's paper.
 #[derive(Default)]
 pub struct Referees {
     /// The rows' referees, 0 for none.
@@ -503,6 +502,9 @@ const REFUSED_INK: [u8; 3] = [255, 0, 0];
 const COUNTRY_REFEREES: i16 = 40;
 /// The refused referee (team +0x928).
 const REFUSED_AT: usize = 0x928;
+/// The headlines of a referee refused (`ereignis.saq` 1750, 1751).
+const FED_UP: usize = 1750;
+const ANGRY: usize = 1751;
 
 impl Screen for Referees {
     fn ids(&self) -> &[u16] {
@@ -561,11 +563,30 @@ impl Referees {
     /// the choice kept, none included.
     fn refuse(&self, cx: &mut Cx, chosen: i16) {
         let refused = own_team(cx).map_or(0, |t| t.get::<i16>(REFUSED_AT));
-        if chosen != refused
-            && chosen != 0
-            && let Some(season) = cx.state.season.as_mut()
-        {
-            season.random.below(2);
+        if chosen != refused && chosen != 0 {
+            // The referee's name: the country's block added without x 40
+            // (a quirk of the original, right only for the first block).
+            let names = own_team(cx).zip(cx.state.records.as_ref()).map(|(team, records)| {
+                let slot = i16::from(records.countries.slot(team.country().into()));
+                let referee = records.referee_name(slot + chosen).unwrap_or_default();
+                (team.name(), referee)
+            });
+            let manager = super::kalkulation::own_manager(cx)
+                .map(|m| format!("{} {}", m.first_name(), m.last_name()))
+                .unwrap_or_default();
+            let texts = a3_files::saq::EventTexts::load(&cx.game.dir);
+            if let Some(season) = cx.state.season.as_mut() {
+                let (club, referee) = names.unwrap_or_default();
+                let (id, args) = if season.random.below(2) == 1 {
+                    (FED_UP, vec![manager.as_str(), referee.as_str()])
+                } else {
+                    (ANGRY, vec![club.as_str(), referee.as_str(), manager.as_str()])
+                };
+                if let Some(text) = texts.as_ref().and_then(|t| t.get(id)) {
+                    let (headline, body) = a3_core::headlines::format(text, &args);
+                    season.headlines.push(a3_core::headlines::Item { priority: 5, headline, body });
+                }
+            }
         }
         if let Some(team) = super::squad::own_team_mut(cx) {
             team.put(REFUSED_AT, chosen);

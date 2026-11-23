@@ -6,6 +6,8 @@
     python3 tools/probe/draws.py TRACE OTHER        # where two runs part
     python3 tools/probe/draws.py TRACE --replica DRAWS [--functions TSV]
                                                     # where the replica parts
+    python3 tools/probe/draws.py TRACE --replica DRAWS --from 0x78ac2a
+                                                    # the same from a caller on
 
 With --replica, DRAWS is what `anstoss-3-1 --script ... --draws DRAWS`
 wrote: a line per draw of the range, the result and the replica's line
@@ -13,6 +15,10 @@ that drew. The original's draws of the main generator with a range of
 two or more are set against them in order (below 2 neither generator
 moves); the first that differs is shown with what led up to it, the
 original's callers named by the decompile's functions.tsv where given.
+With --from, the original's side starts at its first such draw from that
+return address: the replica's recording opens at the script's `now random`
+poke, the original's trace at the game's start (on save A the poke's first
+draw is the week end's presale roll, 0x78ac2a).
 
 A record is 48 bytes: the caller's return address, the range (0 for rand()),
 the result, the source, the thread (in the order threads first drew) and
@@ -54,10 +60,11 @@ def main() -> int:
     args.add_argument("--replica", type=Path)
     args.add_argument("--functions", type=Path)
     args.add_argument("--context", type=int, default=8)
+    args.add_argument("--from", dest="start", type=lambda v: int(v, 0))
     args = args.parse_args()
     draws = read(args.trace)
     if args.replica:
-        return compare(draws, args.replica, args.functions, args.context)
+        return compare(draws, args.replica, args.functions, args.context, args.start)
     if args.other:
         other = read(args.other)
         for i, (a, b) in enumerate(zip(draws, other)):
@@ -110,8 +117,15 @@ def naming(functions: Path | None):
     return name
 
 
-def compare(draws: list[tuple], replica: Path, functions: Path | None, context: int) -> int:
+def compare(draws: list[tuple], replica: Path, functions: Path | None, context: int,
+            start: int | None = None) -> int:
     original = [d for d in draws if d[3] == MAIN and d[1] >= 2]
+    if start is not None:
+        first = next((i for i, d in enumerate(original) if d[0] == start), None)
+        if first is None:
+            print(f"no draw of the original from {start:#x}")
+            return 1
+        original = original[first:]
     ours = []
     for line in replica.read_text().splitlines():
         fields = line.split("\t")

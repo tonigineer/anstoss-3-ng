@@ -1943,6 +1943,16 @@ impl Screen for NoDate {
 
     fn open(&mut self, cx: &mut Cx, view: &mut View, args: Args) {
         let dialog = cx.dialog;
+        // From 25's week-start form the caption names the club joining
+        // (`FUN_00584e64`, "%s - %s").
+        let args = match args {
+            Args::RecordAt(id, country, number) => {
+                let name = cx.game.club_name(cx.state.records.as_ref(), country, number);
+                set(view, dialog, CAPTION_ID, format!("{} - {name}", dialog.title));
+                Args::Record(id)
+            }
+            args => args,
+        };
         if let Args::Record(id) = args {
             let name = cx.state.records.as_ref().and_then(|r| r.known_as(id)).unwrap_or_default();
             let text = control(dialog, NO_DATE_TEXT).map(|c| dialog.controls[c].text.clone());

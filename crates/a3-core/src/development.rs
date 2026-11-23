@@ -23,8 +23,10 @@
 //! young risers bring him youth marks, the sum of the changes moves the
 //! human manager's nerves.
 //!
-//! Left out: the report the human sees of it (`FUN_00410f40`,
-//! `FUN_00410e60`, event 0xca).
+//! A club with a human keeps a page of it for the report the humans see
+//! (`FUN_00410f40`, at most four pages at `DAT_008e2cb4`, event 0xca,
+//! dialog 22 [`Report`]); its rows are its players' changes, when its
+//! trainer is human (`FUN_00410e60`).
 
 use chrono::NaiveDate;
 
@@ -123,6 +125,57 @@ fn best(p: &Player) -> u8 {
     (0..HISTORY_LEN).map(|k| p.get::<u8>(HISTORY + k)).fold(p.strength(), |b, h| b.max(h & 0xf).max(h >> 4))
 }
 
+/// The rows a page of the report holds (`FUN_00410e60` stops at 0x23).
+pub const REPORT_ROWS: usize = 35;
+/// The reasons a row's bits stand for, low bit first: the texts 1878 to
+/// 1888 and 4250 twice (`DAT_0087f548`).
+pub const REASONS: usize = 13;
+/// A row's chances before the draws (`DAT_00876d68`): the drawn ones
+/// (form, the rise and the fall by age) at 0, every other at 100.
+const CHANCES: [i16; REASONS] = [100, 100, 0, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100];
+
+/// One player's line of the report (`FUN_00410e60`'s 0x48 bytes).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ReportRow {
+    pub player: u16,
+    /// His position (R+3, +0x1e), age (`FUN_006ff01b`, +0x1f) and form
+    /// today (`FUN_006ff037`, +0x22).
+    pub position: u8,
+    pub age: u8,
+    pub form: u8,
+    /// His strength before and after (+0x20, +0x21), and the league's
+    /// ceiling (13, 9 or 7, +0x23).
+    pub old: u8,
+    pub new: u8,
+    pub ceiling: u8,
+    /// The reasons he rose and fell by, one bit a reason (+0x24, +0x26).
+    pub up: u16,
+    pub down: u16,
+    /// His season's form times ten (`FUN_006ff257`; +0x28 keeps a tenth
+    /// of it as a float).
+    pub season_form: i16,
+    /// Each reason's chance in percent, negative when its draw failed
+    /// (+0x2c).
+    pub chances: [i16; REASONS],
+}
+
+/// A human club's page of the report (`FUN_0040fa91`'s 0x9e8 bytes).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ReportPage {
+    pub country: u8,
+    pub number: i16,
+    /// The human trainer's difficulty (`FUN_006a64c7`, +0xc), 3 with
+    /// none: at 0 the page tells only whether a man rose or fell.
+    pub insight: u16,
+    pub rows: Vec<ReportRow>,
+}
+
+/// The players' development as the human clubs see it (`DAT_008e2cb0`
+/// pages from `DAT_008e2cb4`); event 0xca shows it when it has a page.
+pub type Report = Vec<ReportPage>;
+/// The pages the report keeps (dialog 22 copies 0x27a0 bytes).
+pub const REPORT_PAGES: usize = 4;
+
 /// What the club brings to every player's development.
 struct Club {
     matches: i32,
@@ -136,16 +189,18 @@ struct Club {
 }
 
 /// The played countries' players develop (`FUN_0040f99c`); `half` at the
-/// winter break, else at the season's end.
-pub fn develop_played(records: &mut Records, half: bool, random: &mut Random) {
+/// winter break, else at the season's end. The report of it comes back.
+pub fn develop_played(records: &mut Records, half: bool, random: &mut Random) -> Report {
+    let mut report = Report::new();
     for country in crate::opponent::played_nations(records) {
         for number in 0..records.countries.team_count(usize::from(country)).max(0) as u16 {
-            develop_club(records, country, number, half, random);
+            develop_club(records, country, number, half, random, &mut report);
         }
     }
+    report
 }
 
-fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, random: &mut Random) {
+fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, random: &mut Random, report: &mut Report) {
     let Some(team) = records.team(country, number) else { return };
     let level = team.level();
     if level >= 10 {
@@ -174,6 +229,17 @@ fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, ra
     };
     let squad = team.players();
     let today = today(records);
+    // A club with a human opens a page (`FUN_00410f40`), and the trainer
+    // his difficulty on it.
+    let mut page = (trainer != 0 || manager != 0).then(|| ReportPage {
+        country: country as u8,
+        number: number as i16,
+        insight: usize::from(trainer)
+            .checked_sub(1)
+            .and_then(|slot| records.managers.get(slot))
+            .map_or(3, |m| m.difficulty() & 0x7f),
+        rows: Vec::new(),
+    });
     let mut sum = 0i16;
     for id in squad {
         let Some(p) = records.player(id) else { continue };
@@ -182,9 +248,13 @@ fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, ra
         }
         let age = today.map_or(0, |d| crate::statistics::age_on(p, d));
         let mut p = p.clone();
-        let (drawn, young_riser) = develop_player(&mut p, age, &mut club, half, random);
+        let (drawn, young_riser, mut row) = develop_player(&mut p, age, &mut club, half, random);
         if club.trainer != 0 {
             sum += drawn;
+            if let Some(page) = page.as_mut().filter(|page| page.rows.len() < REPORT_ROWS) {
+                row.player = id;
+                page.rows.push(row);
+            }
         }
         if let Some(slot) = records.player_mut(id) {
             *slot = p;
@@ -195,6 +265,11 @@ fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, ra
             m.set_youth_marks(m.youth_marks() + YOUTH_MARKS);
         }
     }
+    if let Some(page) = page
+        && report.len() < REPORT_PAGES
+    {
+        report.push(page);
+    }
     if club.manager != 0 && (club.trainer != 0 || club.manager != 0)
         && let Some(m) = usize::from(club.manager).checked_sub(1).and_then(|s| records.managers.get_mut(s))
     {
@@ -204,8 +279,10 @@ fn develop_club(records: &mut Records, country: u16, number: u16, half: bool, ra
 }
 
 /// One player's development (`FUN_0040fa91`'s loop): his change as drawn,
-/// before the bounds, and whether he is a young riser of a human trainer.
-fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random: &mut Random) -> (i16, bool) {
+/// before the bounds, whether he is a young riser of a human trainer, and
+/// his line of the report.
+fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random: &mut Random) -> (i16, bool, ReportRow) {
+    let form_today = crate::statistics::form_today(p);
     let strength = p.strength();
     crate::rollover::note_strength(p, strength);
     let talent = p.talent();
@@ -314,17 +391,25 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
             }
         }
     }
+    // Each draw notes its chance, negative when it fails.
+    let mut chances = CHANCES;
     if up <= 0.0 {
         if down > 0.0 {
             down_bits |= 0x800;
             if f64::from(random.below(100)) < down {
                 change -= 1;
+                chances[11] = down as i16;
+            } else {
+                chances[11] = -(down as i16);
             }
         }
     } else {
         up_bits |= 8;
         if f64::from(random.below(100)) < up {
             change += 1;
+            chances[3] = up as i16;
+        } else {
+            chances[3] = -(up as i16);
         }
     }
     if form_f > 100.0 {
@@ -332,12 +417,18 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
         let chance = (form_f - 100.0) as i16;
         if (random.below(100) as i16) < chance {
             change += 1;
+            chances[2] = chance;
+        } else {
+            chances[2] = -chance;
         }
     } else if form_f < 100.0 {
         down_bits |= 4;
         let chance = (100.0 - form_f) as i16;
         if (random.below(100) as i16) < chance {
             change -= 1;
+            chances[2] = chance;
+        } else {
+            chances[2] = -chance;
         }
     }
     if !half && change == 0 && club.matches / 2 <= league && i16::from(strength) < ceiling {
@@ -358,7 +449,13 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
     }
     let mut young_riser = false;
     if club.trainer != 0 {
+        // The old man's fall by age reads "Talent" a second time.
+        if age > 32 && down_bits & 0x800 != 0 {
+            down_bits = down_bits & !0x800 | 0x1000;
+            chances[12] = chances[11];
+        }
         if strength == 12 && form_f > 130.0 && random.below(500) == 0 && up_bits == 0 && down_bits == 0 {
+            up_bits = 0x200;
             ceiling = 13;
             change = 1;
         }
@@ -379,6 +476,19 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
         change = 1 - s16;
     }
     change = change.clamp(-2, 2);
+    let row = ReportRow {
+        player: 0,
+        position,
+        age: age.clamp(0, 255) as u8,
+        form: form_today.clamp(0, 255) as u8,
+        old: strength,
+        new: (s16 + change) as u8,
+        ceiling: club.ceiling as u8,
+        up: up_bits,
+        down: down_bits,
+        season_form: form.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+        chances,
+    };
     if change > 0 {
         let first = match strength {
             8 => Some(5),
@@ -402,8 +512,7 @@ fn develop_player(p: &mut Player, age: i32, club: &mut Club, half: bool, random:
     if i16::from(now) + 2 < i16::from(best(p)) {
         p.set_problems(p.problems() | BELOW_BEST);
     }
-    let _ = (up_bits, down_bits);
-    (drawn, young_riser)
+    (drawn, young_riser, row)
 }
 
 /// The half week the winter break falls in (`DAT_00b5cbd2 == 0x38`).
@@ -413,27 +522,48 @@ pub const WINTER_BREAK: u16 = 56;
 /// counts them: one on every day from the first the week turns half (day
 /// % 7 = 4) or whole (0) — 18 on day 63, 60 on day 210, as its saves keep
 /// them. On the 56th (day 196) the players develop for the winter break,
-/// without the season's matches (`FUN_0040f99c(1)`).
-pub fn half_week(records: &mut Records, today: i32, random: &mut Random) {
+/// without the season's matches (`FUN_0040f99c(1)`), and its report
+/// comes back.
+pub fn half_week(records: &mut Records, today: i32, random: &mut Random) -> Option<Report> {
     if today < 1 || !matches!(today % 7, 0 | 4) {
-        return;
+        return None;
     }
     let count = today / 7 * 2 + i32::from(today % 7 >= 4);
-    let Ok(count) = u16::try_from(count) else { return };
+    let Ok(count) = u16::try_from(count) else { return None };
+    // The shop draws only where the counter ticks over: the original
+    // redrew and settled right after its increment, so a game resumed
+    // mid-half-week, whose save has the new count already, draws
+    // nothing (`FUN_006da3a9`).
+    let fresh = count > records.globals.half_weeks();
     records.globals.set_half_weeks(count);
-    if count == WINTER_BREAK {
-        develop_played(records, true, random);
+    // Every second half week the betting shop redraws its quotas and
+    // settles the matchday just behind (`FUN_0078107b`, `FUN_007811c5`).
+    if fresh && count % 2 == 0 {
+        crate::betting::redraw_quotas(records, random);
+        crate::betting::settle_matchday(records, random);
     }
+    let developed = (count == WINTER_BREAK).then(|| develop_played(records, true, random));
     // The champions' day honours every first league's leader
     // ([`crate::honours::champions_day`]).
     if count == crate::honours::CHAMPIONS_DAY {
         crate::honours::champions_day(records);
         crate::honours::top_scorers_day(records);
+        // The leaders' managers gain with the public, the fans, the media
+        // and the board ([`crate::standing::champions_day`]).
+        crate::standing::champions_day(records);
+    }
+    // The winter's Hallenturniere, Germany's and France's where they are
+    // played (`FUN_00771959`).
+    for (half, country) in [(crate::tournament::GERMANY_HALLS, 14), (crate::tournament::FRANCE_HALLS, 20)] {
+        if count == half && records.globals.played(country) {
+            crate::tournament::open_winter(records, country as u8, count, random);
+        }
     }
     // And the autumn's half weeks their Herbstmeister.
     if (crate::honours::AUTUMN_FIRST..=crate::honours::AUTUMN_LAST).contains(&count) {
         crate::honours::autumn_day(records, count);
     }
+    developed
 }
 
 /// The new season lifts a weak computer squad (`FUN_0077655c`, from the
@@ -517,7 +647,7 @@ mod tests {
     fn a_weak_player_in_his_late_twenties_gains_a_point() {
         let mut p = player(2, 2, 6);
         let mut random = Random::new(3);
-        let (drawn, young) = develop_player(&mut p, 27, &mut club(9), false, &mut random);
+        let (drawn, young, _) = develop_player(&mut p, 27, &mut club(9), false, &mut random);
         assert_eq!((drawn, young, p.strength()), (1, false, 3));
         assert_eq!(p.get::<u8>(HISTORY), 2, "the old strength noted");
     }
@@ -580,7 +710,15 @@ mod tests {
         let mut random = Random::new(3);
         let _ = crate::promotion::draw(&mut ours, &mut random);
         crate::promotion::count(&mut ours);
-        develop_played(&mut ours, false, &mut random);
+        let report = develop_played(&mut ours, false, &mut random);
+        // The human club's page has every man's line, ending where the
+        // records now stand.
+        assert_eq!(report.len(), 1);
+        assert!(!report[0].rows.is_empty());
+        for row in &report[0].rows {
+            assert_eq!(ours.player(row.player).unwrap().strength(), row.new, "{row:?}");
+            assert_eq!(before.player(row.player).unwrap().strength(), row.old, "{row:?}");
+        }
         let (mut compared, mut ups, mut downs, mut their_ups, mut their_downs) = (0, 0, 0, 0, 0);
         for country in crate::opponent::played_nations(&before) {
             for number in 0..before.countries.team_count(usize::from(country)).max(0) as u16 {

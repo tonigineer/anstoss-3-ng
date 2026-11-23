@@ -245,6 +245,21 @@ pub fn offence(r: &Player) -> u8 {
     (1..=4).rev().find(|&k| r.offences() & (0x10 << (k - 1)) != 0).unwrap_or(0)
 }
 
+/// The worst he did this week or last, by level 1 to 4 (`FUN_00702e05`:
+/// both nibbles of his offences).
+pub fn recent_offence(r: &Player) -> u8 {
+    (1..=4).rev().find(|&k| r.offences() & (0x11 << (k - 1)) != 0).unwrap_or(0)
+}
+
+/// Notes an offence of `level` (1 to 4) on him (`FUN_00702eee`): its bit
+/// of this week, and its count one up, three at most.
+pub fn note_offence(r: &mut Player, level: u8) {
+    let shift = 2 * (level - 1);
+    r.set_offences(r.offences() | 0x10 << (level - 1));
+    let count = (times(r, level) + 1).min(3);
+    r.set_offence_counts(r.offence_counts() & !(3 << shift) | count << shift);
+}
+
 /// How often he did something of a level, at most three times.
 fn times(r: &Player, level: u8) -> u8 {
     (r.offence_counts() >> (2 * (level - 1))) & 3

@@ -11,10 +11,19 @@ pub mod calendar;
 pub mod camp;
 pub mod comparison;
 pub mod contacts;
+pub mod court;
+pub mod cup_results;
 pub mod discipline;
 pub mod donations;
 pub mod doping;
+pub mod doping_control;
+pub mod doping_report;
 pub mod duties;
+pub mod european_ranking;
+pub mod event_text;
+pub mod event_question;
+pub mod development;
+pub mod farewells;
 pub mod finances;
 pub mod formations;
 pub mod friendly;
@@ -22,9 +31,13 @@ pub mod grounds;
 pub mod help;
 pub mod honours;
 pub mod illegal;
+pub mod interview;
 pub mod hub;
 pub mod jobs;
 pub mod kalkulation;
+pub mod match_report;
+pub mod prematch;
+pub mod halftime;
 pub mod licence;
 pub mod konfig3d;
 pub mod market;
@@ -32,25 +45,35 @@ pub mod medical;
 pub mod merchandise;
 pub mod menu_text;
 pub mod musik;
+pub mod national;
+pub mod national_offer;
 pub mod notepad;
 pub mod nutzung;
 pub mod office;
+pub mod open_day;
 pub mod optionen;
 pub mod opponent;
 pub mod planner;
 pub mod playerinfo;
+pub mod poaching;
+pub mod render;
+pub mod fee;
 pub mod popups;
 pub mod save;
 pub mod search;
+pub mod season_start;
+pub mod season_terms;
 pub mod special;
 pub mod squad;
 pub mod stadium;
 pub mod start;
 pub mod statistics;
+pub mod tables_after;
 pub mod tactics;
 pub mod talk;
 pub mod tournament;
 pub mod training;
+pub mod week_abilities;
 pub mod year;
 pub mod youth;
 pub mod youth_tables;
@@ -151,6 +174,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(duties::Takers::default()),
         Box::new(medical::Medical::default()),
         Box::new(medical::Visit),
+        Box::new(open_day::OpenDay),
         Box::new(opponent::Opponent),
         Box::new(playerinfo::PlayerInfo::default()),
         Box::new(office::Office),
@@ -171,6 +195,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(save::SaveGame::default()),
         Box::new(youth_tables::YouthTables::default()),
         Box::new(doping::Doping),
+        Box::new(doping_report::DopingReport::default()),
         Box::new(year::YearCalendar::default()),
         Box::new(finances::Balance::default()),
         Box::new(finances::Finances::default()),
@@ -192,6 +217,13 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(illegal::Illegal::default()),
         Box::new(kalkulation::AgencyEngaged),
         Box::new(kalkulation::SponsorContract),
+        Box::new(national::NationalMenu::default()),
+        Box::new(national::NationalSquad::default()),
+        Box::new(national::NationalPlayerSearch::default()),
+        Box::new(national::NationalTalks::default()),
+        Box::new(national::NationalFriendlies::default()),
+        Box::new(national::NationalTeamInfo::default()),
+        Box::new(national_offer::NationalOffer::default()),
         Box::new(squad::SquadMenu::default()),
         Box::new(squad::CurrentSquad::default()),
         Box::new(squad::MarketValues::default()),
@@ -218,6 +250,7 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(honours::market::Winners),
         Box::new(honours::betting::MatchdayBets::default()),
         Box::new(honours::betting::SeasonBets::default()),
+        Box::new(honours::betting_report::Report::default()),
         Box::new(help::HelpPage::default()),
         Box::new(honours::pay::Pay),
         Box::new(honours::season_records::SeasonRecords),
@@ -256,29 +289,53 @@ pub fn registry() -> Vec<Box<dyn Screen>> {
         Box::new(market::WorldsBest),
         Box::new(market::Appointments::default()),
         Box::new(market::LoanTerms),
+        Box::new(market::JoinTalks),
         Box::new(market::WatchList::default()),
         Box::new(market::WatchedPlayer::default()),
         Box::new(talk::TalkScreen::default()),
         Box::new(talk::PlayerChoice::default()),
+        Box::new(poaching::PoachingTalk::default()),
+        Box::new(fee::FeeTalkScreen::default()),
         Box::new(tactics::TacticsScreen::default()),
+        Box::new(tables_after::TablesAfter::default()),
+        Box::new(interview::InterviewScreen::default()),
+        Box::new(match_report::MatchReport::default()),
+        Box::new(doping_control::DopingControl),
+        Box::new(farewells::Farewells::default()),
+        Box::new(development::Development::default()),
+        Box::new(european_ranking::EuropeanRanking),
+        Box::new(court::Court),
+        Box::new(season_terms::SeasonTerms::default()),
+        Box::new(season_start::SeasonStart::default()),
+        Box::new(cup_results::CupResults::default()),
+        Box::<event_text::EventText>::default(),
+        Box::new(render::Render::default()),
+        Box::new(prematch::Prematch),
+        Box::new(halftime::Halftime),
         Box::new(comparison::Comparison::default()),
-        Box::new(comparison::OpponentSquad),
+        Box::new(comparison::OpponentSquad::default()),
         Box::new(training::ShortTraining::default()),
         Box::new(training::UnitChoice),
         Box::new(training::editor::TemplateEditor::default()),
         Box::new(training::long::LongTraining::default()),
         Box::new(training::individual::IndividualTraining::default()),
         Box::new(training::individual::AbilityChoice::default()),
+        Box::new(week_abilities::WeekAbilities::default()),
         Box::new(training::settings::CoTrainerSettings::default()),
         Box::new(training::performance::TrainingStatistics::default()),
         Box::new(training::rooms::Rooms::default()),
         Box::new(training::career::PlayerCareer::default()),
         Box::new(camp::WorldMap::default()),
         Box::new(camp::CampConfirm),
-        Box::new(camp::CampGroup),
+        Box::new(event_question::EventQuestion),
         Box::new(friendly::FriendlyChoice::default()),
+        Box::new(friendly::FriendlyRequest),
         Box::new(tournament::TournamentChoice::default()),
         Box::new(tournament::OwnTournament::default()),
+        Box::new(tournament::TournamentDraw),
+        Box::new(tournament::TournamentResult),
+        Box::new(tournament::TournamentInvite),
+        Box::new(tournament::HallResult),
         Box::new(donations::Donations::default()),
         Box::new(licence::Licence),
     ]
@@ -294,9 +351,11 @@ pub fn compose(game: &mut Game) {
     hub::compose(&mut game.dialogs, &game.data.rules);
     formations::compose(&mut game.dialogs, &game.data.rules);
     special::compose(&mut game.dialogs);
+    fee::compose(&mut game.dialogs);
     duties::compose(&mut game.dialogs);
     medical::compose(&mut game.dialogs);
     medical::compose_visit(&mut game.dialogs);
+    open_day::compose_open_day(&mut game.dialogs);
     opponent::compose(&mut game.dialogs);
     playerinfo::compose(&mut game.dialogs);
     discipline::compose(&mut game.dialogs);
@@ -307,11 +366,13 @@ pub fn compose(game: &mut Game) {
     training::editor::compose(&mut game.dialogs, &game.data.rules);
     training::long::compose(&mut game.dialogs, &game.data.rules);
     training::individual::compose(&mut game.dialogs, &game.data.rules);
+    week_abilities::compose(&mut game.dialogs);
     training::settings::compose(&mut game.dialogs);
     training::performance::compose(&mut game.dialogs);
     training::rooms::compose(&mut game.dialogs);
     training::career::compose(&mut game.dialogs);
     camp::compose(&mut game.dialogs, &game.data.rules);
+    event_question::compose(&mut game.dialogs);
     friendly::compose(&mut game.dialogs);
     tournament::compose(&mut game.dialogs);
     donations::compose(&mut game.dialogs);
@@ -326,13 +387,30 @@ pub fn compose(game: &mut Game) {
     nutzung::compose(&mut game.dialogs);
     save::compose(&mut game.dialogs);
     youth_tables::compose(&mut game.dialogs);
+    tables_after::compose(&mut game.dialogs);
+    prematch::compose(&mut game.dialogs);
+    halftime::compose(&mut game.dialogs, &game.data.rules);
     doping::compose(&mut game.dialogs);
+    doping_report::compose(&mut game.dialogs);
+    doping_control::compose(&mut game.dialogs);
+    farewells::compose(&mut game.dialogs);
+    development::compose(&mut game.dialogs);
+    european_ranking::compose(&mut game.dialogs);
+    court::compose(&mut game.dialogs);
+    season_terms::compose(&mut game.dialogs);
+    national_offer::compose(&mut game.dialogs);
+    season_start::compose(&mut game.dialogs);
+    cup_results::compose(&mut game.dialogs);
+    event_text::compose(&mut game.dialogs);
+    render::compose(&mut game.dialogs);
     year::compose(&mut game.dialogs, &game.data.rules);
     finances::compose(&mut game.dialogs, &game.data.rules);
     bank::compose(&mut game.dialogs);
     kalkulation::compose(&mut game.dialogs);
     merchandise::compose(&mut game.dialogs);
     illegal::compose(&mut game.dialogs);
+    national::compose(&mut game.dialogs, &game.data.rules);
+    national::compose_picker(&mut game.dialogs);
     squad::compose(&mut game.dialogs, &game.data.rules);
     squad::compose_squad(&mut game.dialogs);
     squad::compose_values(&mut game.dialogs);
@@ -352,6 +430,7 @@ pub fn compose(game: &mut Game) {
     honours::confidence::compose(&mut game.dialogs);
     honours::market::compose(&mut game.dialogs);
     honours::betting::compose(&mut game.dialogs);
+    honours::betting_report::compose(&mut game.dialogs);
     market::compose(&mut game.dialogs);
     market::compose_best(&mut game.dialogs);
     market::compose_talks(&mut game.dialogs);
