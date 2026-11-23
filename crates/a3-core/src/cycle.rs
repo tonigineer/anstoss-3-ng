@@ -1492,14 +1492,7 @@ impl Cycle {
                                 );
                             }
                         }
-                        let played = crate::matches::play_day(
-                            records,
-                            &self.data.world,
-                            &self.data.calendar,
-                            season,
-                            &self.data.rules.individual,
-                            &listed,
-                        );
+                        let played = crate::matches::play_day(records, &self.data, season, &listed);
                         crate::prematch::crowds(&mut pages, &played.faced);
                         season.prematch = pages;
                         crate::halftime::scores(&mut breaks, &played.faced);

@@ -39,8 +39,8 @@
 //!
 //! Before the minutes the kick-off (`kick_off_strengths`, the pre-match
 //! walk's `FUN_006f6fc7`) reckons both sides' strengths from their
-//! elevens; the clubs' tactics laid behind it wait. Not wired into
-//! `matches::play_day` yet: the row's sides are not laid whole.
+//! elevens; the clubs' tactics laid behind it wait. `matches::play_day`
+//! walks the day's listed league matches through it.
 
 use chrono::NaiveDate;
 
@@ -337,6 +337,9 @@ pub struct Match {
     /// +0x08,+0x09: the first leg's goals — +0x09 counts with +0x0e, +0x08
     /// with +0x10.
     pub leg: [u8; 2],
+    /// +0x12,+0x13: the score at half time, which the break copies from
+    /// the goals (`FUN_0064987a`) and the settlement reads as the half's.
+    pub half: [u8; 2],
     /// +0x14..+0x1b: the score at the clock's marks — 90, 10, 75, 85 —
     /// each kept in two bytes, one per side.
     pub score90: [u8; 2],
@@ -467,7 +470,13 @@ pub fn play_matches(
     }
     clock.minute = 45;
     // Half time also packs the half's events (FUN_006f85b7 for the live
-    // match) and records the scorers so far (FUN_0064987a) — not ported.
+    // match) and records the scorers so far (FUN_0064987a) — not ported
+    // but for the half's score, copied over the whole row (+0x12/+0x13;
+    // the original skips the copy on a day `FUN_006ef262` shows no
+    // break, whose half nothing reads).
+    for m in matches.iter_mut() {
+        m.half = [m.goals[0] as u8, m.goals[1] as u8];
+    }
     for m in matches.iter_mut() {
         m.ends_at = added_time(m, random) + 90;
         m.flags &= !MINUTE_UP;
@@ -2230,7 +2239,7 @@ fn saved_formation(team: &crate::records::Team) -> Option<([u16; 11], [u16; 7])>
 /// substitution helpers — they replace an injured or suspended listed
 /// man — run when the manager visits, not in the walk; the replica
 /// stands the listed man as saved.
-fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
+pub(crate) fn saved_eleven(m: &Match, which: usize, records: &Records) -> Vec<u16> {
     let at = which * 2;
     let team = match records.team(m.ids[at], m.ids[at + 1]) {
         Some(team) => team,
@@ -2786,6 +2795,21 @@ pub fn competition_wear(records: &mut Records, (country, number): (u8, u16), pla
                 wear_by_rows(p, minutes, mult, &WEAR_ROWS);
             }
             None => sat_out(p),
+        }
+    }
+}
+
+/// The squad's men a walked match left off its pitch, each a sat-out
+/// step ([`sat_out`]), the walk having worn those who stood
+/// ([`post_match_wear`]).
+pub fn sat_out_rest(records: &mut Records, (country, number): (u8, u16), stood: &[u16]) {
+    let Some(team) = records.team(country.into(), number) else { return };
+    for id in team.players() {
+        if id == 0 || stood.contains(&id) {
+            continue;
+        }
+        if let Some(p) = records.player_mut(id) {
+            sat_out(p);
         }
     }
 }

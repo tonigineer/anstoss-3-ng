@@ -13,6 +13,7 @@ use crate::records::{PLANNER_DAYS, PLANNER_ENTRY, Records, Team};
 use crate::report;
 use crate::season::Season;
 use crate::settlement;
+use crate::sim;
 use crate::statistics::{self, ALL};
 use crate::tickets;
 use crate::world::{self, World};
@@ -44,17 +45,25 @@ const GOAL_UNITS: i32 = 200;
 /// the country's cup when the day is one of its rounds. The leagues that
 /// played, by country and level, and the human clubs whose matches left
 /// them a report. `listed` is the day's match list ([`list_day`]) the
-/// original plays (`FUN_00710839` on the buffer at `0x1baf714`): a league
-/// on it has its controlled pairs there, one left off it none.
-pub fn play_day(
-    records: &mut Records,
-    world: &World,
-    calendar: &Calendar,
-    season: &mut Season,
-    individual: &IndividualTables,
-    listed: &[Listed],
-) -> MatchDay {
+/// original plays (`FUN_00710839` on the buffer at `0x1baf714`): its
+/// leagues' matches stand in one row ([`walk_row`]) that the pre-match
+/// walk and the minutes play together before any is settled
+/// (`FUN_006f38b0`: `FUN_006ef296`, then `FUN_006f352e`), each taking
+/// its goals and half from there and its doping control from the
+/// walk's picks; a league left off it scores its pairs as before and
+/// has no control.
+pub fn play_day(records: &mut Records, data: &crate::data::Data, season: &mut Season, listed: &[Listed]) -> MatchDay {
+    let (world, calendar, individual) = (&data.world, &data.calendar, &data.rules.individual);
     let day = season.day;
+    let (mut day_row, spans) = walk_row(records, calendar, day, listed);
+    if !day_row.is_empty() {
+        // The plain day (mode 1, `FUN_006f352e(count, row, 1)`): with
+        // every `nat_bits` nought the watched walk and the unwatched
+        // one play alike. The walk's lessons wait: the settlement's
+        // scorers teach theirs.
+        sim::pre_match_walk(&mut day_row, records, data, &mut season.random);
+        sim::play_matches(&mut day_row, false, Some(records), None, season.date(), &mut season.random);
+    }
     let mut played = Vec::new();
     let mut faced = Vec::new();
     let mut controls = Vec::new();
@@ -81,8 +90,8 @@ pub fn play_day(
                 league.played() + 1 == matchday && !league.open_games().is_empty()
             });
             if due {
-                let picks = listed.iter().find(|(league, _)| *league == (nation, level)).map_or(&[][..], |(_, p)| p);
-                faced.extend(settle(records, nation, level, day, individual, picks, &mut season.random, &mut controls));
+                let walked = spans.iter().find(|(league, _)| *league == (nation, level)).map(|(_, at)| &day_row[at.clone()]);
+                faced.extend(settle(records, nation, level, day, individual, walked, &mut season.random, &mut controls));
                 played.push((nation, level));
             }
         }
@@ -139,6 +148,50 @@ pub fn list_day(records: &Records, calendar: &Calendar, day: usize, random: &mut
 /// A league on the day's match list, by country and level, and the pairs
 /// its doping control takes ([`listing_picks`]).
 pub type Listed = ((u16, u8), Vec<u32>);
+
+/// The leagues' spans in the day's row, by country and level.
+type Spans = Vec<((u16, u8), std::ops::Range<usize>)>;
+
+/// The day's row as the listing fills it (`FUN_00692045`'s
+/// `FUN_00690a9e` into the buffer at `0x1baf714`): each listed league
+/// due today puts its open pairs in its schedule's order, both sides'
+/// country bytes and ids (+0x00..+0x06), the ground the home side's
+/// (+0x28, the record's first dword copied), the kind its round counted
+/// from nought (+0x20: the matchday less one, past a split league's
+/// regular rounds the round of its second phase, `FUN_0068fd44`) and the
+/// doping control's mark on the pair the list drew (+0x460, one in each
+/// group of four in a split league's second phase). The original's
+/// bytes +0x01/+0x05 (`FUN_0063e2df`) are left nought, as the walk's
+/// trace reads its ids.
+fn walk_row(records: &Records, calendar: &Calendar, day: usize, listed: &[Listed]) -> (Vec<sim::Match>, Spans) {
+    let mut row = Vec::new();
+    let mut spans = Vec::new();
+    for &((country, level), ref picks) in listed {
+        let Some(at) = calendar.row(country, usize::from(level)) else { continue };
+        let Some(matchday) = calendar.matchday(at, day) else { continue };
+        let Some(league) = League::of(records, country, level) else { continue };
+        let games = league.open_games();
+        if league.played() + 1 != matchday || games.is_empty() {
+            continue;
+        }
+        let regular = league.regular_matchdays();
+        let round = if league.split() != 0 && matchday > regular { matchday - regular } else { matchday };
+        let marked: Vec<usize> =
+            picks.iter().enumerate().map(|(group, &pick)| group * SPLIT_PAIRS as usize + pick as usize).collect();
+        let start = row.len();
+        for (k, &(home, away, _)) in games.iter().enumerate() {
+            let mut m = sim::Match::default();
+            m.ids = [country, league.team(home) as u16, country, league.team(away) as u16];
+            m.home_nation = country as u8;
+            m.home_id = m.ids[1];
+            m.kind = u32::try_from(round.saturating_sub(1)).unwrap_or(0);
+            m.doping = marked.contains(&k);
+            row.push(m);
+        }
+        spans.push(((country, level), start..row.len()));
+    }
+    (row, spans)
+}
 
 /// The pair of a league's matchday the doping control takes
 /// (`FUN_00690a9e`, the list's +0x460): one of its `teams / 2`; past the
@@ -1291,14 +1344,19 @@ fn mark_cup(
 /// Both clubs keep their gate figures: the home club its crowd, income and
 /// the visiting fans, the away club the travelling gate of the game. The
 /// human's year calendar fills the day's fixture with the new score, its
-/// flag saying the result stands.
+/// flag saying the result stands. `walked` holds the league's matches as
+/// the day's row played them ([`walk_row`]), in the order of its open
+/// pairs: their goals (+0x0e/+0x10) and half (+0x12/+0x13) stand as the
+/// results, the men the walk picked for the doping control are tested,
+/// and the walk's wear stands for the eleven's (`FUN_007108d3`); without
+/// it each pair's goals are drawn ([`goals`]) and no control is held.
 fn settle(
     records: &mut Records,
     nation: u16,
     level: u8,
     day: usize,
     individual: &IndividualTables,
-    picks: &[u32],
+    walked: Option<&[sim::Match]>,
     random: &mut Random,
     controls: &mut Vec<crate::doping_control::Control>,
 ) -> Vec<Faced> {
@@ -1330,14 +1388,24 @@ fn settle(
     // The row of this matchday in the players' forty-six.
     let md = usize::from(league.played());
     let matchday = i32::try_from(league.played() + 1).unwrap_or(0);
-    let scored: Vec<[u8; 4]> = games
-        .iter()
-        .map(|&(home, away, _)| {
-            let (full, half) = goals(strengths[home], strengths[away], HOME_EDGE, random);
-            let (a_full, a_half) = goals(strengths[away], strengths[home], -HOME_EDGE, random);
-            [full, a_full, half, a_half]
-        })
-        .collect();
+    let walked = walked.filter(|row| row.len() == games.len());
+    let scored: Vec<[u8; 4]> = match walked {
+        Some(row) => row
+            .iter()
+            .map(|m| {
+                let [home, away] = m.goals.map(|g| u8::try_from(g.max(0)).unwrap_or(u8::MAX));
+                [home, away, m.half[0], m.half[1]]
+            })
+            .collect(),
+        None => games
+            .iter()
+            .map(|&(home, away, _)| {
+                let (full, half) = goals(strengths[home], strengths[away], HOME_EDGE, random);
+                let (a_full, a_half) = goals(strengths[away], strengths[home], -HOME_EDGE, random);
+                [full, a_full, half, a_half]
+            })
+            .collect(),
+    };
     // The gate each home club books for its match — the attendance, the
     // money and the stadium it fills — reckoned before the block and the
     // clubs are written.
@@ -1485,11 +1553,12 @@ fn settle(
     // clubs' reports of their matches (`FUN_00550f29`), the matchday from
     // 0 their kind.
     let mut reported = Vec::new();
-    for ((((&home, &away), result), &(attendance, gate)), &fans) in
-        homes.iter().zip(&aways).zip(&scored).zip(&takings).zip(&visiting)
+    for (k, ((((&home, &away), result), &(attendance, gate)), &fans)) in
+        homes.iter().zip(&aways).zip(&scored).zip(&takings).zip(&visiting).enumerate()
     {
+        let worn = walked.and_then(|row| row.get(k));
         let scorers =
-            mark_match(records, nation, level, md, home, away, result[0], result[1], individual, random);
+            mark_match(records, nation, level, md, home, away, result[0], result[1], worn, individual, random);
         let sides = [(nat, home as i16), (nat, away as i16)];
         if let Some(club) = report::human_side(records, sides) {
             let played = report::Played {
@@ -1510,14 +1579,12 @@ fn settle(
     // (+0x460, drawn in `FUN_00690a9e`; in a split league's second phase
     // one in each group of four), both sides' men picked (`FUN_005dad80`,
     // home first) and those of a human's club tested (`FUN_00741aef` →
-    // `FUN_005dae5f`).
-    for (group, &pick) in picks.iter().enumerate() {
-        let at = group * SPLIT_PAIRS as usize + pick as usize;
-        if let (Some(&home), Some(&away)) = (homes.get(at), aways.get(at)) {
-            let picked = [home, away].map(|n| (n, crate::doping_control::pick(records, nation, n, random)));
-            for (n, men) in picked {
-                controls.extend(crate::doping_control::test(records, nation, n, &men, random));
-            }
+    // `FUN_005dae5f`). The walk picked them before its first minute
+    // ([`sim::ready_row`]).
+    for m in walked.unwrap_or_default().iter().filter(|m| m.doping) {
+        for which in 0..2 {
+            let men: Vec<u16> = m.picked[which].iter().copied().filter(|&id| id != 0).collect();
+            controls.extend(crate::doping_control::test(records, nation, m.ids[which * 2 + 1], &men, random));
         }
     }
     // Every offered Toto match keeps its result, wherever it stands in
@@ -1634,7 +1701,11 @@ const SUB_MINUTE: i32 = 70;
 /// his goals of it in +0x2eb; one to three substitutions a side, grades,
 /// cards and the suspensions they bring are the replica's own, held to
 /// what the saves read. The fitness its men keep follows the graded
-/// pass ([`crate::sim::competition_wear`]).
+/// pass ([`crate::sim::competition_wear`]). A match the day's row walked
+/// (`walked`) stands the eleven the walk entered, its booked takers'
+/// goals counted already ([`sim::post_match_books`]) and its eleven worn
+/// ([`sim::post_match_wear`]), so only the men off its pitch take their
+/// sat-out step.
 fn mark_match(
     records: &mut Records,
     nation: u16,
@@ -1644,16 +1715,22 @@ fn mark_match(
     away: u16,
     full: u8,
     a_full: u8,
+    walked: Option<&sim::Match>,
     individual: &IndividualTables,
     random: &mut Random,
 ) -> [Vec<u16>; 2] {
     let mut scorers: [Vec<u16>; 2] = Default::default();
-    for (team, goals, at_home) in [(home, full, true), (away, a_full, false)] {
+    for (which, (team, goals, at_home)) in [(home, full, true), (away, a_full, false)].into_iter().enumerate() {
         let squad = records
             .team(nation, team)
             .map(|t| t.players())
             .unwrap_or_default();
-        let eleven = eleven(&squad, records);
+        // A walked match stood the eleven its walk entered: the saved
+        // line-up the co-trainer or the manager left.
+        let eleven: Vec<u16> = match walked {
+            Some(m) => sim::saved_eleven(m, which, records).into_iter().filter(|&id| id != 0).collect(),
+            None => eleven(&squad, records),
+        };
         let weights: Vec<u32> = eleven
             .iter()
             .map(|&id| {
@@ -1662,17 +1739,34 @@ fn mark_match(
                 })
             })
             .collect();
+        // A walked match's goals its books name a taker for (the side's
+        // goal list, `post_match_books`) stand on him already, counted
+        // in his season's goals; only the rest are drawn.
+        let booked: Vec<(u16, i16)> = walked
+            .map(|m| m.sides[which].goal_book.iter().copied().take_while(|&(id, _)| id != 0).collect())
+            .unwrap_or_default();
+        let booked = &booked[..booked.len().min(usize::from(goals))];
         let mut scored = vec![0u8; eleven.len()];
-        for _ in 0..u32::from(goals) {
+        let mut counted = vec![0u8; eleven.len()];
+        let mut takers: Vec<(u16, i16)> = booked.to_vec();
+        for &(id, _) in booked {
+            if let Some(k) = eleven.iter().position(|&e| e == id) {
+                scored[k] = scored[k].saturating_add(1);
+                counted[k] = counted[k].saturating_add(1);
+            }
+        }
+        for _ in booked.len()..usize::from(goals) {
             let Some(k) = draw(&weights, random) else {
                 break;
             };
             scored[k] = scored[k].saturating_add(1);
-            let id = eleven[k];
+            takers.push((eleven[k], -1));
+        }
+        for (id, kind) in takers {
             scorers[usize::from(!at_home)].push(id);
-            // Every goal teaches its scorer (`FUN_00740aad`); the
-            // replica's draw names no kind, so only Torinstinkt.
-            crate::training_day::goal_lessons(records, individual, (nation, team), id, -1);
+            // Every goal teaches its scorer (`FUN_00740aad`) by its kind;
+            // the replica's draw names none, so only Torinstinkt.
+            crate::training_day::goal_lessons(records, individual, (nation, team), id, kind);
             let names = records.player(id).map(|p| (p.first_name(), p.last_name()));
             if let Some((first, last)) = names {
                 statistics::book_goal(
@@ -1737,13 +1831,13 @@ fn mark_match(
         // rule's worth of yellows; the suspension counts the matchday
         // just played among its matches, which settle serves off at the
         // day's end.
-        let appearances: Vec<(u16, u8, bool, bool)> = eleven
+        let appearances: Vec<(u16, u8, u8, bool, bool)> = eleven
             .iter()
-            .zip(&scored)
-            .map(|(&id, &n)| (id, n, true, outs.contains(&id)))
-            .chain(ins.iter().map(|&id| (id, 0, false, false)))
+            .zip(scored.iter().zip(&counted))
+            .map(|(&id, (&n, &c))| (id, n, c, true, outs.contains(&id)))
+            .chain(ins.iter().map(|&id| (id, 0, 0, false, false)))
             .collect();
-        for (id, n, starter, went_off) in appearances {
+        for (id, n, counted, starter, went_off) in appearances {
             let grade = (5 + u32::from(random.below(5)) + u32::from(n)).min(11) as u8;
             let card = if random.below(110) == 0 {
                 3
@@ -1775,12 +1869,12 @@ fn mark_match(
                     less[0] = less[0].saturating_add(1);
                     p.set_league_less(less);
                 }
-                if n > 0 {
+                if n > counted {
                     let mut goals = p.goals();
-                    goals[0] = goals[0].saturating_add(n);
+                    goals[0] = goals[0].saturating_add(n - counted);
                     p.set_goals(goals);
                     if at_home {
-                        p.set_home_goals(p.home_goals().saturating_add(n));
+                        p.set_home_goals(p.home_goals().saturating_add(n - counted));
                     }
                 }
                 if md < p.matchdays().len() {
@@ -1818,7 +1912,15 @@ fn mark_match(
         let mut minutes: Vec<(u16, i32)> =
             eleven.iter().map(|&id| (id, if outs.contains(&id) { SUB_MINUTE } else { 90 })).collect();
         minutes.extend(ins.iter().map(|&id| (id, 90 - SUB_MINUTE)));
-        crate::sim::competition_wear(records, (u8::try_from(nation).unwrap_or(0), team), &minutes, false);
+        let club = (u8::try_from(nation).unwrap_or(0), team);
+        match walked {
+            Some(m) => {
+                let mut stood = sim::saved_eleven(m, which, records);
+                stood.extend(minutes.iter().map(|&(id, _)| id));
+                sim::sat_out_rest(records, club, &stood);
+            }
+            None => sim::competition_wear(records, club, &minutes, false),
+        }
         // The men who stood leave the youth round (`FUN_007471bd`),
         // in the squad's order as the graded pass walks them.
         for &id in squad.iter().filter(|id| eleven.contains(id) || ins.contains(id)) {
@@ -2218,7 +2320,7 @@ mod crowd_tests {
         let day = usize::from(records.globals.day());
         let exe = a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap();
         let tables = IndividualTables::load(&exe).unwrap();
-        settle(&mut records, 14, 0, day, &tables, &[], &mut random, &mut Vec::new());
+        settle(&mut records, 14, 0, day, &tables, None, &mut random, &mut Vec::new());
         let gates: Vec<i32> = held
             .iter()
             .map(|&(t, at)| records.team(14, t).unwrap().gates()[at])
@@ -2338,9 +2440,9 @@ mod listing_tests {
     }
 
     /// The doping control takes the pair the day's list marked: on A's
-    /// human league, marking the human club's own pair tests his men
-    /// (dialog 41's control), marking the next pair leaves him alone, and
-    /// a league off the list draws no control at all.
+    /// human league, marking the human club's own pair tests the men the
+    /// walk picked of his (dialog 41's control), marking the next pair
+    /// leaves him alone, and a league off the list holds no control.
     #[test]
     #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
     fn the_control_takes_the_lists_pair() {
@@ -2359,15 +2461,78 @@ mod listing_tests {
             .iter()
             .position(|&(h, a, _)| [h, a].iter().any(|&p| league.team(p) == number))
             .unwrap();
-        let controlled = |picks: &[u32]| {
+        let controlled = |picks: Option<&[u32]>| {
             let mut records = load();
             let mut controls = Vec::new();
             let mut random = Random::from_state(4711, 815);
-            settle(&mut records, nation, level, 69, &data.rules.individual, picks, &mut random, &mut controls);
+            let mut row: Vec<sim::Match> = games
+                .iter()
+                .enumerate()
+                .map(|(k, &(h, a, _))| {
+                    let mut m = sim::Match::default();
+                    m.ids = [nation, league.team(h) as u16, nation, league.team(a) as u16];
+                    m.doping = picks.unwrap_or_default().contains(&(k as u32));
+                    m
+                })
+                .collect();
+            sim::ready_row(&mut row, &mut records, &mut random);
+            let walked = picks.map(|_| &row[..]);
+            settle(&mut records, nation, level, 69, &data.rules.individual, walked, &mut random, &mut controls);
             controls.iter().map(|c| c.club).collect::<Vec<_>>()
         };
-        assert_eq!(controlled(&[own as u32]), [(country, number)]);
-        assert!(controlled(&[((own + 1) % games.len()) as u32]).is_empty());
-        assert!(controlled(&[]).is_empty());
+        assert_eq!(controlled(Some(&[own as u32])), [(country, number)]);
+        assert!(controlled(Some(&[((own + 1) % games.len()) as u32])).is_empty());
+        assert!(controlled(None).is_empty());
+    }
+
+    /// The day's listed league matches walk together and settle with the
+    /// walk's goals: on A's next day of the human's league the row holds
+    /// the league's open pairs in their order, the listing's doping mark
+    /// on its pair, and once the walk and the minutes have played it the
+    /// block's four bytes of each pair read the row's goals and half.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn league_days_take_their_goals_from_the_walk() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let data = crate::data::Data::load(&dir).unwrap();
+        let (country, number) = statistics::human_clubs(&records)[0];
+        let nation = u16::from(country);
+        let level = records.team(nation, number as u16).unwrap().level();
+        let league = League::of(&records, nation, level).unwrap();
+        let games = league.open_games();
+        let played = league.played();
+        let pairs: Vec<[u16; 4]> =
+            games.iter().map(|&(h, a, _)| [nation, league.team(h) as u16, nation, league.team(a) as u16]).collect();
+        let at = data.calendar.row(nation, usize::from(level)).unwrap();
+        let day =
+            (usize::from(records.globals.day())..365).find(|&d| data.calendar.matchday(at, d) == Some(played + 1)).unwrap();
+        let mut random = Random::from_state(4711, 815);
+        let listed = list_day(&records, &data.calendar, day, &mut random);
+        let picks = listed.iter().find(|(l, _)| *l == (nation, level)).map(|(_, p)| p.clone()).unwrap();
+        let (mut row, spans) = walk_row(&records, &data.calendar, day, &listed);
+        let span = spans.iter().find(|(l, _)| *l == (nation, level)).map(|(_, s)| s.clone()).unwrap();
+        assert_eq!(span.len(), games.len());
+        for (k, (m, ids)) in row[span.clone()].iter().zip(&pairs).enumerate() {
+            assert_eq!(&m.ids, ids);
+            assert_eq!((m.home_nation, m.home_id), (country, m.ids[1]));
+            assert_eq!(m.doping, picks == [k as u32], "pair {k} against the pick {picks:?}");
+        }
+        sim::pre_match_walk(&mut row, &mut records, &data, &mut random);
+        let today = chrono::NaiveDate::from_ymd_opt(2000, 9, 1).unwrap();
+        sim::play_matches(&mut row, false, Some(&mut records), None, today, &mut random);
+        let walked = &row[span];
+        let results: Vec<u8> =
+            walked.iter().flat_map(|m| [m.goals[0] as u8, m.goals[1] as u8, m.half[0], m.half[1]]).collect();
+        assert!(results.iter().any(|&g| g > 0), "the minutes scored: {results:?}");
+        assert!(walked.iter().all(|m| m.half[0] as i16 <= m.goals[0] && m.half[1] as i16 <= m.goals[1]));
+        settle(&mut records, nation, level, day, &data.rules.individual, Some(walked), &mut random, &mut Vec::new());
+        let name = League::block_name(&records, nation, level).unwrap();
+        let block = records.block(&name).unwrap();
+        let written: Vec<u8> = games.iter().flat_map(|&(_, _, at)| block.get(at..at + 4).unwrap().to_vec()).collect();
+        assert_eq!(written, results);
+        assert_eq!(League::of(&records, nation, level).unwrap().played(), played + 1);
     }
 }
