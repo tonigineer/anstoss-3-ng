@@ -969,7 +969,8 @@ pub struct PurchaseTalk {
     /// The talk over the fee with the bidder he took (from asm 0x7694cc),
     /// while a human seller still answers it.
     pub fee: Option<crate::fee_talk::FeeTalk>,
-    /// What computer clubs alone settled on (`FUN_0076d021`).
+    /// What computer clubs settled on without a dialog (`FUN_0076d021`,
+    /// and `FUN_00768638` asm 0x769797 after the rounds).
     pub settled: Option<Settled>,
 }
 
@@ -1428,10 +1429,11 @@ pub fn close_purchase_talk(records: &mut Records, player: u16) {
 /// its last and the bid not "ab sofort" (+0x3a 0x20, which day 216 past
 /// clears, `FUN_0075827a`) —, nor between clubs of a country (the youth's
 /// and amateurs' compensation, `FUN_0069d8b2` … `FUN_00708836`), and a
-/// release fee is paid as it stands; those moves are not built. Of the
-/// rest a human seller's is talked over ([`crate::fee_talk::FeeTalk`]); two
-/// computer clubs settle on the bidder's most, and a computer seller's
-/// turns with a human bidder (`FUN_0076e018`) are not built.
+/// release fee is paid as it stands; those moves of a human seller are
+/// not built. Of the rest a human seller's is talked over
+/// ([`crate::fee_talk::FeeTalk`]) and computer clubs finish it among
+/// themselves ([`computer_fee`]); a computer seller's turns with a human
+/// bidder (`FUN_0076e018`) are not built.
 fn fee_opening(
     records: &Records,
     random: &mut crate::random::Random,
@@ -1457,6 +1459,66 @@ fn fee_opening(
         crate::fee_talk::FeeTalk::open(records, random, tables, medical, talk.player, talk.seller, buyer, managers)?;
     fee.at_once = at_once;
     (managers[0] != 0).then_some(fee)
+}
+
+/// The fee of the man a talk's rounds gave to a bidder, where the
+/// seller's frame and the winner's are computer clubs alone
+/// (`FUN_00768638` asm 0x769797–0x769c12): he goes for nothing when
+/// listed "ablösefrei" (E+0xd 2) or with his contract run out; else
+/// `FUN_0076d60e` bounds it and the bidder's release fee stands over it,
+/// his most where none is set. (The compensation between clubs of one
+/// country, `FUN_0069d8b2` … `FUN_00708836`, is not built; they go on the
+/// same bounds.) Then the move (`FUN_0070ca69`) with the seller's money
+/// (`FUN_007062ad`) and both clubs' books (`FUN_0063df96`). The seller's
+/// own frame winning — his contract's renewal at asm 0x7691a6 — stays
+/// not built.
+fn computer_fee(
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    tables: (&crate::contract::ContractTables, &crate::value::ValueTables),
+    medical: &crate::medical::MedicalTables,
+    talk: &PurchaseTalk,
+    day: i16,
+) -> Option<Settled> {
+    let k = talk.winner.filter(|&k| k > 0)?;
+    let offer = talk.offers.get(k - 1)?;
+    let buyer = *talk.bidders.get(k - 1)?;
+    if talk.asking.manager != 0 || offer.manager != 0 {
+        return None;
+    }
+    let p = records.player(talk.player)?;
+    let years = i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year());
+    let at_once = offer.flags() & ASKING_AT_ONCE != 0 && day <= LATE_SEASON;
+    let fixed = i64::from(p.fixed_fee()) * RELEASE_UNIT;
+    let fee = if listed_terms(records, talk.player) == Some(FREE_TRANSFER)
+        || years < 1
+        || (years == 1 && !at_once)
+    {
+        0
+    } else {
+        let bounds = crate::fee_talk::FeeTalk::open(
+            records,
+            random,
+            tables,
+            medical,
+            talk.player,
+            talk.seller,
+            buyer,
+            [talk.asking.manager, offer.manager],
+        )?;
+        if fixed == 0 {
+            (bounds.most as u32).wrapping_mul(1000)
+        } else {
+            fixed as u32
+        }
+    };
+    let terms = offer.terms;
+    if at_once {
+        crate::deals::move_now(records, random, talk.player, talk.seller, buyer, fee, &terms);
+    } else {
+        crate::deals::agree(records, random, talk.player, talk.seller, buyer, fee, &terms);
+    }
+    Some(Settled { buyer, fee, terms, at_once })
 }
 
 /// `FUN_00768638` up to its bargaining: who still bids.
@@ -1521,6 +1583,9 @@ fn purchase_bidders(
     }
     contract_rounds(records, random, tables, &mut talk, day);
     talk.fee = fee_opening(records, random, tables, medical, &talk, day);
+    if talk.fee.is_none() {
+        talk.settled = computer_fee(records, random, tables, medical, &talk, day);
+    }
     Some(talk)
 }
 
@@ -2372,6 +2437,87 @@ mod tests {
         let (talk, told) = run(u16::MAX);
         assert_eq!(talk, None);
         assert_eq!(told, vec![Dropout { player: told[0].player, club: human, squad_full: false }]);
+    }
+
+    /// A purchase booked on save A with the human club and a computer one
+    /// bidding for a listed man of a computer seller: the human's frame
+    /// leaves the rounds and the two computer clubs settle the fee on the
+    /// bounds and move him, with no fee talk (`FUN_00768638` asm
+    /// 0x769797).
+    #[test]
+    #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
+    fn the_day_a_computer_seller_settles_with_the_winning_bidder() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let save = dir.parent().unwrap().join("saves-kept").join("A.an3");
+        let rules = crate::season::Rules::load(&a3_files::exe::Exe::open(&dir.join("anstoss3.exe")).unwrap()).unwrap();
+        let mut records = Records::from_save(Save::read(&save).unwrap()).unwrap();
+        let human = {
+            let t = records.teams.iter().find(|t| t.human() != 0).unwrap();
+            (t.country(), i16::from(t.number()))
+        };
+        let start = i32::from(records.globals.start_year());
+        let l = listings(&records)
+            .into_iter()
+            .find(|l| {
+                (l.country, l.number as i16) != human
+                    && l.terms == 1
+                    && !appointments(&records).iter().any(|t| t.player == l.id)
+                    && records
+                        .player(l.id)
+                        .is_some_and(|p| i32::from(p.contract() & 0xfff) - start >= 2)
+            })
+            .unwrap();
+        let seller = (l.country, l.number as i16);
+        records.player_mut(l.id).unwrap().set_fixed_fee(0);
+        let prices = records.globals.fund_prices();
+        let agreed = records.agreed();
+        let mut rest = records
+            .teams
+            .iter()
+            .filter(|t| {
+                t.human() == 0
+                    && t.country() != seller.0
+                    && (t.country(), i16::from(t.number())) != human
+                    && t.player_count() < FULL_SQUAD
+                    && t.level() <= 1
+                    && crate::finances::Balance::of(t, prices, &agreed).investable() > 0
+            })
+            .map(|t| (t.country(), i16::from(t.number())));
+        let first_bid = rest.next().unwrap();
+        let second_bid = rest.next().unwrap();
+        let day = records.globals.day() as i16 + 1;
+        assert!(book(&mut records, PURCHASE, day, l.id, seller, human, [0; TERMS]));
+        let e = {
+            let b = records.block(&format!("{TALKS_AT:#x}")).unwrap();
+            TALKS_FIRST + (usize::try_from(word(b, 0)).unwrap() - 1) * TALK
+        };
+        let b = records.block_mut(&format!("{TALKS_AT:#x}")).unwrap();
+        put16(b, e + TALK_CLUBS, 4);
+        put_side(b, e + CLUB_AT + 2 * CLUB, first_bid, 0, 5);
+        put_side(b, e + CLUB_AT + 3 * CLUB, second_bid, 0, 6);
+        let mut random = crate::random::Random::from_state(1, 1);
+        let mut told = Vec::new();
+        let talks = purchase_talk_day(&mut records, &mut random, &rules, day, &mut told);
+        let talk = talks.into_iter().find(|t| t.player == l.id).expect("no purchase talk");
+        assert_eq!(talk.bidders, vec![human, first_bid, second_bid]);
+        let k = talk.winner.expect("no bidder taken");
+        assert!(k >= 2, "a human frame took him");
+        assert!(talk.fee.is_none());
+        let settled = talk.settled.expect("no settlement");
+        assert_eq!(settled.buyer, talk.bidders[k - 1]);
+        assert!(settled.fee > 0);
+        let buyer = settled.buyer;
+        if settled.at_once {
+            let moved = records.player(l.id).unwrap();
+            assert_eq!((moved.club()[0], i16::from(moved.club()[1])), buyer);
+            assert!(records.team(u16::from(buyer.0), buyer.1 as u16).unwrap().players().contains(&l.id));
+        } else {
+            assert!(
+                records.agreed().iter().any(|d| d.player == l.id && d.seller == seller && d.buyer == buyer),
+                "the agreed transfer is not booked"
+            );
+        }
     }
 
 }
