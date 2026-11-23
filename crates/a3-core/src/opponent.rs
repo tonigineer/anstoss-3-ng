@@ -707,6 +707,50 @@ pub fn archived_result(
     Some(archive.result(i, if second { j + archive.teams() } else { j }))
 }
 
+/// What a's games of the seasons gone by say against b, as the pre-match
+/// walk weighs them (`FUN_0040c5e0`): from the fifth season on, two
+/// clubs of one country, over the archived seasons `10 − seasons <
+/// season < 10`, in the main country the league both played in that
+/// season, a more country's club its own; a point up for each kept game
+/// whose first byte beats its second, one down the other way. Both
+/// searches of the archive's list look for a's number (0x40c710 and
+/// 0x40c767 both read `0x103(param_1)`), so the game read is a's row
+/// against itself, which no season plays.
+pub(crate) fn home_tally(records: &Records, a: &Team, b: &Team) -> i16 {
+    let seasons = i32::from(records.globals.seasons());
+    if seasons < 5 || a.country() != b.country() {
+        return 0;
+    }
+    let main = a.country() as i16 == records.globals.main_country();
+    let mut tally = 0i16;
+    for season in 0..ARCHIVE_SEASONS {
+        if season as i32 <= 10 - seasons {
+            continue;
+        }
+        let league = if main {
+            match archived_league(records, a.number(), season) {
+                Some(l) if Some(l) == archived_league(records, b.number(), season) => l,
+                _ => continue,
+            }
+        } else {
+            // FUN_00676c5d, then FUN_00677a97's 6 + its place
+            match more_league(records, a.country().into()) {
+                Some(l) => l,
+                None => continue,
+            }
+        };
+        let Some(archive) = archived(records, league, season) else { continue };
+        let Some(i) = archive.place_of(a.number()) else { continue };
+        let (x, y) = archive.result(i, i);
+        if y < x {
+            tally += 1;
+        } else if x < y {
+            tally -= 1;
+        }
+    }
+    tally
+}
+
 /// The club's games of the seasons gone by, against every club of the
 /// archived league it played in that season (`FUN_0040cfde`, from
 /// `FUN_0040c97b`'s loop over the seasons `10 − seasons < season < 10`):

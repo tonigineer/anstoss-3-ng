@@ -99,8 +99,9 @@ pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, ran
     // (`FUN_0042c1aa`), the home side first.
     for game in &games {
         let (home, away, _) = game.sides();
-        computer_tactics(records, home, away, true, random);
-        computer_tactics(records, away, home, false, random);
+        let ahead = strength(records, home) - strength(records, away);
+        computer_tactics(records, home, away, true, ahead, random);
+        computer_tactics(records, away, home, false, -ahead, random);
     }
     // The games scored; their results move the clubs (`FUN_00714236`).
     let outcomes: Vec<Outcome> = games
@@ -197,7 +198,16 @@ fn strength(records: &Records, club: (u8, i16)) -> i32 {
 /// short-long and safe-risky at three or four, keeping position at one or
 /// two; then a side more than twenty five, and again more than fifty,
 /// stronger tilts one forward (up to six), one that much weaker one back.
-fn computer_tactics(records: &mut Records, club: (u8, i16), other: (u8, i16), home: bool, random: &mut Random) {
+/// `ahead` is how far its strength on the day lies past the other's
+/// (club +0xdf2 less the other's, a short).
+pub(crate) fn computer_tactics(
+    records: &mut Records,
+    club: (u8, i16),
+    other: (u8, i16),
+    home: bool,
+    ahead: i32,
+    random: &mut Random,
+) {
     let Some(own) = team(records, club) else { return };
     if own.humans()[0] != 0 {
         return;
@@ -209,7 +219,6 @@ fn computer_tactics(records: &mut Records, club: (u8, i16), other: (u8, i16), ho
         id => records.persons.get(usize::from(id)).map_or(2, |p| p.get::<i8>(PERSON_KIND)),
     };
     let together = u32::from(own.table_place()) + team(records, other).map_or(0, |t| u32::from(t.table_place())) < 8;
-    let ahead = strength(records, club) - strength(records, other);
     let mut tilt: u8 = if home { 4 } else { 3 };
     let (mut effort, mut hardness) = (4, 2);
     if !(0..=3).contains(&kind) {
