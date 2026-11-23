@@ -37,9 +37,10 @@
 //! displays: `FUN_0073f1a6` and the `DAT_01bad050`/`01bad060` displays) has
 //! no replica and is left out.
 //!
-//! Not wired into `matches::play_day` yet: the quality-one shot and the
-//! scorer's books still wait, so these games would end thin beside the
-//! stand-in's.
+//! Before the minutes the kick-off (`kick_off_strengths`, the pre-match
+//! walk's `FUN_006f6fc7`) reckons both sides' strengths from their
+//! elevens; the clubs' tactics laid behind it wait. Not wired into
+//! `matches::play_day` yet: the row's sides are not laid whole.
 
 use chrono::NaiveDate;
 
@@ -160,7 +161,8 @@ pub struct Side {
     pub strengths: [i16; 5],
     /// +0x0a (+0x66/+0x25a): the standing a goal counts against the foe's,
     /// a sixth of the two apart added to the minute's mood (`FUN_007410ca`);
-    /// no ported walk fills it, so the replica keeps it at nought.
+    /// the kick-off lays the club's will to win there, tenfold
+    /// (`FUN_006f7b67`, [`kick_off_strengths`]).
     pub nerve: i16,
     /// +0x0c: the mood of the minute, `minute_play` sinks it when the side
     /// trails through the half.
@@ -168,7 +170,9 @@ pub struct Side {
     /// +0x0e..+0x16: recomputed every minute from strengths, morale,
     /// stance and tactic; the chances read these.
     pub rated: [i16; 5],
-    /// +0x1c: what the stance's percentage is taken of.
+    /// +0x1c: what the stance's percentage is taken of — a hundred from
+    /// the kick-off, less for a favourite taking the match lightly
+    /// ([`kick_off_strengths`]).
     pub strength: i16,
     /// +0x1e: index into `MENTAL`.
     pub mental: i16,
@@ -310,6 +314,15 @@ pub struct Side {
     /// (`FUN_00740fb6`); the replica keeps no live objects, so the
     /// pairs wait here for `post_match_books`.
     pub keeper_book: [(u16, bool); LEDGER_SLOTS],
+    /// +0x20..+0x2a: the six line shorts the scorer pick's factors read
+    /// (`FUN_0077e590`): the defensive and the attacking midfield's parts
+    /// on the three wings, pairwise (`FUN_006a1bcf`).
+    pub lines: [i16; 6],
+    /// +0xc6..+0xcc (+0x122../+0x316..): the side's strength on the day —
+    /// the five strengths' sum, the club's +0xdf2 —, its attack, its
+    /// midfield and its defence, each a tenth of the strengths it sums
+    /// (`FUN_006f6fc7`).
+    pub day: [i16; 4],
 }
 
 /// A match as the original keeps it: the 0x498-byte record, one of the
@@ -347,8 +360,10 @@ pub struct Match {
     /// +0x240,+0x434: what the last minute's booking left for the frame to
     /// pass on (`FUN_00413115`); both cleared after.
     pub cards: [u16; 2],
-    /// +0x444: what side one leads by; its sign decides which side's mood
-    /// sinks as the minutes of a lost half run on.
+    /// +0x444: what side one leads by — at the kick-off twice its
+    /// eleven's lead in condition, within 45 (`FUN_006f6c35`); its sign
+    /// decides which side's mood sinks as the minutes of a lost half run
+    /// on.
     pub advantage: i16,
     /// +0x446: a percent on the leading side's attack and hold, see
     /// `minute_play`.
@@ -379,6 +394,11 @@ pub struct Match {
     /// (`FUN_0070c334`) and joins the minute walk only when the whole day
     /// runs watched.
     pub nat_bits: u16,
+    /// +0x244,+0x438: the bonus each side plays for, the club's +0xb0,
+    /// which the pre-match walk lays only after the kick-off strengths
+    /// (its sixth loop); the row is cleared before (`FUN_0062a325`), so
+    /// the kick-off reads nought here.
+    pub bonus: [i32; 2],
 }
 
 /// The day's clock, `DAT_01bad044` and its state globals: minute (+0xe),
@@ -577,6 +597,218 @@ pub fn line_up_row(row: &[Match], records: &mut Records, data: &crate::data::Dat
             }
             crate::autolineup::line_up_computer(records, data, country, number);
         }
+    }
+}
+
+/// The pay a side plays for against a man's salary (live +0x88, the
+/// record's +0x150), in the money unit `DAT_00a3b420` (ten:
+/// `FUN_00627bd0`'s floats times one): a bonus past fifty units of his
+/// salary lifts his part to 112 %, past twenty to 110, twelve 108, ten
+/// 106, six 104, three 103; one under a unit leaves him at 96 %, under
+/// two at 98, else whole (`FUN_006a1bcf`, `DAT_00a3b3ec` …
+/// `DAT_00a3b418`).
+const BONUS_STEPS: [(i32, i32); 6] = [(500, 112), (200, 110), (120, 108), (100, 106), (60, 104), (30, 103)];
+const BONUS_SHORT: [(i32, i32); 2] = [(10, 96), (20, 98)];
+/// The position whose ability word bit 0x800 lifts or sinks a man's part
+/// by a point (`FUN_006a1bcf`'s `FUN_00696c00(…) == 0xe`).
+const WORD_POSITION: u8 = 14;
+const WORD_BIT: u16 = 0x800;
+/// The live +0x57 bit a caution raises — the record's +0x25b keeps it
+/// from the man's last match — and the trait bits that spare him its
+/// toll: the second word's bit 1, the first's 1 and 8.
+const CAUTIONED: u8 = 8;
+/// The favourite's slack (`FUN_006f6fc7`): a side whose strength on the
+/// day lies past the foe's by more than these may take the match lightly,
+/// each step a throw under `(200 - will) * 3 / 80` of a hundred,
+/// its base percent at +0x1c falling to the step's.
+const FAVOURITE: [(i16, &[i16]); 2] = [(40, &[70, 90, 98]), (20, &[90, 98])];
+
+/// What one man of a side counts for before its match, a hundredfold
+/// (`FUN_006a1bcf`'s loop): his strength on the spot's kind as the
+/// line-up reckons it (`FUN_006a144e`) and twenty more, a point either
+/// way on position 14 by his good and bad word's bit 0x800, a cautioned
+/// man less — four fifths for a defender (`FUN_00677c5f`), nine tenths
+/// for any other — and the side's bonus against his salary.
+fn man_part(pitch: &crate::lineup::Tables, spot: (i16, i16), strength: i32, p: &Player, bonus: i32) -> i32 {
+    let mut v = strength + 20;
+    if pitch.position(spot) == WORD_POSITION {
+        if p.good() & WORD_BIT != 0 {
+            v += 10;
+        } else if p.bad() & WORD_BIT != 0 {
+            v = (v - 10).max(0);
+        }
+    }
+    let traits = p.traits();
+    if p.match_bits() & CAUTIONED != 0 && traits[1] & 1 == 0 && traits[0] & 9 == 0 {
+        v = if (2..=5).contains(&p.positions()[0]) { (v << 2) / 5 } else { v * 9 / 10 };
+    }
+    v * bonus_percent(bonus, p.salary())
+}
+
+/// What the side's bonus makes of a man's part against his salary, in
+/// percent ([`BONUS_STEPS`], [`BONUS_SHORT`]).
+fn bonus_percent(bonus: i32, salary: u16) -> i32 {
+    let salary = i32::from(salary);
+    BONUS_STEPS
+        .iter()
+        .find(|&&(by, _)| bonus > salary * by)
+        .or_else(|| BONUS_SHORT.iter().find(|&&(by, _)| bonus < salary * by))
+        .map_or(100, |&(_, pct)| pct)
+}
+
+/// A side's five strengths and six line shorts before its match
+/// (`FUN_006a1bcf`, which `FUN_006f7b67` reaches through `FUN_006f6c20`):
+/// a squad under eleven takes the defaults at 0x8a52a8 — the second row
+/// for a club of a country marked at 0x89dfc8, the third for one below
+/// the tenth level, else the first —; any other sums its eleven, each
+/// man's part ([`man_part`]) spread by the band down the pitch his spot
+/// lies in over goal, defence, defensive and attacking midfield and
+/// attack (the row's bytes 0, 1, 4, 5 and 3 at 0x8a5258), the two
+/// midfields further over the wings by the spot across
+/// ([`crate::lineup::Tables::wing`]); every sum a hundredth. The offside
+/// byte the side keeps at +0x3e (`FUN_006f981c`) reads the men's kinds
+/// at their live +0x28, which the record keeps nowhere: a seam.
+fn side_parts(data: &crate::data::Data, records: &Records, team: &crate::records::Team, bonus: i32) -> ([i16; 5], [i16; 6]) {
+    let pitch = &data.rules.pitch;
+    if team.players().len() < 11 {
+        let row = if data.rules.contract.marked_country(team.country()) {
+            1
+        } else if team.level() > 9 {
+            2
+        } else {
+            0
+        };
+        let r = pitch.short_side(row);
+        return ([r[0], r[1], r[2], r[3], r[4]], [r[5], r[6], r[7], r[8], r[9], r[10]]);
+    }
+    let club = crate::load::club_state_of(records, team, data);
+    let squad = team.players();
+    let (mut s, mut l) = ([0i32; 5], [0i32; 6]);
+    for (spot, k) in club.lineup.on_field() {
+        let (Some(man), Some(p)) = (club.players.get(k), squad.get(k).and_then(|&id| records.player(id))) else {
+            continue;
+        };
+        let strength = pitch.strength_at(man, crate::lineup::fitness_of(&club.fitness, k), pitch.kind_under(spot));
+        let v = man_part(pitch, spot, strength, p, bonus);
+        let row = pitch.side_row(pitch.down_band(spot.1));
+        let part = |b: u8| (u32::from(b).wrapping_mul(v as u32)) as i32 / 100;
+        s[0] += part(row[0]);
+        s[1] += part(row[1]);
+        s[4] += part(row[3]);
+        let (a, b) = (part(row[4]), part(row[5]));
+        s[2] += a;
+        s[3] += b;
+        let wing = pitch.wing(spot.0).map(i32::from);
+        for (w, &share) in wing.iter().enumerate() {
+            l[w * 2] += a * share / 100;
+            l[w * 2 + 1] += b * share / 100;
+        }
+    }
+    (s.map(|v| (v / 100) as i16), l.map(|v| (v / 100) as i16))
+}
+
+/// The class a man adds to his side (`FUN_006f6b7d`): the first trait
+/// word's bit 8 one up, a field player's bit 0x10 one down.
+fn class_of(p: &Player) -> i8 {
+    let bits = p.traits()[0];
+    if bits & 8 != 0 {
+        1
+    } else if p.positions()[0] != crate::world::GOALKEEPER && bits & 0x10 != 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The condition a side's eleven stand in on average, as the lists show
+/// it (`FUN_006770a4` over `FUN_00457e00`): a side listing nobody takes
+/// its squad's, an empty squad fifty.
+fn eleven_condition(records: &Records, team: &crate::records::Team) -> i32 {
+    let points = |ids: &[u16]| -> Vec<i32> {
+        ids.iter()
+            .filter(|&&id| id != 0)
+            .map(|&id| records.player(id).map_or(0, |p| i32::from(crate::computer_training::cond_percent(p))))
+            .collect()
+    };
+    let eleven = points(&team.lineup());
+    if !eleven.is_empty() {
+        return eleven.iter().sum::<i32>() / eleven.len() as i32;
+    }
+    let squad = points(&team.players());
+    if squad.is_empty() { 50 } else { squad.iter().sum::<i32>() / squad.len() as i32 }
+}
+
+/// The kick-off of one match of the row (`FUN_006f6fc7`, the first call
+/// of the pre-match walk's fifth loop), over the sides' records as
+/// [`line_up_row`] left them: both sides' strengths and line shorts
+/// ([`side_parts`]), each club's tactics copied in — its style word to
+/// +0x2e, its tilt, stance and tier bytes (club +0xa8, +0xa9, +0xaa) —
+/// and its will to win tenfold to +0x0a (`FUN_006f7b67`); the class the
+/// eleven's men carry summed into +0x8f/+0x283 (`FUN_006f6b7d`); eleven
+/// men a side; what the first side's eleven lead the second's by in
+/// condition, twice over and within 45, at +0x444 (`FUN_006f6c35`); the
+/// strength on the day and its parts at +0x122../+0x316.. (the club's
+/// +0xdf2); both base percents at a hundred, and a side stronger on the
+/// day by more than forty or twenty throws for its slack ([`FAVOURITE`]),
+/// the first side first. The man marks at +0x40 (`FUN_006f794a`), the
+/// forwards' percent at +0xb4 (`FUN_006fad6c`), the league table's
+/// bits at +0x13c/+0x330 and the per-man match bytes the walk resets
+/// (`FUN_006f7af1`) wait; none of them draws.
+pub fn kick_off_strengths(m: &mut Match, records: &Records, data: &crate::data::Data, random: &mut Random) {
+    let mut wills = [0i16; 2];
+    let mut conditions = [0i32; 2];
+    for which in 0..2 {
+        let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) else { continue };
+        let (strengths, lines) = side_parts(data, records, team, m.bonus[which]);
+        let side = &mut m.sides[which];
+        side.strengths = strengths;
+        side.lines = lines;
+        side.style = team.tactic_flags();
+        wills[which] = team.will();
+        side.nerve = wills[which].wrapping_mul(10);
+        side.tilt = team.style();
+        side.stance = team.effort();
+        side.tier = team.hardness();
+        for id in team.lineup().into_iter().filter(|&id| id != 0) {
+            if let Some(p) = records.player(id) {
+                side.aggr = side.aggr.wrapping_add(class_of(p));
+            }
+        }
+        side.men = 11;
+        conditions[which] = eleven_condition(records, team);
+    }
+    m.advantage = ((conditions[0] - conditions[1]) * 2).clamp(-45, 45) as i16;
+    for side in m.sides.iter_mut() {
+        let s = side.strengths.map(i32::from);
+        side.day = [
+            (s.iter().sum::<i32>() / 10) as i16,
+            (s[4] / 10) as i16,
+            ((s[2] + s[3]) / 10) as i16,
+            (s[1] / 10) as i16,
+        ];
+        side.strength = 100;
+    }
+    for (us, them) in [(0usize, 1usize), (1, 0)] {
+        let (ours, theirs) = (m.sides[us].day[0], m.sides[them].day[0]);
+        let Some(&(_, steps)) = FAVOURITE.iter().find(|&&(by, _)| theirs.wrapping_add(by) < ours) else {
+            continue;
+        };
+        let odds = (200 - i32::from(wills[us])) * 3 / 80;
+        for &step in steps {
+            if (random.below(100) as i32) < odds {
+                m.sides[us].strength = step;
+                break;
+            }
+        }
+    }
+}
+
+/// The pre-match walk's fifth loop (`FUN_006ef296`), match by match: so
+/// far its kick-off ([`kick_off_strengths`]); the clubs' tactics copied
+/// and chosen behind it (`FUN_006f9656`, `FUN_0042c1aa`) wait.
+pub fn kick_off_row(row: &mut [Match], records: &Records, data: &crate::data::Data, random: &mut Random) {
+    for m in row.iter_mut() {
+        kick_off_strengths(m, records, data, random);
     }
 }
 
@@ -4950,5 +5182,179 @@ mod tests {
             chance_for(&mut m, 0, 0.0, 60, Some(&mut fresh), &mut random);
         }
         assert!(0 < hurt(&fresh));
+    }
+
+    /// The kick-off's bonus against a man's salary: the row's nought
+    /// leaves every paid man at 96 % and an unpaid one whole, a bonus of
+    /// one and a half units at 98, two whole, and past fifty his part at
+    /// 112.
+    #[test]
+    fn the_bonus_bends_a_mans_part_by_his_salary() {
+        assert_eq!(bonus_percent(0, 300), 96);
+        assert_eq!(bonus_percent(0, 0), 100);
+        assert_eq!(bonus_percent(15 * 300, 300), 98);
+        assert_eq!(bonus_percent(20 * 300, 300), 100);
+        assert_eq!(bonus_percent(31 * 300, 300), 103);
+        assert_eq!(bonus_percent(501 * 300, 300), 112);
+    }
+
+    /// The original's trace of a season's days (the oracle's
+    /// `runs/season`, its dumps a day apart and `draws.bin` from the
+    /// start): between one dump's generator and the next lies the day's
+    /// pre-match walk, and in its fifth loop the kick-off's slack throws
+    /// (`FUN_006f6fc7`, return addresses 0x6f7469.. for the first side,
+    /// 0x6f757a.. for the second) name each favourite by more than forty
+    /// or twenty, the clubs' tactics (`FUN_0042c1aa`, 0x6f007e and
+    /// 0x6f009d) parting the matches. On every league day whose row holds
+    /// only the leagues the day lists, the replica's kick-off over the
+    /// dump's records, the row lined up first, names the original's
+    /// favourite — or none — match by match: 611 of 612 over ten days,
+    /// the one apart a second side 22 ahead on the day.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's season run from $ANSTOSS3_ORACLE"]
+    fn the_kick_off_names_the_originals_favourites() {
+        use a3_files::an3::Save;
+        let Some(oracle) = std::env::var_os("ANSTOSS3_ORACLE") else {
+            eprintln!("no oracle season run among the saves: ANSTOSS3_ORACLE is not set");
+            return;
+        };
+        let runs = std::path::PathBuf::from(oracle).join("runs");
+        let Ok(trace) = std::fs::read(runs.join("draws.bin")) else {
+            eprintln!("no oracle season trace among the saves");
+            return;
+        };
+        if !runs.join("season/day-064.an3").exists() {
+            eprintln!("no oracle season dumps among the saves");
+            return;
+        }
+        let game = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let data = crate::data::Data::load(&game).unwrap();
+        let u32_at = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        // the main generator's moving draws: caller, range, result, the
+        // first return address above
+        let draws: Vec<(u32, u32, u32, u32)> = trace
+            .chunks_exact(48)
+            .filter(|r| r[12] == 0 && u32_at(r, 4) >= 2)
+            .map(|r| (u32_at(r, 0), u32_at(r, 4), u32_at(r, 8), u32_at(r, 16)))
+            .collect();
+        let kick = |c: u32| (0x6f6fc7..0x6f791a).contains(&c);
+        let tactic = |above: u32| above == 0x6f007e || above == 0x6f009d;
+        let (mut days, mut matches, mut agreed) = (0, 0, 0);
+        // where each dump's generator stands in the trace
+        let mut starts = Vec::new();
+        let mut from = 0;
+        for day in 63..=139u16 {
+            let dump = Save::read(&runs.join(format!("season/day-{day:03}.an3"))).unwrap();
+            let word = |name: &str| i64::from(i32::from_le_bytes(dump.block(name).unwrap().data[..4].try_into().unwrap()));
+            let state = (word("0x89dcc0"), word("0x89dcc4"));
+            let start = (from..draws.len().saturating_sub(8)).find(|&i| {
+                let mut r = Random::from_state(state.0, state.1);
+                draws[i..i + 8].iter().all(|d| r.below(d.1) == d.2)
+            });
+            if let Some(start) = start {
+                from = start;
+            }
+            starts.push((day, start, dump));
+        }
+        for pair in starts.windows(2) {
+            let ((day, Some(start), dump), (_, Some(end), _)) = (&pair[0], &pair[1]) else { continue };
+            let (day, start, end, dump) = (*day, *start, *end, dump.clone());
+            // the day's fifth loop: from its first throw or tactic on,
+            // as long as only those come
+            let Some(first) = (start..end).find(|&i| kick(draws[i].0) || tactic(draws[i].3)) else {
+                continue;
+            };
+            let span: Vec<_> = draws[first..].iter().take_while(|d| kick(d.0) || tactic(d.3)).collect();
+            // the original's matches in order, each its favourite — the
+            // side and whether by forty — or none: a match closes with its
+            // clubs' tactics, three throws a computer side
+            let mut theirs: Vec<Option<(usize, bool)>> = Vec::new();
+            let (mut open, mut last, mut run) = (false, 0u32, 0);
+            for d in &span {
+                let fresh = if kick(d.0) {
+                    last != 0 && last != 1
+                } else {
+                    (d.3 == 0x6f007e && (last == 0x6f009d || (last == 0x6f007e && run == 3)))
+                        || (d.3 == 0x6f009d && last == 0x6f009d && run == 3)
+                };
+                if fresh || !open {
+                    theirs.push(None);
+                    open = true;
+                }
+                let cat = match d.0 {
+                    0x6f7469 => Some((0, true)),
+                    0x6f7500 => Some((0, false)),
+                    0x6f757a => Some((1, true)),
+                    0x6f761a => Some((1, false)),
+                    _ => None,
+                };
+                if let Some(cat) = cat {
+                    *theirs.last_mut().unwrap() = Some(cat);
+                }
+                let now = if kick(d.0) { 1 } else { d.3 };
+                run = if now == last { run + 1 } else { 1 };
+                last = now;
+            }
+            // the replica's, over the day's league matches in the
+            // listing's order
+            let mut records = Records::from_save(dump).unwrap();
+            let mut row = Vec::new();
+            let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
+            let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
+            let firsts: Vec<(u16, u8)> =
+                records.globals.more_countries()[..more].iter().map(|&c| (u16::try_from(c).unwrap_or(0), 0)).collect();
+            let leagues: Vec<(u16, u8)> =
+                (0..records.countries.leagues(usize::from(main)).max(0)).map(|l| (main, l as u8)).chain(firsts).collect();
+            for (country, level) in leagues {
+                let Some(r) = data.calendar.row(country, usize::from(level)) else { continue };
+                let Some(matchday) = data.calendar.matchday(r, usize::from(day)) else { continue };
+                let Some(league) = crate::opponent::League::of(&records, country, level) else { continue };
+                if league.played() + 1 != matchday {
+                    continue;
+                }
+                for (home, away, _) in league.open_games() {
+                    let mut m = Match::default();
+                    m.ids = [country, league.team(home) as u16, country, league.team(away) as u16];
+                    row.push(m);
+                }
+            }
+            if row.is_empty() {
+                continue;
+            }
+            if theirs.len() != row.len() {
+                eprintln!("day {day}: {} matches listed, the original's row {}", row.len(), theirs.len());
+                continue;
+            }
+            line_up_row(&row, &mut records, &data);
+            let mut ours = Vec::new();
+            for m in row.iter_mut() {
+                kick_off_strengths(m, &records, &data, &mut Random::new(1));
+                let (a, b) = (m.sides[0].day[0], m.sides[1].day[0]);
+                ours.push(if b + 40 < a {
+                    Some((0, true))
+                } else if b + 20 < a {
+                    Some((0, false))
+                } else if a + 40 < b {
+                    Some((1, true))
+                } else if a + 20 < b {
+                    Some((1, false))
+                } else {
+                    None
+                });
+            }
+            days += 1;
+            matches += row.len();
+            for (k, (t, o)) in theirs.iter().zip(&ours).enumerate() {
+                if t == o {
+                    agreed += 1;
+                } else {
+                    let m = &row[k];
+                    eprintln!("day {day} match {k} {:?}: theirs {t:?}, ours {o:?} at {} {}", m.ids, m.sides[0].day[0], m.sides[1].day[0]);
+                }
+            }
+        }
+        eprintln!("{days} days, {agreed} of {matches} matches agree");
+        assert!(days >= 8, "only {days} league days found in the trace");
+        assert!(agreed * 100 >= matches * 99, "{agreed} of {matches} matches name the original's favourite");
     }
 }

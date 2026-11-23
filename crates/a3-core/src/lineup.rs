@@ -81,6 +81,16 @@ const ALLROUNDER_FIT: i32 = 8;
 const PARTS_AT: u32 = 0x8a5258;
 const PART_ROW: usize = 6;
 pub const PARTS: usize = 4;
+/// How a side's defensive and attacking midfield spread over the wings by
+/// the band across its man stands in (`FUN_006a187e`, 0x8a52ec: three
+/// shorts a band, five bands).
+const WINGS_AT: u32 = 0x8a52ec;
+const WING_BANDS: usize = 5;
+/// What a side of fewer than eleven counts for before its match
+/// (`FUN_006a1bcf`'s defaults at 0x8a52a8): eleven shorts a row — the
+/// five strengths and the six wings — three rows.
+const SHORT_SIDES_AT: u32 = 0x8a52a8;
+const SHORT_SIDE: usize = 11;
 /// On a side position a player still brings 90 %, on a position of the
 /// other side of the goal line 10 %.
 const SIDE_FIT: i32 = 9;
@@ -124,6 +134,11 @@ pub struct Tables {
     both_feet_fit: Vec<i16>,
     forward_fit: Vec<i16>,
     parts: Vec<[u8; PARTS]>,
+    /// The parts' whole rows: goal, defence, midfield, attack, and the
+    /// midfield's defensive and attacking shares.
+    side_rows: Vec<[u8; PART_ROW]>,
+    wings: Vec<[i16; 3]>,
+    short_sides: Vec<[i16; SHORT_SIDE]>,
     ability_icons: Vec<u16>,
     /// The co-trainer's free system: how many of each kind he puts up at
     /// most, and the spots for so many defenders, midfielders and strikers.
@@ -175,6 +190,13 @@ impl Tables {
                 .collect(),
             forward_fit: exe.u16s(FORWARD_FIT_AT, KINDS)?.into_iter().map(|v| v as i16).collect(),
             parts: parts.chunks(PART_ROW).map(|r| [r[0], r[1], r[2], r[3]]).collect(),
+            side_rows: parts.chunks(PART_ROW).map(|r| [r[0], r[1], r[2], r[3], r[4], r[5]]).collect(),
+            wings: exe.u16s(WINGS_AT, 3 * WING_BANDS)?.chunks(3).map(|w| [w[0] as i16, w[1] as i16, w[2] as i16]).collect(),
+            short_sides: exe
+                .u16s(SHORT_SIDES_AT, 3 * SHORT_SIDE)?
+                .chunks(SHORT_SIDE)
+                .map(|r| std::array::from_fn(|k| r[k] as i16))
+                .collect(),
             ability_icons: exe
                 .u32s(ABILITY_ICONS_AT, NOTHING_ICON + 1)?
                 .into_iter()
@@ -392,6 +414,36 @@ impl Tables {
         self.strength_at(player, fitness, position) + self.bonus(player, 0)
     }
 
+    /// The band down the pitch a spot's height lies in (`DAT_01b993b0`).
+    pub fn down_band(&self, y: i16) -> usize {
+        self.down.iter().skip(1).position(|&line| y < line).unwrap_or(DOWN - 1)
+    }
+
+    /// The parts' whole row of a band down the pitch (0x8a5258).
+    pub fn side_row(&self, band: usize) -> [u8; PART_ROW] {
+        self.side_rows.get(band).copied().unwrap_or_default()
+    }
+
+    /// The wings' row of a spot's place across (`FUN_006a187e` over the
+    /// spot's first coordinate — the original's pixel, not the grid's
+    /// column, so every man standing past the sixteenth pixel falls in
+    /// the last band — then 0x8a52ec).
+    pub fn wing(&self, x: i16) -> [i16; 3] {
+        let band = match x {
+            ..4 => 0,
+            4..8 => 1,
+            8..12 => 2,
+            12..16 => 3,
+            _ => 4,
+        };
+        self.wings.get(band).copied().unwrap_or_default()
+    }
+
+    /// A short side's row of `FUN_006a1bcf`'s defaults.
+    pub fn short_side(&self, row: usize) -> [i16; SHORT_SIDE] {
+        self.short_sides.get(row).copied().unwrap_or_default()
+    }
+
     /// The kind of position the area under a spot makes (`FUN_00696cc5`).
     pub fn kind_under(&self, spot: (i16, i16)) -> u8 {
         self.kind_at(spot)
@@ -407,7 +459,7 @@ impl Tables {
             // The band of the grid the spot's height lies in: before the
             // first line below it, the last band past the last line (the
             // lookup `FUN_00696b76` builds, `FUN_006a18c2` reads).
-            let row = self.down.iter().skip(1).position(|&y| spot.1 < y).unwrap_or(DOWN - 1);
+            let row = self.down_band(spot.1);
             let weights = self.parts.get(row).copied().unwrap_or_default();
             for (part, &weight) in parts.iter_mut().zip(&weights) {
                 *part += value * i32::from(weight);
