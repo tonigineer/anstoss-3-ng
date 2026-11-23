@@ -415,6 +415,11 @@ pub struct Match {
     /// (`FUN_0078b26c`'s locals, before the stadium takes them): the home
     /// fans and the visitors.
     pub fans: [i32; 2],
+    /// +0x24: a game of the day's own list — a friendly (`FUN_00625310`
+    /// lays 1) or a tournament's. The plain pass then wears its men by
+    /// the friendly rows ([`FRIENDLY_WEAR_ROWS`]), no graded pass follows
+    /// and the scorers' books stand off ([`post_match_books`]).
+    pub exhibition: bool,
 }
 
 /// The day's clock, `DAT_01bad044` and its state globals: minute (+0xe),
@@ -515,7 +520,12 @@ pub fn play_matches(
     // Only the grades draw, one number a graded man.
     if let Some(records) = records.as_deref_mut() {
         for m in matches.iter() {
-            if live || m.nat_bits == 0 {
+            if m.exhibition {
+                // The friendlies' walk ends on the plain pass alone
+                // (`FUN_006f3b7a`'s last loop, `FUN_006f8f44` with the
+                // fifth parameter nought).
+                exhibition_wear(m, records);
+            } else if live || m.nat_bits == 0 {
                 // The men's form as the kick-off took it (runtime +0xb7).
                 let kickoff: Vec<Vec<(u16, i32)>> = (0..2)
                     .map(|w| {
@@ -2797,6 +2807,71 @@ pub fn post_match_wear(m: &Match, records: &mut Records) {
     }
 }
 
+/// What the plain pass leaves on a walked game of the day's own list
+/// (`FUN_006f8f44` with the fifth parameter nought on a record whose
+/// +0x24 is set, `FUN_006f8e73` over both sides): each side's eleven by
+/// the friendly rows ([`FRIENDLY_WEAR_ROWS`]) for the whole game, the
+/// multiplier by the side's pressure band as its minutes summed it
+/// (+0x2c), halved for the man at the keeper's spot. The scorers' marks
+/// the pass reads beside (`FUN_006244c3`, `FUN_0062445b` over the men's
+/// +0xc3 with both sides' strengths on the day) wait with the live men.
+fn exhibition_wear(m: &Match, records: &mut Records) {
+    let extra = m.flags & EXTRA != 0;
+    let minutes = if extra { 120 } else { 90 };
+    for which in 0..2 {
+        let mult = WEAR_MULT[wear_band(m.sides[which].fatigue, extra)];
+        for id in saved_eleven(m, which, records) {
+            if let Some(p) = records.player_mut(id).filter(|_| id != 0) {
+                let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
+                wear_by_rows(p, minutes, mult, &FRIENDLY_WEAR_ROWS);
+            }
+        }
+    }
+}
+
+/// The talks a side may hold in a game of the day's own list
+/// (`DAT_00b5d168`, laid on both sides by `FUN_006f3b7a`).
+const EXHIBITION_TALKS: usize = 0xb5d168;
+
+/// The friendlies' walk's second loop (`FUN_006f3b7a`), one game of the
+/// day's own list: both sides' men entered with their throws
+/// ([`enter_sides`], `FUN_00658cfb`), the kick-off
+/// ([`kick_off_strengths`], `FUN_006f6fc7`) whose strength on the day
+/// each club keeps (club +0xdf2, stored back to the team record's +0x304
+/// by `FUN_0063df96`), each computer side's tactics against the other by
+/// it (`FUN_0042c1aa`, the home side first) and the clubs' tactics laid
+/// over the sides (`FUN_006f7d4d`); the talks are the option's. Unlike
+/// the competitions' walk (`FUN_006ef296`) it lays no chance slot,
+/// added-time byte, staff or referee slot (+0x450, +0x451, +0x150,
+/// +0x458 keep the cleared record's nought), opens no press window,
+/// weighs neither the record against the foe nor an airfield, and draws
+/// no first half's added time: the half ends on the 45th minute.
+pub fn exhibition_kick_off(m: &mut Match, records: &mut Records, data: &crate::data::Data, random: &mut Random) {
+    enter_sides(m, records, random);
+    kick_off_strengths(m, records, data, random);
+    for which in 0..2 {
+        if let Some(team) = records.team_mut(m.ids[which * 2], m.ids[which * 2 + 1]) {
+            team.set_day_strength(m.sides[which].day[0]);
+        }
+    }
+    let clubs = [0, 1].map(|w| (m.ids[w * 2] as u8, m.ids[w * 2 + 1] as i16));
+    let ahead = i32::from(m.sides[0].day[0].wrapping_sub(m.sides[1].day[0]));
+    let behind = i32::from(m.sides[1].day[0].wrapping_sub(m.sides[0].day[0]));
+    crate::exhibition::computer_tactics(records, clubs[0], clubs[1], true, ahead, random);
+    crate::exhibition::computer_tactics(records, clubs[1], clubs[0], false, behind, random);
+    let talks = records.globals.get::<i16>(EXHIBITION_TALKS);
+    for which in 0..2 {
+        let side = &mut m.sides[which];
+        if let Some(team) = records.team(m.ids[which * 2], m.ids[which * 2 + 1]) {
+            side.style = team.tactic_flags();
+            side.tilt = team.style();
+            side.stance = team.effort();
+            side.tier = team.hardness();
+        }
+        side.talk_max = talks;
+    }
+}
+
 /// What a friendly or a tournament's game leaves on a side's men
 /// (`FUN_006f3b7a`'s last loop, `FUN_006f8f44` with the fifth parameter
 /// nought): the walk takes the side's stance from the club's effort
@@ -3015,9 +3090,10 @@ fn sat_out(p: &mut Player) {
 /// plain fixture passes it by. All these lifts run
 /// only while the match's kind code sits below 0x3f or stands at 0x10 —
 /// a national tie carries its counters in its own block instead — and
-/// the match's short at +0x24 stands nought, which the replica's kind
-/// always is: as with the wear, the replica stands national ties off the
-/// books through the tie's `nat_bits`. Nothing here draws a number.
+/// the match's short at +0x24 stands nought — [`play_matches`] passes a
+/// game of the day's own list by (`Match::exhibition`); as with the
+/// wear, the replica stands national ties off the books through the
+/// tie's `nat_bits`. Nothing here draws a number.
 pub fn post_match_books(m: &Match, records: &mut Records) {
     for which in 0..2 {
         // the club's season pair counts the side's attempts and its

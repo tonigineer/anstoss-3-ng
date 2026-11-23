@@ -324,7 +324,9 @@ fn count(records: &mut Records, (country, number): (u8, i16)) {
 /// its round index cut as above, each human club counting the game, the
 /// ground's first stadium filled, then its pitch worn — by the home club's
 /// chance at its own ground (one draw), always at another's — and the
-/// stadium stored back where the club keeps it.
+/// stadium stored back where the club keeps it. Beside the gate the home
+/// fans and the visitors the cut demand asked the ground for, which the
+/// crowd's lean weighs (`FUN_0078b26c`'s tail, [`crate::sim::crowd_lean`]).
 pub(crate) fn gate(
     records: &mut Records,
     calendar: &crate::calendar::Calendar,
@@ -332,8 +334,8 @@ pub(crate) fn gate(
     sides: ((u8, i16), (u8, i16), (u8, i16)),
     round: i16,
     random: &mut Random,
-) -> Gate {
-    gate_cut(records, calendar, tables, sides, round, true, random)
+) -> (Gate, [i32; 2]) {
+    asked(records, calendar, tables, sides, round, true, random)
 }
 
 /// The same, the classes' cut only where `classes` asks it: a hall's
@@ -343,11 +345,23 @@ pub(crate) fn gate_cut(
     records: &mut Records,
     calendar: &crate::calendar::Calendar,
     tables: &PresaleTables,
-    (home, away, ground): ((u8, i16), (u8, i16), (u8, i16)),
+    sides: ((u8, i16), (u8, i16), (u8, i16)),
     round: i16,
     classes: bool,
     random: &mut Random,
 ) -> Gate {
+    asked(records, calendar, tables, sides, round, classes, random).0
+}
+
+fn asked(
+    records: &mut Records,
+    calendar: &crate::calendar::Calendar,
+    tables: &PresaleTables,
+    (home, away, ground): ((u8, i16), (u8, i16), (u8, i16)),
+    round: i16,
+    classes: bool,
+    random: &mut Random,
+) -> (Gate, [i32; 2]) {
     fn team(records: &Records, c: (u8, i16)) -> Option<&crate::records::Team> {
         u16::try_from(c.1).ok().and_then(|n| records.team(c.0.into(), n))
     }
@@ -372,8 +386,8 @@ pub(crate) fn gate_cut(
     if PLAYED_CUT[ma.max(0) as usize] > 0 {
         a -= a * PLAYED_CUT[ma.max(0) as usize] / 100;
     }
-    let Ok(number) = u16::try_from(ground.1) else { return Gate::default() };
-    let Some(mut subs) = crate::stadium::subs(records, ground.0, number) else { return Gate::default() };
+    let Ok(number) = u16::try_from(ground.1) else { return (Gate::default(), [h, a]) };
+    let Some(mut subs) = crate::stadium::subs(records, ground.0, number) else { return (Gate::default(), [h, a]) };
     let taken = fill(&subs[0], h, a);
     let mut sub = subs[0].clone();
     let worn = if ground == home {
@@ -391,7 +405,7 @@ pub(crate) fn gate_cut(
         *at = sub;
         crate::stadium::store(records, ground.0, number, &subs);
     }
-    taken
+    (taken, [h, a])
 }
 
 #[cfg(test)]

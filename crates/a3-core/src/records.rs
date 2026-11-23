@@ -516,6 +516,10 @@ record! {
     /// training in `crate::computer_training`, which teaches it with
     /// the tricks).
     0xcb => tactic_extra, set_tactic_extra: u8;
+    /// The side's strength on the day its last match's kick-off reckoned
+    /// (the club object's +0xdf2, `FUN_006f6fc7`), which the results'
+    /// moods and respect weigh.
+    0x304 => day_strength, set_day_strength: i16;
     /// Before the next match: bit 0x800 a training camp, bit 0x1000 a
     /// team meeting (the club object's +0xdf8).
     0x308 => training_flags, set_training_flags: u32;

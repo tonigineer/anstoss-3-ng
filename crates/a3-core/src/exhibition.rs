@@ -6,15 +6,16 @@
 //! tournaments' evening.
 //!
 //! The crowd and the gate are the original's ([`crate::crowd`]). The
-//! goals come from the match engine there; until it is ported, the replica
-//! scores these games as it scores the leagues' ([`crate::matches`]): by
-//! the teams' strengths and a luck, a tie in a tournament decided by extra
-//! time and then penalties.
+//! friendlies walk and play in the match engine ([`crate::sim`]); a
+//! tournament's game the replica still scores as it scored the leagues':
+//! by the teams' strengths and a luck, a tie decided by extra time and
+//! then penalties.
 
 use crate::finances::CLUB_TO_TEAM;
 use crate::matches::{EVEN, HOME_EDGE, goals};
 use crate::random::Random;
 use crate::records::Records;
+use crate::sim;
 use crate::tournament::{self, Fixture, Outcome};
 
 /// Extra time is a third of a game.
@@ -65,7 +66,18 @@ impl Game {
     }
 }
 
-/// The day's matches (`FUN_007615bb`) on day `today`.
+/// The day's matches (`FUN_007615bb`) on day `today`: the list walked
+/// as `FUN_006f3b7a` walks it. Its first loop draws each game's referee
+/// (one throw of forty), reckons its crowd and gate and the crowd's lean
+/// (`FUN_0078b26c`) and lines up its computer sides (`FUN_0042a702`);
+/// the second enters the friendlies' men, kicks them off and chooses
+/// their tactics ([`sim::exhibition_kick_off`]), a side whose formation
+/// stands fewer than seven men losing its game ([`forfeit`]); the
+/// minutes play the friendlies' row (`FUN_006f352e` in its plain mode)
+/// and its plain pass wears their men; then each game's result moves the
+/// clubs (`FUN_00714236`) by their strengths on the day. A tournament's
+/// game stays the replica's: its tactics by the clubs' strengths, its
+/// goals by [`score`], its men worn by [`sim::friendly_wear`].
 pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, random: &mut Random) -> Shown {
     let (calendar, tables) = (&data.calendar, &data.presale);
     let mut games = friendlies(records, today);
@@ -78,16 +90,38 @@ pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, ran
         }
     }
     games.extend(fixtures.into_iter().map(Game::Tournament));
+    // The friendlies' records of the row (`FUN_00625310`): the sides, the
+    // home club's ground, the list's mark at +0x24 and the row's place.
+    // They lead the list, so a game's place in it is its record's.
+    let mut row: Vec<sim::Match> = games
+        .iter()
+        .enumerate()
+        .filter(|(_, game)| matches!(game, Game::Friendly { .. }))
+        .map(|(index, game)| {
+            let (home, away, ground) = game.sides();
+            let mut m = sim::Match::default();
+            m.ids = [home.0.into(), home.1 as u16, away.0.into(), away.1 as u16];
+            m.home_nation = ground.0;
+            m.home_id = ground.1 as u16;
+            m.exhibition = true;
+            m.index = index as u16;
+            m
+        })
+        .collect();
     // The first loop: each game's referee drawn, its crowd and gate, and
     // its computer sides lined up (`FUN_0042a702`).
     let mut gates = Vec::with_capacity(games.len());
-    for game in &games {
+    for (k, game) in games.iter().enumerate() {
         random.below(REFEREES);
         let round = match game {
             Game::Friendly { .. } => FRIENDLY_ROUND,
             Game::Tournament(f) => TURNIER_ROUNDS[f.game],
         };
-        gates.push(crate::crowd::gate(records, calendar, tables, game.sides(), round, random));
+        let (gate, [h, a]) = crate::crowd::gate(records, calendar, tables, game.sides(), round, random);
+        if let Some(m) = row.get_mut(k) {
+            m.form = sim::crowd_lean(h, a);
+        }
+        gates.push(gate);
         let (home, away, _) = game.sides();
         for (country, number) in [home, away] {
             if let Ok(number) = u16::try_from(number) {
@@ -95,43 +129,112 @@ pub fn play_day(data: &crate::data::Data, records: &mut Records, today: i16, ran
             }
         }
     }
-    // The second: each computer side's tactics chosen against the other
-    // (`FUN_0042c1aa`), the home side first.
-    for game in &games {
+    // The second: a friendly's men entered and kicked off, each computer
+    // side's tactics chosen against the other (`FUN_0042c1aa`), the home
+    // side first.
+    for (k, game) in games.iter().enumerate() {
         let (home, away, _) = game.sides();
-        let ahead = strength(records, home) - strength(records, away);
-        computer_tactics(records, home, away, true, ahead, random);
-        computer_tactics(records, away, home, false, -ahead, random);
+        match row.get_mut(k) {
+            Some(m) => {
+                sim::exhibition_kick_off(m, records, data, random);
+                forfeit(m, records);
+            }
+            None => {
+                let ahead = strength(records, home) - strength(records, away);
+                computer_tactics(records, home, away, true, ahead, random);
+                computer_tactics(records, away, home, false, -ahead, random);
+            }
+        }
     }
-    // The games scored; their results move the clubs (`FUN_00714236`).
+    if !row.is_empty() {
+        let date = crate::calendar::date(records.globals.start_year().into(), today.max(0) as usize);
+        sim::play_matches(&mut row, false, Some(records), None, date, random);
+    }
+    // The games scored: a friendly by its minutes, a tournament's by the
+    // replica's reckoning.
     let outcomes: Vec<Outcome> = games
         .iter()
         .zip(&gates)
-        .map(|(game, gate)| {
-            let decided = matches!(game, Game::Tournament(_));
+        .enumerate()
+        .map(|(k, (game, gate))| {
             let (home, away, ground) = game.sides();
-            let mut outcome = score(records, home, away, ground, decided, random);
+            let mut outcome = match row.get(k) {
+                Some(m) => {
+                    let [h, a] = m.goals.map(|g| u8::try_from(g.max(0)).unwrap_or(u8::MAX));
+                    // The winning side by the goals, the away side on a
+                    // draw (`FUN_006f3b7a`'s last loop, +0x0d).
+                    Outcome { goals: (h, a), winner: u8::from(h <= a), ..Outcome::default() }
+                }
+                None => score(records, home, away, ground, true, random),
+            };
             outcome.crowd = gate.crowd;
             outcome.gate = gate.gate;
             outcome
         })
         .collect();
-    // Each game's result moves the clubs (`FUN_00714236`), then its
-    // minutes wear the men (`FUN_006f8f44`).
-    for (game, outcome) in games.iter().zip(&outcomes) {
+    // Each game's result moves the clubs (`FUN_00714236`) by their
+    // strengths on the day; a tournament's minutes then wear its men
+    // (`FUN_006f8f44`), the friendlies' worn by their walk.
+    let strengths: Vec<(i32, i32)> = games
+        .iter()
+        .enumerate()
+        .map(|(k, game)| match row.get(k) {
+            Some(m) => (i32::from(m.sides[0].day[0]), i32::from(m.sides[1].day[0])),
+            None => {
+                let (home, away, _) = game.sides();
+                (strength(records, home), strength(records, away))
+            }
+        })
+        .collect();
+    for ((game, outcome), &on_day) in games.iter().zip(&outcomes).zip(&strengths) {
         let (home, away, _) = game.sides();
-        after_result(records, home, away, i32::from(outcome.goals.0) - i32::from(outcome.goals.1));
-        crate::sim::friendly_wear(records, home, outcome.extra);
-        crate::sim::friendly_wear(records, away, outcome.extra);
+        after_result(records, home, away, i32::from(outcome.goals.0) - i32::from(outcome.goals.1), on_day);
+        if let Game::Tournament(_) = game {
+            crate::sim::friendly_wear(records, home, outcome.extra);
+            crate::sim::friendly_wear(records, away, outcome.extra);
+        }
     }
-    for (game, outcome) in games.iter().zip(&outcomes) {
+    for ((game, outcome), &on_day) in games.iter().zip(&outcomes).zip(&strengths) {
         match game {
-            Game::Friendly { id, home, away, fee } => played(records, *id, *home, *away, *fee, outcome),
+            Game::Friendly { id, home, away, fee } => played(records, *id, (*home, *away), *fee, outcome, on_day),
             Game::Tournament(fixture) => tournament::record(records, fixture, outcome),
         }
     }
     shown.results = tournament::evening(records, today);
     shown
+}
+
+/// Fewer men than this in a side's formation lose its game
+/// (`FUN_006f6bd0` over the club's +0xa9a).
+const FEWEST_MEN: usize = 7;
+/// The record's flags (+0x1d) a lost game sets beside its end: the home
+/// side short, the away side short.
+const SHORT_HOME: u8 = 4;
+const SHORT_AWAY: u8 = 2;
+/// The goals the full side is given.
+const GIVEN: i16 = 3;
+
+/// A side whose formation stands fewer than seven men (`FUN_006f3b7a`'s
+/// second loop, `FUN_006f6bd0` counting the eleven's places): the game
+/// ends before its first minute, three to nought for the other side —
+/// nought to nought when both stand short —, and the short side's
+/// trainer and manager lose five with the public, the fans and the
+/// media and ten of the board's confidence (`FUN_00418065`).
+fn forfeit(m: &mut sim::Match, records: &mut Records) {
+    let sides = [0, 1].map(|w| (m.ids[w * 2] as u8, m.ids[w * 2 + 1] as i16));
+    let short = sides.map(|c| team(records, c).map_or(0, |t| t.lineup().iter().filter(|&&id| id != 0).count()) < FEWEST_MEN);
+    let (flags, goals) = match short {
+        [true, true] => (SHORT_HOME | SHORT_AWAY, [0, 0]),
+        [true, false] => (SHORT_HOME, [0, GIVEN]),
+        [false, true] => (SHORT_AWAY, [GIVEN, 0]),
+        [false, false] => return,
+    };
+    m.flags |= sim::FINISHED | flags;
+    m.goals = goals;
+    m.half = [0, 0];
+    for (club, _) in sides.into_iter().zip(short).filter(|&(_, s)| s) {
+        move_standing(records, club, [-5, -5, -5], -10);
+    }
 }
 
 /// Today's friendlies into the list, in the list's order
@@ -183,7 +286,8 @@ fn strengths(records: &Records, club: (u8, i16)) -> [i16; 4] {
 }
 
 /// The side's strength on the day (club +0xdf2, which `FUN_006f6fc7` sets
-/// at the kick-off from the side's parts): here their sum in points.
+/// at the kick-off from the side's parts) for a tournament's game, which
+/// the replica does not kick off: here their sum in points.
 fn strength(records: &Records, club: (u8, i16)) -> i32 {
     strengths(records, club).iter().map(|&s| i32::from(s)).sum::<i32>() / 10
 }
@@ -291,8 +395,7 @@ fn score(records: &Records, home: (u8, i16), away: (u8, i16), ground: (u8, i16),
 /// much weaker costs will and mood, a heavy one more; a draw moves the
 /// stronger side down and the weaker up when they stand more than five
 /// apart.
-fn after_result(records: &mut Records, home: (u8, i16), away: (u8, i16), d: i32) {
-    let (sh, sa) = (strength(records, home), strength(records, away));
+fn after_result(records: &mut Records, home: (u8, i16), away: (u8, i16), d: i32, (sh, sa): (i32, i32)) {
     let won = |records: &mut Records, c: (u8, i16), (s, o): (i32, i32), d: i32| {
         change(records, c, 1, 0, 0);
         if s < o - 4 {
@@ -349,8 +452,16 @@ fn change(records: &mut Records, club: (u8, i16), mood: i32, respect: i32, will:
 /// A friendly played (`FUN_0062528f`, `FUN_0062555e`): its goals into the
 /// list; the gate shared in halves without a fee, else all the home
 /// club's — a human's extra block keeping its share —; and the respect
-/// and the managers' popularity by the result (`FUN_006256cc`).
-fn played(records: &mut Records, id: u32, home: (u8, i16), away: (u8, i16), fee: i32, outcome: &Outcome) {
+/// and the managers' popularity by the result and the strengths on the
+/// day (`FUN_006256cc`).
+fn played(
+    records: &mut Records,
+    id: u32,
+    (home, away): ((u8, i16), (u8, i16)),
+    fee: i32,
+    outcome: &Outcome,
+    (sh, sa): (i32, i32),
+) {
     crate::friendly::set_goals(records, id, outcome.goals);
     let g = outcome.gate;
     let share = |records: &mut Records, club: (u8, i16), amount: i32| {
@@ -367,8 +478,8 @@ fn played(records: &mut Records, id: u32, home: (u8, i16), away: (u8, i16), fee:
         share(records, home, g);
     }
     let d = i32::from(outcome.goals.0) - i32::from(outcome.goals.1);
-    standing(records, home, away, d);
-    standing(records, away, home, -d);
+    standing(records, home, (sh, sa), d);
+    standing(records, away, (sa, sh), -d);
 }
 
 /// What a friendly's result does to a club's respect and its managers'
@@ -376,8 +487,7 @@ fn played(records: &mut Records, id: u32, home: (u8, i16), away: (u8, i16), fee:
 /// the stronger side by how much stronger and a point with the public,
 /// the fans and the media; a win gains one, against a stronger side two
 /// more and a point with the fans.
-fn standing(records: &mut Records, club: (u8, i16), other: (u8, i16), d: i32) {
-    let (s, o) = (strength(records, club), strength(records, other));
+fn standing(records: &mut Records, club: (u8, i16), (s, o): (i32, i32), d: i32) {
     if d < 0 {
         change(records, club, 0, -1, 0);
         if s > o {
@@ -500,6 +610,44 @@ mod saves {
         assert!(d_near > 0 && d_union == d_near, "{d_union} {d_near}");
         assert_eq!(records.extras[0].get::<i32>(LAST_SHARE), d_union);
         assert_eq!(records.extras[0].together(), together + 2);
+    }
+
+    /// The friendlies walk in the engine: on A's 17th of September Union's
+    /// friendly with Sporting kicks off, and the team record keeps the
+    /// strength on the day the kick-off reckoned (club +0xdf2, team
+    /// +0x304); a Union standing six men in its formation loses its next
+    /// friendly before the first minute, nought to three in the list,
+    /// its manager ten points of the board's confidence the poorer.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn friendlies_take_their_goals_from_the_walk() {
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let data = crate::data::Data::load(&dir).unwrap();
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut records = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let union = (14, 84);
+        let sporting = crate::friendly::Candidate { country: 51, number: 0, away: 0, class: 3, fee: 140 };
+        assert!(crate::friendly::book(&mut records, union, 1, &sporting, 72));
+        let mut m = sim::Match { ids: [14, 84, 51, 0], ..sim::Match::default() };
+        sim::kick_off_strengths(&mut m, &records, &data, &mut Random::new(1));
+        let mut random = Random::new(4);
+        play_day(&data, &mut records, 72, &mut random);
+        assert_eq!(team(&records, union).unwrap().day_strength(), m.sides[0].day[0]);
+        assert!(m.sides[0].day[0] > 0);
+
+        let near = crate::friendly::Candidate { country: 14, number: 107, away: 0, class: 3, fee: 0 };
+        let day = (73..120).find(|&d| records.calendars[0].entry(d)[0] == 0).unwrap() as i16;
+        assert!(crate::friendly::book(&mut records, union, 1, &near, day));
+        let t = team_mut(&mut records, union).unwrap();
+        let mut lineup = t.lineup();
+        lineup[6..].fill(0);
+        t.set_lineup(lineup);
+        let manager = usize::from(team(&records, union).unwrap().humans()[0]) - 1;
+        let confidence = records.managers[manager].confidence();
+        play_day(&data, &mut records, day, &mut random);
+        let f = crate::friendly::friendlies(&records).into_iter().find(|f| f.day == day).unwrap();
+        assert_eq!(f.goals, (0, 3));
+        assert_eq!(records.managers[manager].confidence(), (confidence - 10).max(0));
     }
 
     /// Where a club stands without human trainer and manager, the staff
