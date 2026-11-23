@@ -63,8 +63,10 @@ pub const PENS: u8 = 0x40;
 /// The match goes to (or is in) extra time.
 pub const EXTRA: u8 = 0x80;
 
-/// The record's kind at +0x20: this fixture can go to extra time.
-pub const MAY_EXTRA: u32 = 0x80_0000;
+/// The record's kind at +0x20: this fixture must be won and can go to
+/// extra time (`FUN_00414e2e`, `FUN_006f3343` test 0x80000; a
+/// tournament's game carries it, `FUN_00625974`).
+pub const MAY_EXTRA: u32 = 0x8_0000;
 /// Two legs home and away; the tie is decided over both.
 pub const TWO_LEGS: u32 = 0x8000_0000;
 
@@ -416,7 +418,7 @@ pub struct Match {
     /// fans and the visitors.
     pub fans: [i32; 2],
     /// +0x24: a game of the day's own list — a friendly (`FUN_00625310`
-    /// lays 1) or a tournament's. The plain pass then wears its men by
+    /// lays 1) or a tournament's (`FUN_00625974` lays 2). The plain pass then wears its men by
     /// the friendly rows ([`FRIENDLY_WEAR_ROWS`]), no graded pass follows
     /// and the scorers' books stand off ([`post_match_books`]).
     pub exhibition: bool,
@@ -1162,7 +1164,7 @@ pub fn celebrity_tip(row: &[Match], records: &Records, random: &mut Random) -> C
                 away += 1;
             }
         }
-        if m.kind & (TWO_LEGS | 0x8_0000) == 0x8_0000 && home == away {
+        if m.kind & (TWO_LEGS | MAY_EXTRA) == MAY_EXTRA && home == away {
             home += 1;
         }
         tips.push((m.ids, [home, away]));
@@ -2872,30 +2874,6 @@ pub fn exhibition_kick_off(m: &mut Match, records: &mut Records, data: &crate::d
     }
 }
 
-/// What a friendly or a tournament's game leaves on a side's men
-/// (`FUN_006f3b7a`'s last loop, `FUN_006f8f44` with the fifth parameter
-/// nought): the walk takes the side's stance from the club's effort
-/// (`FUN_006f7d4d`, club +0xa9 into side +0x32), the fatigue
-/// sums the stance's percentage over the ninety minutes — the hundred and
-/// twenty of extra time —, and its band names the multiplier, halved for
-/// the man at the keeper's spot (his +0x28, `FUN_006f6fc7`); the friendly
-/// rows (the record's +0x24 set) by each man's minutes. The eleven the
-/// team keeps stand the whole game, the replica's games knowing no
-/// substitutions yet.
-pub fn friendly_wear(records: &mut Records, (country, number): (u8, i16), extra: bool) {
-    let Some(team) = u16::try_from(number).ok().and_then(|n| records.team(country.into(), n)) else { return };
-    let minutes = if extra { 120 } else { 90 };
-    let pct = MINUTE_PCT.get(usize::from(team.effort())).copied().unwrap_or(100);
-    let mult = WEAR_MULT[wear_band((pct * minutes) as i16, extra)];
-    for id in team.lineup() {
-        if let Some(p) = records.player_mut(id).filter(|_| id != 0) {
-            // The man byte +0x28 at one halves it: the keeper's.
-            let mult = if p.positions()[0] == world::GOALKEEPER { mult / 2 } else { mult };
-            wear_by_rows(p, minutes, mult, &FRIENDLY_WEAR_ROWS);
-        }
-    }
-}
-
 /// A man's grade for a club match, in half steps 2 (a one) to 12 (a
 /// six) — `FUN_006f7f6f` with the match's national marker +0x474 nought:
 /// six and a draw below four, twice what his form fell from the kick-off
@@ -2981,8 +2959,8 @@ const SMOKER: u32 = 0x800;
 /// at +0xb50, in its order). A man who stood on the pitch wears by the
 /// competition rows ([`WEAR_ROWS`], the record's +0x24 nought) for the
 /// minutes `played` names him, the multiplier by the side's pressure band
-/// — its stance the club's effort as in [`friendly_wear`], held the whole
-/// match — halved at the keeper's spot; a man who did not
+/// — its stance the club's effort (`FUN_006f7d4d`, club +0xa9 into side
+/// +0x32), held the whole match — halved at the keeper's spot; a man who did not
 /// (`position == 0`) loses one condition step ([`sat_out`]). The original's
 /// eight tenths for the man its human club's fitness trainer looks after
 /// (`FUN_0069bec0`, the human slot's runtime staff at `DAT_00a58402`)
