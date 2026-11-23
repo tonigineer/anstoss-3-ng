@@ -6,6 +6,7 @@
 pub mod autolineup;
 pub mod betting;
 pub mod bids;
+pub mod bookings;
 pub mod calendar;
 pub mod cards;
 pub mod career;

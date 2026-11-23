@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 
-use a3_files::an3::Save;
+use a3_files::an3::{Block, Form, Save};
 use a3_files::sav::cp1252;
 use chrono::NaiveDate;
 
@@ -2061,6 +2061,27 @@ impl Records {
                 Some(SeasonMark { name: text(e, 0x34), points, club, date })
             })
             .collect()
+    }
+
+    /// Cut one more empty `size`-byte page onto the `CPtrList` at `at`,
+    /// as `FUN_0043736a` allocates a node at the chain's end: the save
+    /// counts the pages named `0x…[n]` and writes that count, so the new
+    /// page goes after the last one it has — or after `follows`, the
+    /// block the layout puts before the list, where it has none.
+    pub fn add_page(&mut self, at: u32, follows: &str, size: usize) {
+        let head = format!("{at:#x}[");
+        let count = (0..).find(|n| !self.save.blocks.iter().any(|b| b.name == format!("{head}{n}]"))).unwrap();
+        let last = self
+            .save
+            .blocks
+            .iter()
+            .rposition(|b| b.name.starts_with(&head))
+            .or_else(|| self.save.blocks.iter().position(|b| b.name == follows))
+            .unwrap_or(0);
+        self.save.blocks.insert(
+            last + 1,
+            Block { name: format!("{head}{count}]"), offset: 0, size: 0, form: Form::Stored, data: vec![0; size] },
+        );
     }
 
     /// The same, to change.

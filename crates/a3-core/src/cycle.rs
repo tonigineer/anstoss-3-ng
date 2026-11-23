@@ -1279,6 +1279,19 @@ impl Cycle {
                             crate::human_day::event_slots(&mut season.random, (today % 7) as i16);
                         slots = Some(gates);
                         if let Some(records) = state.records.as_mut() {
+                            // The dated private lives run their day just
+                            // before the headline (`FUN_005f0428` in
+                            // `FUN_0064f981`): a page whose newest
+                            // booking lies wholly in the past is spent,
+                            // and today's booked births are born, posted
+                            // and taken out of the list again; the
+                            // weddings of kind 0 wait for their part.
+                            let booked = crate::bookings::today(records);
+                            crate::bookings::drop_past(records, booked);
+                            for id in crate::bookings::todays(records, booked, crate::bookings::BIRTH) {
+                                crate::news::born(records, id, &mut posted, &mut season.random);
+                                crate::bookings::unbook(records, id, booked, crate::bookings::BIRTH);
+                            }
                             // The day's headline goes to the paper
                             // before its events (`FUN_0078a0f5`); it
                             // draws nothing.

@@ -3629,9 +3629,9 @@ fn expecting(
 /// The child is on the way, due on day `due` (`FUN_007019fd`): for a man
 /// with fewer than five children and none coming, the date goes in as his
 /// next child's day of birth and the wish gives way to the child coming.
-/// The original also books the birth among the private lives' dates
-/// (`FUN_004377cf`: the saved list at `0x8eb8b0`, pages of a hundred
-/// dated entries), which the replica leaves out, and the birth itself.
+/// The birth is booked among the private lives' dated list as well
+/// (`FUN_004377cf`, the pages at `0x8eb8b0` of [`crate::bookings`]), and
+/// its own day brings the child and the poster — [`born`] runs it.
 fn expect(records: &mut Records, id: u16, due: i32) -> bool {
     let date = records.globals.date_of(due as i16).map(|d| {
         use chrono::Datelike;
@@ -3648,7 +3648,146 @@ fn expect(records: &mut Records, id: u16, due: i32) -> bool {
         p.put::<u8>(at + k, b);
     }
     p.set_shown(p.shown() & !WISH | EXPECTING);
+    drop(p);
+    if let Some(d) = date {
+        crate::bookings::book(
+            records,
+            id,
+            crate::bookings::BIRTH,
+            crate::bookings::stamp(d[0], d[1], u16::from_le_bytes([d[2], d[3]])),
+        );
+    }
     true
+}
+
+/// Today as a child's day of birth: the four bytes day, month and the
+/// year's two (`FUN_00676992` read through the record).
+fn today_bytes(records: &Records) -> [u8; 4] {
+    use chrono::Datelike;
+    records
+        .globals
+        .date_of(i16::try_from(records.globals.day()).unwrap_or(0))
+        .map(|d| {
+            let y = (d.year() as u16).to_le_bytes();
+            [d.day() as u8, d.month() as u8, y[0], y[1]]
+        })
+        .unwrap_or_default()
+}
+
+/// A child comes to the man (`FUN_00701ae6`): a German under the last
+/// real id takes the name the news once promised — Rolf for a boy, Lara
+/// for a girl — unless the children have taken it already, and otherwise
+/// a name drawn fresh from his row: a son one of the first fifty, a
+/// daughter one of the fifty after. The name goes in at +0x288 after the
+/// children's, the birth day today at +0x174, and the wish and the child
+/// coming give way to the father; the promise is spent either way.
+fn add_child(records: &mut Records, id: u16, sex: u8, random: &mut Random) {
+    let date = today_bytes(records);
+    let Some(p) = records.player_mut(id) else { return };
+    let children = p.children().max(0) as usize;
+    let german = p.nation() == GERMANY && id <= LAST_REAL_ID;
+    let promised = match (german, p.shown() & NAMED, sex) {
+        (true, named, 0) if named & NAMED_ROLF != 0 => Some(ROLF),
+        (true, named, 1) if named & NAMED_LARA != 0 => Some(LARA),
+        _ => None,
+    };
+    let names: Vec<u8> = (0..children).map(|k| p.get::<u8>(0x288 + k)).collect();
+    let name = match promised.filter(|n| !names.contains(n)) {
+        Some(name) => name,
+        None => loop {
+            let name = random.below(u32::from(SONS_NAMES)) as u8 + sex * SONS_NAMES;
+            if !names.contains(&name) {
+                break name;
+            }
+        },
+    };
+    p.put::<u8>(0x288 + children, name);
+    for (k, b) in date.into_iter().enumerate() {
+        p.put::<u8>(BIRTH_DATES + 4 * children + k, b);
+    }
+    p.set_children(children as i16 + 1);
+    let mut shown = p.shown() & !WISH & !EXPECTING;
+    if german {
+        shown &= !NAMED;
+    }
+    p.set_shown(shown | FATHERED);
+}
+
+/// Twins come to the man (`FUN_00701dfe`): a name drawn from the row
+/// that neither stands among the children's nor is followed there by its
+/// neighbour, then it and its neighbour in the two free slots, both born
+/// today.
+fn add_twins(records: &mut Records, id: u16, sex: u8, random: &mut Random) {
+    let date = today_bytes(records);
+    let Some(p) = records.player_mut(id) else { return };
+    let children = p.children().max(0) as usize;
+    let names: Vec<u8> = (0..children).map(|k| p.get::<u8>(0x288 + k)).collect();
+    let name = loop {
+        let name = random.below(u32::from(SONS_NAMES) - 1) as u8 + sex * SONS_NAMES;
+        if !names.iter().any(|&n| n == name || n == name + 1) {
+            break name;
+        }
+    };
+    p.put::<u8>(0x288 + children, name);
+    p.put::<u8>(0x288 + children + 1, name + 1);
+    for (k, b) in date.into_iter().enumerate() {
+        p.put::<u8>(BIRTH_DATES + 4 * children + k, b);
+        p.put::<u8>(BIRTH_DATES + 4 * (children + 1) + k, b);
+    }
+    p.set_children(children as i16 + 2);
+    p.set_shown(p.shown() & !WISH & !EXPECTING | FATHERED);
+}
+
+/// The birth its booked day brings (`FUN_005f9146` with the happenings
+/// of `FUN_005f8e70`): a man beyond the real ids, or outside the human
+/// clubs, quietly gets one child and no poster; a man no more in his
+/// club's squad gets nothing; else one man in a hundred gets three
+/// children at once and the 0x425 news, the next one twins and the
+/// 0x426 news, and otherwise a single boy or girl and the 0x427 or 0x428
+/// news while five children are not yet reached — the private part
+/// rising for the single, falling for the twins. The list's entry goes
+/// out either way, in the day walk.
+pub fn born(records: &mut Records, id: u16, posted: &mut Vec<Posted>, random: &mut Random) {
+    let Some([league, number]) = records.player(id).map(|p| p.club()) else { return };
+    let club = (u16::from(league), u16::from(number));
+    let human = crate::statistics::human_clubs(records).contains(&(league, i16::from(number)));
+    if id > LAST_REAL_ID || !human {
+        add_child(records, id, random.below(2) as u8, random);
+        return;
+    }
+    if !records.team(club.0, club.1).is_some_and(|t| t.players().contains(&id)) {
+        return;
+    }
+    let Some(p) = records.player(id) else { return };
+    let children = p.children();
+    let named = p.shown() & NAMED != 0;
+    let draw = random.below(100);
+    if draw == 0 && children < 3 && !named {
+        for _ in 0..3 {
+            let sex = random.below(2) as u8;
+            add_child(records, id, sex, random);
+        }
+        if let Some(p) = records.player_mut(id) {
+            crate::mood::change_private(p, random.below(3) as i32 + 2);
+        }
+        let first = (children - 3).max(0) as u8;
+        posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x425, fill: Fill::Newborns(id, first, 3) });
+    } else if draw <= 1 && children < 4 && !named {
+        add_twins(records, id, random.below(2) as u8, random);
+        if let Some(p) = records.player_mut(id) {
+            crate::mood::change_private(p, -(random.below(3) as i32 + 4));
+        }
+        let first = (children - 2).max(0) as u8;
+        posted.push(Posted { club, code: PRIVATE_NEWS, text: 0x426, fill: Fill::Newborns(id, first, 2) });
+    } else if children < MOST_CHILDREN {
+        let sex = u8::from(random.below(100) >= 0x32);
+        add_child(records, id, sex, random);
+        if let Some(p) = records.player_mut(id) {
+            crate::mood::change_private(p, random.below(3) as i32 + 4);
+        }
+        let text = if sex == 0 { 0x427 } else { 0x428 };
+        posted.push(Posted { club, code: PRIVATE_NEWS, text, fill: Fill::Child(id, children.max(0) as u8) });
+    }
 }
 
 /// An event met anew (`FUN_005e5e90`, `FUN_005e5ee0`): not when it
@@ -8632,6 +8771,13 @@ mod tests {
             (born[0], born[1], u16::from_le_bytes([born[2], born[3]])),
             (date.day() as u8, date.month() as u8, date.year() as u16)
         );
+        // …and booked in the private lives' dated list, to come round
+        // on its own day (`FUN_004377cf`).
+        assert_eq!(
+            crate::bookings::todays(&r, crate::bookings::stamp(born[0], born[1], u16::from_le_bytes([born[2], born[3]])), crate::bookings::BIRTH),
+            [man],
+            "the birth stands in the dated list"
+        );
         let mut names = vec![String::new(); 0x75 * 100];
         names[usize::from(p.names_nation()) * 100 + usize::from(p.partner_name())] = "Sabine".to_owned();
         let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
@@ -8655,6 +8801,74 @@ mod tests {
         let told = crate::mood::parts(p)[0] > WISH_CONTENT;
         let wished = told.then_some(Posted { club, code: PRIVATE_NEWS, text: 0x410, fill: Fill::Partnered(man) });
         assert_eq!(posted, wished.into_iter().collect::<Vec<_>>());
+    }
+
+    /// The booked birth comes round on its day: the list runs before the
+    /// headline, the squad man of a human club draws the branch out of a
+    /// hundred — here a single boy — and gets his poster (0x427) with
+    /// his own name and the child's, his name and birth day standing on
+    /// him while the wish and the child coming give way to the father;
+    /// the entry is taken out of the list again (`FUN_005f9146`,
+    /// `FUN_005f8e70`, `FUN_00701ae6`, `FUN_0043775c`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_booked_birth_comes_round_posted() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let man = r.team(club.0, club.1).unwrap().players()[3];
+        let p = r.player_mut(man).unwrap();
+        p.set_children(0);
+        p.set_club([hc, hn as u8]);
+        p.set_shown(p.shown() & !(WISH | EXPECTING | FATHERED | NAMED) | WISH | EXPECTING);
+        let before = i32::from(p.contentment()[4]);
+        // Book the birth today, and let the day walk run it off.
+        let when = crate::bookings::today(&r);
+        crate::bookings::book(&mut r, man, crate::bookings::BIRTH, when);
+        assert_eq!(crate::bookings::todays(&r, when, crate::bookings::BIRTH), [man]);
+        // The seed that draws the single branch and a boy: two hundred
+        // throws, the name's one and the private lift's after them.
+        let seed = (0..10_000)
+            .find(|&s| {
+                let mut d = Random::new(s);
+                d.below(100) > 1 && d.below(100) < 0x32
+            })
+            .unwrap();
+        let mut probe = Random::new(seed);
+        probe.below(100);
+        probe.below(100);
+        let name = probe.below(u32::from(SONS_NAMES)) as u8;
+        let lift = probe.below(3) as i32 + 4;
+        let mut posted = Vec::new();
+        let mut random = Random::new(seed);
+        for id in crate::bookings::todays(&r, when, crate::bookings::BIRTH) {
+            born(&mut r, id, &mut posted, &mut random);
+            crate::bookings::unbook(&mut r, id, when, crate::bookings::BIRTH);
+        }
+        let mut expected = Random::new(seed);
+        expected.below(100);
+        expected.below(100);
+        expected.below(u32::from(SONS_NAMES));
+        expected.below(3);
+        assert!(random == expected, "the draws as the original's");
+        assert_eq!(crate::bookings::todays(&r, when, crate::bookings::BIRTH), [], "the entry is out again");
+        let p = r.player(man).unwrap();
+        assert_eq!(p.children(), 1);
+        assert_eq!(p.get::<u8>(0x288), name);
+        assert_eq!(p.get::<[u8; 4]>(BIRTH_DATES), today_bytes(&r), "born today");
+        assert_eq!(p.shown() & (WISH | EXPECTING | FATHERED), FATHERED);
+        assert_eq!(i32::from(p.contentment()[4]), (before + lift).clamp(0, 120));
+        assert_eq!(posted, [Posted { club, code: PRIVATE_NEWS, text: 0x427, fill: Fill::Child(man, 0) }]);
+        // The poster names the father and the newborn.
+        let texts = a3_files::saq::EventTexts::load(&dir).unwrap();
+        let mut names = vec![String::new(); 0x75 * 100];
+        names[usize::from(r.player(man).unwrap().names_nation()) * 100 + usize::from(name)] = "Konrad".to_owned();
+        let told = crate::event_text::make(&r, &texts, &|_| String::new(), &names, &posted[0]);
+        assert!(told.text.contains(&r.known_as(man).unwrap()), "{}", told.text);
+        assert!(told.text.contains("Konrad"), "{}", told.text);
     }
 
     /// Category 2 on A's human squad, one German man its only one

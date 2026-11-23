@@ -99,6 +99,11 @@ pub enum Fill {
     /// `%1` a man's name and `%2` the first name of his child of that
     /// number (`FUN_00600f2f` with `FUN_00701818`, the names at +0x288).
     Child(u16, u8),
+    /// `%1` a man's name and `%2` … the first names of his `n` newborns,
+    /// the children of number `k` upwards (`FUN_006012df` with
+    /// `FUN_00701818`, the names at +0x288): three for triplets, two for
+    /// twins with the third buffer left empty.
+    Newborns(u16, u8, u8),
     /// A lead and the text behind it (`"%s %s"`): a man's name, or
     /// another text when there is none.
     Lead(Lead),
@@ -249,6 +254,17 @@ pub fn make(
         Fill::Affair(id) => numbered(body, &[name(id), first_name(id, 0x284)]),
         Fill::PartnerAndAffair(id) => numbered(body, &[name(id), partner(id), first_name(id, 0x284), String::new()]),
         Fill::Child(id, k) => numbered(body, &[name(id), first_name(id, 0x288 + usize::from(k))]),
+        Fill::Newborns(id, first, n) => {
+            let mut args = vec![name(id)];
+            args.extend((0..3).map(|k| {
+                if k < usize::from(n) {
+                    first_name(id, 0x288 + usize::from(first) + k)
+                } else {
+                    String::new()
+                }
+            }));
+            numbered(body, &args)
+        }
         Fill::Lead(lead) => {
             let lead = match lead {
                 Lead::Player(id) => name(id),
