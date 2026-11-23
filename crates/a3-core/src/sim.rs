@@ -792,6 +792,7 @@ pub fn kick_off_strengths(m: &mut Match, records: &Records, data: &crate::data::
             }
         }
         side.men = 11;
+        side.shot_pwr = shot_strength(data, records, team);
         conditions[which] = eleven_condition(records, team);
     }
     m.advantage = ((conditions[0] - conditions[1]) * 2).clamp(-45, 45) as i16;
@@ -817,6 +818,33 @@ pub fn kick_off_strengths(m: &mut Match, records: &Records, data: &crate::data::
                 break;
             }
         }
+    }
+}
+
+/// The side's shooting strength the kick-off ends with (`FUN_006fad6c`
+/// on +0x5c and +0x250, +0xb4): over the club's formation (+0xa9a, each
+/// man's spot at +0xae6/+0xae8), a man in the striker's area (position
+/// 10, `FUN_00696c00`) counts two and one on the wings or behind the
+/// striker (9, 11, 12) one; under six the side shoots whole, up to eight
+/// ten points less each from 150, and past that at 60.
+fn shot_strength(data: &crate::data::Data, records: &Records, team: &crate::records::Team) -> i16 {
+    let pitch = &data.rules.pitch;
+    let club = crate::load::club_state_of(records, team, data);
+    let forward: i16 = club
+        .lineup
+        .on_field()
+        .map(|(spot, _)| match pitch.position(spot) {
+            10 => 2,
+            9 | 11 | 12 => 1,
+            _ => 0,
+        })
+        .sum();
+    if forward < 6 {
+        100
+    } else if forward < 9 {
+        forward * -10 + 0x96
+    } else {
+        0x3c
     }
 }
 
@@ -1027,6 +1055,62 @@ pub fn pre_match_walk(row: &mut [Match], records: &mut Records, data: &crate::da
     line_up_row(row, records, data);
     kick_off_row(row, records, data, random);
     ready_row(row, records, random);
+    // the info page's tip reads it; the replica's page waits
+    let _tip = celebrity_tip(row, records, random);
+}
+
+/// The celebrity's tip on the humans' matches, drawn as the walk's last
+/// step once every match stands ready (`FUN_004cbf59` from
+/// `FUN_006ef296` at 0x6f0ea8; `CInfoseiteProminententip` shows it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CelebrityTip {
+    /// The celebrity's country (`DAT_008ec6ea`) and which of its twenty
+    /// (`DAT_008ec6ec`).
+    pub country: i16,
+    pub celebrity: u32,
+    /// Each tipped match's ids (`DAT_008ec6f0..`) and the goals tipped
+    /// for its sides (`DAT_008ec710`, `DAT_008ec718`).
+    pub tips: Vec<([u16; 4], [i16; 2])>,
+}
+
+/// Seven times in ten, or always without further countries, the main
+/// country's celebrity (`DAT_00b5cbb0`), else one of a further country,
+/// picked among `DAT_00b5cbae` by the countries' key (`DAT_00ae5d8e`);
+/// then each match marked at +0x474 (a human's club, a national side)
+/// gets ninety throws below a thousand: under 24 and twice the levels'
+/// gap (club +0x105, at most 2, the away side's less the home side's) a
+/// home goal, above 972 less that an away goal, and a one-leg tie that
+/// must be won (+0x20 bit 0x80000 without the second leg) breaks a draw
+/// for the home side.
+pub fn celebrity_tip(row: &[Match], records: &Records, random: &mut Random) -> CelebrityTip {
+    let globals = &records.globals;
+    let more = globals.more_count();
+    let country = if random.below(10) < 7 || more == 0 {
+        globals.main_country()
+    } else {
+        records.countries.ranking_key(random.below(u32::try_from(more).unwrap_or(0)) as usize)
+    };
+    let celebrity = random.below(0x14);
+    let level = |nation: u16, id: u16| records.team(nation, id).map_or(0, |t| i16::from(t.level().min(2)));
+    let mut tips = Vec::new();
+    for m in row.iter().filter(|m| m.nat_bits != 0) {
+        let gap = level(m.ids[2], m.ids[3]) - level(m.ids[0], m.ids[1]);
+        let (mut home, mut away) = (0, 0);
+        for _ in 0..0x5a {
+            let roll = random.below(1000) as i16;
+            if roll < gap * 2 + 0x18 {
+                home += 1;
+            }
+            if gap * -2 + 0x3cc < roll {
+                away += 1;
+            }
+        }
+        if m.kind & (TWO_LEGS | 0x8_0000) == 0x8_0000 && home == away {
+            home += 1;
+        }
+        tips.push((m.ids, [home, away]));
+    }
+    CelebrityTip { country, celebrity, tips }
 }
 
 /// One minute of the day's matches, `FUN_006f2d4f` without its
@@ -5582,6 +5666,9 @@ mod tests {
         state: (i64, i64),
         records: Records,
         row: Vec<Match>,
+        /// Where each match of the row writes its result: the league's
+        /// block and the four bytes' offset in it.
+        slots: Vec<(String, usize)>,
     }
 
     /// The oracle's season run (`runs/season`, its dumps a day apart, and
@@ -5632,6 +5719,7 @@ mod tests {
             let ((day, Some(start), state, dump), (_, Some(end), _, _)) = (&pair[0], &pair[1]) else { continue };
             let records = Records::from_save(dump.clone()).unwrap();
             let mut row = Vec::new();
+            let mut slots = Vec::new();
             let main = u16::try_from(records.globals.main_country()).unwrap_or(0);
             let more = usize::try_from(records.globals.more_count()).unwrap_or(0);
             let firsts: Vec<(u16, u8)> =
@@ -5645,14 +5733,16 @@ mod tests {
                 if league.played() + 1 != matchday {
                     continue;
                 }
-                for (home, away, _) in league.open_games() {
+                let name = crate::opponent::League::block_name(&records, country, level).unwrap_or_default();
+                for (home, away, at) in league.open_games() {
                     let mut m = Match::default();
                     m.ids = [country, league.team(home) as u16, country, league.team(away) as u16];
                     row.push(m);
+                    slots.push((name.clone(), at));
                 }
             }
             if !row.is_empty() {
-                days.push(TracedDay { day: *day, start: *start, end: *end, state: *state, records, row });
+                days.push(TracedDay { day: *day, start: *start, end: *end, state: *state, records, row, slots });
             }
         }
         Some((data, draws, days))
@@ -5684,7 +5774,7 @@ mod tests {
         let added = |c: u32| (0x40bc1b..0x40bc96).contains(&c);
         let fifth = |d: &(u32, u32, u32, u32)| kick(d.0) || tactic(d.3) || press(d.0);
         let (mut days, mut wholes, mut fifths, mut matches, mut sixths, mut pressed) = (0, 0, 0, 0, 0, 0);
-        for TracedDay { day, start, end, state, records, row } in traced {
+        for TracedDay { day, start, end, state, records, row, .. } in traced {
             let Some(first) = (start..end).find(|&i| fifth(&draws[i])) else { continue };
             // the generator at the walk's first throw, the day's draws
             // before it replayed; a day whose trace the replay leaves
@@ -5773,5 +5863,149 @@ mod tests {
         assert!(days >= 8, "only {days} league days found in the trace");
         assert!(fifths + 1 >= wholes, "{fifths} of {wholes} fifth loops leave the original's generator");
         assert_eq!(sixths, matches, "the sixth loop's throws");
+    }
+
+    /// The original's sixth loop from its first throw, match by match:
+    /// whether a human's club's side drew for its national branch
+    /// (`FUN_006fc8c6`, 0x6fc8c6..) and ran in bulk (`FUN_0070c334`),
+    /// the throws for the listed men, whether the doping control picked
+    /// (0x5dac94..0x5dae5f), and the match's draws up to its added time
+    /// (`FUN_0040bc1b`).
+    fn sixth_loop(draws: &[(u32, u32, u32, u32)], six: usize) -> Vec<(bool, usize, bool, std::ops::Range<usize>)> {
+        let man = |c: u32| (0x658cfb..0x658fb2).contains(&c);
+        let added = |c: u32| (0x40bc1b..0x40bc96).contains(&c);
+        let mut theirs = Vec::new();
+        let mut i = six;
+        loop {
+            let from = i;
+            let national = draws[i..].iter().take_while(|d| (0x6fc8c6..0x6fc9dc).contains(&d.0)).count();
+            i += national;
+            let n = draws[i..].iter().take_while(|d| man(d.0)).count();
+            i += n;
+            let picks = draws[i..].iter().take_while(|d| (0x5dac94..0x5dae5f).contains(&d.0)).count();
+            i += picks;
+            let bulk = if national > 0 { draws[i..].iter().take_while(|d| !added(d.0)).count() } else { 0 };
+            i += bulk;
+            if i >= draws.len() || !added(draws[i].0) {
+                return theirs;
+            }
+            i += 1;
+            theirs.push((national > 0, n, picks > 0, from..i));
+        }
+    }
+
+    /// The walk's last step against the original's trace: on every traced
+    /// league day whose row holds only the listed leagues, from the
+    /// original's state once its sixth loop is through (the human's
+    /// match, bulk-run in the national branch, stepped over on the
+    /// original's throws and marked at +0x474), the celebrity's tip
+    /// (`FUN_004cbf59`, 0x4cbf59..) throws as the original's — two or
+    /// three for the celebrity, ninety for each marked match — and leaves
+    /// the generator where the minutes' first throw (`FUN_006f6857`, or
+    /// a marked match's open play first) finds it. How far the replica's minutes then follow and
+    /// how many of the next dump's league results they meet is printed:
+    /// the shot's range (`FUN_0040b8c9`, the attack's rated +0x16 a few
+    /// hundredths low), the sides' class sum (+0x33, one apart on some
+    /// sides) and the human's match, which the watched walk plays through
+    /// the national path (`FUN_006f562b`'s `FUN_006f529d`, 0x6f5308), part
+    /// them still.
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR and the oracle's season run from $ANSTOSS3_ORACLE"]
+    fn the_walk_ends_where_the_originals_minutes_start() {
+        use a3_files::an3::Save;
+        let Some((data, draws, traced)) = traced_days() else { return };
+        let season = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_ORACLE").unwrap()).join("runs/season");
+        let kick = |c: u32| (0x6f6fc7..0x6f791a).contains(&c);
+        let tactic = |above: u32| above == 0x6f007e || above == 0x6f009d;
+        let press = |c: u32| (0x6f9656..0x6f9788).contains(&c);
+        let fifth = |d: &(u32, u32, u32, u32)| kick(d.0) || tactic(d.3) || press(d.0);
+        let (mut days, mut tipped, mut followed, mut matches, mut agreed) = (0, 0, 0, 0, 0);
+        for TracedDay { day, start, end, state, records, row, slots } in traced {
+            let Some(first) = (start..end).find(|&i| fifth(&draws[i])) else { continue };
+            let mut original = Random::from_state(state.0, state.1);
+            if !draws[start..first].iter().all(|d| original.below(d.1) == d.2) {
+                continue;
+            }
+            let six = first + draws[first..].iter().take_while(|d| fifth(d)).count();
+            let theirs = sixth_loop(&draws, six);
+            if theirs.len() != row.len() {
+                continue;
+            }
+            let (mut records, mut row) = (records, row);
+            for m in row.iter_mut() {
+                m.home_nation = m.ids[0] as u8;
+                m.home_id = m.ids[1];
+            }
+            pre_match(&mut row);
+            line_up_row(&row, &mut records, &data);
+            let mut ours = original.clone();
+            kick_off_row(&mut row, &mut records, &data, &mut ours);
+            for d in &draws[first..six] {
+                original.below(d.1);
+            }
+            if ours != original {
+                eprintln!("day {day}: the fifth loop parts from the original's");
+                continue;
+            }
+            for (m, (human, _, picked, span)) in row.iter_mut().zip(&theirs) {
+                m.doping = *picked;
+                let mut ours = original.clone();
+                ready_row(std::slice::from_mut(m), &mut records, &mut ours);
+                for d in &draws[span.clone()] {
+                    original.below(d.1);
+                }
+                if *human {
+                    // run in bulk by the national branch: the minutes pass it
+                    m.nat_bits |= 1;
+                }
+            }
+            let walk = theirs.last().map_or(six, |t| t.3.end);
+            days += 1;
+            // the tip, by the generator's state, then the minutes' first
+            // throw: the chance's side (`FUN_006f6857`) or, a marked match
+            // first, its open play (`FUN_006f529d`..)
+            let tip = draws[walk..].iter().take_while(|d| (0x4cbf59..0x4cc22e).contains(&d.0)).count();
+            let mut ours = original.clone();
+            let marked = row.iter().filter(|m| m.nat_bits != 0).count();
+            let drawn = celebrity_tip(&row, &records, &mut ours);
+            for d in &draws[walk..walk + tip] {
+                original.below(d.1);
+            }
+            let minutes = walk + tip;
+            if ours == original && (0x6f529d..0x6f6af7).contains(&draws[minutes].0) && drawn.tips.len() == marked {
+                tipped += 1;
+            } else {
+                eprintln!("day {day}: the tip throws {tip}, then {:#x}", draws[minutes].0);
+                continue;
+            }
+            let today = records.globals.date_of(records.globals.day() as i16).unwrap();
+            crate::random::record(true);
+            play_matches(&mut row, false, Some(&mut records), None, today, &mut ours);
+            let mine = crate::random::recorded();
+            crate::random::record(false);
+            let part = mine.iter().zip(&draws[minutes..]).position(|(a, d)| (a.range, a.result) != (d.1, d.2));
+            match part {
+                None => followed += 1,
+                Some(k) => {
+                    let (d, a) = (draws[minutes + k], mine[k]);
+                    eprintln!(
+                        "day {day}: the minutes part at throw {k} of {}: theirs {:#x} below {} {}, ours below {} {} at {}:{}",
+                        mine.len(), d.0, d.1, d.2, a.range, a.result, a.at.file(), a.at.line()
+                    );
+                }
+            }
+            let next = Records::from_save(Save::read(&season.join(format!("day-{:03}.an3", day + 1))).unwrap()).unwrap();
+            for ((m, (human, ..)), (name, at)) in row.iter().zip(&theirs).zip(&slots) {
+                if *human {
+                    continue;
+                }
+                matches += 1;
+                let written = next.block(name).unwrap()[*at..*at + 4].to_vec();
+                agreed += usize::from(written == [m.goals[0] as u8, m.goals[1] as u8, m.half[0], m.half[1]]);
+            }
+        }
+        eprintln!("{days} days, {tipped} tips as the original's; {followed} follow its minutes, {agreed} of {matches} results agree");
+        assert!(days >= 8, "only {days} league days found in the trace");
+        assert_eq!(tipped, days, "the celebrity's tip");
     }
 }
