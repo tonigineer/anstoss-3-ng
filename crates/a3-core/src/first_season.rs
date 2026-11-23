@@ -556,8 +556,10 @@ pub(crate) fn new_partner(records: &mut Records, tables: &Tables, club_country: 
 }
 
 /// She becomes his wife (`FUN_00702b15`): the passing date kept as the
-/// day they married.
-fn marry(records: &mut Records, id: u16) {
+/// day they married. The original also takes the booked wedding day out
+/// of the private list (`FUN_004377b7`); the day walk that calls this
+/// unbooks the entry itself, `bookings::unbook`.
+pub(crate) fn marry(records: &mut Records, id: u16) {
     let Some(p) = records.player_mut(id) else { return };
     p.put::<u8>(PARTNER, p.get::<u8>(PARTNER) & 0xe0 | WIFE);
     let passing = p.get::<u32>(PASSING);

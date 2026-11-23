@@ -3790,6 +3790,24 @@ pub fn born(records: &mut Records, id: u16, posted: &mut Vec<Posted>, random: &m
     }
 }
 
+/// The wedding its booked day brings (`FUN_005fd386`): a man outside the
+/// human clubs simply marries — `first_season::marry` (`FUN_00702b15`)
+/// makes the passing day the day they are together since and spends the
+/// engagement; a human club marries him only while its squad still holds
+/// him, else the day passes him by. The original tells it in a log that
+/// writes nothing (`FUN_006c6380`) and posts no news — the pair's news
+/// stood at the proposal — and the list's entry goes out in the day
+/// walk either way.
+pub fn wedding(records: &mut Records, id: u16) {
+    let Some([league, number]) = records.player(id).map(|p| p.club()) else { return };
+    if crate::statistics::human_clubs(records).contains(&(league, i16::from(number)))
+        && !records.team(u16::from(league), u16::from(number)).is_some_and(|t| t.players().contains(&id))
+    {
+        return;
+    }
+    crate::first_season::marry(records, id);
+}
+
 /// An event met anew (`FUN_005e5e90`, `FUN_005e5ee0`): not when it
 /// stands among the recent events already; else it goes in among them,
 /// the oldest of twenty out.
@@ -8869,6 +8887,54 @@ mod tests {
         let told = crate::event_text::make(&r, &texts, &|_| String::new(), &names, &posted[0]);
         assert!(told.text.contains(&r.known_as(man).unwrap()), "{}", told.text);
         assert!(told.text.contains("Konrad"), "{}", told.text);
+    }
+
+    /// The booked wedding marries its man on the day: the human club's
+    /// squad man gets a wife — engagement spent, its day standing on him
+    /// as the day they are together since, the girlfriend's states gone —
+    /// while a man of the same human club no squad holds stays as he
+    /// stood. Both entries go out of the list again, and nothing is
+    /// posted, the original only writing its log of nothing
+    /// (`FUN_005fd386`, `FUN_00702b15`, `FUN_006c6380`, `FUN_0043775c`).
+    #[test]
+    #[ignore = "reads an installed game from $ANSTOSS3_DIR"]
+    fn the_booked_wedding_marries_on_its_day() {
+        use a3_files::an3::Save;
+        let dir = std::path::PathBuf::from(std::env::var_os("ANSTOSS3_DIR").expect("ANSTOSS3_DIR"));
+        let keeps = dir.parent().unwrap().join("saves-kept");
+        let mut r = Records::from_save(Save::read(&keeps.join("A.an3")).unwrap()).unwrap();
+        let (hc, hn) = crate::statistics::human_clubs(&r)[0];
+        let club = (u16::from(hc), hn as u16);
+        let squad = r.team(club.0, club.1).unwrap().players();
+        let (man, castaway) = (squad[3], squad[4]);
+        let when = crate::bookings::today(&r);
+        for &id in &[man, castaway] {
+            let p = r.player_mut(id).unwrap();
+            p.set_club([hc, hn as u8]);
+            p.set_partner(p.partner() & 0xe0 | GIRLFRIEND);
+            p.put::<u32>(ENGAGED, when);
+        }
+        // and the castaway stands in no squad of the club anymore
+        let kept: Vec<u16> = squad.into_iter().filter(|&id| id != castaway).collect();
+        r.team_mut(club.0, club.1).unwrap().set_players(&kept);
+        // Book the weddings today, and let the day walk run them off.
+        for &id in &[man, castaway] {
+            crate::bookings::book(&mut r, id, crate::bookings::WEDDING, when);
+        }
+        assert_eq!(crate::bookings::todays(&r, when, crate::bookings::WEDDING), [man, castaway]);
+        for id in crate::bookings::todays(&r, when, crate::bookings::WEDDING) {
+            wedding(&mut r, id);
+            crate::bookings::unbook(&mut r, id, when, crate::bookings::WEDDING);
+        }
+        assert_eq!(crate::bookings::todays(&r, when, crate::bookings::WEDDING), [], "the entries are out again");
+        let p = r.player(man).unwrap();
+        assert_eq!(p.partner() & 3, WIFE);
+        assert_eq!(p.partner() & 0x1c, 0, "the girlfriend's states give way");
+        assert_eq!(p.get::<u32>(TOGETHER_SINCE), when, "the wedding day stands");
+        assert_eq!(p.get::<u8>(ENGAGED), 0, "the engagement is spent");
+        let p = r.player(castaway).unwrap();
+        assert_eq!(p.partner() & 3, GIRLFRIEND, "the squadless man stays as he stood");
+        assert_eq!(p.get::<u32>(ENGAGED), when);
     }
 
     /// Category 2 on A's human squad, one German man its only one
