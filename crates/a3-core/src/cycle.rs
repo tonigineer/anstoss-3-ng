@@ -2216,8 +2216,11 @@ impl Cycle {
     }
 
     /// The day's purchase talks one by one (`FUN_0076cb3e`'s last loop),
-    /// a fee talk with a human seller in his dialog 308 a round at a time:
-    /// his answer, then the bidder's (`FUN_00768638` asm 0x7698d1–0x769b0b).
+    /// a fee talk a round at a time: the seller's — his dialog 308 with a
+    /// human manager, `FUN_0076e018` for a computer one — then the
+    /// bidder's, and on an agreed fee the move (`FUN_0070ca69`; the
+    /// failed talk's dialog 0xa7 not built) (`FUN_00768638` asm
+    /// 0x7698d1–0x769b0b).
     fn purchase_talks(&self, told: &mut Vec<crate::transfers::Dropout>) -> Result<(), Gone> {
         let rules = &self.data.rules;
         loop {
@@ -2239,13 +2242,25 @@ impl Cycle {
                 )
             };
             let Some((player, talk)) = next else { return Ok(()) };
-            if let Some(fee) = talk.and_then(|t| t.fee) {
+            if let Some(talk) = talk.filter(|t| t.fee.is_some()) {
+                let fee = talk.fee.clone().expect("fee talk");
                 self.season(|s| s.fee_talk = Some(fee));
+                let mut ended = None;
                 loop {
-                    self.ask(Request::new(FEE_TALK))?;
-                    let ended = self
+                    // The seller's turn: his dialog with a human
+                    // manager, `FUN_0076e018`'s turn for a computer one.
+                    let human = self
+                        .season(|s| s.fee_talk.as_ref().is_some_and(|f| f.managers[0] != 0))
+                        .unwrap_or(false);
+                    if human {
+                        self.ask(Request::new(FEE_TALK))?;
+                    }
+                    ended = self
                         .season(|s| {
                             let fee = s.fee_talk.as_mut()?;
+                            if fee.managers[0] == 0 {
+                                fee.computer_seller_turn(&mut s.random);
+                            }
                             fee.after_seller().or_else(|| fee.bidder_turn(&mut s.random))
                         })
                         .flatten();
@@ -2253,7 +2268,23 @@ impl Cycle {
                         break;
                     }
                 }
-                self.season(|s| s.fee_talk = None);
+                let fee = self.season(|s| s.fee_talk.take()).flatten();
+                if let (Some(fee), Some(crate::fee_talk::Ending::Agreed(money))) = (fee, ended) {
+                    // The human seller agreed: he moves on the winner's
+                    // terms.
+                    let terms = talk
+                        .winner
+                        .filter(|&k| k > 0)
+                        .and_then(|k| talk.offers.get(k - 1))
+                        .map(|o| o.terms);
+                    if let Some(terms) = terms {
+                        let mut guard = self.state();
+                        let state = &mut *guard;
+                        if let (Some(season), Some(records)) = (state.season.as_mut(), state.records.as_mut()) {
+                            crate::transfers::move_for_fee(records, &mut season.random, &fee, money as u32, &terms);
+                        }
+                    }
+                }
             }
             let mut guard = self.state();
             if let Some(records) = guard.records.as_mut() {

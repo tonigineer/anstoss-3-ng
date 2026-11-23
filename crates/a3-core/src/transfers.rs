@@ -1413,8 +1413,7 @@ pub fn next_purchase_talk(
 
 /// A purchase talk's end: a listing whose terms read [`POACHED`] (E+0xd =
 /// 3) leaves the transfer list (`FUN_0075a71f`), and the appointment goes
-/// (`FUN_0076cb3e`). (The move after a fee agreed with a human club —
-/// `FUN_0070ca69` — and the talk's messages 0x96 are not built.)
+/// (`FUN_0076cb3e`). (The talk's messages 0x96 are not built.)
 pub fn close_purchase_talk(records: &mut Records, player: u16) {
     if listings(records).iter().any(|l| l.id == player && l.terms == POACHED) {
         take_off(records, player);
@@ -1429,11 +1428,11 @@ pub fn close_purchase_talk(records: &mut Records, player: u16) {
 /// its last and the bid not "ab sofort" (+0x3a 0x20, which day 216 past
 /// clears, `FUN_0075827a`) —, nor between clubs of a country (the youth's
 /// and amateurs' compensation, `FUN_0069d8b2` … `FUN_00708836`), and a
-/// release fee is paid as it stands; those moves of a human seller are
-/// not built. Of the rest a human seller's is talked over
-/// ([`crate::fee_talk::FeeTalk`]) and computer clubs finish it among
-/// themselves ([`computer_fee`]); a computer seller's turns with a human
-/// bidder (`FUN_0076e018`) are not built.
+/// release fee is paid as it stands; a human seller goes with those
+/// moves too ([`computer_fee`]). Of the rest a human seller's is talked
+/// over ([`crate::fee_talk::FeeTalk`], its seller's computer turns
+/// `FUN_0076e018`) and computer clubs finish it among themselves; the
+/// dialog its failure brings a human (0xa7, `FUN_00769c6c`) is not built.
 fn fee_opening(
     records: &Records,
     random: &mut crate::random::Random,
@@ -1461,17 +1460,19 @@ fn fee_opening(
     (managers[0] != 0).then_some(fee)
 }
 
-/// The fee of the man a talk's rounds gave to a bidder, where the
-/// seller's frame and the winner's are computer clubs alone
-/// (`FUN_00768638` asm 0x769797–0x769c12): he goes for nothing when
-/// listed "ablösefrei" (E+0xd 2) or with his contract run out; else
-/// `FUN_0076d60e` bounds it and the bidder's release fee stands over it,
-/// his most where none is set. (The compensation between clubs of one
-/// country, `FUN_0069d8b2` … `FUN_00708836`, is not built; they go on the
-/// same bounds.) Then the move (`FUN_0070ca69`) with the seller's money
-/// (`FUN_007062ad`) and both clubs' books (`FUN_0063df96`). The seller's
-/// own frame winning — his contract's renewal at asm 0x7691a6 — stays
-/// not built.
+/// The fee of the man a talk's rounds gave to a bidder, settled without a
+/// talk over it (`FUN_00768638` asm 0x769588–0x769c12): he goes for
+/// nothing when listed "ablösefrei" (E+0xd 2) or with his contract run
+/// out, and for his release fee as it stands when one is set — a human
+/// seller goes with those moves too. Of the rest, where the seller's
+/// frame and the winner's are computer clubs alone, `FUN_0076d60e`
+/// bounds the fee and the bidder's most is it; a human seller's is
+/// talked over ([`crate::fee_talk::FeeTalk`]) instead. (The compensation
+/// between clubs of one country, `FUN_0069d8b2` … `FUN_00708836`, is not
+/// built; they go on the same bounds.) Then the move (`FUN_0070ca69`)
+/// with the seller's money (`FUN_007062ad`) and both clubs' books
+/// (`FUN_0063df96`). The seller's own frame winning — his contract's
+/// renewal at asm 0x7691a6 — stays not built.
 fn computer_fee(
     records: &mut Records,
     random: &mut crate::random::Random,
@@ -1483,9 +1484,6 @@ fn computer_fee(
     let k = talk.winner.filter(|&k| k > 0)?;
     let offer = talk.offers.get(k - 1)?;
     let buyer = *talk.bidders.get(k - 1)?;
-    if talk.asking.manager != 0 || offer.manager != 0 {
-        return None;
-    }
     let p = records.player(talk.player)?;
     let years = i32::from(p.contract() & 0xfff) - i32::from(records.globals.start_year());
     let at_once = offer.flags() & ASKING_AT_ONCE != 0 && day <= LATE_SEASON;
@@ -1495,6 +1493,10 @@ fn computer_fee(
         || (years == 1 && !at_once)
     {
         0
+    } else if fixed > 0 {
+        fixed as u32
+    } else if talk.asking.manager != 0 || offer.manager != 0 {
+        return None;
     } else {
         let bounds = crate::fee_talk::FeeTalk::open(
             records,
@@ -1506,11 +1508,7 @@ fn computer_fee(
             buyer,
             [talk.asking.manager, offer.manager],
         )?;
-        if fixed == 0 {
-            (bounds.most as u32).wrapping_mul(1000)
-        } else {
-            fixed as u32
-        }
+        (bounds.most as u32).wrapping_mul(1000)
     };
     let terms = offer.terms;
     if at_once {
@@ -1519,6 +1517,22 @@ fn computer_fee(
         crate::deals::agree(records, random, talk.player, talk.seller, buyer, fee, &terms);
     }
     Some(Settled { buyer, fee, terms, at_once })
+}
+
+/// The move a fee agreed in dialog 308 brings (`FUN_0070ca69`), on the
+/// winner's terms: as [`computer_fee`]'s, at once on his "ab sofort".
+pub(crate) fn move_for_fee(
+    records: &mut Records,
+    random: &mut crate::random::Random,
+    fee: &crate::fee_talk::FeeTalk,
+    money: u32,
+    terms: &[u8; TERMS],
+) {
+    if fee.at_once {
+        crate::deals::move_now(records, random, fee.player, fee.seller, fee.buyer, money, terms);
+    } else {
+        crate::deals::agree(records, random, fee.player, fee.seller, fee.buyer, money, terms);
+    }
 }
 
 /// `FUN_00768638` up to its bargaining: who still bids.
@@ -1816,9 +1830,9 @@ fn among_the_best(records: &Records, team: &crate::records::Team, p: &crate::rec
 /// `FUN_0076a49a`, the remark by `FUN_0076a4ee`; not built). Then each
 /// frame still in, from the first bidder on and from the seller's on
 /// later passes unless he lets the man go (-0x28), bids in turn — a
-/// computer club by `FUN_0076a307`, a human one by `FUN_0076a19b`, whose
-/// dialog is not built, so he leaves the talk — until one frame or none
-/// is left in.
+/// computer club by `FUN_0076a307`, a human one by `FUN_0076a19b`, who
+/// is only told of the round (message 0x9a, not built) and stays in on
+/// his opening offer — until one frame or none is left in.
 fn contract_rounds(
     records: &Records,
     random: &mut crate::random::Random,
@@ -1838,14 +1852,18 @@ fn contract_rounds(
     loop {
         while k < n {
             if !frames[k].out {
-                if frames[k].manager != 0 {
-                    frames[k].out = true;
-                } else if let Some(at) = computer_bid(records, random, tables, talk, sides[k], &mut frames[k]) {
+                if frames[k].manager == 0
+                    && let Some(at) = computer_bid(records, random, tables, talk, sides[k], &mut frames[k])
+                {
                     talk.winner = Some(k);
                     talk.best = at;
                 }
             }
-            if (first..n).filter(|&j| !frames[j].out).count() <= 1 {
+            // One frame left in, or none a computer bid is left among
+            // them: the rounds are through.
+            if (first..n).filter(|&j| !frames[j].out).count() <= 1
+                || (first..n).all(|j| frames[j].out || frames[j].manager != 0)
+            {
                 talk.asking = frames[0];
                 talk.offers = frames[1..].to_vec();
                 return;
@@ -2441,9 +2459,9 @@ mod tests {
 
     /// A purchase booked on save A with the human club and a computer one
     /// bidding for a listed man of a computer seller: the human's frame
-    /// leaves the rounds and the two computer clubs settle the fee on the
-    /// bounds and move him, with no fee talk (`FUN_00768638` asm
-    /// 0x769797).
+    /// is only told of the rounds and stays in, no human frame takes the
+    /// man, and the two computer clubs settle the fee on the bounds and
+    /// move him, with no fee talk (`FUN_00768638` asm 0x769797).
     #[test]
     #[ignore = "reads the kept saves next to $ANSTOSS3_DIR"]
     fn the_day_a_computer_seller_settles_with_the_winning_bidder() {

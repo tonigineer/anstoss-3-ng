@@ -4,7 +4,8 @@
 //! bidder offering, in thousands, round after round until the asking
 //! comes down to the offer on the fee slider's steps, or one of them runs
 //! out of patience. A human seller answers in dialog 308
-//! (`CVerhandlungUeberAbloese`); a computer bidder raises its offer by
+//! (`CVerhandlungUeberAbloese`); a computer seller brings his asking down
+//! by `FUN_0076e018`; a computer bidder raises its offer by
 //! `FUN_0076e379`.
 
 use crate::records::{Player, Records, Team};
@@ -104,6 +105,13 @@ const PATIENCE: i16 = 9;
 const RAISE_ODDS: u32 = 40;
 const RAISE: f64 = 1.05;
 const MET_PATIENCE: i16 = 6;
+/// `FUN_0076e018`'s cuts of the asking: three per cent (0x835108) when
+/// the offer has barely come up, five (0x833f80) in forty; eight to
+/// twelve and one to eleven per cent with a draw (92 and 99 less one),
+/// and ten (0x833fa0) in forty between a tenth of the way and its odds.
+const OFF_LITTLE: f64 = 0.97;
+const OFF_SOME: f64 = 0.95;
+const OFF_FAR: f64 = 0.90;
 
 /// A running fee talk (`0x1c5bf38`): the seller's frame and the bidder's
 /// whose contract the player took (+0x2b4), their asking and offer (+0x54
@@ -125,6 +133,9 @@ pub struct FeeTalk {
     pub affordable: i32,
     pub least: i32,
     pub most: i32,
+    /// The last offer the seller has seen (+0x304), in thousands; the
+    /// block is zeroed when the talk ends, so it starts at nothing.
+    pub seen: i32,
     /// A hard seller's flags (+0x2fa); the release fee as a cap (+0x310,
     /// +0x314, in the game's money).
     pub hard: u16,
@@ -363,6 +374,7 @@ impl FeeTalk {
             fixed,
             demand: demand as i32,
             offer: offer as i32,
+            seen: 0,
             patience: [PATIENCE; 2],
             out: [false; 2],
             at_once: false,
@@ -383,10 +395,90 @@ impl FeeTalk {
         None
     }
 
+    /// The computer seller's turn (`FUN_0076e018`): holding out hard and
+    /// not pressing, an offer under his least costs him three patience
+    /// and brings the pressing bit on; pressing, an offer at or under it
+    /// costs one and out of patience he is out, else the bit goes off. An
+    /// offer not over the last he saw costs two patience. Else, the
+    /// offer risen, his asking comes down by how far the offer reached
+    /// towards it, and one patience less; never under his least, under
+    /// the offer, or over the release fee's cap.
+    pub fn computer_seller_turn(&mut self, random: &mut crate::random::Random) {
+        let mut roll = -1;
+        if self.hard != 0 {
+            if self.hard & PRESSING == 0 {
+                if self.offer < self.least {
+                    self.patience[0] -= 3;
+                    if self.patience[0] < 1 {
+                        self.out[0] = true;
+                    }
+                    self.hard |= PRESSING;
+                    return;
+                }
+            } else if self.offer <= self.least {
+                self.patience[0] -= 1;
+                if self.patience[0] > 0 {
+                    return;
+                }
+                self.out[0] = true;
+                return;
+            } else {
+                self.hard &= !PRESSING;
+                roll = 0;
+            }
+        }
+        if self.seen >= self.offer {
+            self.patience[0] -= 2;
+            if self.patience[0] < 1 {
+                self.out[0] = true;
+            }
+            return;
+        }
+        // How far the offer came up towards the asking, in hundredths.
+        let mut pct = 5.0f32;
+        let gap = self.demand - self.seen;
+        if gap > 0 {
+            pct = ((self.offer - self.seen) as f32 * 100.0) / gap as f32;
+        }
+        self.seen = self.offer;
+        if roll == -1 {
+            roll = random.below(100) as i32;
+        }
+        if pct <= 5.0 {
+            self.demand = (f64::from(self.demand) * OFF_LITTLE) as i32;
+        } else if roll < 40 {
+            self.demand = (f64::from(self.demand) * OFF_SOME) as i32;
+        } else if pct <= 10.0 {
+            let by = f64::from(92 - random.below(5) as i32);
+            self.demand = (by * f64::from(self.demand as f32) / 100.0) as i32;
+        } else if roll < 40 {
+            self.demand = (f64::from(self.demand) * OFF_FAR) as i32;
+        } else {
+            let by = f64::from(99 - random.below(10) as i32);
+            self.demand = (by * f64::from(self.demand as f32) / 100.0) as i32;
+        }
+        if self.demand < self.least {
+            self.demand = self.least;
+        }
+        if self.demand < self.offer {
+            self.demand = self.offer;
+        }
+        if let Some(cap) = self.fixed
+            && (cap as u32) < self.demand as u32
+        {
+            self.demand = cap as i32;
+        }
+        self.patience[0] -= 1;
+        if self.patience[0] < 1 {
+            self.out[0] = true;
+        }
+    }
+
     /// The bidder's turn (a computer's by `FUN_0076e379`) and the round's
     /// end: out, the talk fails; the asking down to the offer, agreed on
-    /// the asking. (A human bidder's dialog is not built: no human bidder
-    /// is left to take a contract.)
+    /// the asking. (A human bidder stays in on his opening terms
+    /// (`FUN_0076a19b`) and never takes the man: the winner's of a
+    /// talk's rounds is a computer club's frame.)
     pub fn bidder_turn(&mut self, random: &mut crate::random::Random) -> Option<Ending> {
         if self.managers[1] == 0 {
             self.raise(random);
@@ -481,5 +573,58 @@ mod tests {
         assert_eq!(amount(step(10_350)), 10_000);
         assert_eq!(amount(step(2_017)), 2_000);
         assert!(agrees(2_049, 2_000) && !agrees(2_050, 2_049));
+    }
+
+    /// A talk on Nsoki's bounds (least 2 070, asking 10 000) for the
+    /// seller's-turn tests.
+    fn seller_at(least: i32, demand: i32, offer: i32, seen: i32, hard: u16) -> FeeTalk {
+        FeeTalk {
+            player: 3262,
+            seller: (14, 84),
+            buyer: (59, 3),
+            managers: [0, 0],
+            value: 2_070_000,
+            asking: 10_350,
+            affordable: 0,
+            least,
+            most: 2_459,
+            seen,
+            hard,
+            fixed: None,
+            demand,
+            offer,
+            patience: [9, 9],
+            out: [false, false],
+            at_once: false,
+            round: 0,
+        }
+    }
+
+    #[test]
+    fn the_computer_seller_asks_less_as_the_offer_rises() {
+        let mut random = crate::random::Random::from_state(1, 1);
+        // The offer risen from 800 to 900 of the 9 200 between — a
+        // hundredth of the way — three per cent off the asking, and the
+        // seller remembers the offer; one patience less.
+        let mut fee = seller_at(2_070, 10_000, 900, 800, 0);
+        fee.computer_seller_turn(&mut random);
+        assert_eq!((fee.seen, fee.patience[0], fee.out[0]), (900, 8, false));
+        assert!((9_699..=9_700).contains(&fee.demand));
+        // An offer not over the last he saw costs two patience and holds
+        // the asking.
+        let mut fee = seller_at(2_070, 10_000, 900, 900, 0);
+        fee.computer_seller_turn(&mut random);
+        assert_eq!((fee.patience[0], fee.demand), (7, 10_000));
+        // Holding out hard (+0x2fa 2) and not pressing, an offer under
+        // his least costs three and brings the pressing bit on.
+        let mut fee = seller_at(2_070, 10_000, 900, 0, 2);
+        fee.computer_seller_turn(&mut random);
+        assert_eq!((fee.patience[0], fee.hard, fee.demand), (6, 3, 10_000));
+        // Pressing, an offer at his least costs one patience; out of
+        // patience, he is out.
+        let mut fee = seller_at(900, 10_000, 900, 900, 1);
+        fee.patience[0] = 1;
+        fee.computer_seller_turn(&mut random);
+        assert!(fee.out[0]);
     }
 }
